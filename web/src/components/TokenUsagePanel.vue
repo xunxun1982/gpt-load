@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { getDashboardTokenUsage, type DashboardChartRange } from "@/api/dashboard";
+import { DASHBOARD_TIME_RANGES, DEFAULT_DASHBOARD_RANGE } from "@/constants/dashboard";
 import type { ChartData, DashboardTokenUsageResponse, ModelTokenUsageItem } from "@/types/models";
 import { formatTokenCount } from "@/utils/display";
 import { NEmpty, NSelect, NSpin, type SelectOption } from "naive-ui";
@@ -13,7 +14,7 @@ const props = withDefaults(
     range?: DashboardChartRange;
   }>(),
   {
-    range: "today",
+    range: DEFAULT_DASHBOARD_RANGE,
   }
 );
 
@@ -24,7 +25,7 @@ const emit = defineEmits<{
 const loading = ref(true);
 const tokenUsage = ref<DashboardTokenUsageResponse | null>(null);
 const selectedModel = ref<string | null>(null);
-const selectedRange = ref<DashboardChartRange>("today");
+const selectedRange = ref<DashboardChartRange>(DEFAULT_DASHBOARD_RANGE);
 const modelOptions = ref<SelectOption[]>([]);
 const chartSvg = ref<SVGElement>();
 const hoveredPoint = ref<{
@@ -50,18 +51,14 @@ const chartPadding = { top: 40, right: 40, bottom: 60, left: 80 };
 const plotWidth = chartWidth - chartPadding.left - chartPadding.right;
 const plotHeight = chartHeight - chartPadding.top - chartPadding.bottom;
 
-const timeRanges: Array<{ value: DashboardChartRange; labelKey: string }> = [
-  { value: "today", labelKey: "charts.rangeToday" },
-  { value: "yesterday", labelKey: "charts.rangeYesterday" },
-  { value: "this_week", labelKey: "charts.rangeThisWeek" },
-  { value: "last_week", labelKey: "charts.rangeLastWeek" },
-  { value: "this_month", labelKey: "charts.rangeThisMonth" },
-  { value: "last_month", labelKey: "charts.rangeLastMonth" },
-  { value: "last_30_days", labelKey: "dashboard.last30Days" },
-];
-
 const formatExactTokenCount = (value: number) => {
   return new Intl.NumberFormat().format(Math.round(value));
+};
+
+const getCacheTokens = (
+  item: Pick<ModelTokenUsageItem, "cache_read_tokens" | "cache_write_tokens">
+) => {
+  return item.cache_read_tokens + item.cache_write_tokens;
 };
 
 const topModels = computed<ModelTokenUsageItem[]>(() => tokenUsage.value?.models ?? []);
@@ -69,11 +66,11 @@ const summary = computed(() => tokenUsage.value?.summary);
 const tokenChart = computed<ChartData | null>(() => tokenUsage.value?.chart ?? null);
 const hasEstimatedTokens = computed(() => (summary.value?.estimated_tokens ?? 0) > 0);
 const selectedRangeLabel = computed(() => {
-  const range = timeRanges.find(item => item.value === selectedRange.value);
+  const range = DASHBOARD_TIME_RANGES.find(item => item.value === selectedRange.value);
   return range ? t(range.labelKey) : "";
 });
 const rangeOptions = computed<SelectOption[]>(() =>
-  timeRanges.map(range => ({
+  DASHBOARD_TIME_RANGES.map(range => ({
     value: range.value,
     label: t(range.labelKey),
   }))
@@ -319,7 +316,7 @@ const handleModelChange = (value: string | number | null) => {
 
 const handleRangeChange = (value: string | number | null) => {
   if (value === null) {
-    selectedRange.value = "today";
+    selectedRange.value = DEFAULT_DASHBOARD_RANGE;
     return;
   }
   selectedRange.value = value as DashboardChartRange;
@@ -602,6 +599,9 @@ onMounted(() => {
           <span>{{ t("dashboard.model") }}</span>
           <span>{{ t("dashboard.inputTokens") }}</span>
           <span>{{ t("dashboard.outputTokens") }}</span>
+          <span>{{ t("dashboard.cacheTokens") }}</span>
+          <span>{{ t("dashboard.thinkingTokens") }}</span>
+          <span>{{ t("dashboard.estimatedTokens") }}</span>
           <span>{{ t("dashboard.totalTokens") }}</span>
         </div>
         <div v-for="item in topModels" :key="item.model" class="token-row">
@@ -619,15 +619,29 @@ onMounted(() => {
             {{ formatTokenCount(item.output_tokens) }}
           </span>
           <span
+            :data-label="t('dashboard.cacheTokens')"
+            :title="formatExactTokenCount(getCacheTokens(item))"
+          >
+            {{ formatTokenCount(getCacheTokens(item)) }}
+          </span>
+          <span
+            :data-label="t('dashboard.thinkingTokens')"
+            :title="formatExactTokenCount(item.thinking_tokens)"
+          >
+            {{ formatTokenCount(item.thinking_tokens) }}
+          </span>
+          <span
+            :data-label="t('dashboard.estimatedTokens')"
+            :title="formatExactTokenCount(item.estimated_tokens)"
+          >
+            {{ formatTokenCount(item.estimated_tokens) }}
+          </span>
+          <span
             class="total-cell"
             :data-label="t('dashboard.totalTokens')"
             :title="formatExactTokenCount(item.total_tokens)"
           >
             <strong>{{ formatTokenCount(item.total_tokens) }}</strong>
-            <small v-if="item.estimated_tokens > 0">
-              {{ t("dashboard.includesEstimated") }}
-              {{ formatTokenCount(item.estimated_tokens) }}
-            </small>
           </span>
         </div>
       </div>
@@ -750,8 +764,10 @@ onMounted(() => {
   left: 50%;
   z-index: 10;
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 12px;
+  max-width: calc(100% - 24px);
   padding: 2px;
   border-radius: 24px;
   transform: translateX(-50%);
@@ -986,7 +1002,7 @@ onMounted(() => {
 
 .token-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1.6fr) repeat(3, minmax(84px, 1fr));
+  grid-template-columns: minmax(160px, 1.6fr) repeat(6, minmax(80px, 1fr));
   gap: 12px;
   align-items: center;
   padding: 10px 12px;
@@ -1098,7 +1114,7 @@ onMounted(() => {
   }
 
   .token-row {
-    grid-template-columns: minmax(120px, 1.4fr) repeat(3, minmax(64px, 1fr));
+    grid-template-columns: minmax(120px, 1.4fr) repeat(6, minmax(60px, 1fr));
     gap: 8px;
     padding: 9px 10px;
     font-size: 12px;

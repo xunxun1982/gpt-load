@@ -178,6 +178,7 @@ func TestGetEffectiveEndpointForAggregation(t *testing.T) {
 		subGroup             *models.Group
 		aggregateChannelType string
 		usesClaudeEndpoint   bool
+		usesCodexEndpoint    bool
 		expected             string
 	}{
 		{
@@ -250,12 +251,32 @@ func TestGetEffectiveEndpointForAggregation(t *testing.T) {
 			usesClaudeEndpoint:   false,
 			expected:             "/v1/responses",
 		},
+		{
+			name: "custom endpoint - OpenAI force Codex child in Responses aggregate",
+			subGroup: &models.Group{
+				ValidationEndpoint: "/v1/chat/completions",
+				ChannelType:        "openai",
+			},
+			aggregateChannelType: "openai-response",
+			usesCodexEndpoint:    true,
+			expected:             "/v1/responses",
+		},
+		{
+			name: "custom endpoint - Anthropic force Codex child in Responses aggregate",
+			subGroup: &models.Group{
+				ValidationEndpoint: "/v1/messages",
+				ChannelType:        "anthropic",
+			},
+			aggregateChannelType: "openai-response",
+			usesCodexEndpoint:    true,
+			expected:             "/v1/responses",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := getEffectiveEndpointForAggregation(tt.subGroup, tt.aggregateChannelType, tt.usesClaudeEndpoint)
+			result := getEffectiveEndpointForAggregation(tt.subGroup, tt.aggregateChannelType, tt.usesClaudeEndpoint, tt.usesCodexEndpoint)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -308,6 +329,55 @@ func TestValidateSubGroupsAllowsAnthropicAggregateCCCompatibleChannels(t *testin
 	require.NoError(t, err)
 	require.Len(t, result.SubGroups, len(groups))
 	assert.Equal(t, "/v1/messages", result.ValidationEndpoint)
+}
+
+func TestValidateSubGroupsAllowsResponsesAggregateCodexCompatibleChannels(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	groups := []models.Group{
+		{
+			Name:        "responses-native",
+			DisplayName: "Responses Native",
+			GroupType:   "standard",
+			Enabled:     true,
+			ChannelType: "openai-response",
+			TestModel:   "gpt-4.1-mini",
+			Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+			Config:      datatypes.JSONMap{},
+		},
+		{
+			Name:        "openai-codex",
+			DisplayName: "OpenAI Codex",
+			GroupType:   "standard",
+			Enabled:     true,
+			ChannelType: "openai",
+			TestModel:   "gpt-4.1-mini",
+			Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+			Config:      datatypes.JSONMap{"codex_support": true},
+		},
+		{
+			Name:        "anthropic-codex",
+			DisplayName: "Anthropic Codex",
+			GroupType:   "standard",
+			Enabled:     true,
+			ChannelType: "anthropic",
+			TestModel:   "claude-3-haiku-20240307",
+			Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.anthropic.com","weight":1}]`)),
+			Config:      datatypes.JSONMap{"codex_support": true},
+		},
+	}
+	require.NoError(t, db.Create(&groups).Error)
+
+	inputs := make([]SubGroupInput, 0, len(groups))
+	for _, group := range groups {
+		inputs = append(inputs, SubGroupInput{GroupID: group.ID, Weight: 100})
+	}
+
+	result, err := service.ValidateSubGroups(context.Background(), "openai-response", inputs, "")
+	require.NoError(t, err)
+	require.Len(t, result.SubGroups, len(groups))
+	assert.Equal(t, "/v1/responses", result.ValidationEndpoint)
 }
 
 func TestValidateSubGroupsRejectsDuplicateGroupIDs(t *testing.T) {

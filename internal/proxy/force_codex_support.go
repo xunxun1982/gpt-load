@@ -1,0 +1,1027 @@
+package proxy
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
+
+	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
+)
+
+const (
+	ctxKeyCodexEnabled        = "codex_enabled"
+	ctxKeyCodexUpstreamFormat = "codex_upstream_format"
+
+	codexUpstreamOpenAIChat = "openai_chat"
+	codexUpstreamClaude     = "claude"
+	codexUpstreamResponses  = "openai_response"
+)
+
+// isCodexPath detects the explicit /codex force endpoint without confusing it
+// with a group that is literally named "codex".
+func isCodexPath(path, groupName string) bool {
+	if groupName != "" {
+		prefix := "/proxy/" + groupName + "/"
+		if strings.HasPrefix(path, prefix) {
+			suffix := strings.TrimPrefix(path, prefix)
+			return strings.HasPrefix(suffix, "codex/v1/") || suffix == "codex/v1"
+		}
+	}
+	return strings.Contains(path, "/codex/v1/") || strings.HasSuffix(path, "/codex/v1")
+}
+
+// rewriteCodexPathToOpenAIGeneric removes only the /codex segment that precedes
+// /v1 so group names remain untouched.
+func rewriteCodexPathToOpenAIGeneric(path string) string {
+	return strings.Replace(path, "/codex/v1", "/v1", 1)
+}
+
+func isCodexSupportEnabled(group *models.Group) bool {
+	if group == nil || (group.ChannelType != "openai" && group.ChannelType != "anthropic") {
+		return false
+	}
+	return getGroupConfigBool(group, "codex_support")
+}
+
+func isCodexEndpointSupported(group *models.Group) bool {
+	if group == nil {
+		return false
+	}
+	if group.ChannelType == "openai-response" {
+		return true
+	}
+	return isCodexSupportEnabled(group)
+}
+
+func isCodexEnabled(c *gin.Context) bool {
+	if v, ok := c.Get(ctxKeyCodexEnabled); ok {
+		if enabled, ok := v.(bool); ok && enabled {
+			return true
+		}
+	}
+	return false
+}
+
+func setCodexUpstreamFormat(c *gin.Context, format string) {
+	c.Set(ctxKeyCodexUpstreamFormat, format)
+}
+
+func getCodexUpstreamFormat(c *gin.Context) string {
+	if v, ok := c.Get(ctxKeyCodexUpstreamFormat); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, error) {
+	if codexReq == nil {
+		return nil, fmt.Errorf("codex request is nil")
+	}
+	req := &OpenAIRequest{
+		Model:             codexReq.Model,
+		Stream:            codexReq.Stream,
+		Temperature:       codexReq.Temperature,
+		TopP:              codexReq.TopP,
+		MaxTokens:         codexReq.MaxOutputTokens,
+		ParallelToolCalls: codexReq.ParallelToolCalls,
+	}
+
+	if strings.TrimSpace(codexReq.Instructions) != "" {
+		req.Messages = append(req.Messages, OpenAIMessage{
+			Role:    "system",
+			Content: marshalStringAsJSONRaw("codex_instructions", codexReq.Instructions),
+		})
+	}
+
+	messages, err := convertCodexInputToOpenAIMessages(codexReq.Input)
+	if err != nil {
+		return nil, err
+	}
+	req.Messages = append(req.Messages, messages...)
+
+	if len(codexReq.Tools) > 0 {
+		req.Tools = make([]OpenAITool, 0, len(codexReq.Tools))
+		for _, tool := range codexReq.Tools {
+			if tool.Type != "" && tool.Type != "function" {
+				continue
+			}
+			req.Tools = append(req.Tools, OpenAITool{
+				Type: "function",
+				Function: OpenAIFunction{
+					Name:        tool.Name,
+					Description: tool.Description,
+					Parameters:  normalizeToolParameters(tool.Parameters),
+				},
+			})
+		}
+	}
+	req.ToolChoice = convertResponsesToolChoiceToOpenAIChat(codexReq.ToolChoice)
+	return req, nil
+}
+
+func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error) {
+	if codexReq == nil {
+		return nil, fmt.Errorf("codex request is nil")
+	}
+	req := &ClaudeRequest{
+		Model:       codexReq.Model,
+		Stream:      codexReq.Stream,
+		Temperature: codexReq.Temperature,
+		TopP:        codexReq.TopP,
+	}
+	if codexReq.MaxOutputTokens != nil {
+		req.MaxTokens = *codexReq.MaxOutputTokens
+	}
+	if strings.TrimSpace(codexReq.Instructions) != "" {
+		req.System = marshalStringAsJSONRaw("codex_instructions", codexReq.Instructions)
+	}
+
+	messages, err := convertCodexInputToClaudeMessages(codexReq.Input)
+	if err != nil {
+		return nil, err
+	}
+	req.Messages = messages
+
+	if len(codexReq.Tools) > 0 {
+		req.Tools = make([]ClaudeTool, 0, len(codexReq.Tools))
+		for _, tool := range codexReq.Tools {
+			if tool.Type != "" && tool.Type != "function" {
+				continue
+			}
+			req.Tools = append(req.Tools, ClaudeTool{
+				Name:        tool.Name,
+				Description: tool.Description,
+				InputSchema: normalizeToolParameters(tool.Parameters),
+			})
+		}
+	}
+	req.ToolChoice = convertResponsesToolChoiceToClaude(codexReq.ToolChoice)
+	return req, nil
+}
+
+func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal string) *CodexResponse {
+	if openaiResp == nil {
+		return &CodexResponse{
+			ID:        "resp_" + time.Now().Format("20060102150405"),
+			Object:    "response",
+			CreatedAt: time.Now().Unix(),
+			Status:    "failed",
+			Error:     &CodexError{Type: "server_error", Message: "empty upstream response"},
+		}
+	}
+	resp := &CodexResponse{
+		ID:        openaiResp.ID,
+		Object:    "response",
+		CreatedAt: openaiResp.Created,
+		Status:    "completed",
+		Model:     openaiResp.Model,
+		Output:    make([]CodexOutputItem, 0),
+	}
+	if resp.ID == "" {
+		resp.ID = "resp_" + time.Now().Format("20060102150405")
+	}
+	if resp.CreatedAt == 0 {
+		resp.CreatedAt = time.Now().Unix()
+	}
+	if openaiResp.Error != nil {
+		resp.Status = "failed"
+		resp.Error = &CodexError{
+			Type:    openaiResp.Error.Type,
+			Message: openaiResp.Error.Message,
+		}
+		return resp
+	}
+
+	if len(openaiResp.Choices) > 0 {
+		choice := openaiResp.Choices[0]
+		msg := choice.Message
+		if msg == nil {
+			msg = choice.Delta
+		}
+		if msg != nil {
+			var parsedCalls []functionCall
+			if len(msg.ToolCalls) == 0 && msg.Content != nil && *msg.Content != "" {
+				parsedCalls = parseFunctionCallsXML(*msg.Content, triggerSignal)
+				if len(parsedCalls) == 0 && strings.Contains(*msg.Content, "<function_calls>") {
+					parsedCalls = parseFunctionCallsXML(*msg.Content, "")
+				}
+			}
+			if len(msg.ToolCalls) == 0 && len(parsedCalls) == 0 && msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
+				reasoning := *msg.ReasoningContent
+				if triggerSignal != "" && strings.Contains(reasoning, triggerSignal) ||
+					strings.Contains(reasoning, "<invoke") ||
+					strings.Contains(reasoning, "<function_calls>") {
+					parsedCalls = parseFunctionCallsXML(reasoning, triggerSignal)
+					if len(parsedCalls) == 0 {
+						parsedCalls = parseFunctionCallsXML(reasoning, "")
+					}
+				}
+			}
+
+			if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
+				reasoning := strings.TrimSpace(removeFunctionCallsBlocks(*msg.ReasoningContent, cleanupModeFull))
+				if reasoning != "" {
+					resp.Output = append(resp.Output, CodexOutputItem{
+						Type:   "reasoning",
+						Status: "completed",
+						Summary: []CodexSummaryItem{{
+							Type: "summary_text",
+							Text: reasoning,
+						}},
+					})
+				}
+			}
+			if msg.Content != nil && *msg.Content != "" {
+				text := strings.TrimSpace(removeFunctionCallsBlocks(*msg.Content, cleanupModeFull))
+				if text != "" {
+					resp.Output = append(resp.Output, CodexOutputItem{
+						Type:   "message",
+						Role:   "assistant",
+						Status: "completed",
+						Content: []CodexContentBlock{{
+							Type: "output_text",
+							Text: text,
+						}},
+					})
+				}
+			}
+			for _, tc := range msg.ToolCalls {
+				if tc.ID == "" || tc.Function.Name == "" || !isValidToolCallArguments(tc.Function.Name, tc.Function.Arguments) {
+					continue
+				}
+				resp.Output = append(resp.Output, CodexOutputItem{
+					Type:      "function_call",
+					ID:        "fc_" + strings.TrimPrefix(tc.ID, "call_"),
+					Status:    "completed",
+					CallID:    tc.ID,
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				})
+			}
+			if len(msg.ToolCalls) == 0 {
+				appendParsedFunctionCallsToCodex(resp, parsedCalls)
+			}
+		}
+	}
+	if openaiResp.Usage != nil {
+		resp.Usage = &CodexUsage{
+			InputTokens:  openaiResp.Usage.PromptTokens,
+			OutputTokens: openaiResp.Usage.CompletionTokens,
+			TotalTokens:  openaiResp.Usage.TotalTokens,
+		}
+		if details := codexInputTokenDetailsFromOpenAI(openaiResp.Usage.PromptTokensDetails); details != nil {
+			resp.Usage.InputTokensDetails = details
+			resp.Usage.CacheReadTokens = details.CachedTokens
+		}
+		if details := codexOutputTokenDetailsFromOpenAI(openaiResp.Usage.CompletionTokensDetails); details != nil {
+			resp.Usage.OutputTokensDetails = details
+			resp.Usage.ThinkingTokens = details.ReasoningTokens
+		}
+		if resp.Usage.TotalTokens == 0 {
+			resp.Usage.TotalTokens = resp.Usage.InputTokens + resp.Usage.OutputTokens
+		}
+	}
+	return resp
+}
+
+func convertClaudeToCodexResponse(claudeResp *ClaudeResponse) *CodexResponse {
+	if claudeResp == nil {
+		return &CodexResponse{
+			ID:        "resp_" + time.Now().Format("20060102150405"),
+			Object:    "response",
+			CreatedAt: time.Now().Unix(),
+			Status:    "failed",
+			Error:     &CodexError{Type: "server_error", Message: "empty upstream response"},
+		}
+	}
+	resp := &CodexResponse{
+		ID:        claudeResp.ID,
+		Object:    "response",
+		CreatedAt: time.Now().Unix(),
+		Status:    "completed",
+		Model:     claudeResp.Model,
+		Output:    make([]CodexOutputItem, 0, len(claudeResp.Content)),
+	}
+	if resp.ID == "" {
+		resp.ID = "resp_" + time.Now().Format("20060102150405")
+	}
+	for _, block := range claudeResp.Content {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				resp.Output = append(resp.Output, CodexOutputItem{
+					Type:   "message",
+					Role:   "assistant",
+					Status: "completed",
+					Content: []CodexContentBlock{{
+						Type: "output_text",
+						Text: block.Text,
+					}},
+				})
+			}
+		case "thinking":
+			if block.Thinking != "" {
+				resp.Output = append(resp.Output, CodexOutputItem{
+					Type:   "reasoning",
+					Status: "completed",
+					Summary: []CodexSummaryItem{{
+						Type: "summary_text",
+						Text: block.Thinking,
+					}},
+				})
+			}
+		case "tool_use":
+			if block.ID != "" && block.Name != "" {
+				resp.Output = append(resp.Output, CodexOutputItem{
+					Type:      "function_call",
+					ID:        "fc_" + block.ID,
+					Status:    "completed",
+					CallID:    "call_" + block.ID,
+					Name:      block.Name,
+					Arguments: string(block.Input),
+				})
+			}
+		}
+	}
+	if claudeResp.Usage != nil {
+		resp.Usage = &CodexUsage{
+			InputTokens:      claudeResp.Usage.InputTokens,
+			OutputTokens:     claudeResp.Usage.OutputTokens,
+			TotalTokens:      codexTotalTokensFromClaudeUsage(claudeResp.Usage),
+			CacheReadTokens:  claudeResp.Usage.CacheReadInputTokens,
+			CacheWriteTokens: claudeResp.Usage.CacheCreationInputTokens,
+			ThinkingTokens:   claudeResp.Usage.ThinkingTokens,
+		}
+		if claudeResp.Usage.CacheReadInputTokens > 0 {
+			resp.Usage.InputTokensDetails = &TokenUsageDetails{CachedTokens: claudeResp.Usage.CacheReadInputTokens}
+		}
+		if claudeResp.Usage.ThinkingTokens > 0 {
+			resp.Usage.OutputTokensDetails = &TokenUsageDetails{ReasoningTokens: claudeResp.Usage.ThinkingTokens}
+		}
+	}
+	return resp
+}
+
+func codexTotalTokensFromClaudeUsage(usage *ClaudeUsage) int {
+	if usage == nil {
+		return 0
+	}
+	total := usage.InputTokens + usage.OutputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens
+	if usage.ThinkingTokens > 0 {
+		total += usage.ThinkingTokens
+	}
+	return total
+}
+
+func codexInputTokenDetailsFromOpenAI(details *TokenUsageDetails) *TokenUsageDetails {
+	if details == nil || details.CachedTokens <= 0 {
+		return nil
+	}
+	return &TokenUsageDetails{CachedTokens: details.CachedTokens}
+}
+
+func codexOutputTokenDetailsFromOpenAI(details *TokenUsageDetails) *TokenUsageDetails {
+	if details == nil || details.ReasoningTokens <= 0 {
+		return nil
+	}
+	return &TokenUsageDetails{ReasoningTokens: details.ReasoningTokens}
+}
+
+func convertCodexInputToOpenAIMessages(input json.RawMessage) ([]OpenAIMessage, error) {
+	var raw any
+	if err := json.Unmarshal(input, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse Codex input: %w", err)
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		if s, ok := raw.(string); ok {
+			return []OpenAIMessage{{Role: "user", Content: marshalStringAsJSONRaw("codex_input", s)}}, nil
+		}
+		return nil, fmt.Errorf("unsupported Codex input format")
+	}
+	messages := make([]OpenAIMessage, 0, len(items))
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		itemType, _ := m["type"].(string)
+		switch itemType {
+		case "message", "":
+			role, _ := m["role"].(string)
+			if role == "" {
+				role = "user"
+			}
+			text := codexContentText(m["content"], role)
+			if text == "" {
+				continue
+			}
+			if role == "developer" {
+				role = "system"
+			}
+			messages = append(messages, OpenAIMessage{Role: role, Content: marshalStringAsJSONRaw("codex_message", text)})
+		case "function_call":
+			callID := stringFromMap(m, "call_id")
+			if callID == "" {
+				callID = stringFromMap(m, "id")
+			}
+			name := stringFromMap(m, "name")
+			if callID == "" || name == "" {
+				continue
+			}
+			messages = append(messages, OpenAIMessage{
+				Role: "assistant",
+				ToolCalls: []OpenAIToolCall{{
+					ID:   callID,
+					Type: "function",
+					Function: OpenAIFunctionCall{
+						Name:      name,
+						Arguments: stringFromMap(m, "arguments"),
+					},
+				}},
+			})
+		case "function_call_output":
+			callID := stringFromMap(m, "call_id")
+			output := stringFromMap(m, "output")
+			messages = append(messages, OpenAIMessage{
+				Role:       "tool",
+				ToolCallID: callID,
+				Content:    marshalStringAsJSONRaw("codex_tool_output", output),
+			})
+		}
+	}
+	return messages, nil
+}
+
+func convertCodexInputToClaudeMessages(input json.RawMessage) ([]ClaudeMessage, error) {
+	var raw any
+	if err := json.Unmarshal(input, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse Codex input: %w", err)
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		if s, ok := raw.(string); ok {
+			content, _ := json.Marshal([]ClaudeContentBlock{{Type: "text", Text: s}})
+			return []ClaudeMessage{{Role: "user", Content: content}}, nil
+		}
+		return nil, fmt.Errorf("unsupported Codex input format")
+	}
+	messages := make([]ClaudeMessage, 0, len(items))
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		itemType, _ := m["type"].(string)
+		switch itemType {
+		case "message", "":
+			role, _ := m["role"].(string)
+			if role == "" || role == "developer" || role == "system" {
+				role = "user"
+			}
+			text := codexContentText(m["content"], role)
+			if text == "" {
+				continue
+			}
+			content, _ := json.Marshal([]ClaudeContentBlock{{Type: "text", Text: text}})
+			messages = append(messages, ClaudeMessage{Role: role, Content: content})
+		case "function_call":
+			callID := strings.TrimPrefix(stringFromMap(m, "call_id"), "call_")
+			name := stringFromMap(m, "name")
+			if callID == "" || name == "" {
+				continue
+			}
+			content, _ := json.Marshal([]ClaudeContentBlock{{
+				Type:  "tool_use",
+				ID:    callID,
+				Name:  name,
+				Input: json.RawMessage(stringFromMap(m, "arguments")),
+			}})
+			messages = append(messages, ClaudeMessage{Role: "assistant", Content: content})
+		case "function_call_output":
+			callID := strings.TrimPrefix(stringFromMap(m, "call_id"), "call_")
+			output := stringFromMap(m, "output")
+			content, _ := json.Marshal([]ClaudeContentBlock{{
+				Type:      "tool_result",
+				ToolUseID: callID,
+				Content:   marshalStringAsJSONRaw("codex_tool_output", output),
+			}})
+			messages = append(messages, ClaudeMessage{Role: "user", Content: content})
+		}
+	}
+	return messages, nil
+}
+
+func codexContentText(content any, role string) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var sb strings.Builder
+		for _, part := range v {
+			m, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			partType, _ := m["type"].(string)
+			if partType == "input_text" || partType == "output_text" || partType == "text" {
+				sb.WriteString(stringFromMap(m, "text"))
+			}
+		}
+		return sb.String()
+	default:
+		if content == nil {
+			return ""
+		}
+		b, err := json.Marshal(content)
+		if err != nil {
+			return fmt.Sprint(content)
+		}
+		logrus.WithField("role", role).Debug("Force Codex: converted non-text content to JSON string")
+		return string(b)
+	}
+}
+
+func stringFromMap(m map[string]any, key string) string {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch s := v.(type) {
+	case string:
+		return s
+	default:
+		b, err := json.Marshal(s)
+		if err != nil {
+			return fmt.Sprint(s)
+		}
+		return string(b)
+	}
+}
+
+func convertResponsesToolChoiceToOpenAIChat(toolChoice any) any {
+	switch v := toolChoice.(type) {
+	case nil:
+		return nil
+	case string:
+		return v
+	case map[string]any:
+		if t, _ := v["type"].(string); t == "function" {
+			if name, _ := v["name"].(string); name != "" {
+				return map[string]any{
+					"type": "function",
+					"function": map[string]string{
+						"name": name,
+					},
+				}
+			}
+		}
+		return v
+	default:
+		return v
+	}
+}
+
+func convertResponsesToolChoiceToClaude(toolChoice any) json.RawMessage {
+	switch v := toolChoice.(type) {
+	case nil:
+		return nil
+	case string:
+		var mapped any
+		switch v {
+		case "required":
+			mapped = map[string]any{"type": "any"}
+		case "auto", "none":
+			mapped = map[string]any{"type": v}
+		default:
+			return nil
+		}
+		out, _ := json.Marshal(mapped)
+		return out
+	case map[string]any:
+		if t, _ := v["type"].(string); t == "function" {
+			if name, _ := v["name"].(string); name != "" {
+				out, _ := json.Marshal(map[string]any{"type": "tool", "name": name})
+				return out
+			}
+		}
+	}
+	return nil
+}
+
+func appendParsedFunctionCallsToCodex(resp *CodexResponse, calls []functionCall) {
+	for _, call := range calls {
+		if call.Name == "" {
+			continue
+		}
+		argsJSON, err := json.Marshal(call.Args)
+		if err != nil {
+			logrus.WithError(err).Debug("Force Codex: failed to marshal parsed function call args")
+			continue
+		}
+		callID := "call_" + utils.GenerateRandomSuffix()
+		resp.Output = append(resp.Output, CodexOutputItem{
+			Type:      "function_call",
+			ID:        "fc_" + strings.TrimPrefix(callID, "call_"),
+			Status:    "completed",
+			CallID:    callID,
+			Name:      call.Name,
+			Arguments: string(argsJSON),
+		})
+	}
+}
+
+func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *models.Group, bodyBytes []byte) ([]byte, bool, error) {
+	var codexReq CodexRequest
+	if err := json.Unmarshal(bodyBytes, &codexReq); err != nil {
+		return bodyBytes, false, fmt.Errorf("failed to parse Codex request: %w", err)
+	}
+
+	switch group.ChannelType {
+	case "openai":
+		chatReq, err := convertCodexRequestToOpenAIChat(&codexReq)
+		if err != nil {
+			return bodyBytes, false, err
+		}
+		out, err := json.Marshal(chatReq)
+		if err != nil {
+			return bodyBytes, false, err
+		}
+		c.Set(ctxKeyCodexEnabled, true)
+		setCodexUpstreamFormat(c, codexUpstreamOpenAIChat)
+		return out, true, nil
+	case "anthropic":
+		claudeReq, err := convertCodexRequestToClaude(&codexReq)
+		if err != nil {
+			return bodyBytes, false, err
+		}
+		out, err := json.Marshal(claudeReq)
+		if err != nil {
+			return bodyBytes, false, err
+		}
+		c.Set(ctxKeyCodexEnabled, true)
+		setCodexUpstreamFormat(c, codexUpstreamClaude)
+		return out, true, nil
+	case "openai-response":
+		c.Set(ctxKeyCodexEnabled, true)
+		setCodexUpstreamFormat(c, codexUpstreamResponses)
+		return bodyBytes, true, nil
+	default:
+		return bodyBytes, false, fmt.Errorf("unsupported channel type %q for Codex support", group.ChannelType)
+	}
+}
+
+func (ps *ProxyServer) handleForceCodexNormalResponse(c *gin.Context, resp *http.Response) {
+	format := getCodexUpstreamFormat(c)
+	if format == codexUpstreamResponses {
+		if isFunctionCallEnabled(c) {
+			ps.handleFunctionCallNormalResponseByChannel(c, resp, functionCallGroupFromContext(c))
+			return
+		}
+		ps.handleNormalResponse(c, resp)
+		return
+	}
+
+	bodyBytes, err := readAllWithLimit(resp.Body, maxUpstreamResponseBodySize)
+	if err != nil {
+		writeForceCodexGatewayError(c, "Upstream response body is too large")
+		return
+	}
+
+	origEncoding := resp.Header.Get("Content-Encoding")
+	bodyBytes, err = utils.DecompressResponseWithLimit(origEncoding, bodyBytes, maxUpstreamResponseBodySize)
+	if err != nil {
+		writeForceCodexGatewayError(c, "Failed to decompress upstream response body")
+		return
+	}
+	if origEncoding != "" {
+		clearUpstreamEncodingHeaders(c)
+	}
+
+	var codexResp *CodexResponse
+	switch format {
+	case codexUpstreamOpenAIChat:
+		var openaiResp OpenAIResponse
+		if err := json.Unmarshal(bodyBytes, &openaiResp); err != nil {
+			if resp.StatusCode >= http.StatusBadRequest {
+				codexResp = rawCodexErrorResponse(resp.StatusCode, bodyBytes)
+			} else {
+				writeForceCodexPassthrough(c, resp, bodyBytes)
+				return
+			}
+		} else {
+			codexResp = convertOpenAIChatToCodexResponse(&openaiResp, functionCallTriggerSignal(c))
+		}
+	case codexUpstreamClaude:
+		var claudeResp ClaudeResponse
+		if err := json.Unmarshal(bodyBytes, &claudeResp); err != nil {
+			if resp.StatusCode >= http.StatusBadRequest {
+				codexResp = rawCodexErrorResponse(resp.StatusCode, bodyBytes)
+			} else {
+				writeForceCodexPassthrough(c, resp, bodyBytes)
+				return
+			}
+		} else {
+			codexResp = convertClaudeToCodexResponse(&claudeResp)
+		}
+	default:
+		writeForceCodexPassthrough(c, resp, bodyBytes)
+		return
+	}
+
+	out, err := json.Marshal(codexResp)
+	if err != nil {
+		writeForceCodexGatewayError(c, "Failed to marshal Codex response")
+		return
+	}
+	setTokenUsageOrEstimateFromFullBodyIf(c, out, resp.StatusCode < http.StatusBadRequest)
+	if shouldCaptureResponse(c) {
+		c.Set("response_body", sanitizeAndTruncateBytesForLog(out, maxResponseCaptureBytes))
+	}
+	clearUpstreamEncodingHeaders(c)
+	c.Data(resp.StatusCode, "application/json", out)
+}
+
+func (ps *ProxyServer) handleForceCodexStreamingResponse(c *gin.Context, resp *http.Response) {
+	format := getCodexUpstreamFormat(c)
+	if format == codexUpstreamResponses {
+		if isFunctionCallEnabled(c) {
+			ps.handleFunctionCallStreamingResponse(c, resp)
+			return
+		}
+		ps.handleStreamingResponse(c, resp)
+		return
+	}
+
+	// Streaming cross-protocol conversion is collected into a bounded buffer and
+	// then emitted as Responses SSE. This mirrors the existing force_function_call
+	// stream path and avoids leaking upstream-native events to Codex clients.
+	bodyBytes, err := readAllWithLimit(resp.Body, maxUpstreamResponseBodySize)
+	if err != nil {
+		writeForceCodexGatewayError(c, "Upstream streaming response is too large")
+		return
+	}
+	origEncoding := resp.Header.Get("Content-Encoding")
+	bodyBytes, err = utils.DecompressResponseWithLimit(origEncoding, bodyBytes, maxUpstreamResponseBodySize)
+	if err != nil {
+		writeForceCodexGatewayError(c, "Failed to decompress upstream streaming response")
+		return
+	}
+	streamResp, statusCode := ps.convertForceCodexCollectedStream(c, resp.StatusCode, format, bodyBytes)
+	out, err := json.Marshal(streamResp)
+	if err != nil {
+		writeForceCodexGatewayError(c, "Failed to marshal collected Codex stream")
+		return
+	}
+	if !setTokenUsageFromBody(c, bodyBytes) {
+		setTokenUsageOrEstimateFromFullBodyIf(c, out, statusCode < http.StatusBadRequest)
+	}
+	clearUpstreamEncodingHeaders(c)
+	c.Header("Content-Type", "text/event-stream")
+	c.Status(statusCode)
+	_, _ = c.Writer.Write([]byte("event: response.completed\n"))
+	_, _ = c.Writer.Write([]byte("data: " + string(out) + "\n\n"))
+	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	if flusher, ok := c.Writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (ps *ProxyServer) convertForceCodexCollectedStream(c *gin.Context, statusCode int, format string, bodyBytes []byte) (*CodexResponse, int) {
+	if statusCode >= http.StatusBadRequest {
+		return rawCodexErrorResponse(statusCode, bodyBytes), statusCode
+	}
+
+	switch format {
+	case codexUpstreamOpenAIChat:
+		openaiResp := collectOpenAIChatStreamToResponse(bodyBytes)
+		return convertOpenAIChatToCodexResponse(openaiResp, functionCallTriggerSignal(c)), statusCode
+	case codexUpstreamClaude:
+		claudeResp := collectClaudeStreamToResponse(bodyBytes)
+		return convertClaudeToCodexResponse(claudeResp), statusCode
+	default:
+		return rawCodexErrorResponse(http.StatusBadGateway, []byte("unsupported Codex stream conversion")), http.StatusBadGateway
+	}
+}
+
+func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
+	resp := &OpenAIResponse{
+		ID:      "chatcmpl_" + utils.GenerateRandomSuffix(),
+		Object:  "chat.completion",
+		Created: time.Now().Unix(),
+		Choices: []OpenAIChoice{{
+			Index: 0,
+			Message: &OpenAIRespMessage{
+				Role: "assistant",
+			},
+		}},
+	}
+	var content strings.Builder
+	toolCallsByIndex := make(map[int]*OpenAIToolCall)
+	finishReason := ""
+	for _, data := range extractSSEDataPayloads(bodyBytes) {
+		if data == "[DONE]" {
+			continue
+		}
+		var chunk OpenAIResponse
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		if chunk.ID != "" {
+			resp.ID = chunk.ID
+		}
+		if chunk.Created != 0 {
+			resp.Created = chunk.Created
+		}
+		if chunk.Model != "" {
+			resp.Model = chunk.Model
+		}
+		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta == nil {
+			continue
+		}
+		if chunk.Choices[0].FinishReason != nil {
+			finishReason = *chunk.Choices[0].FinishReason
+		}
+		delta := chunk.Choices[0].Delta
+		if delta.Content != nil {
+			content.WriteString(*delta.Content)
+		}
+		for idx, tc := range delta.ToolCalls {
+			key := idx
+			if tc.Index != nil {
+				key = *tc.Index
+			}
+			current := toolCallsByIndex[key]
+			if current == nil {
+				copyCall := OpenAIToolCall{Type: "function"}
+				current = &copyCall
+				toolCallsByIndex[key] = current
+			}
+			if tc.ID != "" {
+				current.ID = tc.ID
+			}
+			if tc.Type != "" {
+				current.Type = tc.Type
+			}
+			if tc.Function.Name != "" {
+				current.Function.Name = tc.Function.Name
+			}
+			if tc.Function.Arguments != "" {
+				current.Function.Arguments += tc.Function.Arguments
+			}
+		}
+	}
+	if content.Len() > 0 {
+		text := content.String()
+		resp.Choices[0].Message.Content = &text
+	}
+	if finishReason != "" {
+		resp.Choices[0].FinishReason = &finishReason
+	}
+	for i := 0; i < len(toolCallsByIndex); i++ {
+		if tc := toolCallsByIndex[i]; tc != nil && tc.ID != "" && tc.Function.Name != "" {
+			resp.Choices[0].Message.ToolCalls = append(resp.Choices[0].Message.ToolCalls, *tc)
+		}
+	}
+	return resp
+}
+
+func collectClaudeStreamToResponse(bodyBytes []byte) *ClaudeResponse {
+	resp := &ClaudeResponse{
+		ID:      "msg_" + utils.GenerateRandomSuffix(),
+		Type:    "message",
+		Role:    "assistant",
+		Content: make([]ClaudeContentBlock, 0),
+		Usage:   &ClaudeUsage{},
+	}
+	blocks := make(map[int]*ClaudeContentBlock)
+	for _, data := range extractSSEDataPayloads(bodyBytes) {
+		var event ClaudeStreamEvent
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+		switch event.Type {
+		case "message_start":
+			if event.Message != nil {
+				resp.ID = event.Message.ID
+				resp.Model = event.Message.Model
+				if event.Message.Usage != nil {
+					resp.Usage.InputTokens = event.Message.Usage.InputTokens
+				}
+			}
+		case "content_block_start":
+			if event.ContentBlock != nil {
+				copyBlock := *event.ContentBlock
+				if copyBlock.Type == "tool_use" {
+					copyBlock.Input = nil
+				}
+				blocks[event.Index] = &copyBlock
+			}
+		case "content_block_delta":
+			block := blocks[event.Index]
+			if block == nil || event.Delta == nil {
+				continue
+			}
+			switch event.Delta.Type {
+			case "text_delta":
+				block.Text += event.Delta.Text
+			case "thinking_delta":
+				block.Thinking += event.Delta.Thinking
+			case "input_json_delta":
+				block.Input = append(block.Input, []byte(event.Delta.PartialJSON)...)
+			}
+		case "content_block_stop":
+			if block := blocks[event.Index]; block != nil {
+				resp.Content = append(resp.Content, *block)
+				delete(blocks, event.Index)
+			}
+		case "message_delta":
+			if event.Delta != nil && event.Delta.StopReason != "" {
+				stop := event.Delta.StopReason
+				resp.StopReason = &stop
+			}
+			if event.Usage != nil {
+				resp.Usage.OutputTokens = event.Usage.OutputTokens
+			}
+		}
+	}
+	for i := 0; i < len(blocks); i++ {
+		if block := blocks[i]; block != nil {
+			resp.Content = append(resp.Content, *block)
+		}
+	}
+	return resp
+}
+
+func extractSSEDataPayloads(bodyBytes []byte) []string {
+	scanner := bufio.NewScanner(bytes.NewReader(bodyBytes))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamLineBytes)
+	var payloads []string
+	var current strings.Builder
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		payloads = append(payloads, current.String())
+		current.Reset()
+	}
+	for scanner.Scan() {
+		line := strings.TrimRight(scanner.Text(), "\r\n")
+		if strings.TrimSpace(line) == "" {
+			flush()
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "data:") {
+			if current.Len() > 0 {
+				current.WriteByte('\n')
+			}
+			current.WriteString(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:")))
+		}
+	}
+	flush()
+	return payloads
+}
+
+func rawCodexErrorResponse(statusCode int, body []byte) *CodexResponse {
+	msg := strings.TrimSpace(utils.SanitizeErrorBody(string(body)))
+	if msg == "" {
+		msg = fmt.Sprintf("Upstream returned status %d", statusCode)
+	}
+	return &CodexResponse{
+		ID:        "resp_" + utils.GenerateRandomSuffix(),
+		Object:    "response",
+		CreatedAt: time.Now().Unix(),
+		Status:    "failed",
+		Error: &CodexError{
+			Type:    "server_error",
+			Message: msg,
+		},
+	}
+}
+
+func writeForceCodexGatewayError(c *gin.Context, message string) {
+	clearUpstreamEncodingHeaders(c)
+	c.JSON(http.StatusBadGateway, gin.H{
+		"error": gin.H{
+			"message": message,
+			"type":    "server_error",
+		},
+	})
+}
+
+func writeForceCodexPassthrough(c *gin.Context, resp *http.Response, body []byte) {
+	if shouldCaptureResponse(c) {
+		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
+	}
+	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+}

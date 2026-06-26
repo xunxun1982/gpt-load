@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import CCBadge from "@/components/keys/CCBadge.vue";
+import CodexBadge from "@/components/keys/CodexBadge.vue";
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -8,6 +9,7 @@ interface Props {
   isChildGroup?: boolean;
   channelType?: string;
   ccSupport?: boolean;
+  codexSupport?: boolean;
   showChildTag?: boolean;
 }
 
@@ -15,6 +17,7 @@ const props = withDefaults(defineProps<Props>(), {
   isChildGroup: false,
   channelType: undefined,
   ccSupport: false,
+  codexSupport: false,
   showChildTag: true,
 });
 
@@ -29,6 +32,10 @@ const showCCBadge = computed(
       props.channelType === "gemini") &&
     props.ccSupport
 );
+
+const showCodexBadge = computed(
+  () => (props.channelType === "openai" || props.channelType === "anthropic") && props.codexSupport
+);
 </script>
 
 <template>
@@ -36,6 +43,7 @@ const showCCBadge = computed(
     <span v-if="isChildGroup" class="child-indicator" aria-hidden="true">🌿</span>
     <span class="label-text">{{ trimmedLabel }}</span>
     <c-c-badge v-if="showCCBadge" :channel-type="channelType" :cc-support="ccSupport" />
+    <codex-badge v-if="showCodexBadge" :channel-type="channelType" :codex-support="codexSupport" />
     <span v-if="isChildGroup && showChildTag" class="child-tag">
       {{ t("keys.isChildGroup") }}
     </span>

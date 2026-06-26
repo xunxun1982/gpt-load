@@ -34,6 +34,7 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import AddSubGroupModal from "./AddSubGroupModal.vue";
 import CCBadge from "./CCBadge.vue";
+import CodexBadge from "./CodexBadge.vue";
 import EditSubGroupWeightModal from "./EditSubGroupWeightModal.vue";
 
 const { t, locale } = useI18n();
@@ -64,7 +65,7 @@ function getSubGroupStatus(subGroup: SubGroupInfo): {
 interface SubGroupRow extends SubGroupInfo {
   percentage: number;
   // Canonical group object from the main group list (props.groups).
-  // This lets us reuse the exact same config (including cc_support)
+  // This lets us reuse the exact same config (including forced endpoint flags)
   // that is used by the dropdown in AddSubGroupModal.
   canonicalGroup?: Group;
 }
@@ -85,7 +86,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
 
 // Build a map from group ID to the full Group object from props.groups.
-// This ensures we reuse the same config (especially cc_support) that is
+// This ensures we reuse the same config (especially forced endpoint flags) that is
 // used when rendering the sub-group selector dropdown.
 const groupById = computed(() => {
   const map = new Map<number, Group>();
@@ -381,6 +382,12 @@ function formatDateTime(isoString: string | null | undefined): string {
                     :channel-type="(subGroup.canonicalGroup || subGroup.group).channel_type"
                     :cc-support="
                       (subGroup.canonicalGroup || subGroup.group).config?.cc_support === true
+                    "
+                  />
+                  <codex-badge
+                    :channel-type="(subGroup.canonicalGroup || subGroup.group).channel_type"
+                    :codex-support="
+                      (subGroup.canonicalGroup || subGroup.group).config?.codex_support === true
                     "
                   />
                 </div>

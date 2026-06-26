@@ -198,11 +198,22 @@ func GetValidationEndpoint(group *models.Group) string {
 // String values are case-insensitive and accept "true", "1", "yes", "on".
 // This function is shared across aggregate_group_service and hub_service to ensure consistent behavior.
 func IsGroupCCSupportEnabled(group *models.Group) bool {
+	return IsGroupConfigBoolEnabled(group, "cc_support")
+}
+
+// IsGroupCodexSupportEnabled checks whether codex_support is enabled for a group.
+func IsGroupCodexSupportEnabled(group *models.Group) bool {
+	return IsGroupConfigBoolEnabled(group, "codex_support")
+}
+
+// IsGroupConfigBoolEnabled checks a boolean-like group config flag.
+// It preserves legacy bool/numeric/string parsing used by runtime compatibility flags.
+func IsGroupConfigBoolEnabled(group *models.Group, key string) bool {
 	if group == nil || group.Config == nil {
 		return false
 	}
 
-	raw, ok := group.Config["cc_support"]
+	raw, ok := group.Config[key]
 	if !ok || raw == nil {
 		return false
 	}

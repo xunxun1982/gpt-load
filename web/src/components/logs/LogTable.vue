@@ -79,7 +79,7 @@ const totalPages = computed(() => {
 const totalRecordsText = computed(() => {
   if (total.value < 0) {
     if (loading.value) {
-      return t("logs.calculatingTotal");
+      return t("common.loading");
     }
     if (logs.value.length === 0) {
       return t("logs.currentPageNoRecords");

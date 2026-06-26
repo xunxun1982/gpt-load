@@ -46,6 +46,7 @@ interface GroupOption extends SelectOption {
   isChildGroup?: boolean;
   channelType?: string;
   ccSupport?: boolean;
+  codexSupport?: boolean;
   parentGroupId?: number | null;
   name?: string;
 }
@@ -115,6 +116,15 @@ const getAvailableOptions = computed(() => {
         if (!isAnthropic && !isOpenAIWithCC && !isOpenAIResponseWithCC && !isGeminiWithCC) {
           return false;
         }
+      } else if (props.aggregateGroup?.channel_type === "openai-response") {
+        const isOpenAIResponse = group.channel_type === "openai-response";
+        const isOpenAIWithCodex =
+          group.channel_type === "openai" && group.config?.codex_support === true;
+        const isAnthropicWithCodex =
+          group.channel_type === "anthropic" && group.config?.codex_support === true;
+        if (!isOpenAIResponse && !isOpenAIWithCodex && !isAnthropicWithCodex) {
+          return false;
+        }
       } else {
         if (group.channel_type !== props.aggregateGroup?.channel_type) {
           return false;
@@ -143,6 +153,7 @@ const getAvailableOptions = computed(() => {
     parentGroupId: group.parent_group_id,
     channelType: group.channel_type,
     ccSupport: group.config?.cc_support === true,
+    codexSupport: group.config?.codex_support === true,
     name: group.name,
   }));
 });
@@ -321,6 +332,7 @@ function renderLabel(option: SelectOption) {
     isChildGroup: opt.isChildGroup === true,
     channelType: opt.channelType,
     ccSupport: opt.ccSupport === true,
+    codexSupport: opt.codexSupport === true,
     showChildTag: true,
   });
 }

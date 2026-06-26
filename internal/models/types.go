@@ -113,6 +113,9 @@ type GroupConfig struct {
 	// When enabled, clients can connect via /claude endpoint and requests will be
 	// converted from Claude format to OpenAI format before forwarding to upstream.
 	CCSupport *bool `json:"cc_support,omitempty"`
+	// CodexSupport enables the explicit /codex force endpoint for non-Responses groups.
+	// OpenAI Responses groups receive Responses-format requests and do not use this flag.
+	CodexSupport *bool `json:"codex_support,omitempty"`
 	// ThinkingModel specifies the model to use when Claude Code enables extended thinking.
 	// When a request has thinking.type="enabled", the model will be automatically
 	// switched to this model. Leave empty to use the original model from request.

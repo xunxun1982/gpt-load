@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { getDashboardChart, getGroupList, type DashboardChartRange } from "@/api/dashboard";
 import GroupSelectLabel from "@/components/common/GroupSelectLabel.vue";
+import { DASHBOARD_TIME_RANGES, DEFAULT_DASHBOARD_RANGE } from "@/constants/dashboard";
 import type { ChartData } from "@/types/models";
 import { getGroupDisplayName } from "@/utils/display";
 import { sortGroupsWithChildren } from "@/utils/sort";
@@ -15,7 +16,7 @@ const props = withDefaults(
     range?: DashboardChartRange;
   }>(),
   {
-    range: "today",
+    range: DEFAULT_DASHBOARD_RANGE,
   }
 );
 
@@ -60,26 +61,15 @@ interface GroupSelectOption extends SelectOption {
 // Group selection options for dropdown
 const groupOptions = ref<GroupSelectOption[]>([]);
 
-// Preset time ranges for quick selection
-const timeRanges: Array<{ value: DashboardChartRange; labelKey: string }> = [
-  { value: "today", labelKey: "charts.rangeToday" },
-  { value: "yesterday", labelKey: "charts.rangeYesterday" },
-  { value: "this_week", labelKey: "charts.rangeThisWeek" },
-  { value: "last_week", labelKey: "charts.rangeLastWeek" },
-  { value: "this_month", labelKey: "charts.rangeThisMonth" },
-  { value: "last_month", labelKey: "charts.rangeLastMonth" },
-  { value: "last_30_days", labelKey: "dashboard.last30Days" },
-];
-
-const selectedRange = ref<DashboardChartRange>("today");
+const selectedRange = ref<DashboardChartRange>(DEFAULT_DASHBOARD_RANGE);
 
 const selectedRangeLabel = computed(() => {
-  const range = timeRanges.find(r => r.value === selectedRange.value);
+  const range = DASHBOARD_TIME_RANGES.find(r => r.value === selectedRange.value);
   return range ? t(range.labelKey) : "";
 });
 
 const rangeOptions = computed<SelectOption[]>(() =>
-  timeRanges.map(range => ({
+  DASHBOARD_TIME_RANGES.map(range => ({
     value: range.value,
     label: t(range.labelKey),
   }))

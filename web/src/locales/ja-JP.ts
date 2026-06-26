@@ -130,8 +130,8 @@ export default {
     failedRequests: "失敗リクエスト",
     todayRequests: "今日のリクエスト",
     requestTrend: "リクエストトレンド",
-    last7Days: "過去7日間",
-    last30Days: "過去30日間",
+    last7Days: "過去1週間",
+    last30Days: "過去1か月",
     systemStatus: "システムステータス",
     running: "実行中",
     stopped: "停止",
@@ -167,6 +167,9 @@ export default {
     openaiCCBadge: "OpenAI CC",
     openaiResponseCCBadge: "OpenAI Responses CC",
     geminiCCBadge: "Gemini CC",
+    codexSupportBadge: "強制Codex",
+    openaiCodexBadge: "OpenAI Codex",
+    anthropicCodexBadge: "Anthropic Codex",
     allSubGroupsSelected: "すべての利用可能なサブグループが選択されています",
     selectChannelTypeFirst: "先にチャンネルタイプを選択してください",
     channelTypeChanged: "チャンネルタイプが変更され、サブグループ設定がクリアされました",
@@ -577,6 +580,17 @@ export default {
       "このスイッチは OpenAI、OpenAI Responses、Gemini チャンネルのグループに有効で、他のチャンネルではこの設定は無視され、表示されません。",
     ccSupportRedirectTip:
       "Claude Code 互換性向けに、別名とフルモデル名の両方をリダイレクトに追加（opus/claude-opus-4-5-20251101、sonnet、claude-sonnet-4-5-20250929、haiku、claude-haiku-4-5-20251001 → 上流モデル。例：opus → deepseek-chat）。任意でクライアント側フォールバックとして、Claude Code の settings.json に env を設定（関連する環境変数には ANTHROPIC_MODEL、ANTHROPIC_DEFAULT_OPUS_MODEL、ANTHROPIC_DEFAULT_SONNET_MODEL、ANTHROPIC_DEFAULT_HAIKU_MODEL が含まれます）。",
+    codexSupport: "強制 Codex サポート",
+    codexSupportTooltip1:
+      "Codex 互換の OpenAI Responses クライアント向けに /codex エンドポイントを有効にします。",
+    codexSupportTooltip2:
+      "リクエストは OpenAI Responses 形式からこのグループの上流プロトコルへ変換されます。",
+    codexSupportTooltip3:
+      "同じ標準グループで強制 CC と強制 Codex を同時に有効化することはできません。",
+    codexSupportTip:
+      "有効にすると、クライアントは /proxy/グループ名/codex/v1/responses を使用できます。OpenAI Responses 集約グループでは、強制 Codex 子グループに命中した場合のみこの強制エンドポイントへルーティングされます。",
+    forceCCCodexMutuallyExclusive:
+      "同じ標準グループで強制 CC と強制 Codex を同時に有効化することはできません。",
     thinkingModel: "思考モデル",
     thinkingModelTooltip:
       "Claude Code が拡張思考モードを有効にすると、このモデルが自動的に使用されます。空のままにすると、リクエストの元のモデルが使用されます。例：deepseek-reasoner",
@@ -950,6 +964,9 @@ export default {
     requestTrend: "リクエストトレンド",
     requestTrend24h: "24時間リクエストトレンド",
     timeRange: "期間",
+    rangeLast24Hours: "過去24時間",
+    rangeLast7Days: "過去1週間",
+    rangeLast1Month: "過去1か月",
     rangeToday: "今日",
     rangeYesterday: "昨日",
     rangeThisWeek: "今週",
@@ -1214,6 +1231,10 @@ export default {
       "このグループは {count} 個の集約グループによって参照されているため、チャンネルタイプまたは検証エンドポイントを変更できません",
     cc_support_cannot_disable_used_by_anthropic:
       "このグループは以下のAnthropic集約グループで使用されているため、CCサポートを無効にできません: {groups}",
+    codex_support_cannot_disable_used_by_codex:
+      "このグループは以下の OpenAI Responses 集約グループで使用されているため、Codexサポートを無効にできません: {groups}",
+    force_cc_codex_mutually_exclusive:
+      "同じグループで強制 CC と強制 Codex を同時に有効化することはできません",
     invalid_copy_keys_value: "無効なキーコピーオプション",
     child_group_cannot_export_individually:
       "子グループは個別にエクスポートできません。親グループをエクスポートしてください",

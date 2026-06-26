@@ -421,6 +421,7 @@ type OpenAIMessage struct {
 
 // OpenAIToolCall represents a tool call in OpenAI format.
 type OpenAIToolCall struct {
+	Index    *int               `json:"index,omitempty"`
 	ID       string             `json:"id"`
 	Type     string             `json:"type"`
 	Function OpenAIFunctionCall `json:"function"`
@@ -465,6 +466,9 @@ type OpenAIRequest struct {
 	// invalid JSON. With interface{}, json.Marshal guarantees correct JSON encoding
 	// for both string and object forms while keeping the code simple (KISS).
 	ToolChoice interface{} `json:"tool_choice,omitempty"`
+	// ParallelToolCalls is preserved when converting Responses requests to Chat Completions
+	// for the explicit /codex force endpoint.
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 	// ReasoningEffort enables reasoning for models that support it (e.g., o1, o3 series).
 	// Valid values: "low", "medium", "high". Only sent when thinking is enabled.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
@@ -1173,9 +1177,11 @@ type OpenAIRespMessage struct {
 
 // OpenAIUsage represents usage info in OpenAI response.
 type OpenAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int                `json:"prompt_tokens"`
+	CompletionTokens        int                `json:"completion_tokens"`
+	TotalTokens             int                `json:"total_tokens"`
+	PromptTokensDetails     *TokenUsageDetails `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *TokenUsageDetails `json:"completion_tokens_details,omitempty"`
 }
 
 // ClaudeResponse represents a Claude API response.
@@ -1192,8 +1198,11 @@ type ClaudeResponse struct {
 
 // ClaudeUsage represents usage info in Claude response.
 type ClaudeUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	ThinkingTokens           int `json:"thinking_tokens,omitempty"`
 }
 
 // convertOpenAIToClaudeResponse converts OpenAI response to Claude format.

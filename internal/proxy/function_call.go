@@ -934,7 +934,7 @@ func isPotentialMalformedTagStart(s string) bool {
 	return false
 }
 
-// applyFunctionCallRequestRewrite rewrites an OpenAI chat completions request body
+// applyFunctionCallRequestRewrite rewrites supported tool-call request schemas
 // to enable middleware-based function call. It injects a system prompt describing
 // available tools and removes native tools/tool_choice fields so the upstream model
 // only sees the prompt-based contract.

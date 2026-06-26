@@ -796,11 +796,110 @@ func TestValidateAndCleanConfigRemovesForceFunctionCallForGemini(t *testing.T) {
 	cleaned, err := svc.validateAndCleanConfig(map[string]any{
 		"force_function_call": true,
 		"cc_support":          true,
+		"codex_support":       true,
 	}, "gemini")
 
 	require.NoError(t, err)
 	assert.NotContains(t, cleaned, "force_function_call")
 	assert.Equal(t, true, cleaned["cc_support"])
+	assert.NotContains(t, cleaned, "codex_support")
+}
+
+func TestValidateAndCleanConfigCodexSupportScope(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	tests := []struct {
+		name        string
+		channelType string
+		want        bool
+	}{
+		{name: "openai force codex group", channelType: "openai", want: true},
+		{name: "anthropic force codex group", channelType: "anthropic", want: true},
+		{name: "openai responses is codex native", channelType: "openai-response", want: false},
+		{name: "gemini unsupported", channelType: "gemini", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleaned, err := svc.validateAndCleanConfig(map[string]any{
+				"codex_support": true,
+			}, tt.channelType)
+
+			require.NoError(t, err)
+			if tt.want {
+				assert.Equal(t, true, cleaned["codex_support"])
+			} else {
+				assert.NotContains(t, cleaned, "codex_support")
+			}
+		})
+	}
+}
+
+func TestValidateAndCleanConfigRejectsForceCCAndCodexTogether(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	_, err := svc.validateAndCleanConfig(map[string]any{
+		"cc_support":    true,
+		"codex_support": true,
+	}, "openai")
+
+	require.Error(t, err)
+	var i18nErr *I18nError
+	require.True(t, errors.As(err, &i18nErr))
+	assert.Equal(t, "validation.force_cc_codex_mutually_exclusive", i18nErr.MessageID)
+}
+
+func TestUpdateGroupPreventsDisablingCodexSupportUsedByCodexAggregate(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+	svc.aggregateGroupService = NewAggregateGroupService(db, svc.groupManager, nil)
+
+	subGroup := models.Group{
+		Name:               "codex-forced-child",
+		DisplayName:        "Codex Forced Child",
+		GroupType:          "standard",
+		Enabled:            true,
+		ChannelType:        "openai",
+		Upstreams:          datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":100}]`)),
+		ValidationEndpoint: "/v1/chat/completions",
+		TestModel:          "gpt-4.1-mini",
+		Config:             datatypes.JSONMap{"codex_support": true},
+	}
+	require.NoError(t, db.Create(&subGroup).Error)
+	aggregateGroup := models.Group{
+		Name:        "codex-aggregate-parent",
+		DisplayName: "Codex Aggregate Parent",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		ChannelType: "openai-response",
+		Upstreams:   datatypes.JSON([]byte(`[]`)),
+		TestModel:   "-",
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:             aggregateGroup.ID,
+		SubGroupID:          subGroup.ID,
+		Weight:              100,
+		MinEffectiveWeight:  1,
+		SubGroupName:        subGroup.Name,
+		SubGroupEnabled:     true,
+	}).Error)
+
+	_, err := svc.UpdateGroup(context.Background(), subGroup.ID, GroupUpdateParams{
+		Config: map[string]any{},
+	})
+
+	require.Error(t, err)
+	var i18nErr *I18nError
+	require.ErrorAs(t, err, &i18nErr)
+	assert.Equal(t, "validation.codex_support_cannot_disable_used_by_codex", i18nErr.MessageID)
+	assert.Contains(t, fmt.Sprint(i18nErr.Template["groups"]), aggregateGroup.Name)
 }
 
 // TestIsValidGroupName tests group name validation
@@ -1138,6 +1237,30 @@ func TestIsConfigCCSupportEnabled(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := isConfigCCSupportEnabled(tt.config)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestIsConfigCodexSupportEnabled(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		config   datatypes.JSONMap
+		expected bool
+	}{
+		{name: "nil config", config: nil, expected: false},
+		{name: "missing codex_support", config: datatypes.JSONMap{}, expected: false},
+		{name: "boolean true", config: datatypes.JSONMap{"codex_support": true}, expected: true},
+		{name: "boolean false", config: datatypes.JSONMap{"codex_support": false}, expected: false},
+		{name: "string true", config: datatypes.JSONMap{"codex_support": "true"}, expected: true},
+		{name: "number non-zero", config: datatypes.JSONMap{"codex_support": 1}, expected: true},
+		{name: "number zero", config: datatypes.JSONMap{"codex_support": 0}, expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isConfigCodexSupportEnabled(tt.config)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

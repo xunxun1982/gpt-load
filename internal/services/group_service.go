@@ -949,8 +949,8 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			return nil, err
 		}
 
-		// Check if cc_support is being disabled for OpenAI/OpenAI Responses/Gemini groups before performing any database write.
-		// If so, verify that this group is not used as a sub-group in any Anthropic aggregate groups.
+		// Check whether force endpoint flags are being disabled before performing any database write.
+		// If so, verify that this group is not used as a forced sub-group in a matching aggregate group.
 		// NOTE: This guard is best-effort and not wrapped in an explicit transaction. There is a small
 		// time-of-check-to-time-of-use window where aggregate membership can change concurrently, but
 		// we intentionally keep lock time minimal (especially for SQLite). Any misconfiguration will
@@ -999,6 +999,46 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 				if len(anthropicParents) > 0 {
 					return nil, NewI18nError(app_errors.ErrValidation, "validation.cc_support_cannot_disable_used_by_anthropic",
 						map[string]any{"groups": strings.Join(anthropicParents, ", ")})
+				}
+			}
+		}
+		if (group.ChannelType == "openai" || group.ChannelType == "anthropic") && group.GroupType != "aggregate" {
+			oldCodexEnabled := isConfigCodexSupportEnabled(group.Config)
+			newCodexEnabled := isConfigCodexSupportEnabled(datatypes.JSONMap(cleanedConfig))
+
+			if oldCodexEnabled && !newCodexEnabled {
+				parentGroups, err := s.aggregateGroupService.GetParentAggregateGroups(ctx, group.ID)
+				if err != nil {
+					return nil, app_errors.ParseDBError(err)
+				}
+
+				codexParents := make([]string, 0)
+				if len(parentGroups) > 0 {
+					parentIDs := make([]uint, 0, len(parentGroups))
+					for _, parent := range parentGroups {
+						parentIDs = append(parentIDs, parent.GroupID)
+					}
+
+					var parentGroupModels []models.Group
+					if err := s.db.WithContext(ctx).Select("id", "channel_type").Where("id IN ?", parentIDs).Find(&parentGroupModels).Error; err != nil {
+						return nil, app_errors.ParseDBError(err)
+					}
+
+					channelTypeMap := make(map[uint]string, len(parentGroupModels))
+					for _, pg := range parentGroupModels {
+						channelTypeMap[pg.ID] = pg.ChannelType
+					}
+
+					for _, parent := range parentGroups {
+						if channelTypeMap[parent.GroupID] == "openai-response" {
+							codexParents = append(codexParents, parent.Name)
+						}
+					}
+				}
+
+				if len(codexParents) > 0 {
+					return nil, NewI18nError(app_errors.ErrValidation, "validation.codex_support_cannot_disable_used_by_codex",
+						map[string]any{"groups": strings.Join(codexParents, ", ")})
 				}
 			}
 		}
@@ -2790,6 +2830,19 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any, channelT
 	if channelType == "gemini" {
 		delete(configMap, "force_function_call")
 	}
+	if channelType == "anthropic" {
+		delete(configMap, "cc_support")
+		delete(configMap, "thinking_model")
+		delete(configMap, "codex_instructions")
+		delete(configMap, "codex_instructions_mode")
+	}
+	if channelType != "openai" && channelType != "anthropic" {
+		delete(configMap, "codex_support")
+	}
+	if isConfigBoolEnabled(datatypes.JSONMap(configMap), "cc_support") &&
+		isConfigBoolEnabled(datatypes.JSONMap(configMap), "codex_support") {
+		return nil, NewI18nError(app_errors.ErrValidation, "validation.force_cc_codex_mutually_exclusive", nil)
+	}
 	if legacyValue, ok := configMap["request_timeout"]; ok {
 		if _, hasNewKey := configMap["non_stream_request_timeout"]; !hasNewKey {
 			normalizedValue, ok := positiveNumericConfigValue(legacyValue)
@@ -3111,11 +3164,19 @@ func (s *GroupService) generateUniqueGroupNameForCopy(ctx context.Context, baseN
 // of using a shared cross-package utility to keep validation self-contained and avoid extra
 // coupling between proxy and services layers.
 func isConfigCCSupportEnabled(config datatypes.JSONMap) bool {
+	return isConfigBoolEnabled(config, "cc_support")
+}
+
+func isConfigCodexSupportEnabled(config datatypes.JSONMap) bool {
+	return isConfigBoolEnabled(config, "codex_support")
+}
+
+func isConfigBoolEnabled(config datatypes.JSONMap, key string) bool {
 	if config == nil {
 		return false
 	}
 
-	raw, ok := config["cc_support"]
+	raw, ok := config[key]
 	if !ok || raw == nil {
 		return false
 	}

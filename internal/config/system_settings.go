@@ -522,7 +522,7 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 
 		// Allow group-only boolean flags for experimental features.
 		// These flags are stored only at group level and are not part of system-level settings.
-		if key == "force_function_call" || key == "cc_support" ||
+		if key == "force_function_call" || key == "cc_support" || key == "codex_support" ||
 			key == "intercept_event_log" || key == "parallel_tool_calls" ||
 			key == "shorten_tool_names" || key == "validation_stream" ||
 			key == "force_stream" || key == "force_non_stream" ||

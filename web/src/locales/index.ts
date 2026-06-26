@@ -43,6 +43,7 @@ function getDefaultLocale(): Locale {
 }
 
 // Merge feature locales into main locales
+// Feature bundles stay nested; top-level keys such as logs live in the root locale files.
 function mergeLocales<T extends Record<string, unknown>>(
   base: T,
   siteManagement: Record<string, unknown>,

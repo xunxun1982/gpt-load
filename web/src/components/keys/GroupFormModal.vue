@@ -128,6 +128,7 @@ interface GroupFormData {
   simulated_codex_version: string;
   simulated_claude_code_version: string;
   cc_support: boolean;
+  codex_support: boolean;
   intercept_event_log: boolean;
   thinking_model: string;
   codex_instructions_mode: "auto" | "official" | "custom";
@@ -187,6 +188,7 @@ const formData = reactive<GroupFormData>({
   simulated_codex_version: DEFAULT_CODEX_VERSION,
   simulated_claude_code_version: DEFAULT_CLAUDE_CODE_VERSION,
   cc_support: false,
+  codex_support: false,
   intercept_event_log: false,
   thinking_model: "",
   codex_instructions_mode: "auto",
@@ -234,6 +236,7 @@ const controlledConfigKeys = new Set([
   "simulated_codex_version",
   "simulated_claude_code_version",
   "cc_support",
+  "codex_support",
   "intercept_event_log",
   "thinking_model",
   "codex_instructions",
@@ -418,12 +421,11 @@ watch(
     if (newChannelType !== "openai-response") {
       formData.responses_include_encrypted_reasoning = false;
     }
-    if (
-      newChannelType !== "openai" &&
-      newChannelType !== "openai-response" &&
-      newChannelType !== "gemini"
-    ) {
+    if (!supportsCCSupport(newChannelType)) {
       formData.cc_support = false;
+    }
+    if (!supportsCodexSupport(newChannelType)) {
+      formData.codex_support = false;
     }
     // Handle intercept_event_log based on channel type.
     // Default to true for Anthropic channel, false for others.
@@ -434,6 +436,24 @@ watch(
       }
     } else {
       formData.intercept_event_log = false;
+    }
+  }
+);
+
+watch(
+  () => formData.cc_support,
+  enabled => {
+    if (enabled) {
+      formData.codex_support = false;
+    }
+  }
+);
+
+watch(
+  () => formData.codex_support,
+  enabled => {
+    if (enabled) {
+      formData.cc_support = false;
     }
   }
 );
@@ -457,6 +477,14 @@ function supportsForceFunctionCall(channelType: string): boolean {
   return (
     channelType === "openai" || channelType === "openai-response" || channelType === "anthropic"
   );
+}
+
+function supportsCCSupport(channelType: string): boolean {
+  return channelType === "openai" || channelType === "openai-response" || channelType === "gemini";
+}
+
+function supportsCodexSupport(channelType: string): boolean {
+  return channelType === "openai" || channelType === "anthropic";
 }
 
 // Reset form
@@ -496,6 +524,7 @@ function resetForm() {
     simulated_codex_version: DEFAULT_CODEX_VERSION,
     simulated_claude_code_version: DEFAULT_CLAUDE_CODE_VERSION,
     cc_support: false,
+    codex_support: false,
     intercept_event_log: false,
     thinking_model: "",
     codex_instructions_mode: "auto",
@@ -592,11 +621,11 @@ function loadGroupData() {
   const ccRaw = rawConfig["cc_support"];
   // CC support is available for OpenAI, OpenAI Responses, and Gemini channels.
   const ccSupport =
-    (props.group.channel_type === "openai" ||
-      props.group.channel_type === "openai-response" ||
-      props.group.channel_type === "gemini") &&
-    typeof ccRaw === "boolean"
-      ? ccRaw
+    supportsCCSupport(props.group.channel_type) && typeof ccRaw === "boolean" ? ccRaw : false;
+  const codexRaw = rawConfig["codex_support"];
+  const codexSupport =
+    supportsCodexSupport(props.group.channel_type) && typeof codexRaw === "boolean" && !ccSupport
+      ? codexRaw
       : false;
   const interceptEventLogRaw = rawConfig["intercept_event_log"];
   // Default to true for Anthropic channel when not explicitly configured
@@ -674,6 +703,7 @@ function loadGroupData() {
     simulated_codex_version: simulatedCodexVersion,
     simulated_claude_code_version: simulatedClaudeCodeVersion,
     cc_support: ccSupport,
+    codex_support: codexSupport,
     intercept_event_log: interceptEventLog,
     thinking_model: thinkingModel,
     codex_instructions: codexInstructions,
@@ -1482,11 +1512,22 @@ async function handleSubmit() {
       delete config["responses_include_encrypted_reasoning"];
     }
 
+    if (formData.cc_support && formData.codex_support) {
+      message.error(t("keys.forceCCCodexMutuallyExclusive"));
+      return;
+    }
+
     // Persist cc_support toggle as a dedicated config key.
-    if (formData.cc_support) {
+    if (supportsCCSupport(formData.channel_type) && formData.cc_support) {
       config["cc_support"] = true;
     } else {
       delete config["cc_support"];
+    }
+
+    if (supportsCodexSupport(formData.channel_type) && formData.codex_support) {
+      config["codex_support"] = true;
+    } else {
+      delete config["codex_support"];
     }
 
     // Persist intercept_event_log toggle as a dedicated config key (Anthropic only).
@@ -1497,7 +1538,11 @@ async function handleSubmit() {
     }
 
     // Persist thinking_model as a dedicated config key (only when cc_support is enabled).
-    if (formData.cc_support && formData.thinking_model.trim()) {
+    if (
+      supportsCCSupport(formData.channel_type) &&
+      formData.cc_support &&
+      formData.thinking_model.trim()
+    ) {
       config["thinking_model"] = formData.thinking_model.trim();
     } else {
       delete config["thinking_model"];
@@ -2814,10 +2859,7 @@ async function handleSubmit() {
               <div
                 class="config-section"
                 v-if="
-                  formData.group_type !== 'aggregate' &&
-                  (formData.channel_type === 'openai' ||
-                    formData.channel_type === 'openai-response' ||
-                    formData.channel_type === 'gemini')
+                  formData.group_type !== 'aggregate' && supportsCCSupport(formData.channel_type)
                 "
               >
                 <n-form-item path="cc_support">
@@ -2936,6 +2978,42 @@ async function handleSubmit() {
                         size="small"
                         style="width: 100%"
                       />
+                    </div>
+                  </div>
+                </n-form-item>
+              </div>
+
+              <!-- Codex force endpoint toggle (OpenAI Chat and Anthropic channels). -->
+              <div
+                class="config-section"
+                v-if="
+                  formData.group_type !== 'aggregate' && supportsCodexSupport(formData.channel_type)
+                "
+              >
+                <n-form-item path="codex_support">
+                  <template #label>
+                    <div class="form-label-with-tooltip">
+                      {{ t("keys.codexSupport") }}
+                      <n-tooltip trigger="hover" placement="right-start">
+                        <template #trigger>
+                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                        </template>
+                        <div>
+                          {{ t("keys.codexSupportTooltip1") }}
+                          <br />
+                          {{ t("keys.codexSupportTooltip2") }}
+                          <br />
+                          {{ t("keys.codexSupportTooltip3") }}
+                        </div>
+                      </n-tooltip>
+                    </div>
+                  </template>
+                  <div style="width: 100%">
+                    <div style="display: flex; align-items: center; height: 32px">
+                      <n-switch v-model:value="formData.codex_support" size="small" />
+                    </div>
+                    <div style="font-size: 12px; color: #999; margin-top: 4px; line-height: 1.5">
+                      <div>{{ t("keys.codexSupportTip") }}</div>
                     </div>
                   </div>
                 </n-form-item>

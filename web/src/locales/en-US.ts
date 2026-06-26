@@ -96,7 +96,7 @@ export default {
     rpm10Min: "10-Min RPM",
     requests24h: "24h Requests",
     tokens24h: "24h Tokens",
-    modelTokenUsage: "Model Token Usage",
+    modelTokenUsage: "Model Tokens Usage",
     inputTokens: "Input Tokens",
     outputTokens: "Output Tokens",
     cacheTokens: "Cache Tokens",
@@ -107,7 +107,7 @@ export default {
     allModels: "All Models",
     model: "Model",
     totalTokens: "Total Tokens",
-    noTokenUsage: "No token usage data",
+    noTokenUsage: "No Tokens usage data",
     errorRate24h: "24h Error Rate",
     requestStatistics: "Request Statistics",
     totalRequests: "Total Requests",
@@ -115,8 +115,8 @@ export default {
     failedRequests: "Failed Requests",
     todayRequests: "Today Requests",
     requestTrend: "Request Trend",
-    last7Days: "Last 7 Days",
-    last30Days: "Last 30 Days",
+    last7Days: "Last 1 Week",
+    last30Days: "Last 1 Month",
     systemStatus: "System Status",
     running: "Running",
     stopped: "Stopped",
@@ -166,6 +166,9 @@ export default {
     openaiCCBadge: "OpenAI CC",
     openaiResponseCCBadge: "OpenAI Responses CC",
     geminiCCBadge: "Gemini CC",
+    codexSupportBadge: "Force Codex",
+    openaiCodexBadge: "OpenAI Codex",
+    anthropicCodexBadge: "Anthropic Codex",
     allSubGroupsSelected: "All available sub groups have been selected",
     selectChannelTypeFirst: "Please select channel type first",
     channelTypeChanged: "Channel type changed, sub groups configuration has been cleared",
@@ -578,6 +581,17 @@ export default {
     // NOTE: Keep detailed guidance here intentionally to avoid external doc dependency for CC users.
     ccSupportRedirectTip:
       "For Claude Code compatibility, configure both alias and full-name redirects: 1) Add model redirect rules for opus, claude-opus-4-5-20251101, sonnet, claude-sonnet-4-5-20250929, haiku, claude-haiku-4-5-20251001 (targets can be your actual upstream model, e.g. opus → deepseek-chat); 2) Optional client-side fallback: set env in Claude Code settings.json, related environment variables include ANTHROPIC_MODEL, ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL, ANTHROPIC_DEFAULT_HAIKU_MODEL.",
+    codexSupport: "Force Codex Support",
+    codexSupportTooltip1:
+      "Enable the /codex endpoint for Codex-compatible OpenAI Responses clients.",
+    codexSupportTooltip2:
+      "Requests will be converted from OpenAI Responses format to this group's upstream protocol.",
+    codexSupportTooltip3:
+      "This switch is mutually exclusive with Force CC on the same standard group.",
+    codexSupportTip:
+      "When enabled, clients can use /proxy/[group]/codex/v1/responses. Aggregate Responses groups route to this endpoint only when the selected sub-group enables Force Codex.",
+    forceCCCodexMutuallyExclusive:
+      "Force CC and Force Codex cannot be enabled on the same standard group.",
     thinkingModel: "Thinking Model",
     thinkingModelTooltip:
       "When Claude Code enables extended thinking mode, this model will be used automatically. Leave empty to use the original model from request. e.g., deepseek-reasoner",
@@ -853,7 +867,7 @@ export default {
     responseContent: "Response Content",
     errorInfo: "Error Information",
     customColumns: "Custom Columns",
-    tokenUsage: "Token Usage",
+    tokenUsage: "Tokens Usage",
     inputTokens: "Input Tokens",
     outputTokens: "Output Tokens",
     totalTokens: "Total Tokens",
@@ -963,6 +977,9 @@ export default {
     requestTrend: "Request Trend",
     requestTrend24h: "24h Request Trend",
     timeRange: "Time range",
+    rangeLast24Hours: "Last 24 Hours",
+    rangeLast7Days: "Last 1 Week",
+    rangeLast1Month: "Last 1 Month",
     rangeToday: "Today",
     rangeYesterday: "Yesterday",
     rangeThisWeek: "This Week",
@@ -1227,6 +1244,10 @@ export default {
       "This group is referenced by {count} aggregate groups, cannot modify channel type or validation endpoint",
     cc_support_cannot_disable_used_by_anthropic:
       "This group is used by the following Anthropic aggregate groups, cannot disable CC support: {groups}",
+    codex_support_cannot_disable_used_by_codex:
+      "This group is used by the following OpenAI Responses aggregate groups, cannot disable Codex support: {groups}",
+    force_cc_codex_mutually_exclusive:
+      "Force CC and Force Codex cannot both be enabled on the same group",
     invalid_copy_keys_value: "Invalid copy keys option",
     child_group_cannot_export_individually:
       "Child groups cannot be exported individually, please export the parent group",
