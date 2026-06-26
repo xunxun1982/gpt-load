@@ -776,7 +776,7 @@ export default {
     errorMessage: "错误信息",
     exportLogs: "导出密钥",
     totalRecords: "共 {total} 条记录",
-    calculatingTotal: "正在计算总数...",
+    calculatingTotal: "快速分页：总数未计算",
     recordsPerPage: "{count}条/页",
     previousPage: "上一页",
     nextPage: "下一页",

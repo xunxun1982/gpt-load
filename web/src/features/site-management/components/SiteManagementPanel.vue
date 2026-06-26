@@ -356,9 +356,7 @@ async function fetchSiteProxyPoolOptions() {
   try {
     const items = await proxyPoolApi.listSelectionOptions();
     siteProxyPoolOptions.value = items.map(item => ({
-      label: `${t("siteManagement.proxyManualProxy")}: ${
-        item.label ? `${item.label} (${item.url || item.value})` : item.url || item.value
-      }`,
+      label: `${t("siteManagement.proxyManualProxy")}: ${item.label} (${item.url || item.value})`,
       value: item.value,
     }));
   } catch (error) {

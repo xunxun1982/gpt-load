@@ -798,7 +798,7 @@ export default {
     errorMessage: "エラーメッセージ",
     exportLogs: "キーのエクスポート",
     totalRecords: "合計 {total} 件",
-    calculatingTotal: "合計を計算中...",
+    calculatingTotal: "高速ページング：総数は未計算",
     recordsPerPage: "{count}件/ページ",
     previousPage: "前のページ",
     nextPage: "次のページ",

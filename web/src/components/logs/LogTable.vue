@@ -78,6 +78,7 @@ const totalPages = computed(() => {
 // Display text for pagination info
 const totalRecordsText = computed(() => {
   if (total.value < 0) {
+    // Fast log pagination intentionally skips COUNT(*) on large tables.
     return t("logs.calculatingTotal");
   }
   return t("logs.totalRecords", { total: total.value });
