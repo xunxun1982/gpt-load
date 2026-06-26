@@ -519,8 +519,8 @@ export default {
     functionCallTooltip1: "Enable middleware-based function call for this group.",
     functionCallTooltip2:
       "Only enable this for providers that do NOT have native function call support. Enabling it on providers with built-in function call may cause duplicated or undefined behavior.",
-    functionCallOpenAITip:
-      "This switch is only available and effective for OpenAI channel groups. Other channels ignore this setting.",
+    functionCallTip:
+      "This switch applies to OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages groups. Unsupported channels hide or ignore this setting.",
     parallelToolCalls: "Parallel Tool Calls",
     parallelToolCallsTooltip:
       "Control whether the model can make multiple tool calls in a single response. Set to 'Disabled' for gpt-4.1-nano or when you need simpler client handling.",

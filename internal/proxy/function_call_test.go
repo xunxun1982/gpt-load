@@ -844,6 +844,81 @@ func TestHandleFunctionCallAnthropicStreamingResponseCleansMalformedXML(t *testi
 	}
 }
 
+func TestHandleFunctionCallResponsesStreamingResponseReplaysLongTextWhenCollectLimitReached(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	longText := strings.Repeat("a", maxCodexStreamCollectBytes+1024)
+	streamBody := "event: response.output_text.delta\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"" + longText + "\"}\n\n" +
+		"data: [DONE]\n\n"
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_long>>")
+	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected long text stream to pass through with status %d, got %d", http.StatusOK, w.Code)
+	}
+	output := w.Body.String()
+	if !strings.Contains(output, `event: response.output_text.delta`) {
+		t.Fatalf("expected buffered Responses event to be replayed, got prefix %q", output[:min(len(output), 128)])
+	}
+	if !strings.Contains(output, `data: [DONE]`) {
+		t.Fatalf("expected remaining Responses stream to be forwarded")
+	}
+	if strings.Contains(output, "Failed to read upstream error body") {
+		t.Fatalf("expected passthrough instead of read failure, got %q", output)
+	}
+}
+
+func TestHandleFunctionCallAnthropicStreamingResponseReplaysLongTextWhenCollectLimitReached(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	longText := strings.Repeat("b", maxCodexStreamCollectBytes+1024)
+	streamBody := "event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"" + longText + "\"}}\n\n" +
+		"event: message_stop\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_long>>")
+	c.Set("group", &models.Group{Name: "test-group", ChannelType: "anthropic"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected long text stream to pass through with status %d, got %d", http.StatusOK, w.Code)
+	}
+	output := w.Body.String()
+	if !strings.Contains(output, `event: content_block_delta`) {
+		t.Fatalf("expected buffered Anthropic event to be replayed, got prefix %q", output[:min(len(output), 128)])
+	}
+	if !strings.Contains(output, `event: message_stop`) {
+		t.Fatalf("expected remaining Anthropic stream to be forwarded")
+	}
+	if strings.Contains(output, "Failed to read upstream error body") {
+		t.Fatalf("expected passthrough instead of read failure, got %q", output)
+	}
+}
+
 // TestRemoveFunctionCallsBlocks_RealCaseFromProductionLog verifies that a real-world
 // CC output containing malformed <> + invokename/parametername fragments from
 // real-world production log is cleaned correctly: all malformed XML fragments are removed while

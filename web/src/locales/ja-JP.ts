@@ -519,8 +519,8 @@ export default {
     functionCallTooltip1: "このグループ向けにミドルウェアベースの関数呼び出し機能を有効にします。",
     functionCallTooltip2:
       "ネイティブで関数呼び出しをサポートしていないプロバイダーでのみ有効にしてください。すでにネイティブの関数呼び出しを持つチャンネルで有効にすると、二重呼び出しや予期しない動作を引き起こす可能性があります。",
-    functionCallOpenAITip:
-      "このスイッチは OpenAI チャンネルのグループにのみ有効で、他のプロバイダーでは表示も効果もありません。",
+    functionCallTip:
+      "このスイッチは OpenAI Chat Completions、OpenAI Responses、Anthropic Messages グループに適用されます。未対応のチャンネルでは非表示または無視されます。",
     parallelToolCalls: "並列ツール呼び出し",
     parallelToolCallsTooltip:
       "モデルが単一の応答で複数のツールを呼び出せるかどうかを制御します。gpt-4.1-nano やクライアント処理を簡素化する必要がある場合は「無効」に設定することをお勧めします。",

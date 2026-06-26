@@ -426,6 +426,37 @@ func TestHandleCodexForcedStreamResponseKeepsFailedEventTerminal(t *testing.T) {
 	}
 }
 
+func TestHandleCodexForcedStreamResponseAppliesFunctionCallConversion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyFunctionCallEnabled, true)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_forced>>")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"event: response.completed\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_forced\",\"object\":\"response\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Let me search.\\n<<CALL_forced>>\\n<invoke name=\\\"web_search\\\"><parameter name=\\\"query\\\">weather</parameter></invoke>\"}]}],\"usage\":{\"input_tokens\":7,\"output_tokens\":5,\"total_tokens\":12}}}\n\n" +
+				"data: [DONE]\n\n",
+		)),
+		Header: make(http.Header),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleCodexForcedStreamResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	output := w.Body.String()
+	assert.Contains(t, output, `"type":"function_call"`)
+	assert.Contains(t, output, `"name":"web_search"`)
+	assert.NotContains(t, output, "<invoke")
+	assert.NotContains(t, output, "<<CALL_forced>>")
+	usage, source, ok := getTokenUsage(c)
+	require.True(t, ok)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(12), usage.TotalTokens)
+}
+
 func TestHandleNormalResponseSkipsTokenAccountingOnCopyError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

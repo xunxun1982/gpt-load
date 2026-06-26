@@ -78,6 +78,9 @@ const totalPages = computed(() => {
 // Display text for pagination info
 const totalRecordsText = computed(() => {
   if (total.value < 0) {
+    if (loading.value) {
+      return t("logs.calculatingTotal");
+    }
     if (logs.value.length === 0) {
       return t("logs.currentPageNoRecords");
     }

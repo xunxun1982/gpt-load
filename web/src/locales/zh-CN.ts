@@ -497,8 +497,8 @@ export default {
     functionCallTooltip1: "为此分组启用基于中间件的函数调用能力",
     functionCallTooltip2:
       "仅在上游模型本身不支持原生函数调用时启用。对于已经原生支持函数调用的渠道，请不要开启该开关，否则可能出现重复调用或未定义的行为。",
-    functionCallOpenAITip:
-      "此开关仅对 OpenAI 渠道分组生效，其他渠道会忽略该配置并且不会展示此选项。",
+    functionCallTip:
+      "此开关适用于 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 分组；不支持的渠道会隐藏或忽略该配置。",
     parallelToolCalls: "并行工具调用",
     parallelToolCallsTooltip:
       "控制模型是否可以在单次响应中调用多个工具。对于 gpt-4.1-nano 或需要简化客户端处理时，建议设为「禁用」。",

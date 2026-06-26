@@ -1737,6 +1737,11 @@ type functionCallSSEEvent struct {
 	Lines []string
 }
 
+type functionCallSSEReadResult struct {
+	Events      []functionCallSSEEvent
+	Passthrough io.Reader
+}
+
 func (ps *ProxyServer) handleFunctionCallResponsesNormalResponse(c *gin.Context, resp *http.Response) {
 	body, ok := readFunctionCallNormalResponseBody(c, resp)
 	if !ok {
@@ -2755,12 +2760,19 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 }
 
 func (ps *ProxyServer) handleFunctionCallResponsesStreamingBody(c *gin.Context, body io.Reader, flusher http.Flusher, triggerSignal string) {
-	events, err := readFunctionCallSSEEvents(body)
+	result, err := readFunctionCallSSEEvents(body)
 	if err != nil {
 		logUpstreamError("reading Responses function call stream", err)
 		writeUpstreamErrorBodyReadFailure(c)
 		return
 	}
+	if result.Passthrough != nil {
+		if err := copyFunctionCallSSEPassthrough(c, result.Passthrough, flusher); err != nil {
+			logUpstreamError("passing through Responses function call stream", err)
+		}
+		return
+	}
+	events := result.Events
 
 	text, responseID, model := collectResponsesFunctionCallStreamText(c, events)
 	calls := parseFunctionCallsXML(text, triggerSignal)
@@ -2935,12 +2947,19 @@ func (ps *ProxyServer) handleFunctionCallResponsesStreamingBody(c *gin.Context, 
 }
 
 func (ps *ProxyServer) handleFunctionCallAnthropicStreamingBody(c *gin.Context, body io.Reader, flusher http.Flusher, triggerSignal string) {
-	events, err := readFunctionCallSSEEvents(body)
+	result, err := readFunctionCallSSEEvents(body)
 	if err != nil {
 		logUpstreamError("reading Anthropic function call stream", err)
 		writeUpstreamErrorBodyReadFailure(c)
 		return
 	}
+	if result.Passthrough != nil {
+		if err := copyFunctionCallSSEPassthrough(c, result.Passthrough, flusher); err != nil {
+			logUpstreamError("passing through Anthropic function call stream", err)
+		}
+		return
+	}
+	events := result.Events
 
 	text, messageID, model, inputTokens, outputTokens := collectAnthropicFunctionCallStreamText(c, events)
 	calls := parseFunctionCallsXML(text, triggerSignal)
@@ -3026,15 +3045,15 @@ func (ps *ProxyServer) handleFunctionCallAnthropicStreamingBody(c *gin.Context, 
 	}
 }
 
-func readFunctionCallSSEEvents(body io.Reader) ([]functionCallSSEEvent, error) {
-	scanner := bufio.NewScanner(io.LimitReader(body, maxCodexStreamCollectBytes+1))
-	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamLineBytes)
-
+func readFunctionCallSSEEvents(body io.Reader) (functionCallSSEReadResult, error) {
+	reader := bufio.NewReaderSize(body, 64*1024)
+	var raw bytes.Buffer
 	var events []functionCallSSEEvent
 	var lines []string
 	var dataParts []string
 	eventName := ""
 	var collectedBytes int64
+	var lineBuf bytes.Buffer
 
 	flushEvent := func() {
 		if len(lines) == 0 && eventName == "" && len(dataParts) == 0 {
@@ -3049,32 +3068,66 @@ func readFunctionCallSSEEvents(body io.Reader) ([]functionCallSSEEvent, error) {
 		dataParts = nil
 		eventName = ""
 	}
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		collectedBytes += int64(len(line)) + 1
-		if collectedBytes > maxCodexStreamCollectBytes {
-			return nil, errors.New(errCodexStreamCollectorLimit)
+	passthrough := func() functionCallSSEReadResult {
+		// Parse limits should degrade to raw passthrough, not fail valid long streams.
+		return functionCallSSEReadResult{
+			Passthrough: io.MultiReader(bytes.NewReader(raw.Bytes()), reader),
 		}
-		if strings.TrimSpace(line) == "" {
+	}
+	processLine := func(line string) {
+		trimmedLine := strings.TrimRight(line, "\r\n")
+		if strings.TrimSpace(trimmedLine) == "" {
 			flushEvent()
-			continue
+			return
 		}
-		lines = append(lines, line+"\n")
-		trimmed := strings.TrimSpace(line)
+		lines = append(lines, line)
+		trimmed := strings.TrimSpace(trimmedLine)
 		if strings.HasPrefix(trimmed, "event:") {
 			eventName = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
-			continue
+			return
 		}
 		if strings.HasPrefix(trimmed, "data:") {
 			dataParts = append(dataParts, strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")))
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
+
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			raw.Write(fragment)
+			collectedBytes += int64(len(fragment))
+			if collectedBytes > maxCodexStreamCollectBytes {
+				return passthrough(), nil
+			}
+			if lineBuf.Len()+len(fragment) > maxCodexStreamLineBytes {
+				return passthrough(), nil
+			}
+			lineBuf.Write(fragment)
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				if lineBuf.Len() > 0 {
+					processLine(lineBuf.String())
+				}
+				flushEvent()
+				return functionCallSSEReadResult{Events: events}, nil
+			}
+			return functionCallSSEReadResult{}, err
+		}
+		processLine(lineBuf.String())
+		lineBuf.Reset()
 	}
-	flushEvent()
-	return events, nil
+}
+
+func copyFunctionCallSSEPassthrough(c *gin.Context, reader io.Reader, flusher http.Flusher) error {
+	if _, err := io.Copy(c.Writer, reader); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
 }
 
 func replayFunctionCallSSEEvents(c *gin.Context, events []functionCallSSEEvent, flusher http.Flusher) error {
