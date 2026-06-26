@@ -55,6 +55,7 @@ type BalanceService struct {
 	client           *http.Client
 	stealthClientMgr *StealthClientManager
 	proxyClients     sync.Map // Cache for proxy-enabled HTTP clients
+	proxyResolver    managedSiteProxyURLResolver
 
 	// Background refresh control
 	stopCh    chan struct{}
@@ -81,6 +82,10 @@ func NewBalanceService(db *gorm.DB, encryptionSvc encryption.Service) *BalanceSe
 		stopCh:           make(chan struct{}),
 		cleanupCh:        make(chan struct{}),
 	}
+}
+
+func (s *BalanceService) SetProxyURLResolver(resolver managedSiteProxyURLResolver) {
+	s.proxyResolver = resolver
 }
 
 // Start begins the background balance refresh scheduler
@@ -417,7 +422,7 @@ func (s *BalanceService) getHTTPClient(site *ManagedSite) *http.Client {
 	if isStealthBypassMethod(site.BypassMethod) {
 		proxyURL := ""
 		if site.UseProxy {
-			proxyURL = strings.TrimSpace(site.ProxyURL)
+			proxyURL = resolveManagedSiteProxyURL(context.Background(), s.proxyResolver, site.ProxyURL)
 		}
 		return s.stealthClientMgr.GetClient(proxyURL)
 	}
@@ -428,7 +433,10 @@ func (s *BalanceService) getHTTPClient(site *ManagedSite) *http.Client {
 	}
 
 	// Check proxy client cache
-	proxyURL := strings.TrimSpace(site.ProxyURL)
+	proxyURL := resolveManagedSiteProxyURL(context.Background(), s.proxyResolver, site.ProxyURL)
+	if proxyURL == "" {
+		return s.client
+	}
 	if cached, ok := s.proxyClients.Load(proxyURL); ok {
 		return cached.(*http.Client)
 	}

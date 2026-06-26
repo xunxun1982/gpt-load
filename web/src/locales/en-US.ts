@@ -813,7 +813,7 @@ export default {
     errorMessage: "Error Message",
     exportLogs: "Export Keys",
     totalRecords: "Total {total} records",
-    calculatingTotal: "Calculating total...",
+    calculatingTotal: "Fast pagination: total not counted",
     recordsPerPage: "{count} per page",
     previousPage: "Previous",
     nextPage: "Next",

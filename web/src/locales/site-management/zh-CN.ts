@@ -42,9 +42,10 @@ export default {
 
   // Proxy settings
   useProxy: "使用代理",
-  proxyUrl: "代理地址",
-  proxyUrlPlaceholder: "http://127.0.0.1:7890",
-  proxyUrlTooltip: "签到请求使用的代理地址，支持HTTP/SOCKS5",
+  proxyUrl: "代理池",
+  proxyUrlPlaceholder: "不使用代理",
+  proxyUrlTooltip: "签到请求使用的手动代理池代理",
+  proxyManualProxy: "手动代理",
 
   // Bypass settings
   bypassMethod: "绕过方式",

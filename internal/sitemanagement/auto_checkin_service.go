@@ -53,6 +53,7 @@ type AutoCheckinService struct {
 	encryptionSvc encryption.Service
 	client        *http.Client
 	balanceSvc    *BalanceService
+	proxyResolver managedSiteProxyURLResolver
 
 	// Proxy client cache to reuse HTTP clients with same proxy URL for connection pooling.
 	// Key: normalized proxy URL, Value: *http.Client with proxy transport.
@@ -114,6 +115,10 @@ func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encrypt
 
 func (s *AutoCheckinService) SetBalanceService(balanceSvc *BalanceService) {
 	s.balanceSvc = balanceSvc
+}
+
+func (s *AutoCheckinService) SetProxyURLResolver(resolver managedSiteProxyURLResolver) {
+	s.proxyResolver = resolver
 }
 
 func (s *AutoCheckinService) Start() {
@@ -851,7 +856,7 @@ func (s *AutoCheckinService) getCheckinHTTPClient(site ManagedSite) *http.Client
 	if isStealthBypassMethod(site.BypassMethod) {
 		proxyURL := ""
 		if site.UseProxy {
-			proxyURL = strings.TrimSpace(site.ProxyURL)
+			proxyURL = resolveManagedSiteProxyURL(context.Background(), s.proxyResolver, site.ProxyURL)
 		}
 		return s.stealthClientMgr.GetClient(proxyURL)
 	}
@@ -872,6 +877,10 @@ func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http
 	proxyURL = strings.TrimSpace(proxyURL)
 	if proxyURL == "" {
 		// No proxy URL configured, use default client
+		return s.client
+	}
+	proxyURL = resolveManagedSiteProxyURL(context.Background(), s.proxyResolver, proxyURL)
+	if proxyURL == "" {
 		return s.client
 	}
 
