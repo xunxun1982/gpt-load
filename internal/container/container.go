@@ -132,12 +132,17 @@ func BuildContainer() (*dig.Container, error) {
 	if err := container.Provide(sitemanagement.NewSiteService); err != nil {
 		return nil, err
 	}
-	if err := container.Provide(sitemanagement.NewBalanceService); err != nil {
+	if err := container.Provide(func(db *gorm.DB, encryptionSvc encryption.Service, proxyPoolSvc *services.ProxyPoolService) *sitemanagement.BalanceService {
+		balanceSvc := sitemanagement.NewBalanceService(db, encryptionSvc)
+		balanceSvc.SetProxyURLResolver(proxyPoolSvc)
+		return balanceSvc
+	}); err != nil {
 		return nil, err
 	}
-	if err := container.Provide(func(db *gorm.DB, store store.Store, encryptionSvc encryption.Service, balanceSvc *sitemanagement.BalanceService) *sitemanagement.AutoCheckinService {
+	if err := container.Provide(func(db *gorm.DB, store store.Store, encryptionSvc encryption.Service, proxyPoolSvc *services.ProxyPoolService, balanceSvc *sitemanagement.BalanceService) *sitemanagement.AutoCheckinService {
 		autoCheckinSvc := sitemanagement.NewAutoCheckinService(db, store, encryptionSvc)
 		autoCheckinSvc.SetBalanceService(balanceSvc)
+		autoCheckinSvc.SetProxyURLResolver(proxyPoolSvc)
 		return autoCheckinSvc
 	}); err != nil {
 		return nil, err

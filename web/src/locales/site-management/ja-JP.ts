@@ -42,9 +42,10 @@ export default {
 
   // Proxy settings
   useProxy: "プロキシ使用",
-  proxyUrl: "プロキシURL",
-  proxyUrlPlaceholder: "http://127.0.0.1:7890",
-  proxyUrlTooltip: "チェックインリクエスト用のプロキシURL、HTTP/SOCKS5対応",
+  proxyUrl: "プロキシプール",
+  proxyUrlPlaceholder: "プロキシなし",
+  proxyUrlTooltip: "チェックインリクエストに使用する手動プロキシプール",
+  proxyManualProxy: "手動プロキシ",
 
   // Bypass settings
   bypassMethod: "バイパス方式",

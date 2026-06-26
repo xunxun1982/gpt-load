@@ -21,6 +21,7 @@ import {
   type SiteImportData,
   type SiteListParams,
 } from "@/api/site-management";
+import { proxyPoolApi } from "@/api/proxy-pool";
 import { appState } from "@/utils/app-state";
 import { askExportMode, askImportMode } from "@/utils/export-import";
 import {
@@ -98,6 +99,8 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 const deleteConfirmInput = ref("");
 const deleteAllConfirmInput = ref("");
 const deleteAllLoading = ref(false);
+const siteProxyPoolOptions = ref<{ label: string; value: string }[]>([]);
+const siteProxyPoolLoading = ref(false);
 
 // Balance state
 const balances = ref<Record<number, string | null>>({});
@@ -186,6 +189,18 @@ const siteTypeOptions = computed<SelectOption[]>(() => {
 
   // Keep legacy Veloera editable without exposing it for new site creation.
   return siteTypeLabelOptions.value;
+});
+
+const siteProxySelectOptions = computed<SelectOption[]>(() => {
+  const options: SelectOption[] = [
+    { label: t("siteManagement.proxyUrlPlaceholder"), value: "" },
+    ...siteProxyPoolOptions.value,
+  ];
+  const currentProxy = siteForm.proxy_url.trim();
+  if (currentProxy && !options.some(option => option.value === currentProxy)) {
+    options.push({ label: currentProxy, value: currentProxy });
+  }
+  return options;
 });
 
 // Auth type options for multi-select
@@ -336,6 +351,25 @@ async function loadSites(options: LoadSitesOptions = {}) {
   }
 }
 
+async function fetchSiteProxyPoolOptions() {
+  siteProxyPoolLoading.value = true;
+  try {
+    const items = await proxyPoolApi.listSelectionOptions();
+    siteProxyPoolOptions.value = items.map(item => ({
+      label: `${t("siteManagement.proxyManualProxy")}: ${
+        item.label ? `${item.label} (${item.url || item.value})` : item.url || item.value
+      }`,
+      value: item.value,
+    }));
+  } catch (error) {
+    siteProxyPoolOptions.value = [];
+    console.error("Failed to fetch site proxy pool options:", error);
+    message.error(t("proxyPool.loadFailed"));
+  } finally {
+    siteProxyPoolLoading.value = false;
+  }
+}
+
 // Debounced search handler
 const debouncedSearch = debounce(() => {
   if (applyingRouteFocus.value) {
@@ -418,6 +452,7 @@ function resetSiteForm() {
 function openCreateSite() {
   editingSite.value = null;
   resetSiteForm();
+  void fetchSiteProxyPoolOptions();
   showSiteModal.value = true;
 }
 
@@ -446,13 +481,20 @@ function openEditSite(site: ManagedSiteDTO) {
     checkin_enabled: site.checkin_enabled,
     custom_checkin_url: site.custom_checkin_url,
     use_proxy: site.use_proxy,
-    proxy_url: site.proxy_url,
+    proxy_url: site.use_proxy ? site.proxy_url : "",
     bypass_method: site.bypass_method,
     auth_type: authTypes,
   });
   authValueInputs.access_token = "";
   authValueInputs.cookie = "";
+  void fetchSiteProxyPoolOptions();
   showSiteModal.value = true;
+}
+
+function updateSiteProxySelection(value: string | null) {
+  const proxyURL = value || "";
+  siteForm.proxy_url = proxyURL;
+  siteForm.use_proxy = proxyURL.trim() !== "";
 }
 
 // Known WAF/Cloudflare cookie names that indicate bypass capability.
@@ -585,8 +627,11 @@ async function submitSite() {
     }
   }
 
+  const proxyURL = siteForm.proxy_url.trim();
   const payload = {
     ...siteForm,
+    use_proxy: proxyURL !== "",
+    proxy_url: proxyURL,
     auth_type: authTypeStr,
   };
 
@@ -2088,14 +2133,17 @@ watch(
               <n-form-item :label="t('siteManagement.autoCheckinEnabled')" class="form-item-switch">
                 <n-switch v-model:value="siteForm.checkin_enabled" />
               </n-form-item>
-              <n-form-item :label="t('siteManagement.useProxy')" class="form-item-switch">
-                <n-switch v-model:value="siteForm.use_proxy" />
-              </n-form-item>
             </div>
-            <n-form-item v-if="siteForm.use_proxy" :label="t('siteManagement.proxyUrl')">
-              <n-input
-                v-model:value="siteForm.proxy_url"
+            <n-form-item :label="t('siteManagement.proxyUrl')">
+              <n-select
+                :value="siteForm.proxy_url"
+                :options="siteProxySelectOptions"
                 :placeholder="t('siteManagement.proxyUrlPlaceholder')"
+                :loading="siteProxyPoolLoading"
+                filterable
+                clearable
+                style="width: 100%"
+                @update:value="value => updateSiteProxySelection(value as string | null)"
               />
             </n-form-item>
             <n-form-item :label="t('siteManagement.bypassMethod')">

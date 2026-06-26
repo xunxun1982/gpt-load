@@ -42,9 +42,10 @@ export default {
 
   // Proxy settings
   useProxy: "Use Proxy",
-  proxyUrl: "Proxy URL",
-  proxyUrlPlaceholder: "http://127.0.0.1:7890",
-  proxyUrlTooltip: "Proxy URL for check-in requests, supports HTTP/SOCKS5",
+  proxyUrl: "Proxy Pool",
+  proxyUrlPlaceholder: "No proxy",
+  proxyUrlTooltip: "Manual proxy pool proxy for check-in requests",
+  proxyManualProxy: "Manual Proxy",
 
   // Bypass settings
   bypassMethod: "Bypass Method",
