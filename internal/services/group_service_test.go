@@ -712,7 +712,7 @@ func TestValidateAndCleanConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := svc.validateAndCleanConfig(tt.config)
+			_, err := svc.validateAndCleanConfig(tt.config, "openai")
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
@@ -775,7 +775,7 @@ func TestValidateAndCleanConfigLegacyRequestTimeoutCompatibility(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cleaned, err := svc.validateAndCleanConfig(tt.config)
+			cleaned, err := svc.validateAndCleanConfig(tt.config, "openai")
 			if tt.expectError {
 				require.Error(t, err)
 				return
@@ -786,6 +786,21 @@ func TestValidateAndCleanConfigLegacyRequestTimeoutCompatibility(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateAndCleanConfigRemovesForceFunctionCallForGemini(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	cleaned, err := svc.validateAndCleanConfig(map[string]any{
+		"force_function_call": true,
+		"cc_support":          true,
+	}, "gemini")
+
+	require.NoError(t, err)
+	assert.NotContains(t, cleaned, "force_function_call")
+	assert.Equal(t, true, cleaned["cc_support"])
 }
 
 // TestIsValidGroupName tests group name validation

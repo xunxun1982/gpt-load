@@ -356,6 +356,494 @@ func TestApplyFunctionCallRequestRewrite_NonCCRequestRemovesTools(t *testing.T) 
 	}
 }
 
+func TestApplyFunctionCallRequestRewrite_OpenAIResponsesRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/proxy/test-group/v1/responses", nil)
+
+	group := &models.Group{
+		Name:        "test-group",
+		ChannelType: "openai-response",
+		Config: map[string]any{
+			"force_function_call": true,
+		},
+	}
+
+	reqBody := map[string]any{
+		"model":        "test-model",
+		"instructions": "Existing instructions.",
+		"input":        "Find current weather.",
+		"tools": []any{
+			map[string]any{
+				"type":        "function",
+				"name":        "web_search",
+				"description": "Search the web",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{"type": "string"},
+					},
+					"required": []any{"query"},
+				},
+			},
+		},
+		"tool_choice":         "required",
+		"parallel_tool_calls": false,
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	ps := &ProxyServer{}
+	rewrittenBody, triggerSignal, err := ps.applyFunctionCallRequestRewrite(c, group, bodyBytes)
+	if err != nil {
+		t.Fatalf("applyFunctionCallRequestRewrite() error = %v", err)
+	}
+	if triggerSignal == "" {
+		t.Fatal("expected trigger signal")
+	}
+
+	var rewrittenReq map[string]any
+	if err := json.Unmarshal(rewrittenBody, &rewrittenReq); err != nil {
+		t.Fatalf("failed to unmarshal rewritten body: %v", err)
+	}
+	if _, ok := rewrittenReq["tools"]; ok {
+		t.Fatalf("expected Responses tools to be removed")
+	}
+	if _, ok := rewrittenReq["tool_choice"]; ok {
+		t.Fatalf("expected Responses tool_choice to be removed")
+	}
+	if _, ok := rewrittenReq["parallel_tool_calls"]; ok {
+		t.Fatalf("expected Responses parallel_tool_calls to be removed")
+	}
+	instructions, _ := rewrittenReq["instructions"].(string)
+	if !strings.Contains(instructions, triggerSignal) {
+		t.Fatalf("expected injected instructions to contain trigger signal, got %q", instructions)
+	}
+	if !strings.Contains(instructions, "Existing instructions.") {
+		t.Fatalf("expected existing instructions to be preserved, got %q", instructions)
+	}
+}
+
+func TestApplyFunctionCallRequestRewrite_OpenAIResponsesStreamRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/proxy/test-group/v1/responses", nil)
+
+	group := &models.Group{
+		Name:        "test-group",
+		ChannelType: "openai-response",
+		Config: map[string]any{
+			"force_function_call": true,
+		},
+	}
+	reqBody := map[string]any{
+		"model":  "test-model",
+		"input":  "Find current weather.",
+		"stream": true,
+		"tools": []any{
+			map[string]any{
+				"type":       "function",
+				"name":       "web_search",
+				"parameters": map[string]any{"type": "object"},
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	ps := &ProxyServer{}
+	rewrittenBody, triggerSignal, err := ps.applyFunctionCallRequestRewrite(c, group, bodyBytes)
+	if err != nil {
+		t.Fatalf("applyFunctionCallRequestRewrite() error = %v", err)
+	}
+	if triggerSignal == "" {
+		t.Fatal("expected trigger signal for streaming Responses request")
+	}
+
+	var rewrittenReq map[string]any
+	if err := json.Unmarshal(rewrittenBody, &rewrittenReq); err != nil {
+		t.Fatalf("failed to unmarshal rewritten body: %v", err)
+	}
+	if _, ok := rewrittenReq["tools"]; ok {
+		t.Fatalf("expected streaming Responses tools to be removed")
+	}
+	if instructions, _ := rewrittenReq["instructions"].(string); !strings.Contains(instructions, triggerSignal) {
+		t.Fatalf("expected injected instructions to contain trigger signal, got %q", instructions)
+	}
+}
+
+func TestApplyFunctionCallRequestRewrite_AnthropicMessagesRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/proxy/test-group/v1/messages", nil)
+
+	group := &models.Group{
+		Name:        "test-group",
+		ChannelType: "anthropic",
+		Config: map[string]any{
+			"force_function_call": true,
+		},
+	}
+
+	reqBody := map[string]any{
+		"model":  "claude-test",
+		"system": "Existing system.",
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "text", "text": "Find current weather."},
+				},
+			},
+		},
+		"tools": []any{
+			map[string]any{
+				"name":         "web_search",
+				"description":  "Search the web",
+				"input_schema": map[string]any{"type": "object"},
+			},
+		},
+		"tool_choice": map[string]any{"type": "any"},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	ps := &ProxyServer{}
+	rewrittenBody, triggerSignal, err := ps.applyFunctionCallRequestRewrite(c, group, bodyBytes)
+	if err != nil {
+		t.Fatalf("applyFunctionCallRequestRewrite() error = %v", err)
+	}
+	if triggerSignal == "" {
+		t.Fatal("expected trigger signal")
+	}
+
+	var rewrittenReq map[string]any
+	if err := json.Unmarshal(rewrittenBody, &rewrittenReq); err != nil {
+		t.Fatalf("failed to unmarshal rewritten body: %v", err)
+	}
+	if _, ok := rewrittenReq["tools"]; ok {
+		t.Fatalf("expected Anthropic tools to be removed")
+	}
+	if _, ok := rewrittenReq["tool_choice"]; ok {
+		t.Fatalf("expected Anthropic tool_choice to be removed")
+	}
+	system, _ := rewrittenReq["system"].(string)
+	if !strings.Contains(system, triggerSignal) {
+		t.Fatalf("expected injected system prompt to contain trigger signal, got %q", system)
+	}
+	if !strings.Contains(system, "Existing system.") {
+		t.Fatalf("expected existing system prompt to be preserved, got %q", system)
+	}
+}
+
+func TestApplyFunctionCallRequestRewrite_AnthropicMessagesStreamRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/proxy/test-group/v1/messages", nil)
+
+	group := &models.Group{
+		Name:        "test-group",
+		ChannelType: "anthropic",
+		Config: map[string]any{
+			"force_function_call": true,
+		},
+	}
+	reqBody := map[string]any{
+		"model":  "claude-test",
+		"stream": true,
+		"messages": []any{
+			map[string]any{
+				"role":    "user",
+				"content": "Find current weather.",
+			},
+		},
+		"tools": []any{
+			map[string]any{
+				"name":         "web_search",
+				"input_schema": map[string]any{"type": "object"},
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	ps := &ProxyServer{}
+	rewrittenBody, triggerSignal, err := ps.applyFunctionCallRequestRewrite(c, group, bodyBytes)
+	if err != nil {
+		t.Fatalf("applyFunctionCallRequestRewrite() error = %v", err)
+	}
+	if triggerSignal == "" {
+		t.Fatal("expected trigger signal for streaming Anthropic request")
+	}
+
+	var rewrittenReq map[string]any
+	if err := json.Unmarshal(rewrittenBody, &rewrittenReq); err != nil {
+		t.Fatalf("failed to unmarshal rewritten body: %v", err)
+	}
+	if _, ok := rewrittenReq["tools"]; ok {
+		t.Fatalf("expected streaming Anthropic tools to be removed")
+	}
+	system, _ := rewrittenReq["system"].(string)
+	if !strings.Contains(system, triggerSignal) {
+		t.Fatalf("expected injected system prompt to contain trigger signal, got %q", system)
+	}
+}
+
+func TestHandleFunctionCallResponsesNormalResponseConvertsXMLToFunctionCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := `{"id":"resp_1","object":"response","status":"completed","model":"gpt-test","output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"Let me search.\n<<CALL_resp>>\n<invoke name=\"web_search\"><parameter name=\"query\">weather</parameter></invoke>"}]}]}`
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	c.Set("group", &models.Group{Name: "test-group"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallResponsesNormalResponse(c, upstreamResp)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+	output := w.Body.String()
+	if !strings.Contains(output, `"type":"function_call"`) {
+		t.Fatalf("expected Responses function_call output item, got %s", output)
+	}
+	if !strings.Contains(output, `"name":"web_search"`) {
+		t.Fatalf("expected function call name, got %s", output)
+	}
+	if strings.Contains(output, "<invoke") || strings.Contains(output, "<<CALL_resp>>") {
+		t.Fatalf("expected XML function call text to be removed, got %s", output)
+	}
+}
+
+func TestHandleFunctionCallAnthropicNormalResponseConvertsXMLToToolUse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"Let me search.\n<<CALL_claude>>\n<invoke name=\"web_search\"><parameter name=\"query\">weather</parameter></invoke>"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":2}}`
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_claude>>")
+	c.Set("group", &models.Group{Name: "test-group"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallAnthropicNormalResponse(c, upstreamResp)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+	output := w.Body.String()
+	if !strings.Contains(output, `"type":"tool_use"`) {
+		t.Fatalf("expected Anthropic tool_use block, got %s", output)
+	}
+	if !strings.Contains(output, `"name":"web_search"`) {
+		t.Fatalf("expected tool_use name, got %s", output)
+	}
+	if !strings.Contains(output, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected stop_reason tool_use, got %s", output)
+	}
+	if strings.Contains(output, "<invoke") || strings.Contains(output, "<<CALL_claude>>") {
+		t.Fatalf("expected XML function call text to be removed, got %s", output)
+	}
+}
+
+func TestHandleFunctionCallResponsesStreamingResponseConvertsXMLToFunctionCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	streamBody := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-test","status":"in_progress"}}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"Let me search.\n<<CALL_resp>>\n<invoke name=\"web_search\"><parameter name=\"query\">weather</parameter></invoke>"}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-test","status":"completed"}}`,
+		``,
+	}, "\n")
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	output := w.Body.String()
+	if !strings.Contains(output, "event: response.output_item.added") {
+		t.Fatalf("expected Responses output_item.added event, got %s", output)
+	}
+	if !strings.Contains(output, `"type":"function_call"`) {
+		t.Fatalf("expected Responses function_call event, got %s", output)
+	}
+	if !strings.Contains(output, `"name":"web_search"`) {
+		t.Fatalf("expected function call name, got %s", output)
+	}
+	if strings.Contains(output, "<invoke") || strings.Contains(output, "<<CALL_resp>>") {
+		t.Fatalf("expected XML function call text to be removed, got %s", output)
+	}
+}
+
+func TestHandleFunctionCallAnthropicStreamingResponseConvertsXMLToToolUse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	streamBody := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me search.\n<<CALL_claude>>\n<invoke name=\"web_search\"><parameter name=\"query\">weather</parameter></invoke>"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_claude>>")
+	c.Set("group", &models.Group{Name: "test-group", ChannelType: "anthropic"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	output := w.Body.String()
+	if !strings.Contains(output, "event: content_block_start") {
+		t.Fatalf("expected Anthropic content_block_start event, got %s", output)
+	}
+	if !strings.Contains(output, `"type":"tool_use"`) {
+		t.Fatalf("expected Anthropic tool_use block, got %s", output)
+	}
+	if !strings.Contains(output, `"name":"web_search"`) {
+		t.Fatalf("expected tool_use name, got %s", output)
+	}
+	if !strings.Contains(output, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected stop_reason tool_use, got %s", output)
+	}
+	if strings.Contains(output, "<invoke") || strings.Contains(output, "<<CALL_claude>>") {
+		t.Fatalf("expected XML function call text to be removed, got %s", output)
+	}
+}
+
+func TestHandleFunctionCallResponsesStreamingResponseCleansMalformedXML(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	streamBody := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-test","status":"in_progress"}}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"Let me search.\n<<CALL_resp>>\n<invoke><parameter name=\"query\">weather</parameter>"}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-test","status":"completed"}}`,
+		``,
+	}, "\n")
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	output := w.Body.String()
+	if strings.Contains(output, "<invoke") || strings.Contains(output, "<<CALL_resp>>") {
+		t.Fatalf("expected malformed XML function call text to be removed, got %s", output)
+	}
+	if !strings.Contains(output, "event: response.completed") {
+		t.Fatalf("expected cleaned Responses stream to complete, got %s", output)
+	}
+}
+
+func TestHandleFunctionCallAnthropicStreamingResponseCleansMalformedXML(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	streamBody := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me search.\n<<CALL_claude>>\n<invoke><parameter name=\"query\">weather</parameter>"}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_claude>>")
+	c.Set("group", &models.Group{Name: "test-group", ChannelType: "anthropic"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	output := w.Body.String()
+	if strings.Contains(output, "<invoke") || strings.Contains(output, "<<CALL_claude>>") {
+		t.Fatalf("expected malformed XML function call text to be removed, got %s", output)
+	}
+	if !strings.Contains(output, `"stop_reason":"end_turn"`) {
+		t.Fatalf("expected cleaned Anthropic stream to finish as text, got %s", output)
+	}
+}
+
 // TestRemoveFunctionCallsBlocks_RealCaseFromProductionLog verifies that a real-world
 // CC output containing malformed <> + invokename/parametername fragments from
 // real-world production log is cleaned correctly: all malformed XML fragments are removed while

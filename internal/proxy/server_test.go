@@ -342,6 +342,22 @@ func TestIsForceFunctionCallEnabled(t *testing.T) {
 				ChannelType: "anthropic",
 				Config:      map[string]any{"force_function_call": true},
 			},
+			expected: true,
+		},
+		{
+			name: "openai_response_enabled",
+			group: &models.Group{
+				ChannelType: "openai-response",
+				Config:      map[string]any{"force_function_call": true},
+			},
+			expected: true,
+		},
+		{
+			name: "gemini_stays_disabled",
+			group: &models.Group{
+				ChannelType: "gemini",
+				Config:      map[string]any{"force_function_call": true},
+			},
 			expected: false,
 		},
 		{

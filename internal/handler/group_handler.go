@@ -315,7 +315,7 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		TestModel:            group.TestModel,
 		ValidationEndpoint:   group.ValidationEndpoint,
 		ParamOverrides:       group.ParamOverrides,
-		Config:               group.Config,
+		Config:               configVisibleForChannel(group.Config, group.ChannelType),
 		HeaderRules:          headerRules,
 		ModelMapping:         group.ModelMapping, // Deprecated: for backward compatibility
 		ModelRedirectRules:   group.ModelRedirectRules,
@@ -330,6 +330,20 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		CreatedAt:            group.CreatedAt,
 		UpdatedAt:            group.UpdatedAt,
 	}
+}
+
+func configVisibleForChannel(config datatypes.JSONMap, channelType string) datatypes.JSONMap {
+	if channelType != "gemini" || len(config) == 0 {
+		return config
+	}
+	visible := make(datatypes.JSONMap, len(config))
+	for key, value := range config {
+		if key == "force_function_call" {
+			continue
+		}
+		visible[key] = value
+	}
+	return visible
 }
 
 // DeleteGroup handles deleting a group.
@@ -382,8 +396,12 @@ func (s *Server) GetGroupConfigOptions(c *gin.Context) {
 		return
 	}
 
+	channelType := strings.TrimSpace(c.Query("channel_type"))
 	translated := make([]ConfigOption, 0, len(options))
 	for _, option := range options {
+		if channelType == "gemini" && option.Key == "force_function_call" {
+			continue
+		}
 		name := option.Name
 		if strings.HasPrefix(name, "config.") {
 			name = i18n.Message(c, name)

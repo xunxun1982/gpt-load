@@ -409,9 +409,7 @@ watch(
       }
     }
 
-    // Force disable function call when channel is not OpenAI.
-    // CC support is available for OpenAI, OpenAI Responses, and Gemini channels.
-    if (newChannelType !== "openai") {
+    if (!supportsForceFunctionCall(newChannelType)) {
       formData.force_function_call = false;
     }
     if (!supportsParallelToolCalls(newChannelType)) {
@@ -453,6 +451,12 @@ function getOldDefaultUpstream(channelType: string): string {
 
 function supportsParallelToolCalls(channelType: string): boolean {
   return channelType === "openai" || channelType === "openai-response";
+}
+
+function supportsForceFunctionCall(channelType: string): boolean {
+  return (
+    channelType === "openai" || channelType === "openai-response" || channelType === "anthropic"
+  );
 }
 
 // Reset form
@@ -533,7 +537,9 @@ function loadGroupData() {
   const rawConfig: Record<string, unknown> = props.group.config || {};
   const fcRaw = rawConfig["force_function_call"];
   const forceFunctionCall =
-    props.group.channel_type === "openai" && typeof fcRaw === "boolean" ? fcRaw : false;
+    supportsForceFunctionCall(props.group.channel_type) && typeof fcRaw === "boolean"
+      ? fcRaw
+      : false;
   // Read parallel_tool_calls config (three-state: default, true, false)
   const ptcRaw = rawConfig["parallel_tool_calls"];
   let parallelToolCalls: "default" | "true" | "false" = "default";
@@ -1390,7 +1396,7 @@ async function handleSubmit() {
 
     // Persist force_function_call toggle as a dedicated config key.
     // Explicitly delete the key when disabled to ensure clean config state.
-    if (formData.force_function_call) {
+    if (supportsForceFunctionCall(formData.channel_type) && formData.force_function_call) {
       config["force_function_call"] = true;
     } else {
       delete config["force_function_call"];
@@ -2729,10 +2735,13 @@ async function handleSubmit() {
                 </n-button>
               </div>
 
-              <!-- Function call toggle (OpenAI channel only) -->
+              <!-- Function call toggle -->
               <div
                 class="config-section"
-                v-if="formData.group_type !== 'aggregate' && formData.channel_type === 'openai'"
+                v-if="
+                  formData.group_type !== 'aggregate' &&
+                  supportsForceFunctionCall(formData.channel_type)
+                "
               >
                 <n-form-item path="force_function_call">
                   <template #label>

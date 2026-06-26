@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"gorm.io/datatypes"
+
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 )
@@ -22,6 +24,18 @@ func TestCreateGroup_InvalidJSON(t *testing.T) {
 	s.CreateGroup(c)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestConfigVisibleForChannelHidesForceFunctionCallForGemini(t *testing.T) {
+	t.Parallel()
+
+	visible := configVisibleForChannel(datatypes.JSONMap{
+		"force_function_call": true,
+		"cc_support":          true,
+	}, "gemini")
+
+	assert.NotContains(t, visible, "force_function_call")
+	assert.Equal(t, true, visible["cc_support"])
 }
 
 func TestUpdateGroup_InvalidID(t *testing.T) {

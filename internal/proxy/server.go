@@ -316,7 +316,7 @@ func parseSubMaxRetries(config map[string]any) int {
 }
 
 // isForceFunctionCallEnabled checks whether the force_function_call flag is enabled
-// for the given group. This flag is currently only meaningful for OpenAI channel groups
+// for the given group. The middleware is limited to known non-Gemini tool schemas
 // and is stored in the group-level JSON config rather than global system settings.
 //
 // NOTE: ForceFunctionCall is a group-only override key and is not part of the
@@ -328,8 +328,9 @@ func isForceFunctionCallEnabled(group *models.Group) bool {
 		return false
 	}
 
-	// Only enable function call middleware for OpenAI channel groups.
-	if group.ChannelType != "openai" {
+	switch group.ChannelType {
+	case "openai", "openai-response", "anthropic":
+	default:
 		return false
 	}
 
@@ -440,6 +441,22 @@ func isOpenAIResponsesEndpoint(path string) bool {
 		return true
 	}
 	return strings.HasSuffix(path, "/v1/responses")
+}
+
+func isFunctionCallRewriteEndpoint(group *models.Group, path, method string) bool {
+	if group == nil {
+		return false
+	}
+	switch group.ChannelType {
+	case "openai":
+		return isChatCompletionsEndpoint(path, method)
+	case "openai-response":
+		return method == http.MethodPost && isOpenAIResponsesEndpoint(path)
+	case "anthropic":
+		return isAnthropicMessagesEndpoint(path, method)
+	default:
+		return false
+	}
 }
 
 // isOpenAIResponseForcedStream returns true if OpenAI Responses forced streaming was applied.
@@ -1003,8 +1020,8 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				}
 			}
 
-			// Apply function call request rewrite for eligible OpenAI groups.
-			if isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+			// Apply function call request rewrite for eligible channel endpoints.
+			if isForceFunctionCallEnabled(group) && isFunctionCallRewriteEndpoint(group, c.Request.URL.Path, c.Request.Method) {
 				rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(c, group, finalBodyBytes)
 				if fcErr != nil {
 					logrus.WithError(fcErr).WithFields(logrus.Fields{
@@ -1371,7 +1388,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 				// Codex forced streaming: collect stream response and return as non-stream
 				ps.handleCodexForcedStreamResponse(c, resp)
 			} else if isFunctionCallEnabled(c) {
-				ps.handleFunctionCallNormalResponse(c, resp)
+				ps.handleFunctionCallNormalResponseByChannel(c, resp, group)
 			} else {
 				ps.handleNormalResponse(c, resp)
 			}
@@ -1711,12 +1728,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
-	// Apply function call request rewrite for eligible OpenAI sub-groups.
+	// Apply function call request rewrite for eligible sub-group endpoints.
 	// Clear any stale function call state from previous sub-group attempts
 	// so that downstream response handlers do not see outdated flags.
 	c.Set(ctxKeyFunctionCallEnabled, false)
 	c.Set(ctxKeyTriggerSignal, "")
-	if isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+	if isForceFunctionCallEnabled(group) && isFunctionCallRewriteEndpoint(group, c.Request.URL.Path, c.Request.Method) {
 		rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(c, group, finalBodyBytes)
 		if fcErr != nil {
 			logrus.WithError(fcErr).WithFields(logrus.Fields{
@@ -2135,7 +2152,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				// Codex forced streaming: collect stream response and return as non-stream
 				ps.handleCodexForcedStreamResponse(c, resp)
 			} else if isFunctionCallEnabled(c) {
-				ps.handleFunctionCallNormalResponse(c, resp)
+				ps.handleFunctionCallNormalResponseByChannel(c, resp, group)
 			} else {
 				ps.handleNormalResponse(c, resp)
 			}

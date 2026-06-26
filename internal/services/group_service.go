@@ -303,7 +303,7 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		}
 	}
 
-	cleanedConfig, err := s.validateAndCleanConfig(params.Config)
+	cleanedConfig, err := s.validateAndCleanConfig(params.Config, channelType)
 	if err != nil {
 		return nil, err
 	}
@@ -944,7 +944,7 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 	}
 
 	if params.Config != nil {
-		cleanedConfig, err := s.validateAndCleanConfig(params.Config)
+		cleanedConfig, err := s.validateAndCleanConfig(params.Config, group.ChannelType)
 		if err != nil {
 			return nil, err
 		}
@@ -2775,7 +2775,7 @@ func (s *GroupService) GetGroupConfigOptions() ([]ConfigOption, error) {
 }
 
 // validateAndCleanConfig verifies GroupConfig overrides.
-func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[string]any, error) {
+func (s *GroupService) validateAndCleanConfig(configMap map[string]any, channelType string) (map[string]any, error) {
 	if configMap == nil {
 		return nil, nil
 	}
@@ -2786,6 +2786,9 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any) (map[str
 			configMap["force_function_call"] = legacyValue
 		}
 		delete(configMap, "force_function_calling")
+	}
+	if channelType == "gemini" {
+		delete(configMap, "force_function_call")
 	}
 	if legacyValue, ok := configMap["request_timeout"]; ok {
 		if _, hasNewKey := configMap["non_stream_request_timeout"]; !hasNewKey {
