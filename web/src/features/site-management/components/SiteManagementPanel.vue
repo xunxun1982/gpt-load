@@ -240,19 +240,16 @@ const checkinFilterOptions = computed<SelectOption[]>(() => [
   { label: t("siteManagement.filterCheckinNo"), value: "false" },
 ]);
 
-// Current check-in day based on Beijing time (UTC+8) with 05:00 reset
+function formatLocalDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+// Current check-in day based on local calendar day with midnight reset
 // Computed once and shared across all table rows for performance
-const currentCheckinDay = computed(() => {
-  const now = new Date();
-  const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000; // UTC+8 in milliseconds
-  const CHECKIN_RESET_HOUR = 5; // Check-in day resets at 05:00 Beijing time
-  const beijingTime = new Date(now.getTime() + BEIJING_OFFSET_MS);
-  // If before 05:00 Beijing time, consider it as previous day
-  if (beijingTime.getUTCHours() < CHECKIN_RESET_HOUR) {
-    beijingTime.setUTCDate(beijingTime.getUTCDate() - 1);
-  }
-  return beijingTime.toISOString().slice(0, 10); // YYYY-MM-DD format
-});
+const currentCheckinDay = computed(() => formatLocalDate(new Date()));
 
 interface LoadSitesOptions {
   focusSiteId?: number | null;
@@ -879,12 +876,12 @@ async function checkinSite(site: ManagedSiteDTO) {
   }
 }
 
-// Check if site was opened today (based on Beijing time with 05:00 reset)
+// Check if site was opened today.
 function isSiteOpenedToday(site: ManagedSiteDTO): boolean {
   return site.last_site_opened_date === currentCheckinDay.value;
 }
 
-// Check if check-in page was opened today (based on Beijing time with 05:00 reset)
+// Check if check-in page was opened today.
 function isCheckinPageOpenedToday(site: ManagedSiteDTO): boolean {
   return site.last_checkin_page_opened_date === currentCheckinDay.value;
 }
@@ -1233,8 +1230,8 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
         return h("span", { style: "color: #999" }, "-");
       }
       // Only show status if it's from the current check-in day, otherwise show "-"
-      // Check-in day resets at 05:00 Beijing time (UTC+8), not midnight
-      // This prevents stale "success" status from showing after the reset time
+      // Check-in day resets at midnight.
+      // This prevents stale "success" status from showing on the next day.
       if (!row.last_checkin_date || row.last_checkin_date !== currentCheckinDay.value) {
         return h("span", { style: "color: #999" }, "-");
       }
@@ -1666,15 +1663,14 @@ function removeScheduleTime(index: number) {
   autoCheckinConfig.value.schedule_times.splice(index, 1);
 }
 
-// Format next scheduled time for display (convert UTC to Beijing time)
+// Format next scheduled time for display.
 const nextScheduledDisplay = computed(() => {
   if (!autoCheckinStatus.value?.next_scheduled_at) {
     return "";
   }
   try {
     const utcDate = new Date(autoCheckinStatus.value.next_scheduled_at);
-    // Convert to Beijing time (UTC+8)
-    return utcDate.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+    return utcDate.toLocaleString("zh-CN");
   } catch {
     return autoCheckinStatus.value.next_scheduled_at;
   }
@@ -1687,7 +1683,7 @@ const lastRunDisplay = computed(() => {
   }
   try {
     const utcDate = new Date(autoCheckinStatus.value.last_run_at);
-    return utcDate.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+    return utcDate.toLocaleString("zh-CN");
   } catch {
     return autoCheckinStatus.value.last_run_at;
   }

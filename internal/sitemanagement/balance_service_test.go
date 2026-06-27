@@ -470,10 +470,10 @@ func TestBalanceService_RefreshScheduler(t *testing.T) {
 	nextRefresh := service.nextRefreshTime()
 	assert.True(t, nextRefresh.After(time.Now()))
 
-	// Verify it's at 05:00 Beijing time
-	beijingTime := nextRefresh.In(beijingLocation)
-	assert.Equal(t, 5, beijingTime.Hour())
-	assert.Equal(t, 0, beijingTime.Minute())
+	// Verify it's at local midnight.
+	localTime := nextRefresh.In(checkinLocation())
+	assert.Equal(t, 0, localTime.Hour())
+	assert.Equal(t, 0, localTime.Minute())
 }
 
 // TestBalanceService_SupportsBalance tests site type support check

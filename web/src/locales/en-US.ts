@@ -1150,7 +1150,7 @@ export default {
     nextScheduled: "Next Scheduled",
     lastRun: "Last Run",
     checkinSummary: "Success {success} / Failed {failed} / Skipped {skipped}",
-    beijingTimeNote: "All times are in Beijing time (UTC+8)",
+    beijingTimeNote: "Times use the server TZ timezone; defaults to Beijing time (UTC+8)",
     minutes: "min",
     statusIdle: "Idle",
     checkin: "Check-in",

@@ -1139,7 +1139,7 @@ export default {
     nextScheduled: "次回予定",
     lastRun: "前回実行",
     checkinSummary: "成功 {success} / 失敗 {failed} / スキップ {skipped}",
-    beijingTimeNote: "すべての時間は北京時間 (UTC+8) です",
+    beijingTimeNote: "時刻はサーバーの TZ タイムゾーンを使用し、未設定時は北京時間 (UTC+8) です",
     checkin: "チェックイン",
     logs: "ログ",
     logTime: "時間",

@@ -19,8 +19,8 @@ import (
 const (
 	// balanceRequestTimeout is the timeout for balance fetch requests
 	balanceRequestTimeout = 10 * time.Second
-	// balanceRefreshHour is the hour (Beijing time) when balances are auto-refreshed
-	balanceRefreshHour = 5
+	// balanceRefreshHour is the local hour when balances are auto-refreshed.
+	balanceRefreshHour = 0
 )
 
 // BalanceInfo represents the balance information for a site
@@ -127,12 +127,12 @@ func (s *BalanceService) Stop(_ context.Context) {
 	logrus.Info("Balance refresh scheduler stopped")
 }
 
-// runScheduler runs the daily balance refresh at 05:00 Beijing time
+// runScheduler runs the daily balance refresh at local midnight.
 func (s *BalanceService) runScheduler() {
 	defer s.wg.Done()
 
 	for {
-		// Calculate next 05:00 Beijing time
+		// Calculate next local midnight.
 		nextRefresh := s.nextRefreshTime()
 		waitDuration := time.Until(nextRefresh)
 
@@ -148,13 +148,14 @@ func (s *BalanceService) runScheduler() {
 	}
 }
 
-// nextRefreshTime calculates the next 05:00 Beijing time
+// nextRefreshTime calculates the next local midnight.
 func (s *BalanceService) nextRefreshTime() time.Time {
-	now := time.Now().In(beijingLocation)
+	loc := checkinLocation()
+	now := time.Now().In(loc)
 	target := time.Date(now.Year(), now.Month(), now.Day(),
-		balanceRefreshHour, 0, 0, 0, beijingLocation)
+		balanceRefreshHour, 0, 0, 0, loc)
 
-	// If already past 05:00 today, schedule for tomorrow
+	// If already past midnight today, schedule for tomorrow.
 	if !target.After(now) {
 		target = target.Add(24 * time.Hour)
 	}

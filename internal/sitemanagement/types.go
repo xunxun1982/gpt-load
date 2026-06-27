@@ -51,11 +51,11 @@ type ManagedSiteDTO struct {
 	LastCheckInMessage string     `json:"last_checkin_message"`
 
 	// Track when user clicked "Open Site" or "Open Check-in Page" buttons.
-	// Date format: YYYY-MM-DD in Beijing time (UTC+8), resets at 05:00 Beijing time.
+	// Date format: YYYY-MM-DD in the site-management timezone, resets at midnight.
 	LastSiteOpenedDate        string `json:"last_site_opened_date"`
 	LastCheckinPageOpenedDate string `json:"last_checkin_page_opened_date"`
 
-	// Cached balance information, refreshed daily at 05:00 Beijing time.
+	// Cached balance information, refreshed daily at midnight in the site-management timezone.
 	LastBalance     string `json:"last_balance"`
 	LastBalanceDate string `json:"last_balance_date"`
 
@@ -92,17 +92,17 @@ const (
 )
 
 // AutoCheckinConfig holds the auto check-in scheduling configuration.
-// All times are in Beijing time (UTC+8).
+// All times are in the site-management timezone.
 type AutoCheckinConfig struct {
 	GlobalEnabled bool `json:"global_enabled"`
 	// ScheduleTimes contains multiple check-in times in "HH:MM" format, comma-separated.
 	// Example: "09:00,12:00,18:00" for three daily check-ins.
 	// Used when ScheduleMode is "multiple".
 	ScheduleTimes []string `json:"schedule_times"`
-	// WindowStart is the start time in "HH:MM" format (24-hour, Beijing time).
+	// WindowStart is the start time in "HH:MM" format (24-hour, site-management timezone).
 	// Used when ScheduleMode is "random".
 	WindowStart string `json:"window_start"`
-	// WindowEnd is the end time in "HH:MM" format (24-hour, Beijing time).
+	// WindowEnd is the end time in "HH:MM" format (24-hour, site-management timezone).
 	// Used when ScheduleMode is "random".
 	WindowEnd    string `json:"window_end"`
 	ScheduleMode string `json:"schedule_mode"`

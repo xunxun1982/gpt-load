@@ -588,7 +588,7 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 }
 
 // RecordSiteOpened records when user clicked "Open Site" button.
-// Updates last_site_opened_date to current Beijing check-in day (resets at 05:00 Beijing time).
+// Updates last_site_opened_date to the current site-management local day.
 //
 // Design Decision: This is a fire-and-forget tracking feature. We intentionally do NOT:
 // 1. Check if site exists before update (would add extra DB query)
@@ -609,7 +609,7 @@ func (s *SiteService) RecordSiteOpened(ctx context.Context, siteID uint) error {
 }
 
 // RecordCheckinPageOpened records when user clicked "Open Check-in Page" button.
-// Updates last_checkin_page_opened_date to current Beijing check-in day (resets at 05:00 Beijing time).
+// Updates last_checkin_page_opened_date to the current site-management local day.
 //
 // Design Decision: Same as RecordSiteOpened - fire-and-forget without existence check.
 func (s *SiteService) RecordCheckinPageOpened(ctx context.Context, siteID uint) error {

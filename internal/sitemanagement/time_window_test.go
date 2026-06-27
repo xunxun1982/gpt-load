@@ -8,31 +8,25 @@ import (
 )
 
 func TestGetBeijingCheckinDayAt(t *testing.T) {
-	t.Parallel()
-
 	tests := []struct {
 		name         string
+		tz           string
 		inputTime    time.Time
 		expectedDate string
 	}{
 		{
-			name:         "Before 05:00 Beijing time - should use previous day",
+			name:         "Before old 05:00 reset uses current Beijing day by default",
 			inputTime:    time.Date(2024, 1, 15, 4, 59, 0, 0, beijingLocation),
-			expectedDate: "2024-01-14",
-		},
-		{
-			name:         "Exactly 05:00 Beijing time - should use current day",
-			inputTime:    time.Date(2024, 1, 15, 5, 0, 0, 0, beijingLocation),
 			expectedDate: "2024-01-15",
 		},
 		{
-			name:         "After 05:00 Beijing time - should use current day",
-			inputTime:    time.Date(2024, 1, 15, 5, 1, 0, 0, beijingLocation),
-			expectedDate: "2024-01-15",
-		},
-		{
-			name:         "Midnight Beijing time - should use previous day",
+			name:         "Midnight Beijing time uses current day by default",
 			inputTime:    time.Date(2024, 1, 15, 0, 0, 0, 0, beijingLocation),
+			expectedDate: "2024-01-15",
+		},
+		{
+			name:         "Before Beijing midnight uses previous day by default",
+			inputTime:    time.Date(2024, 1, 14, 15, 59, 0, 0, time.UTC),
 			expectedDate: "2024-01-14",
 		},
 		{
@@ -46,20 +40,21 @@ func TestGetBeijingCheckinDayAt(t *testing.T) {
 			expectedDate: "2024-01-15",
 		},
 		{
-			name:         "UTC time exactly 05:00 Beijing (21:00 UTC previous day)",
-			inputTime:    time.Date(2024, 1, 14, 21, 0, 0, 0, time.UTC), // 05:00 Beijing next day
+			name:         "UTC time at Beijing midnight uses next Beijing day by default",
+			inputTime:    time.Date(2024, 1, 14, 16, 0, 0, 0, time.UTC),
 			expectedDate: "2024-01-15",
 		},
 		{
-			name:         "UTC time after 05:00 Beijing (22:00 UTC previous day)",
-			inputTime:    time.Date(2024, 1, 14, 22, 0, 0, 0, time.UTC), // 06:00 Beijing next day
-			expectedDate: "2024-01-15",
+			name:         "TZ environment overrides default timezone",
+			tz:           "America/New_York",
+			inputTime:    time.Date(2024, 1, 15, 4, 59, 0, 0, time.UTC),
+			expectedDate: "2024-01-14",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			t.Setenv("TZ", tt.tz)
 
 			result := GetBeijingCheckinDayAt(tt.inputTime)
 			assert.Equal(t, tt.expectedDate, result)

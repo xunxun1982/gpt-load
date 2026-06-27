@@ -427,13 +427,14 @@ func (s *AutoCheckinService) loadConfig(ctx context.Context) (*AutoCheckinConfig
 }
 
 // computeMultipleTrigger calculates the next trigger time from multiple scheduled times.
-// All times are in Beijing time (UTC+8).
+// All times are in the configured site-management timezone.
 func computeMultipleTrigger(scheduleTimes []string, now time.Time) time.Time {
 	if len(scheduleTimes) == 0 {
 		return time.Time{}
 	}
 
-	beijingNow := now.In(beijingLocation)
+	loc := checkinLocation()
+	localNow := now.In(loc)
 	var nextTrigger time.Time
 
 	for _, timeStr := range scheduleTimes {
@@ -442,12 +443,12 @@ func computeMultipleTrigger(scheduleTimes []string, now time.Time) time.Time {
 			continue
 		}
 
-		// Create target time for today in Beijing timezone
-		target := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(),
-			minutes/60, minutes%60, 0, 0, beijingLocation)
+		// Create target time for today in the configured timezone.
+		target := time.Date(localNow.Year(), localNow.Month(), localNow.Day(),
+			minutes/60, minutes%60, 0, 0, loc)
 
 		// If target is in the past, schedule for tomorrow
-		if !target.After(beijingNow) {
+		if !target.After(localNow) {
 			target = target.Add(24 * time.Hour)
 		}
 
@@ -512,8 +513,9 @@ func lastRunSucceededForCurrentScheduleDay(cfg *AutoCheckinConfig, st AutoChecki
 func computeNextRegularTrigger(cfg *AutoCheckinConfig, now time.Time, skipToday bool) (time.Time, error) {
 	base := now
 	if skipToday {
-		beijingNow := now.In(beijingLocation)
-		nextDay := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(), 23, 59, 59, 0, beijingLocation)
+		loc := checkinLocation()
+		localNow := now.In(loc)
+		nextDay := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 23, 59, 59, 0, loc)
 		base = nextDay
 	}
 
@@ -550,10 +552,10 @@ func computeDeterministicTrigger(cfg *AutoCheckinConfig, now time.Time) time.Tim
 		return time.Time{}
 	}
 
-	// Use Beijing time (UTC+8) for scheduling
-	beijingNow := now.In(beijingLocation)
-	target := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(), deterministicMin/60, deterministicMin%60, 0, 0, beijingLocation)
-	if !target.After(beijingNow) {
+	loc := checkinLocation()
+	localNow := now.In(loc)
+	target := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), deterministicMin/60, deterministicMin%60, 0, 0, loc)
+	if !target.After(localNow) {
 		target = target.Add(24 * time.Hour)
 	}
 	return target
@@ -569,17 +571,17 @@ func computeRandomTrigger(windowStart, windowEnd string, now time.Time) (time.Ti
 		return time.Time{}, err
 	}
 
-	// Use Beijing time (UTC+8) for scheduling
-	beijingNow := now.In(beijingLocation)
-	today := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(), 0, 0, 0, 0, beijingLocation)
+	loc := checkinLocation()
+	localNow := now.In(loc)
+	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
 	start := today.Add(time.Duration(startMin) * time.Minute)
 	end := today.Add(time.Duration(endMin) * time.Minute)
 
-	nowMin := beijingNow.Hour()*60 + beijingNow.Minute()
+	nowMin := localNow.Hour()*60 + localNow.Minute()
 	if end.Before(start) || end.Equal(start) {
 		end = end.Add(24 * time.Hour)
 		// Window crosses midnight and we're after midnight but before the end.
-		if beijingNow.Before(start) && nowMin <= endMin {
+		if localNow.Before(start) && nowMin <= endMin {
 			start = start.Add(-24 * time.Hour)
 			end = end.Add(-24 * time.Hour)
 		}
@@ -630,9 +632,10 @@ func randomScheduleDay(t time.Time, startMin, endMin int) string {
 }
 
 func randomScheduleDayStart(t time.Time, startMin, endMin int) time.Time {
-	beijingTime := t.In(beijingLocation)
-	dayStart := time.Date(beijingTime.Year(), beijingTime.Month(), beijingTime.Day(), 0, 0, 0, 0, beijingLocation)
-	nowMin := beijingTime.Hour()*60 + beijingTime.Minute()
+	loc := checkinLocation()
+	localTime := t.In(loc)
+	dayStart := time.Date(localTime.Year(), localTime.Month(), localTime.Day(), 0, 0, 0, 0, loc)
+	nowMin := localTime.Hour()*60 + localTime.Minute()
 	if startMin >= endMin && nowMin <= endMin {
 		return dayStart.AddDate(0, 0, -1)
 	}
@@ -640,8 +643,7 @@ func randomScheduleDayStart(t time.Time, startMin, endMin int) time.Time {
 }
 
 func todayString(now time.Time) string {
-	// Use Beijing time (UTC+8) for date string
-	return now.In(beijingLocation).Format("2006-01-02")
+	return now.In(checkinLocation()).Format("2006-01-02")
 }
 
 func (s *AutoCheckinService) runAllCheckins(ctx context.Context) {

@@ -81,11 +81,11 @@ type ManagedSite struct {
 	LastCheckInMessage string     `gorm:"column:last_checkin_message;type:text;not null;default:''" json:"last_checkin_message"`
 
 	// Track when user clicked "Open Site" or "Open Check-in Page" buttons.
-	// Date format: YYYY-MM-DD in Beijing time (UTC+8), resets at 05:00 Beijing time.
+	// Date format: YYYY-MM-DD in the site-management timezone, resets at midnight.
 	LastSiteOpenedDate        string `gorm:"column:last_site_opened_date;type:char(10);not null;default:''" json:"last_site_opened_date"`
 	LastCheckinPageOpenedDate string `gorm:"column:last_checkin_page_opened_date;type:char(10);not null;default:''" json:"last_checkin_page_opened_date"`
 
-	// Cached balance information, refreshed daily at 05:00 Beijing time.
+	// Cached balance information, refreshed daily at midnight in the site-management timezone.
 	// Balance is stored as display string (e.g., "$10.50") or empty if not available.
 	LastBalance     string `gorm:"column:last_balance;type:varchar(32);not null;default:''" json:"last_balance"`
 	LastBalanceDate string `gorm:"column:last_balance_date;type:char(10);not null;default:''" json:"last_balance_date"`
