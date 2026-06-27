@@ -73,8 +73,10 @@ func TestGetSettings(t *testing.T) {
 	// Should return default settings when not initialized
 	settings := manager.GetSettings()
 	assert.NotNil(t, settings)
-	assert.Greater(t, settings.NonStreamRequestTimeout, 0)
-	assert.Zero(t, settings.StreamRequestTimeout)
+	assert.Equal(t, 1200, settings.RequestTimeout)
+	assert.Equal(t, 1200, settings.NonStreamRequestTimeout)
+	assert.Equal(t, 600, settings.StreamRequestTimeout)
+	assert.Equal(t, 30, settings.ConnectTimeout)
 }
 
 // TestGetAppUrl tests getting app URL
@@ -752,7 +754,7 @@ func TestGetEffectiveConfigLegacyRequestTimeout(t *testing.T) {
 	})
 
 	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 0, cfg.StreamRequestTimeout)
+	assert.Equal(t, 600, cfg.StreamRequestTimeout)
 	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
 }
 
