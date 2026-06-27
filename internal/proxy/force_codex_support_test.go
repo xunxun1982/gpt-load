@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -636,6 +637,27 @@ func TestAggregateForceCodexPassthroughNativeResponsesSubGroup(t *testing.T) {
 	assert.Contains(t, upstreamPayload, "input")
 	assert.NotContains(t, upstreamPayload, "messages")
 	assert.JSONEq(t, `{"id":"resp_native","object":"response","created_at":123,"model":"gpt-test","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"native ok"}]}]}`, w.Body.String())
+}
+
+func TestCollectClaudeStreamToResponseKeepsSparseUnclosedBlocks(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(strings.Join([]string{
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"first"}}`,
+		"",
+		`data: {"type":"content_block_stop","index":0}`,
+		"",
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":"third"}}`,
+		"",
+		`data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" block"}}`,
+		"",
+	}, "\n"))
+
+	resp := collectClaudeStreamToResponse(body)
+
+	require.Len(t, resp.Content, 2)
+	assert.Equal(t, "first", resp.Content[0].Text)
+	assert.Equal(t, "third block", resp.Content[1].Text)
 }
 
 func intPtr(v int) *int {

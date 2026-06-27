@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -955,8 +956,13 @@ func collectClaudeStreamToResponse(bodyBytes []byte) *ClaudeResponse {
 			}
 		}
 	}
-	for i := 0; i < len(blocks); i++ {
-		if block := blocks[i]; block != nil {
+	keys := make([]int, 0, len(blocks))
+	for k := range blocks {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	for _, k := range keys {
+		if block := blocks[k]; block != nil {
 			resp.Content = append(resp.Content, *block)
 		}
 	}

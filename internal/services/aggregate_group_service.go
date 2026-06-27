@@ -86,8 +86,7 @@ func isGroupCCSupportEnabled(group *models.Group) bool {
 // getEffectiveEndpointForAggregation returns the effective validation endpoint for a sub-group
 // in the context of an aggregate group. Forced child groups expose the parent protocol endpoint
 // before channel-specific conversion.
-func getEffectiveEndpointForAggregation(subGroup *models.Group, aggregateChannelType string, usesClaudeEndpoint bool, usesCodexEndpointOpt ...bool) string {
-	usesCodexEndpoint := len(usesCodexEndpointOpt) > 0 && usesCodexEndpointOpt[0]
+func getEffectiveEndpointForAggregation(subGroup *models.Group, aggregateChannelType string, usesClaudeEndpoint bool, usesCodexEndpoint bool) string {
 	// If sub-group has custom validation endpoint, use it
 	if subGroup.ValidationEndpoint != "" {
 		// CC sub-groups in Anthropic aggregates should match Claude's endpoint
