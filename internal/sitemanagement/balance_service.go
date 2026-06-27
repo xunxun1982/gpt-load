@@ -19,8 +19,6 @@ import (
 const (
 	// balanceRequestTimeout is the timeout for balance fetch requests
 	balanceRequestTimeout = 10 * time.Second
-	// balanceRefreshHour is the local hour when balances are auto-refreshed.
-	balanceRefreshHour = 0
 )
 
 // BalanceInfo represents the balance information for a site
@@ -150,16 +148,11 @@ func (s *BalanceService) runScheduler() {
 
 // nextRefreshTime calculates the next local midnight.
 func (s *BalanceService) nextRefreshTime() time.Time {
-	loc := checkinLocation()
-	now := time.Now().In(loc)
-	target := time.Date(now.Year(), now.Month(), now.Day(),
-		balanceRefreshHour, 0, 0, 0, loc)
+	return nextRefreshTimeAt(time.Now())
+}
 
-	// If already past midnight today, schedule for tomorrow.
-	if !target.After(now) {
-		target = target.Add(24 * time.Hour)
-	}
-	return target
+func nextRefreshTimeAt(base time.Time) time.Time {
+	return nextCheckinResetAt(base)
 }
 
 // refreshAllBalancesBackground refreshes balances for all enabled sites in background

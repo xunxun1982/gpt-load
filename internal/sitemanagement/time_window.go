@@ -8,19 +8,26 @@ import (
 	"time"
 )
 
+const fallbackTimezoneName = "Asia/Shanghai"
+
 // beijingLocation is the fallback timezone for site-management dates.
-var beijingLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+var beijingLocation = time.FixedZone(fallbackTimezoneName, 8*60*60)
 
 func checkinLocation() *time.Location {
+	loc, _ := checkinLocationWithName()
+	return loc
+}
+
+func checkinLocationWithName() (*time.Location, string) {
 	tz := strings.TrimSpace(os.Getenv("TZ"))
 	if tz == "" {
-		return beijingLocation
+		return beijingLocation, fallbackTimezoneName
 	}
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		return beijingLocation
+		return beijingLocation, fallbackTimezoneName
 	}
-	return loc
+	return loc, tz
 }
 
 // GetBeijingCheckinDay returns the current "check-in day" in TZ, defaulting to Beijing time.
@@ -35,6 +42,16 @@ func GetBeijingCheckinDay() string {
 // Returns date in "YYYY-MM-DD" format.
 func GetBeijingCheckinDayAt(t time.Time) string {
 	return t.In(checkinLocation()).Format("2006-01-02")
+}
+
+func nextCheckinResetAt(base time.Time) time.Time {
+	loc := checkinLocation()
+	now := base.In(loc)
+	reset := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	if !reset.After(now) {
+		reset = reset.AddDate(0, 0, 1)
+	}
+	return reset
 }
 
 func parseTimeToMinutes(value string) (int, error) {

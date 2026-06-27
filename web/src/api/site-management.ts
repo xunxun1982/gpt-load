@@ -349,6 +349,9 @@ export interface AutoCheckinStatus {
   last_run_at?: string;
   last_run_result?: string;
   next_scheduled_at?: string;
+  current_checkin_day?: string;
+  timezone?: string;
+  next_checkin_reset_at?: string;
   summary?: AutoCheckinRunSummary;
   pending_retry: boolean;
 }

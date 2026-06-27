@@ -91,6 +91,7 @@ const loading = ref(false);
 const sites = ref<ManagedSiteDTO[]>([]);
 const focusedSiteId = ref<number | null>(null);
 const focusedSiteClearTimer = ref<number | undefined>(undefined);
+const checkinDayRefreshTimer = ref<number | undefined>(undefined);
 const applyingRouteFocus = ref(false);
 const showSiteModal = ref(false);
 const editingSite = ref<ManagedSiteDTO | null>(null);
@@ -247,9 +248,37 @@ function formatLocalDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-// Current check-in day based on local calendar day with midnight reset
+function nextLocalMidnight(): Date {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+}
+
+function scheduleCheckinDayRefresh(status: AutoCheckinStatus | null) {
+  if (checkinDayRefreshTimer.value) {
+    window.clearTimeout(checkinDayRefreshTimer.value);
+    checkinDayRefreshTimer.value = undefined;
+  }
+
+  const resetAt = status?.next_checkin_reset_at
+    ? new Date(status.next_checkin_reset_at)
+    : nextLocalMidnight();
+  const target = Number.isNaN(resetAt.getTime()) ? nextLocalMidnight() : resetAt;
+  const delay = Math.min(Math.max(target.getTime() - Date.now() + 1000, 1000), 2_147_483_647);
+
+  checkinDayRefreshTimer.value = window.setTimeout(() => {
+    void (async () => {
+      await loadAutoCheckinConfig();
+      await loadSites();
+    })();
+  }, delay);
+}
+
+// Prefer the backend-resolved site-management day. The local fallback only covers
+// initial loading and older backends that do not return current_checkin_day yet.
 // Computed once and shared across all table rows for performance
-const currentCheckinDay = computed(() => formatLocalDate(new Date()));
+const currentCheckinDay = computed(
+  () => autoCheckinStatus.value?.current_checkin_day || formatLocalDate(new Date())
+);
 
 interface LoadSitesOptions {
   focusSiteId?: number | null;
@@ -380,6 +409,10 @@ const debouncedSearch = debounce(() => {
 onUnmounted(() => {
   debouncedSearch.cancel();
   clearFocusedSite();
+  if (checkinDayRefreshTimer.value) {
+    window.clearTimeout(checkinDayRefreshTimer.value);
+    checkinDayRefreshTimer.value = undefined;
+  }
 });
 
 // Watch search input changes
@@ -1579,6 +1612,7 @@ async function loadAutoCheckinConfig() {
     ]);
     autoCheckinConfig.value = config;
     autoCheckinStatus.value = status;
+    scheduleCheckinDayRefresh(status);
   } catch (_) {
     /* handled by centralized error handler */
   } finally {
@@ -1663,17 +1697,28 @@ function removeScheduleTime(index: number) {
   autoCheckinConfig.value.schedule_times.splice(index, 1);
 }
 
+function formatStatusTime(value: string): string {
+  try {
+    const utcDate = new Date(value);
+    if (Number.isNaN(utcDate.getTime())) {
+      return value;
+    }
+    const timezone = autoCheckinStatus.value?.timezone;
+    if (timezone) {
+      return utcDate.toLocaleString("zh-CN", { timeZone: timezone });
+    }
+    return `${utcDate.toLocaleString("zh-CN")} (${t("siteManagement.clientLocalTime")})`;
+  } catch {
+    return value;
+  }
+}
+
 // Format next scheduled time for display.
 const nextScheduledDisplay = computed(() => {
   if (!autoCheckinStatus.value?.next_scheduled_at) {
     return "";
   }
-  try {
-    const utcDate = new Date(autoCheckinStatus.value.next_scheduled_at);
-    return utcDate.toLocaleString("zh-CN");
-  } catch {
-    return autoCheckinStatus.value.next_scheduled_at;
-  }
+  return formatStatusTime(autoCheckinStatus.value.next_scheduled_at);
 });
 
 // Format last run time for display
@@ -1681,12 +1726,7 @@ const lastRunDisplay = computed(() => {
   if (!autoCheckinStatus.value?.last_run_at) {
     return "";
   }
-  try {
-    const utcDate = new Date(autoCheckinStatus.value.last_run_at);
-    return utcDate.toLocaleString("zh-CN");
-  } catch {
-    return autoCheckinStatus.value.last_run_at;
-  }
+  return formatStatusTime(autoCheckinStatus.value.last_run_at);
 });
 
 onMounted(() => {
@@ -1942,7 +1982,7 @@ watch(
           <!-- Save button and note -->
           <span class="config-inline-item config-save">
             <n-text depth="3" style="font-size: 10px">
-              {{ t("siteManagement.beijingTimeNote") }}
+              {{ t("siteManagement.serverTimezoneNote") }}
             </n-text>
             <n-button
               size="tiny"

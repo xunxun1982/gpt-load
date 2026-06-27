@@ -199,17 +199,17 @@ func (s *AutoCheckinService) Stop(ctx context.Context) {
 
 func (s *AutoCheckinService) GetStatus() AutoCheckinStatus {
 	if s.store == nil {
-		return AutoCheckinStatus{IsRunning: false}
+		return withCheckinMetadata(AutoCheckinStatus{IsRunning: false})
 	}
 	data, err := s.store.Get(autoCheckinStatusKey)
 	if err != nil {
-		return AutoCheckinStatus{IsRunning: false}
+		return withCheckinMetadata(AutoCheckinStatus{IsRunning: false})
 	}
 	var st AutoCheckinStatus
 	if json.Unmarshal(data, &st) != nil {
-		return AutoCheckinStatus{IsRunning: false}
+		return withCheckinMetadata(AutoCheckinStatus{IsRunning: false})
 	}
-	return st
+	return withCheckinMetadata(st)
 }
 
 func (s *AutoCheckinService) TriggerRunNow() {
@@ -331,11 +331,20 @@ func (s *AutoCheckinService) setStatus(status AutoCheckinStatus) {
 	if s.store == nil {
 		return
 	}
+	status = withCheckinMetadata(status)
 	b, err := json.Marshal(status)
 	if err != nil {
 		return
 	}
 	_ = s.store.Set(autoCheckinStatusKey, b, 24*time.Hour)
+}
+
+func withCheckinMetadata(status AutoCheckinStatus) AutoCheckinStatus {
+	_, timezone := checkinLocationWithName()
+	status.CurrentCheckinDay = GetBeijingCheckinDay()
+	status.Timezone = timezone
+	status.NextCheckinResetAt = nextCheckinResetAt(time.Now()).UTC().Format(time.RFC3339)
+	return status
 }
 
 func (s *AutoCheckinService) setNextScheduledAt(next time.Time) {
@@ -443,13 +452,11 @@ func computeMultipleTrigger(scheduleTimes []string, now time.Time) time.Time {
 			continue
 		}
 
-		// Create target time for today in the configured timezone.
-		target := time.Date(localNow.Year(), localNow.Month(), localNow.Day(),
-			minutes/60, minutes%60, 0, 0, loc)
+		target := localDateTime(localNow, minutes, loc)
 
 		// If target is in the past, schedule for tomorrow
 		if !target.After(localNow) {
-			target = target.Add(24 * time.Hour)
+			target = target.AddDate(0, 0, 1)
 		}
 
 		// Find the earliest next trigger
@@ -556,9 +563,14 @@ func computeDeterministicTrigger(cfg *AutoCheckinConfig, now time.Time) time.Tim
 	localNow := now.In(loc)
 	target := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), deterministicMin/60, deterministicMin%60, 0, 0, loc)
 	if !target.After(localNow) {
-		target = target.Add(24 * time.Hour)
+		target = target.AddDate(0, 0, 1)
 	}
 	return target
+}
+
+func localDateTime(base time.Time, minutes int, loc *time.Location) time.Time {
+	localBase := base.In(loc)
+	return time.Date(localBase.Year(), localBase.Month(), localBase.Day(), minutes/60, minutes%60, 0, 0, loc)
 }
 
 func computeRandomTrigger(windowStart, windowEnd string, now time.Time) (time.Time, error) {
@@ -573,30 +585,29 @@ func computeRandomTrigger(windowStart, windowEnd string, now time.Time) (time.Ti
 
 	loc := checkinLocation()
 	localNow := now.In(loc)
-	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
-	start := today.Add(time.Duration(startMin) * time.Minute)
-	end := today.Add(time.Duration(endMin) * time.Minute)
+	start := localDateTime(localNow, startMin, loc)
+	end := localDateTime(localNow, endMin, loc)
 
 	nowMin := localNow.Hour()*60 + localNow.Minute()
 	if end.Before(start) || end.Equal(start) {
-		end = end.Add(24 * time.Hour)
+		end = end.AddDate(0, 0, 1)
 		// Window crosses midnight and we're after midnight but before the end.
 		if localNow.Before(start) && nowMin <= endMin {
-			start = start.Add(-24 * time.Hour)
-			end = end.Add(-24 * time.Hour)
+			start = start.AddDate(0, 0, -1)
+			end = end.AddDate(0, 0, -1)
 		}
 	}
 
-	if beijingNow.After(end) {
-		start = start.Add(24 * time.Hour)
-		end = end.Add(24 * time.Hour)
-	} else if beijingNow.After(start) {
-		start = beijingNow
+	if localNow.After(end) {
+		start = start.AddDate(0, 0, 1)
+		end = end.AddDate(0, 0, 1)
+	} else if localNow.After(start) {
+		start = localNow
 	}
 
 	duration := end.Sub(start)
 	if duration <= 0 {
-		return beijingNow.Add(24 * time.Hour), nil
+		return localNow.AddDate(0, 0, 1), nil
 	}
 	offset := time.Duration(rand.Int63n(int64(duration)))
 	return start.Add(offset), nil
@@ -613,15 +624,15 @@ func computeNextScheduleDayRandomTrigger(windowStart, windowEnd string, now time
 	}
 
 	nextScheduleDay := randomScheduleDayStart(now, startMin, endMin).AddDate(0, 0, 1)
-	start := nextScheduleDay.Add(time.Duration(startMin) * time.Minute)
-	end := nextScheduleDay.Add(time.Duration(endMin) * time.Minute)
+	start := localDateTime(nextScheduleDay, startMin, nextScheduleDay.Location())
+	end := localDateTime(nextScheduleDay, endMin, nextScheduleDay.Location())
 	if !end.After(start) {
-		end = end.Add(24 * time.Hour)
+		end = end.AddDate(0, 0, 1)
 	}
 
 	duration := end.Sub(start)
 	if duration <= 0 {
-		return nextScheduleDay.Add(24 * time.Hour), nil
+		return nextScheduleDay.AddDate(0, 0, 1), nil
 	}
 	offset := time.Duration(rand.Int63n(int64(duration)))
 	return start.Add(offset), nil

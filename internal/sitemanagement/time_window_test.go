@@ -50,6 +50,12 @@ func TestGetBeijingCheckinDayAt(t *testing.T) {
 			inputTime:    time.Date(2024, 1, 15, 4, 59, 0, 0, time.UTC),
 			expectedDate: "2024-01-14",
 		},
+		{
+			name:         "Invalid TZ falls back to Beijing timezone",
+			tz:           "Invalid/Timezone",
+			inputTime:    time.Date(2024, 1, 14, 16, 0, 0, 0, time.UTC),
+			expectedDate: "2024-01-15",
+		},
 	}
 
 	for _, tt := range tests {

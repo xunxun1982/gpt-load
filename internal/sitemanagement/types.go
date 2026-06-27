@@ -135,11 +135,14 @@ const (
 )
 
 type AutoCheckinStatus struct {
-	IsRunning       bool                        `json:"is_running"`
-	LastRunAt       string                      `json:"last_run_at,omitempty"`
-	LastRunResult   string                      `json:"last_run_result,omitempty"`
-	NextScheduledAt string                      `json:"next_scheduled_at,omitempty"`
-	Summary         *AutoCheckinRunSummary      `json:"summary,omitempty"`
-	Attempts        *AutoCheckinAttemptsTracker `json:"attempts,omitempty"`
-	PendingRetry    bool                        `json:"pending_retry"`
+	IsRunning          bool                        `json:"is_running"`
+	LastRunAt          string                      `json:"last_run_at,omitempty"`
+	LastRunResult      string                      `json:"last_run_result,omitempty"`
+	NextScheduledAt    string                      `json:"next_scheduled_at,omitempty"`
+	CurrentCheckinDay  string                      `json:"current_checkin_day"`
+	Timezone           string                      `json:"timezone"`
+	NextCheckinResetAt string                      `json:"next_checkin_reset_at"`
+	Summary            *AutoCheckinRunSummary      `json:"summary,omitempty"`
+	Attempts           *AutoCheckinAttemptsTracker `json:"attempts,omitempty"`
+	PendingRetry       bool                        `json:"pending_retry"`
 }

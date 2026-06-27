@@ -1225,6 +1225,39 @@ func TestAutoCheckinMultipleScheduleSkipsRemainingTimesAfterSuccess(t *testing.T
 		"successful auto check-in should not be scheduled again at a later fixed time on the same day")
 }
 
+func TestComputeMultipleTriggerKeepsWallClockTimeAcrossDST(t *testing.T) {
+	t.Setenv("TZ", "America/New_York")
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	now := time.Date(2026, 3, 8, 23, 0, 0, 0, loc)
+
+	next := computeMultipleTrigger([]string{"00:30"}, now)
+
+	localNext := next.In(loc)
+	assert.Equal(t, 2026, localNext.Year())
+	assert.Equal(t, time.March, localNext.Month())
+	assert.Equal(t, 9, localNext.Day())
+	assert.Equal(t, 0, localNext.Hour())
+	assert.Equal(t, 30, localNext.Minute())
+}
+
+func TestAutoCheckinStatusIncludesServerTimezoneMetadata(t *testing.T) {
+	t.Setenv("TZ", "America/New_York")
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	service := NewAutoCheckinService(db, store.NewMemoryStore(), encSvc)
+
+	status := service.GetStatus()
+
+	assert.Equal(t, GetBeijingCheckinDay(), status.CurrentCheckinDay)
+	assert.Equal(t, "America/New_York", status.Timezone)
+	resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
+	require.NoError(t, err)
+	assert.True(t, resetAt.After(time.Now()))
+}
+
 func TestAutoCheckinDeterministicScheduleSkipsTodayAfterSuccess(t *testing.T) {
 	t.Parallel()
 

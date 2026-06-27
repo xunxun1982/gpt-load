@@ -476,6 +476,22 @@ func TestBalanceService_RefreshScheduler(t *testing.T) {
 	assert.Equal(t, 0, localTime.Minute())
 }
 
+func TestBalanceService_NextRefreshTimeKeepsMidnightAcrossDST(t *testing.T) {
+	t.Setenv("TZ", "America/New_York")
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	now := time.Date(2026, 3, 8, 23, 0, 0, 0, loc)
+	nextRefresh := nextRefreshTimeAt(now)
+
+	localTime := nextRefresh.In(loc)
+	assert.Equal(t, 2026, localTime.Year())
+	assert.Equal(t, time.March, localTime.Month())
+	assert.Equal(t, 9, localTime.Day())
+	assert.Equal(t, 0, localTime.Hour())
+	assert.Equal(t, 0, localTime.Minute())
+}
+
 // TestBalanceService_SupportsBalance tests site type support check
 func TestBalanceService_SupportsBalance(t *testing.T) {
 	t.Parallel()
