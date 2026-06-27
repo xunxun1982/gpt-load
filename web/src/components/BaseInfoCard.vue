@@ -207,13 +207,17 @@ watch(
                 <div class="token-usage-row">
                   <span>{{ t("dashboard.inputTokens") }}:</span>
                   <strong>
-                    {{ stats?.token_usage ? formatTokenCount(stats.token_usage.input_tokens) : "--" }}
+                    {{
+                      stats?.token_usage ? formatTokenCount(stats.token_usage.input_tokens) : "--"
+                    }}
                   </strong>
                 </div>
                 <div class="token-usage-row">
                   <span>{{ t("dashboard.outputTokens") }}:</span>
                   <strong>
-                    {{ stats?.token_usage ? formatTokenCount(stats.token_usage.output_tokens) : "--" }}
+                    {{
+                      stats?.token_usage ? formatTokenCount(stats.token_usage.output_tokens) : "--"
+                    }}
                   </strong>
                 </div>
                 <div v-if="stats?.token_usage?.estimated_tokens" class="token-usage-row estimated">

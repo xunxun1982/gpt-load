@@ -12,17 +12,32 @@ import (
 	"testing"
 	"time"
 
+	"gpt-load/internal/encryption"
 	"gpt-load/internal/i18n"
 	"gpt-load/internal/store"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func init() {
 	if err := i18n.Init(); err != nil {
 		panic("failed to initialize i18n for tests: " + err.Error())
 	}
+}
+
+func assertPersistedAuthTokens(t *testing.T, db *gorm.DB, encSvc encryption.Service, siteID uint, accessToken, refreshToken string) {
+	t.Helper()
+
+	var updated ManagedSite
+	require.NoError(t, db.First(&updated, siteID).Error)
+	decrypted, err := encSvc.Decrypt(updated.AuthValue)
+	require.NoError(t, err)
+	var persisted map[string]string
+	require.NoError(t, json.Unmarshal([]byte(decrypted), &persisted))
+	assert.Equal(t, accessToken, persisted["access_token"])
+	assert.Equal(t, refreshToken, persisted["refresh_token"])
 }
 
 // TestTaskTypeConstantsSync verifies that local task type constants match services package
@@ -805,15 +820,7 @@ func TestAutoCheckinRefreshesSub2APITokenOnExpiredAccessToken(t *testing.T) {
 	assert.Equal(t, CheckinResultSuccess, result.Status)
 	assert.Equal(t, []string{"Bearer expired-token", "Bearer fresh-token"}, checkinAuthorizations)
 	assert.Equal(t, 1, refreshRequests)
-
-	var updated ManagedSite
-	require.NoError(t, db.First(&updated, site.ID).Error)
-	decrypted, err := encSvc.Decrypt(updated.AuthValue)
-	require.NoError(t, err)
-	var persisted map[string]string
-	require.NoError(t, json.Unmarshal([]byte(decrypted), &persisted))
-	assert.Equal(t, "fresh-token", persisted["access_token"])
-	assert.Equal(t, "fresh-refresh-token", persisted["refresh_token"])
+	assertPersistedAuthTokens(t, db, encSvc, site.ID, "fresh-token", "fresh-refresh-token")
 }
 
 func TestAutoCheckinRefreshesSub2APITokenBeforeCheckinWhenJWTExpired(t *testing.T) {
@@ -869,6 +876,138 @@ func TestAutoCheckinRefreshesSub2APITokenBeforeCheckinWhenJWTExpired(t *testing.
 	assert.Equal(t, CheckinResultSuccess, result.Status)
 	assert.Equal(t, 1, refreshRequests)
 	assert.Equal(t, 1, checkinRequests)
+	assertPersistedAuthTokens(t, db, encSvc, site.ID, "fresh-token", "fresh-refresh-token")
+}
+
+func TestAutoCheckinPersistsProactiveSub2APITokenWhenEndpointMissing(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteCheckinLog{}))
+
+	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
+	refreshRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshRequests++
+			assert.Equal(t, http.MethodPost, r.Method)
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	authJSON := `{"access_token":"` + expiredToken + `","refresh_token":"refresh-token"}`
+	encryptedAuth, err := encSvc.Encrypt(authJSON)
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:           "sub2api",
+		BaseURL:        server.URL,
+		SiteType:       SiteTypeSub2API,
+		Enabled:        true,
+		CheckInEnabled: true,
+		AuthType:       AuthTypeAccessToken,
+		AuthValue:      encryptedAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewAutoCheckinService(db, nil, encSvc)
+
+	result, err := service.CheckInSite(t.Context(), site.ID)
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Equal(t, "check-in endpoint not configured", result.Message)
+	assert.Equal(t, 1, refreshRequests)
+	assertPersistedAuthTokens(t, db, encSvc, site.ID, "fresh-token", "fresh-refresh-token")
+}
+
+func TestAutoCheckinPersistsProactiveSub2APITokenWhenCheckinRequestErrors(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteCheckinLog{}))
+
+	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
+	refreshRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshRequests++
+			assert.Equal(t, http.MethodPost, r.Method)
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/v1/user/check-in":
+			hijacker, ok := w.(http.Hijacker)
+			require.True(t, ok)
+			conn, _, err := hijacker.Hijack()
+			require.NoError(t, err)
+			_ = conn.Close()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	authJSON := `{"access_token":"` + expiredToken + `","refresh_token":"refresh-token"}`
+	encryptedAuth, err := encSvc.Encrypt(authJSON)
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:           "sub2api",
+		BaseURL:        server.URL,
+		SiteType:       SiteTypeSub2API,
+		Enabled:        true,
+		CheckInEnabled: true,
+		AuthType:       AuthTypeAccessToken,
+		AuthValue:      encryptedAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewAutoCheckinService(db, nil, encSvc)
+
+	result, err := service.CheckInSite(t.Context(), site.ID)
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Equal(t, 1, refreshRequests)
+	assertPersistedAuthTokens(t, db, encSvc, site.ID, "fresh-token", "fresh-refresh-token")
+}
+
+func TestPersistAuthUpdatesSkipsStaleCredentialSnapshot(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteCheckinLog{}))
+
+	originalAuth, err := encSvc.Encrypt(`{"access_token":"old-token","refresh_token":"old-refresh"}`)
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "sub2api",
+		BaseURL:   "https://example.test",
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: originalAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	userEditedAuth, err := encSvc.Encrypt(`{"access_token":"user-token","refresh_token":"user-refresh"}`)
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&ManagedSite{}).Where("id = ?", site.ID).Update("auth_value", userEditedAuth).Error)
+
+	service := NewAutoCheckinService(db, nil, encSvc)
+	err = service.persistAuthUpdates(t.Context(), site, parseAuthConfig(site.AuthType, `{"access_token":"old-token","refresh_token":"old-refresh"}`), map[string]string{
+		AuthTypeAccessToken:   "fresh-token",
+		authFieldRefreshToken: "fresh-refresh-token",
+	})
+
+	require.Error(t, err)
+	assertPersistedAuthTokens(t, db, encSvc, site.ID, "user-token", "user-refresh")
 }
 
 func TestAutoCheckinRefreshesBalanceAfterSuccessfulCheckin(t *testing.T) {

@@ -697,7 +697,7 @@ async function testGateway(item: ProxyPoolSelectionOption) {
     const result = await proxyPoolApi.testGateway(gatewayResultKey(item));
     gatewayTestResults[key] = { ...result, url: item.url || result.url };
     if (result.success) {
-      await loadItems();
+      await loadItems().catch(() => undefined);
       message.success(t("proxyPool.gatewayTestSuccess", { duration: result.duration_ms }));
     } else {
       message.error(

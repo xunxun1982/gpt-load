@@ -71,8 +71,8 @@ jobs:
           cache: "npm"
           cache-dependency-path: "web/package-lock.json"
 
-      - name: Setup npm
-        run: npm install -g npm@${{ env.NPM_VERSION }} --no-audit && npm --version
+      - name: Verify bundled npm version
+        run: test "$(npm --version)" = "${{ env.NPM_VERSION }}"
 
       - name: Build Frontend
         run: npm ci && VITE_VERSION=${{ github.ref_name }} npm run build

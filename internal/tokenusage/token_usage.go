@@ -275,14 +275,13 @@ func fallbackTotalTokens(fields map[string]json.RawMessage, usage Usage) int64 {
 		"cache_creation_input_tokens",
 		"cached_input_tokens",
 		"cached_tokens",
-		"cachedContentTokenCount",
-		"cached_content_token_count",
 		"cacheReadInputTokens",
 		"prompt_cache_hit_tokens",
 		"cache_read_tokens",
 		"cache_write_tokens",
 		"cacheWriteInputTokens",
 	) {
+		// Gemini cached-content fields are already included in prompt token counts.
 		total += usage.CacheReadTokens + usage.CacheWriteTokens
 	}
 	if hasAnyField(

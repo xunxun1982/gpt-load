@@ -48,6 +48,8 @@ const (
 	maxPoWAttempts         = uint64(1 << 32)
 )
 
+var errManagedSiteAuthChangedDuringCheckin = errors.New("managed site auth value changed during check-in; skipped stale auth update")
+
 type AutoCheckinService struct {
 	db            *gorm.DB
 	store         store.Store
@@ -821,6 +823,11 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 	client := s.getCheckinHTTPClient(site)
 
 	res, err := provider.CheckIn(ctx, client, site, authConfig)
+	if len(res.AuthUpdates) > 0 {
+		if err := s.persistAuthUpdates(ctx, site, authConfig, res.AuthUpdates); err != nil {
+			logrus.WithError(err).WithField("site_id", site.ID).Warn("failed to persist managed site auth update")
+		}
+	}
 	if err != nil {
 		result.Status = CheckinResultFailed
 		result.Message = err.Error()
@@ -830,11 +837,6 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 
 	result.Status = res.Status
 	result.Message = res.Message
-	if len(res.AuthUpdates) > 0 {
-		if err := s.persistAuthUpdates(ctx, site, authConfig, res.AuthUpdates); err != nil {
-			logrus.WithError(err).WithField("site_id", site.ID).Warn("failed to persist managed site auth update")
-		}
-	}
 	s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
 	if result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked {
 		site.UserID = encryptedUserID
@@ -957,7 +959,18 @@ func (s *AutoCheckinService) persistAuthUpdates(ctx context.Context, site Manage
 	if err != nil {
 		return err
 	}
-	return s.db.WithContext(ctx).Model(&ManagedSite{}).Where("id = ?", site.ID).Update("auth_value", encrypted).Error
+	result := s.db.WithContext(ctx).
+		Model(&ManagedSite{}).
+		Where("id = ? AND auth_type = ? AND auth_value = ?", site.ID, site.AuthType, site.AuthValue).
+		Update("auth_value", encrypted)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		// Preserve credentials if the user edited auth while check-in was running.
+		return errManagedSiteAuthChangedDuringCheckin
+	}
+	return nil
 }
 
 func (s *AutoCheckinService) persistSiteResult(ctx context.Context, siteID uint, status, message string) {
@@ -1553,6 +1566,12 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 	}
 
 	authUpdates := map[string]string(nil)
+	withAuthUpdates := func(result providerResult) providerResult {
+		if len(authUpdates) > 0 {
+			result.AuthUpdates = authUpdates
+		}
+		return result
+	}
 	if authType == AuthTypeAccessToken &&
 		strings.TrimSpace(refreshToken) != "" &&
 		sub2APIAccessTokenNeedsRefresh(authValue, time.Now()) {
@@ -1573,7 +1592,7 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 	for _, apiURL := range buildSub2APICheckinURLs(site) {
 		result, statusCode, missingEndpoint, err := p.requestCheckIn(ctx, client, apiURL, headers, authType, useStealth)
 		if err != nil {
-			return result, err
+			return withAuthUpdates(result), err
 		}
 		if missingEndpoint {
 			continue
@@ -1582,26 +1601,25 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 			refreshed, refreshErr := p.refreshTokens(ctx, client, site, authValue, refreshToken, useStealth)
 			if refreshErr != nil {
 				logrus.WithError(refreshErr).WithField("endpoint", pathForLog(apiURL)).Warn("Sub2API token refresh failed")
-				return result, nil
+				return withAuthUpdates(result), nil
 			}
+			authValue = refreshed.AccessToken
+			refreshToken = refreshed.RefreshToken
 			headers["Authorization"] = bearerAuthorizationValue(refreshed.AccessToken)
-			retryResult, _, _, retryErr := p.requestCheckIn(ctx, client, apiURL, headers, authType, useStealth)
-			if retryErr != nil {
-				return retryResult, retryErr
-			}
-			retryResult.AuthUpdates = map[string]string{
+			authUpdates = map[string]string{
 				AuthTypeAccessToken:   refreshed.AccessToken,
 				authFieldRefreshToken: refreshed.RefreshToken,
 			}
-			return retryResult, nil
+			retryResult, _, _, retryErr := p.requestCheckIn(ctx, client, apiURL, headers, authType, useStealth)
+			if retryErr != nil {
+				return withAuthUpdates(retryResult), retryErr
+			}
+			return withAuthUpdates(retryResult), nil
 		}
-		if len(authUpdates) > 0 {
-			result.AuthUpdates = authUpdates
-		}
-		return result, nil
+		return withAuthUpdates(result), nil
 	}
 
-	return providerResult{Status: CheckinResultFailed, Message: "check-in endpoint not configured"}, nil
+	return withAuthUpdates(providerResult{Status: CheckinResultFailed, Message: "check-in endpoint not configured"}), nil
 }
 
 func (p sub2APIProvider) requestCheckIn(

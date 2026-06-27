@@ -1,8 +1,12 @@
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { URL } from "node:url";
 
-const component = readFileSync(new URL("../src/components/BaseInfoCard.vue", import.meta.url), "utf8");
+const component = readFileSync(
+  new URL("../src/components/BaseInfoCard.vue", import.meta.url),
+  "utf8"
+);
 const zhLocale = readFileSync(new URL("../src/locales/zh-CN.ts", import.meta.url), "utf8");
 const enLocale = readFileSync(new URL("../src/locales/en-US.ts", import.meta.url), "utf8");
 const jaLocale = readFileSync(new URL("../src/locales/ja-JP.ts", import.meta.url), "utf8");

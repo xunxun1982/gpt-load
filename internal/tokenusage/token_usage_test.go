@@ -127,6 +127,35 @@ func TestFromJSONGeminiUsageMetadataSnakeCase(t *testing.T) {
 	}
 }
 
+func TestFromJSONGeminiUsageMetadataWithoutTotalDoesNotAddCachedContent(t *testing.T) {
+	tests := []struct {
+		name       string
+		cacheField string
+	}{
+		{name: "camel_case_cached_content", cacheField: `"cachedContentTokenCount": 4`},
+		{name: "snake_case_cached_content", cacheField: `"cached_content_token_count": 4`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usage, ok := FromJSON([]byte(`{
+				"usageMetadata": {
+					"promptTokenCount": 13,
+					"candidatesTokenCount": 9,
+					"thoughtsTokenCount": 2,
+					` + tt.cacheField + `
+				}
+			}`))
+			if !ok {
+				t.Fatal("expected usage")
+			}
+			if usage.InputTokens != 13 || usage.OutputTokens != 9 || usage.TotalTokens != 24 || usage.ThinkingTokens != 2 || usage.CacheReadTokens != 4 {
+				t.Fatalf("unexpected usage: %+v", usage)
+			}
+		})
+	}
+}
+
 func TestFromJSONReasoningTokenDetailAliases(t *testing.T) {
 	tests := []struct {
 		name string
