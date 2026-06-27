@@ -350,6 +350,7 @@ func (s *ProxyPoolService) TestGatewayProxy(ctx context.Context, candidateID str
 	result, err := s.testGatewayProxyOption(ctx, selected)
 	if result != nil {
 		s.storeGatewayTestResult(selected.CandidateID, *result)
+		s.switchGatewayProxyIfManualResultIsBetter(selected, *result)
 		return result, err
 	}
 	if err != nil {
@@ -360,6 +361,42 @@ func (s *ProxyPoolService) TestGatewayProxy(ctx context.Context, candidateID str
 		})
 	}
 	return result, err
+}
+
+func (s *ProxyPoolService) switchGatewayProxyIfManualResultIsBetter(selected GatewayProxyOption, result ProxyPoolTestResult) {
+	if !result.Success {
+		return
+	}
+	providerID := strings.TrimSpace(selected.Value)
+	if providerID == "" {
+		return
+	}
+	currentBaseURL := channel.GatewayProxyBaseURL(providerID)
+	if sameGatewayProxyBaseURL(result.URL, currentBaseURL) {
+		return
+	}
+
+	currentResult, ok := s.gatewayTestResultForURL(providerID, currentBaseURL)
+	if !ok {
+		return
+	}
+	if currentResult.Success && !isBetterGatewayProxyResult(result, currentResult) {
+		return
+	}
+	channel.CompareAndSetGatewayProxyBaseURL(providerID, currentBaseURL, result.URL)
+}
+
+func (s *ProxyPoolService) gatewayTestResultForURL(providerID string, rawURL string) (ProxyPoolTestResult, bool) {
+	s.gatewayTestResultMu.RLock()
+	defer s.gatewayTestResultMu.RUnlock()
+	for _, option := range s.gatewayProxyOptions {
+		if strings.TrimSpace(option.Value) != providerID || !sameGatewayProxyBaseURL(option.URL, rawURL) {
+			continue
+		}
+		result, ok := s.gatewayTestResults[option.CandidateID]
+		return result, ok
+	}
+	return ProxyPoolTestResult{}, false
 }
 
 func (s *ProxyPoolService) gatewayProxyOptionByCandidateID(candidateID string) (GatewayProxyOption, error) {

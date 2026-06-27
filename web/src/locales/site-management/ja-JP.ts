@@ -67,12 +67,14 @@ export default {
   authValueEditHint: "空欄で既存の認証情報を維持",
   authTypeNone: "なし",
   authTypeAccessToken: "アクセストークン",
+  sub2ApiRefreshToken: "リフレッシュトークン",
+  sub2ApiRefreshTokenPlaceholder: "refresh_tokenを入力",
   authTypeCookie: "Cookie",
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
     "ブラウザからCookieを取得してください。session/tokenなどのフィールドを含めます。サイトがブラウザ保護を使用している場合は、cf_clearanceやacw_tcなどのWAF Cookieも含めてください。",
   sub2ApiAuthHint:
-    "Sub2APIはアクセストークンを選択します。AuthValue/TokenにはDevTools Application -> Local Storage -> 現在のSub2APIドメイン -> auth_tokenを入力し、ユーザーIDは空欄にします。",
+    "Sub2APIはアクセストークンを選択します。Access TokenにはApplication/Local Storageの現在のドメインにあるauth_tokenを入力し、Refresh Tokenには同じ場所のrefresh_tokenを入力します。期限切れ時に自動更新できるよう、両方の入力を推奨します。ユーザーIDは空欄にします。",
   anyrouterAuthHint:
     "AnyRouterはCookieを選択します。ログイン後、Networkで https://<AnyRouterドメイン>/api/user/sign_in リクエストを探し、Request HeadersのCookie全体をコピーします。ユーザーIDは空欄にします。",
   multiAuthHint:

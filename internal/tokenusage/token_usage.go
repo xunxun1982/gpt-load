@@ -55,6 +55,9 @@ func FromJSON(body []byte) (Usage, bool) {
 	if usage, ok := usageFromRaw(root["usageMetadata"]); ok {
 		return usage, true
 	}
+	if usage, ok := usageFromRaw(root["usage_metadata"]); ok {
+		return usage, true
+	}
 	if usage, ok := usageFromRaw(root["meta"]); ok {
 		return usage, true
 	}
@@ -197,6 +200,7 @@ func usageFromRaw(raw json.RawMessage) (Usage, bool) {
 			"prompt_tokens",
 			"input_tokens",
 			"promptTokenCount",
+			"prompt_token_count",
 			"inputTokens",
 			"prompt_eval_count",
 		),
@@ -205,10 +209,11 @@ func usageFromRaw(raw json.RawMessage) (Usage, bool) {
 			"completion_tokens",
 			"output_tokens",
 			"candidatesTokenCount",
+			"candidates_token_count",
 			"outputTokens",
 			"eval_count",
 		),
-		TotalTokens: firstInt(fields, "total_tokens", "totalTokenCount", "totalTokens"),
+		TotalTokens: firstInt(fields, "total_tokens", "totalTokenCount", "total_token_count", "totalTokens"),
 		CacheReadTokens: firstInt(
 			fields,
 			"cache_read_input_tokens",
@@ -216,11 +221,23 @@ func usageFromRaw(raw json.RawMessage) (Usage, bool) {
 			"cached_input_tokens",
 			"cached_tokens",
 			"cachedContentTokenCount",
+			"cached_content_token_count",
 			"cacheReadInputTokens",
 			"prompt_cache_hit_tokens",
 		),
 		CacheWriteTokens: firstInt(fields, "cache_creation_input_tokens", "cache_write_tokens", "cacheWriteInputTokens"),
-		ThinkingTokens:   firstInt(fields, "thinking_tokens", "reasoning_tokens", "reasoning_output_tokens", "thoughtsTokenCount"),
+		ThinkingTokens: firstInt(
+			fields,
+			"thinking_tokens",
+			"thinkingTokenCount",
+			"thinking_token_count",
+			"reasoning_tokens",
+			"reasoningTokens",
+			"reasoning_token_count",
+			"reasoning_output_tokens",
+			"thoughtsTokenCount",
+			"thoughts_token_count",
+		),
 	}
 
 	for _, nestedKey := range []string{"tokens", "billed_units", "billedUnits"} {
@@ -231,10 +248,10 @@ func usageFromRaw(raw json.RawMessage) (Usage, bool) {
 		}
 	}
 
-	if details, ok := objectField(fields, "completion_tokens_details", "output_tokens_details"); ok {
-		usage.ThinkingTokens = firstPositive(usage.ThinkingTokens, firstInt(details, "reasoning_tokens"))
+	if details, ok := objectField(fields, "completion_tokens_details", "output_tokens_details", "completionTokensDetails", "outputTokensDetails"); ok {
+		usage.ThinkingTokens = firstPositive(usage.ThinkingTokens, firstInt(details, "reasoning_tokens", "reasoningTokens", "reasoning_token_count"))
 	}
-	if details, ok := objectField(fields, "prompt_tokens_details", "input_tokens_details"); ok {
+	if details, ok := objectField(fields, "prompt_tokens_details", "input_tokens_details", "promptTokensDetails", "inputTokensDetails"); ok {
 		usage.CacheReadTokens = firstPositive(usage.CacheReadTokens, firstInt(details, "cached_tokens", "cache_read_tokens", "cache_read_input_tokens"))
 		usage.CacheWriteTokens = firstPositive(usage.CacheWriteTokens, firstInt(details, "cache_creation_input_tokens", "cache_write_tokens"))
 		if cacheCreation, ok := objectField(details, "cache_creation"); ok {
@@ -258,16 +275,29 @@ func fallbackTotalTokens(fields map[string]json.RawMessage, usage Usage) int64 {
 		"cache_creation_input_tokens",
 		"cached_input_tokens",
 		"cached_tokens",
-		"cachedContentTokenCount",
 		"cacheReadInputTokens",
 		"prompt_cache_hit_tokens",
 		"cache_read_tokens",
 		"cache_write_tokens",
 		"cacheWriteInputTokens",
 	) {
+		// Gemini cached-content fields are already included in prompt token counts.
 		total += usage.CacheReadTokens + usage.CacheWriteTokens
 	}
-	if hasAnyField(fields, "thinking_tokens", "reasoning_output_tokens", "thoughtsTokenCount") {
+	if hasAnyField(
+		fields,
+		"thinking_tokens",
+		"thinkingTokenCount",
+		"thinking_token_count",
+		"reasoning_tokens",
+		"reasoningTokens",
+		"reasoning_token_count",
+		"reasoning_output_tokens",
+		"thoughtsTokenCount",
+		"thoughts_token_count",
+	) {
+		// Details-only reasoning fields are breakdowns of output tokens for OpenAI/Responses.
+		// Keep them non-additive unless an upstream also reports an additive top-level field.
 		total += usage.ThinkingTokens
 	}
 

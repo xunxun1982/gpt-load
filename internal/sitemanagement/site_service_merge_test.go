@@ -23,6 +23,31 @@ func TestSiteService_MergeAuthValues(t *testing.T) {
 		assert.Equal(t, "new-token-value", result)
 	})
 
+	t.Run("single auth type - JSON supplemental value preserves existing token", func(t *testing.T) {
+		existingValue := `{"access_token":"old-token","refresh_token":"old-refresh"}`
+		encrypted, err := encSvc.Encrypt(existingValue)
+		require.NoError(t, err)
+
+		result, err := svc.mergeAuthValues("access_token", encrypted, `{"refresh_token":"new-refresh"}`)
+		require.NoError(t, err)
+
+		var parsed map[string]string
+		err = json.Unmarshal([]byte(result), &parsed)
+		require.NoError(t, err)
+		assert.Equal(t, "old-token", parsed["access_token"])
+		assert.Equal(t, "new-refresh", parsed["refresh_token"])
+	})
+
+	t.Run("single auth type - plain text update replaces supplemental values", func(t *testing.T) {
+		existingValue := `{"access_token":"old-token","refresh_token":"old-refresh"}`
+		encrypted, err := encSvc.Encrypt(existingValue)
+		require.NoError(t, err)
+
+		result, err := svc.mergeAuthValues("access_token", encrypted, "new-token")
+		require.NoError(t, err)
+		assert.Equal(t, "new-token", result)
+	})
+
 	t.Run("multi-auth - new JSON with both values", func(t *testing.T) {
 		newValue := `{"access_token":"new-token","cookie":"new-cookie"}`
 		result, err := svc.mergeAuthValues("access_token,cookie", "", newValue)

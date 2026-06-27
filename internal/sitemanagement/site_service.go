@@ -1424,9 +1424,39 @@ func (s *SiteService) mergeAuthValues(authType, existingEncrypted, newValue stri
 		}
 	}
 
-	// If only one auth type, no merging needed - return new value as-is
+	// Plain single-auth updates are replacements. Sub2API keeps refresh_token by
+	// sending JSON explicitly, so non-JSON values must not keep supplemental fields.
 	if len(cleanAuthTypes) <= 1 {
-		return newValue, nil
+		var newJSON map[string]string
+		if err := json.Unmarshal([]byte(newValue), &newJSON); err != nil {
+			return newValue, nil
+		}
+
+		existingValues := make(map[string]string)
+		if existingEncrypted != "" {
+			if decrypted, err := s.encryptionSvc.Decrypt(existingEncrypted); err == nil {
+				var existingJSON map[string]string
+				if err := json.Unmarshal([]byte(decrypted), &existingJSON); err == nil {
+					existingValues = existingJSON
+				} else if len(cleanAuthTypes) > 0 && strings.TrimSpace(decrypted) != "" {
+					existingValues[cleanAuthTypes[0]] = decrypted
+				}
+			}
+		}
+
+		for k, v := range newJSON {
+			if strings.TrimSpace(v) != "" {
+				existingValues[k] = v
+			}
+		}
+		if len(existingValues) == 0 {
+			return newValue, nil
+		}
+		mergedJSON, err := json.Marshal(existingValues)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal merged auth values: %w", err)
+		}
+		return string(mergedJSON), nil
 	}
 
 	// Multi-auth case: merge with existing values

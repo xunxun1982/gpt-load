@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,6 +47,8 @@ const (
 	newAPICheckinPoWAction = "checkin"
 	maxPoWAttempts         = uint64(1 << 32)
 )
+
+var errManagedSiteAuthChangedDuringCheckin = errors.New("managed site auth value changed during check-in; skipped stale auth update")
 
 type AutoCheckinService struct {
 	db            *gorm.DB
@@ -820,6 +823,11 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 	client := s.getCheckinHTTPClient(site)
 
 	res, err := provider.CheckIn(ctx, client, site, authConfig)
+	if len(res.AuthUpdates) > 0 {
+		if err := s.persistAuthUpdates(ctx, site, authConfig, res.AuthUpdates); err != nil {
+			logrus.WithError(err).WithField("site_id", site.ID).Warn("failed to persist managed site auth update")
+		}
+	}
 	if err != nil {
 		result.Status = CheckinResultFailed
 		result.Message = err.Error()
@@ -920,6 +928,49 @@ func (s *AutoCheckinService) decryptAuthValue(encrypted string) (string, error) 
 		return "", nil
 	}
 	return s.encryptionSvc.Decrypt(encrypted)
+}
+
+func (s *AutoCheckinService) persistAuthUpdates(ctx context.Context, site ManagedSite, authConfig AuthConfig, updates map[string]string) error {
+	values := make(map[string]string, len(authConfig.AuthValues)+len(authConfig.SupplementalValues)+len(updates))
+	for k, v := range authConfig.AuthValues {
+		if strings.TrimSpace(v) != "" {
+			values[k] = v
+		}
+	}
+	for k, v := range authConfig.SupplementalValues {
+		if k != authFieldAuthToken && strings.TrimSpace(v) != "" {
+			values[k] = v
+		}
+	}
+	for k, v := range updates {
+		if strings.TrimSpace(v) != "" {
+			values[k] = v
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+
+	data, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	encrypted, err := s.encryptionSvc.Encrypt(string(data))
+	if err != nil {
+		return err
+	}
+	result := s.db.WithContext(ctx).
+		Model(&ManagedSite{}).
+		Where("id = ? AND auth_type = ? AND auth_value = ?", site.ID, site.AuthType, site.AuthValue).
+		Update("auth_value", encrypted)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		// Preserve credentials if the user edited auth while check-in was running.
+		return errManagedSiteAuthChangedDuringCheckin
+	}
+	return nil
 }
 
 func (s *AutoCheckinService) persistSiteResult(ctx context.Context, siteID uint, status, message string) {
@@ -1048,8 +1099,9 @@ func (s *AutoCheckinService) periodicCleanup() {
 }
 
 type providerResult struct {
-	Status  string
-	Message string
+	Status      string
+	Message     string
+	AuthUpdates map[string]string
 }
 
 type checkinProvider interface {
@@ -1467,13 +1519,14 @@ func (p sub2APIProvider) CheckIn(ctx context.Context, client *http.Client, site 
 
 	useStealth := shouldUseStealthRequest(site)
 	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
+	refreshToken := authConfig.GetSupplementalValue(authFieldRefreshToken)
 	var cookieSession string
 	if authConfig.HasAuthType(AuthTypeCookie) {
 		cookieSession = authConfig.GetAuthValue(AuthTypeCookie)
 	}
 
 	return tryMultiAuth(authConfig, authTypesToTry, func(authType, authValue string) (providerResult, error) {
-		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, cookieSession, useStealth)
+		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, cookieSession, refreshToken, useStealth)
 	})
 }
 
@@ -1484,6 +1537,7 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 	authType string,
 	authValue string,
 	cookieSession string,
+	refreshToken string,
 	useStealth bool,
 ) (providerResult, error) {
 	headers := make(map[string]string)
@@ -1511,18 +1565,61 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
 	}
 
+	authUpdates := map[string]string(nil)
+	withAuthUpdates := func(result providerResult) providerResult {
+		if len(authUpdates) > 0 {
+			result.AuthUpdates = authUpdates
+		}
+		return result
+	}
+	if authType == AuthTypeAccessToken &&
+		strings.TrimSpace(refreshToken) != "" &&
+		sub2APIAccessTokenNeedsRefresh(authValue, time.Now()) {
+		refreshed, refreshErr := p.refreshTokens(ctx, client, site, authValue, refreshToken, useStealth)
+		if refreshErr != nil {
+			logrus.WithError(refreshErr).Warn("Sub2API token proactive refresh failed")
+		} else {
+			authValue = refreshed.AccessToken
+			refreshToken = refreshed.RefreshToken
+			headers["Authorization"] = bearerAuthorizationValue(authValue)
+			authUpdates = map[string]string{
+				AuthTypeAccessToken:   refreshed.AccessToken,
+				authFieldRefreshToken: refreshed.RefreshToken,
+			}
+		}
+	}
+
 	for _, apiURL := range buildSub2APICheckinURLs(site) {
-		result, _, missingEndpoint, err := p.requestCheckIn(ctx, client, apiURL, headers, authType, useStealth)
+		result, statusCode, missingEndpoint, err := p.requestCheckIn(ctx, client, apiURL, headers, authType, useStealth)
 		if err != nil {
-			return result, err
+			return withAuthUpdates(result), err
 		}
 		if missingEndpoint {
 			continue
 		}
-		return result, nil
+		if authType == AuthTypeAccessToken && statusCode == http.StatusUnauthorized && strings.TrimSpace(refreshToken) != "" {
+			refreshed, refreshErr := p.refreshTokens(ctx, client, site, authValue, refreshToken, useStealth)
+			if refreshErr != nil {
+				logrus.WithError(refreshErr).WithField("endpoint", pathForLog(apiURL)).Warn("Sub2API token refresh failed")
+				return withAuthUpdates(result), nil
+			}
+			authValue = refreshed.AccessToken
+			refreshToken = refreshed.RefreshToken
+			headers["Authorization"] = bearerAuthorizationValue(refreshed.AccessToken)
+			authUpdates = map[string]string{
+				AuthTypeAccessToken:   refreshed.AccessToken,
+				authFieldRefreshToken: refreshed.RefreshToken,
+			}
+			retryResult, _, _, retryErr := p.requestCheckIn(ctx, client, apiURL, headers, authType, useStealth)
+			if retryErr != nil {
+				return withAuthUpdates(retryResult), retryErr
+			}
+			return withAuthUpdates(retryResult), nil
+		}
+		return withAuthUpdates(result), nil
 	}
 
-	return providerResult{Status: CheckinResultFailed, Message: "check-in endpoint not configured"}, nil
+	return withAuthUpdates(providerResult{Status: CheckinResultFailed, Message: "check-in endpoint not configured"}), nil
 }
 
 func (p sub2APIProvider) requestCheckIn(
@@ -1582,6 +1679,80 @@ func (p sub2APIProvider) requestCheckIn(
 		return providerResult{Status: CheckinResultFailed, Message: resp.Message}, statusCode, false, nil
 	}
 	return providerResult{Status: CheckinResultFailed, Message: "check-in failed"}, statusCode, false, nil
+}
+
+type sub2APIRefreshResult struct {
+	AccessToken  string
+	RefreshToken string
+}
+
+func (p sub2APIProvider) refreshTokens(
+	ctx context.Context,
+	client *http.Client,
+	site ManagedSite,
+	accessToken string,
+	refreshToken string,
+	useStealth bool,
+) (sub2APIRefreshResult, error) {
+	endpoint := buildCheckinURL(site.BaseURL, "/api/v1/auth/refresh", "/api/v1/auth/refresh")
+	headers := map[string]string{}
+	if strings.TrimSpace(accessToken) != "" {
+		headers["Authorization"] = bearerAuthorizationValue(accessToken)
+	}
+	body := map[string]any{authFieldRefreshToken: refreshToken}
+
+	var data []byte
+	var statusCode int
+	var err error
+	if useStealth {
+		data, statusCode, err = doStealthJSONRequest(ctx, client, http.MethodPost, endpoint, headers, body)
+	} else {
+		data, statusCode, err = doJSONRequest(ctx, client, http.MethodPost, endpoint, headers, body)
+	}
+	if err != nil {
+		return sub2APIRefreshResult{}, fmt.Errorf("refresh http %d: %w", statusCode, err)
+	}
+
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"message"`
+		Data struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return sub2APIRefreshResult{}, err
+	}
+	if resp.Code != 0 || strings.TrimSpace(resp.Data.AccessToken) == "" || strings.TrimSpace(resp.Data.RefreshToken) == "" {
+		if resp.Msg != "" {
+			return sub2APIRefreshResult{}, errors.New(resp.Msg)
+		}
+		return sub2APIRefreshResult{}, errors.New("invalid refresh response")
+	}
+	return sub2APIRefreshResult{
+		AccessToken:  strings.TrimSpace(resp.Data.AccessToken),
+		RefreshToken: strings.TrimSpace(resp.Data.RefreshToken),
+	}, nil
+}
+
+func sub2APIAccessTokenNeedsRefresh(token string, now time.Time) bool {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) < 2 {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp <= 0 {
+		return false
+	}
+	expiresAt := time.Unix(claims.Exp, 0)
+	return !expiresAt.After(now.Add(2 * time.Minute))
 }
 
 type genericCheckInResponse struct {

@@ -67,12 +67,14 @@ export default {
   authValueEditHint: "Leave empty to keep existing auth",
   authTypeNone: "None",
   authTypeAccessToken: "Access Token",
+  sub2ApiRefreshToken: "Refresh Token",
+  sub2ApiRefreshTokenPlaceholder: "Enter refresh_token",
   authTypeCookie: "Cookie",
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
     "Capture Cookie from browser, including session/token fields. If site uses browser protection, also include WAF cookies such as cf_clearance and acw_tc.",
   sub2ApiAuthHint:
-    "For Sub2API, select Access Token. Use DevTools Application -> Local Storage -> current Sub2API domain -> auth_token as AuthValue/Token, and leave User ID empty.",
+    "For Sub2API, select Access Token. Fill Access Token with auth_token from Application/Local Storage for the current domain; fill Refresh Token with refresh_token from the same place. Filling both is recommended so expired tokens can be renewed automatically. Leave User ID empty.",
   anyrouterAuthHint:
     "For AnyRouter, select Cookie. After login, find the https://<AnyRouter domain>/api/user/sign_in request in Network and copy the full Cookie from Request Headers. Leave User ID empty.",
   multiAuthHint:

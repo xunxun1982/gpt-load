@@ -23,7 +23,6 @@ import {
   NModal,
   NSelect,
   NSpace,
-  NSwitch,
   NTag,
   NText,
   NTooltip,
@@ -32,7 +31,7 @@ import {
   type DataTableColumns,
   type FormRules,
 } from "naive-ui";
-import { computed, h, onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, h, onMounted, reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
@@ -61,12 +60,10 @@ const gatewayPageSize = ref(6);
 const total = ref(0);
 const hasMore = ref(false);
 const testingAll = ref(false);
-const autoTesting = ref(false);
 const batchTesting = ref(false);
 const testingIds = ref<number[]>([]);
 const testResults = reactive<Record<number, ProxyPoolTestResult>>({});
 const gatewayTestResults = reactive<Record<string, ProxyPoolTestResult>>({});
-let autoTestTimer: number | undefined;
 
 const proxyPoolSettingsForm = reactive<{
   targetUrl: string;
@@ -360,9 +357,6 @@ const activeGatewayText = computed(() => {
     url: option.url || option.value,
   });
 });
-const proxyAutoTestIntervalMs = computed(
-  () => proxyPoolSettingsApplied.intervalMinutes * 60 * 1000
-);
 const autoTestIntervalText = computed(() => {
   const minutes = proxyPoolSettingsApplied.intervalMinutes;
   if (minutes % 60 === 0) {
@@ -459,9 +453,6 @@ async function loadItems() {
     hasMore.value =
       result.pagination.has_more ??
       (result.pagination.total_items < 0 && items.value.length >= pageSize.value);
-    if (items.value.length === 0 && autoTesting.value) {
-      handleAutoTestChange(false);
-    }
   } catch (error) {
     hasMore.value = false;
     message.error(t("proxyPool.loadFailed"));
@@ -656,7 +647,6 @@ async function saveProxyPoolSettings() {
       gatewayTimeoutSeconds,
       gatewayIntervalMinutes
     );
-    restartAutoTestTimer();
     showSettingsModal.value = false;
     message.success(t("proxyPool.settingsSaved"));
   } catch {
@@ -707,6 +697,7 @@ async function testGateway(item: ProxyPoolSelectionOption) {
     const result = await proxyPoolApi.testGateway(gatewayResultKey(item));
     gatewayTestResults[key] = { ...result, url: item.url || result.url };
     if (result.success) {
+      await loadItems().catch(() => undefined);
       message.success(t("proxyPool.gatewayTestSuccess", { duration: result.duration_ms }));
     } else {
       message.error(
@@ -781,35 +772,6 @@ async function testAll(silent = false) {
     testingAll.value = false;
     batchTesting.value = false;
   }
-}
-
-function clearAutoTestTimer() {
-  if (autoTestTimer !== undefined) {
-    window.clearInterval(autoTestTimer);
-    autoTestTimer = undefined;
-  }
-}
-
-function handleAutoTestChange(enabled: boolean) {
-  autoTesting.value = enabled;
-  clearAutoTestTimer();
-  if (!enabled) {
-    return;
-  }
-  void testAll(true);
-  autoTestTimer = window.setInterval(() => {
-    void testAll(true);
-  }, proxyAutoTestIntervalMs.value);
-}
-
-function restartAutoTestTimer() {
-  if (!autoTesting.value) {
-    return;
-  }
-  clearAutoTestTimer();
-  autoTestTimer = window.setInterval(() => {
-    void testAll(true);
-  }, proxyAutoTestIntervalMs.value);
 }
 
 function resetForm() {
@@ -899,7 +861,6 @@ onMounted(() => {
   void loadProxyPoolSettings();
   void loadItems().catch(() => undefined);
 });
-onUnmounted(clearAutoTestTimer);
 </script>
 
 <template>
@@ -945,15 +906,6 @@ onUnmounted(clearAutoTestTimer);
           </template>
           {{ t("proxyPool.testCurrentPage") }}
         </n-button>
-        <div class="proxy-pool-auto-test">
-          <n-switch
-            size="small"
-            :value="autoTesting"
-            :disabled="items.length === 0"
-            @update:value="handleAutoTestChange"
-          />
-          <span>{{ t("proxyPool.autoTest") }}</span>
-        </div>
       </n-space>
     </div>
 
@@ -1241,14 +1193,6 @@ onUnmounted(clearAutoTestTimer);
   gap: 10px;
   color: var(--text-color-3);
   font-size: 12px;
-}
-
-.proxy-pool-auto-test {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-color-2);
-  font-size: 13px;
 }
 
 .proxy-pool-content-stack {
