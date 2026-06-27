@@ -220,7 +220,10 @@ watch(
                     }}
                   </strong>
                 </div>
-                <div v-if="stats?.token_usage?.estimated_tokens" class="token-usage-row estimated">
+                <div
+                  v-if="stats?.token_usage?.estimated_tokens != null"
+                  class="token-usage-row estimated"
+                >
                   <span>{{ t("dashboard.includesEstimated") }}:</span>
                   <strong>{{ formatTokenCount(stats.token_usage.estimated_tokens) }}</strong>
                 </div>

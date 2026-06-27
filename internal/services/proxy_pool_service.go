@@ -383,7 +383,7 @@ func (s *ProxyPoolService) switchGatewayProxyIfManualResultIsBetter(selected Gat
 	if currentResult.Success && !isBetterGatewayProxyResult(result, currentResult) {
 		return
 	}
-	channel.SetGatewayProxyBaseURL(providerID, result.URL)
+	channel.CompareAndSetGatewayProxyBaseURL(providerID, currentBaseURL, result.URL)
 }
 
 func (s *ProxyPoolService) gatewayTestResultForURL(providerID string, rawURL string) (ProxyPoolTestResult, bool) {

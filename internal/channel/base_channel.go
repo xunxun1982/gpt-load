@@ -100,6 +100,41 @@ func SetGatewayProxyBaseURL(gatewayProxyID string, rawBaseURL string) {
 	gatewayProxyBaseURLMu.Unlock()
 }
 
+// CompareAndSetGatewayProxyBaseURL updates the runtime base URL only if it
+// still matches the caller's snapshot.
+func CompareAndSetGatewayProxyBaseURL(gatewayProxyID string, expectedRawBaseURL string, newRawBaseURL string) bool {
+	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))
+	trimmedExpectedURL := strings.TrimSpace(expectedRawBaseURL)
+	trimmedNewURL := strings.TrimSpace(newRawBaseURL)
+	if trimmedID == "" || trimmedExpectedURL == "" || trimmedNewURL == "" {
+		return false
+	}
+	if _, ok := gatewayProxyProviders[trimmedID]; !ok {
+		return false
+	}
+	expected, err := url.Parse(trimmedExpectedURL)
+	if err != nil || expected.Scheme == "" || expected.Host == "" {
+		return false
+	}
+	expected.RawQuery = ""
+	expected.Fragment = ""
+	next, err := url.Parse(trimmedNewURL)
+	if err != nil || next.Scheme == "" || next.Host == "" {
+		return false
+	}
+	next.RawQuery = ""
+	next.Fragment = ""
+
+	gatewayProxyBaseURLMu.Lock()
+	defer gatewayProxyBaseURLMu.Unlock()
+	current, ok := gatewayProxyBaseURLs[trimmedID]
+	if !ok || current.String() != expected.String() {
+		return false
+	}
+	gatewayProxyBaseURLs[trimmedID] = *next
+	return true
+}
+
 // DisableGatewayProxyBaseURL disables a built-in gateway proxy at runtime.
 func DisableGatewayProxyBaseURL(gatewayProxyID string) {
 	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))

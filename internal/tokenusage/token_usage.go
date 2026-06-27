@@ -296,6 +296,8 @@ func fallbackTotalTokens(fields map[string]json.RawMessage, usage Usage) int64 {
 		"thoughtsTokenCount",
 		"thoughts_token_count",
 	) {
+		// Details-only reasoning fields are breakdowns of output tokens for OpenAI/Responses.
+		// Keep them non-additive unless an upstream also reports an additive top-level field.
 		total += usage.ThinkingTokens
 	}
 

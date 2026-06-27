@@ -314,6 +314,32 @@ func TestSelectUpstreamWithClientsUsesRuntimeGatewayProxyBaseURL(t *testing.T) {
 	require.Equal(t, "betterclaude", selection.GatewayProxy)
 }
 
+func TestCompareAndSetGatewayProxyBaseURLSkipsStaleExpectedBase(t *testing.T) {
+	previous := GatewayProxyBaseURL("betterclaude")
+	t.Cleanup(func() {
+		restoreGatewayProxyBaseURL("betterclaude", previous)
+	})
+	SetGatewayProxyBaseURL("betterclaude", "https://auto.example.com")
+
+	switched := CompareAndSetGatewayProxyBaseURL("betterclaude", "https://old.example.com", "https://manual.example.com")
+
+	require.False(t, switched)
+	require.Equal(t, "https://auto.example.com", GatewayProxyBaseURL("betterclaude"))
+}
+
+func TestCompareAndSetGatewayProxyBaseURLUpdatesMatchingBase(t *testing.T) {
+	previous := GatewayProxyBaseURL("betterclaude")
+	t.Cleanup(func() {
+		restoreGatewayProxyBaseURL("betterclaude", previous)
+	})
+	SetGatewayProxyBaseURL("betterclaude", "https://old.example.com")
+
+	switched := CompareAndSetGatewayProxyBaseURL("betterclaude", "https://old.example.com", "https://manual.example.com")
+
+	require.True(t, switched)
+	require.Equal(t, "https://manual.example.com", GatewayProxyBaseURL("betterclaude"))
+}
+
 func TestSelectUpstreamWithClientsFallsBackWhenGatewayProxyRuntimeBaseDisabled(t *testing.T) {
 	previous := GatewayProxyBaseURL("betterclaude")
 	t.Cleanup(func() {

@@ -67,7 +67,7 @@ export default {
   authValueEditHint: "空欄で既存の認証情報を維持",
   authTypeNone: "なし",
   authTypeAccessToken: "アクセストークン",
-  sub2ApiRefreshToken: "Refresh Token",
+  sub2ApiRefreshToken: "リフレッシュトークン",
   sub2ApiRefreshTokenPlaceholder: "refresh_tokenを入力",
   authTypeCookie: "Cookie",
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",

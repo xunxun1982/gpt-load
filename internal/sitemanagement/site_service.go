@@ -1424,9 +1424,8 @@ func (s *SiteService) mergeAuthValues(authType, existingEncrypted, newValue stri
 		}
 	}
 
-	// If only one auth type and the new value is plain text, preserve legacy behavior.
-	// JSON values may include supplemental fields such as Sub2API refresh_token and
-	// still need merging with the existing encrypted credential.
+	// Plain single-auth updates are replacements. Sub2API keeps refresh_token by
+	// sending JSON explicitly, so non-JSON values must not keep supplemental fields.
 	if len(cleanAuthTypes) <= 1 {
 		var newJSON map[string]string
 		if err := json.Unmarshal([]byte(newValue), &newJSON); err != nil {
@@ -1444,10 +1443,14 @@ func (s *SiteService) mergeAuthValues(authType, existingEncrypted, newValue stri
 				}
 			}
 		}
+
 		for k, v := range newJSON {
 			if strings.TrimSpace(v) != "" {
 				existingValues[k] = v
 			}
+		}
+		if len(existingValues) == 0 {
+			return newValue, nil
 		}
 		mergedJSON, err := json.Marshal(existingValues)
 		if err != nil {

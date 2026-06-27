@@ -14,6 +14,7 @@ const jaLocale = readFileSync(new URL("../src/locales/ja-JP.ts", import.meta.url
 test("24h token card renders input, output, and estimated portion as separate rows", () => {
   assert.match(component, /class="token-usage-breakdown"/);
   assert.equal((component.match(/class="token-usage-row/g) ?? []).length, 3);
+  assert.match(component, /stats\?\.token_usage\?\.estimated_tokens != null/);
   assert.doesNotMatch(component, /\s·\s/);
 });
 
