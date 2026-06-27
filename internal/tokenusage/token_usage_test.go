@@ -109,6 +109,66 @@ func TestFromJSONGeminiUsageMetadata(t *testing.T) {
 	}
 }
 
+func TestFromJSONGeminiUsageMetadataSnakeCase(t *testing.T) {
+	usage, ok := FromJSON([]byte(`{
+		"usage_metadata": {
+			"prompt_token_count": 13,
+			"candidates_token_count": 9,
+			"total_token_count": 24,
+			"thoughts_token_count": 2,
+			"cached_content_token_count": 4
+		}
+	}`))
+	if !ok {
+		t.Fatal("expected usage")
+	}
+	if usage.InputTokens != 13 || usage.OutputTokens != 9 || usage.TotalTokens != 24 || usage.ThinkingTokens != 2 || usage.CacheReadTokens != 4 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+}
+
+func TestFromJSONReasoningTokenDetailAliases(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "camel_case_responses_details",
+			body: `{
+				"usage": {
+					"input_tokens": 11,
+					"output_tokens": 7,
+					"total_tokens": 18,
+					"outputTokensDetails": {"reasoningTokens": 3}
+				}
+			}`,
+		},
+		{
+			name: "snake_case_reasoning_count",
+			body: `{
+				"usage": {
+					"prompt_tokens": 11,
+					"completion_tokens": 7,
+					"total_tokens": 18,
+					"completion_tokens_details": {"reasoning_token_count": 3}
+				}
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usage, ok := FromJSON([]byte(tt.body))
+			if !ok {
+				t.Fatal("expected usage")
+			}
+			if usage.InputTokens != 11 || usage.OutputTokens != 7 || usage.TotalTokens != 18 || usage.ThinkingTokens != 3 {
+				t.Fatalf("unexpected usage: %+v", usage)
+			}
+		})
+	}
+}
+
 func TestFromJSONDeepSeekUsageDetails(t *testing.T) {
 	usage, ok := FromJSON([]byte(`{
 		"usage": {

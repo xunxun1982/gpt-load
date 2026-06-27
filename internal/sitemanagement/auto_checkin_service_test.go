@@ -3,9 +3,11 @@ package sitemanagement
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -720,6 +722,155 @@ func TestSub2APIProviderDetectsHTMLChallengePage(t *testing.T) {
 	assert.Equal(t, msgBrowserChallengeDetected, result.Message)
 }
 
+func TestSub2APIProviderKeepsExpiredTokenMessageOnUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/user/check-in", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"success":false,"message":"Token has expired"}`))
+	}))
+	defer server.Close()
+
+	provider := sub2APIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeAccessToken},
+		AuthValues: map[string]string{AuthTypeAccessToken: "expired-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Equal(t, "HTTP 401: Token has expired", result.Message)
+}
+
+func TestAutoCheckinRefreshesSub2APITokenOnExpiredAccessToken(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteCheckinLog{}))
+
+	var checkinAuthorizations []string
+	refreshRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/user/check-in":
+			assert.Equal(t, http.MethodPost, r.Method)
+			checkinAuthorizations = append(checkinAuthorizations, r.Header.Get("Authorization"))
+			if r.Header.Get("Authorization") == "Bearer expired-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"success":false,"message":"Token has expired"}`))
+				return
+			}
+			assert.Equal(t, "Bearer fresh-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+		case "/api/v1/auth/refresh":
+			refreshRequests++
+			assert.Equal(t, http.MethodPost, r.Method)
+			assert.Equal(t, "Bearer expired-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":0}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	authJSON := `{"access_token":"expired-token","refresh_token":"refresh-token"}`
+	encryptedAuth, err := encSvc.Encrypt(authJSON)
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:           "sub2api",
+		BaseURL:        server.URL,
+		SiteType:       SiteTypeSub2API,
+		Enabled:        true,
+		CheckInEnabled: true,
+		AuthType:       AuthTypeAccessToken,
+		AuthValue:      encryptedAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewAutoCheckinService(db, nil, encSvc)
+	service.SetBalanceService(NewBalanceService(db, encSvc))
+
+	result, err := service.CheckInSite(t.Context(), site.ID)
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	assert.Equal(t, []string{"Bearer expired-token", "Bearer fresh-token"}, checkinAuthorizations)
+	assert.Equal(t, 1, refreshRequests)
+
+	var updated ManagedSite
+	require.NoError(t, db.First(&updated, site.ID).Error)
+	decrypted, err := encSvc.Decrypt(updated.AuthValue)
+	require.NoError(t, err)
+	var persisted map[string]string
+	require.NoError(t, json.Unmarshal([]byte(decrypted), &persisted))
+	assert.Equal(t, "fresh-token", persisted["access_token"])
+	assert.Equal(t, "fresh-refresh-token", persisted["refresh_token"])
+}
+
+func TestAutoCheckinRefreshesSub2APITokenBeforeCheckinWhenJWTExpired(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteCheckinLog{}))
+
+	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
+	checkinRequests := 0
+	refreshRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshRequests++
+			assert.Equal(t, http.MethodPost, r.Method)
+			assert.Equal(t, "Bearer "+expiredToken, r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/v1/user/check-in":
+			checkinRequests++
+			assert.Equal(t, "Bearer fresh-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+		case "/api/user/self":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":0}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	authJSON := `{"access_token":"` + expiredToken + `","refresh_token":"refresh-token"}`
+	encryptedAuth, err := encSvc.Encrypt(authJSON)
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:           "sub2api",
+		BaseURL:        server.URL,
+		SiteType:       SiteTypeSub2API,
+		Enabled:        true,
+		CheckInEnabled: true,
+		AuthType:       AuthTypeAccessToken,
+		AuthValue:      encryptedAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewAutoCheckinService(db, nil, encSvc)
+	service.SetBalanceService(NewBalanceService(db, encSvc))
+
+	result, err := service.CheckInSite(t.Context(), site.ID)
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	assert.Equal(t, 1, refreshRequests)
+	assert.Equal(t, 1, checkinRequests)
+}
+
 func TestAutoCheckinRefreshesBalanceAfterSuccessfulCheckin(t *testing.T) {
 	t.Parallel()
 
@@ -1051,6 +1202,12 @@ func storeSuccessfulAutoCheckinStatus(memStore store.Store, now time.Time) error
 		return err
 	}
 	return memStore.Set(autoCheckinStatusKey, statusBytes, time.Hour)
+}
+
+func testSub2APIJWTWithExp(exp time.Time) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":` + strconv.FormatInt(exp.Unix(), 10) + `}`))
+	return header + "." + payload + ".signature"
 }
 
 func testPoWMeetsDifficulty(challenge, nonce string, difficulty int) bool {

@@ -1,7 +1,7 @@
 # =============================================================================
 # Frontend build stage
 # =============================================================================
-FROM node:26.2.0-alpine3.23 AS node-builder
+FROM node:26.4.0-alpine3.23 AS node-builder
 
 ARG VERSION=1.0.0
 WORKDIR /build
@@ -17,7 +17,7 @@ RUN VITE_VERSION=${VERSION} npm run build
 # =============================================================================
 # Go build stage with PGO optimization
 # =============================================================================
-FROM golang:1.26.3-alpine3.23 AS go-builder
+FROM golang:1.26.4-alpine3.23 AS go-builder
 
 ARG VERSION=1.0.0
 ARG TARGETARCH

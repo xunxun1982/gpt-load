@@ -67,12 +67,14 @@ export default {
   authValueEditHint: "留空表示不修改现有认证信息",
   authTypeNone: "无",
   authTypeAccessToken: "Access Token",
+  sub2ApiRefreshToken: "Refresh Token",
+  sub2ApiRefreshTokenPlaceholder: "输入 refresh_token",
   authTypeCookie: "Cookie",
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
     "需要从浏览器抓取 Cookie，包含 session/token 等字段。如站点启用了浏览器防护，还需包含 cf_clearance、acw_tc 等防护 Cookie。",
   sub2ApiAuthHint:
-    "Sub2API 选择 Access Token；AuthValue/Token 填浏览器开发者工具 Application/应用 -> Local Storage -> 当前 Sub2API 域名 -> auth_token，用户ID留空。",
+    "Sub2API 选择 Access Token；Access Token 填 Application/Local Storage 当前域名里的 auth_token；Refresh Token 填同处的 refresh_token，推荐两者一起填写以便过期后自动续期；用户ID留空。",
   anyrouterAuthHint:
     "AnyRouter 选择 Cookie；登录站点后在 Network 中找 https://<AnyRouter域名>/api/user/sign_in 请求，复制 Request Headers 里的完整 Cookie，用户ID留空。",
   multiAuthHint:

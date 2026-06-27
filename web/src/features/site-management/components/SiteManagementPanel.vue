@@ -150,6 +150,7 @@ const siteForm = reactive({
 // Separate inputs for each auth type
 const authValueInputs = reactive({
   access_token: "",
+  refresh_token: "",
   cookie: "",
 });
 
@@ -444,6 +445,7 @@ function resetSiteForm() {
     auth_type: [],
   });
   authValueInputs.access_token = "";
+  authValueInputs.refresh_token = "";
   authValueInputs.cookie = "";
 }
 
@@ -484,6 +486,7 @@ function openEditSite(site: ManagedSiteDTO) {
     auth_type: authTypes,
   });
   authValueInputs.access_token = "";
+  authValueInputs.refresh_token = "";
   authValueInputs.cookie = "";
   void fetchSiteProxyPoolOptions();
   showSiteModal.value = true;
@@ -610,16 +613,23 @@ async function submitSite() {
         hasAnyValue = true;
       }
     }
+    if (siteForm.site_type === "sub2api" && siteForm.auth_type.includes("access_token")) {
+      const refreshToken = authValueInputs.refresh_token.trim();
+      if (refreshToken) {
+        authValues.refresh_token = refreshToken;
+        hasAnyValue = true;
+      }
+    }
 
     // Only set auth_value if user provided at least one value
     // Backend will merge with existing values for multi-auth (preserves unchanged credentials)
     if (hasAnyValue) {
-      if (siteForm.auth_type.length === 1) {
+      if (siteForm.auth_type.length === 1 && !authValues.refresh_token) {
         // Single auth type: use plain value for backward compatibility
         const firstAuthType = siteForm.auth_type[0];
         authValueStr = (firstAuthType && authValues[firstAuthType]) || "";
       } else {
-        // Multiple auth types: use JSON format
+        // Multiple auth values are serialized for the backend; users edit them as separate fields.
         authValueStr = JSON.stringify(authValues);
       }
     }
@@ -2197,6 +2207,21 @@ watch(
                   editingSite
                     ? t('siteManagement.authValueEditHint')
                     : t('siteManagement.authValuePlaceholder')
+                "
+              />
+            </n-form-item>
+            <n-form-item
+              v-if="siteForm.site_type === 'sub2api' && siteForm.auth_type.includes('access_token')"
+              :label="t('siteManagement.sub2ApiRefreshToken')"
+            >
+              <n-input
+                v-model:value="authValueInputs.refresh_token"
+                type="password"
+                show-password-on="click"
+                :placeholder="
+                  editingSite
+                    ? t('siteManagement.authValueEditHint')
+                    : t('siteManagement.sub2ApiRefreshTokenPlaceholder')
                 "
               />
             </n-form-item>

@@ -203,16 +203,23 @@ watch(
                 {{ stats?.token_usage ? formatTokenCount(stats.token_usage.total_tokens) : "--" }}
               </div>
               <div class="stat-title">{{ t("dashboard.tokens24h") }}</div>
-              <div class="stat-detail">
-                {{ t("dashboard.inputTokens") }}:
-                {{ stats?.token_usage ? formatTokenCount(stats.token_usage.input_tokens) : "--" }}
-                ·
-                {{ t("dashboard.outputTokens") }}:
-                {{ stats?.token_usage ? formatTokenCount(stats.token_usage.output_tokens) : "--" }}
-              </div>
-              <div v-if="stats?.token_usage?.estimated_tokens" class="stat-detail">
-                {{ t("dashboard.includesEstimated") }}:
-                {{ formatTokenCount(stats.token_usage.estimated_tokens) }}
+              <div class="token-usage-breakdown">
+                <div class="token-usage-row">
+                  <span>{{ t("dashboard.inputTokens") }}:</span>
+                  <strong>
+                    {{ stats?.token_usage ? formatTokenCount(stats.token_usage.input_tokens) : "--" }}
+                  </strong>
+                </div>
+                <div class="token-usage-row">
+                  <span>{{ t("dashboard.outputTokens") }}:</span>
+                  <strong>
+                    {{ stats?.token_usage ? formatTokenCount(stats.token_usage.output_tokens) : "--" }}
+                  </strong>
+                </div>
+                <div v-if="stats?.token_usage?.estimated_tokens" class="token-usage-row estimated">
+                  <span>{{ t("dashboard.includesEstimated") }}:</span>
+                  <strong>{{ formatTokenCount(stats.token_usage.estimated_tokens) }}</strong>
+                </div>
               </div>
             </div>
 
@@ -372,6 +379,39 @@ watch(
   line-height: 1.25;
   color: var(--text-secondary);
   overflow-wrap: anywhere;
+}
+
+.token-usage-breakdown {
+  display: grid;
+  gap: 3px;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.token-usage-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  color: var(--text-secondary);
+}
+
+.token-usage-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.token-usage-row strong {
+  min-width: max-content;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.token-usage-row.estimated strong {
+  color: var(--text-secondary);
 }
 
 .stat-bar {

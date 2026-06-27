@@ -276,6 +276,81 @@ func TestProxyPoolServiceListGatewayProxyOptionsIncludesLatestManualTestResult(t
 	assert.Equal(t, gatewayServer.URL, options[0].TestResult.URL)
 }
 
+func TestProxyPoolServiceTestGatewayProxySwitchesToFasterManualResult(t *testing.T) {
+	previous := channel.GatewayProxyBaseURL("betterclaude")
+	t.Cleanup(func() {
+		channel.SetGatewayProxyBaseURL("betterclaude", previous)
+	})
+
+	currentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer currentServer.Close()
+	fasterServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer fasterServer.Close()
+
+	svc := setupProxyPoolServiceWithOptions(
+		t,
+		WithGatewayProxyOptions([]GatewayProxyOption{
+			{Type: "gateway", Label: "current", Value: "betterclaude", CandidateID: "betterclaude-current", URL: currentServer.URL},
+			{Type: "gateway", Label: "faster", Value: "betterclaude", CandidateID: "betterclaude-faster", URL: fasterServer.URL},
+		}),
+		WithGatewayProxySampling(1, 0),
+	)
+	channel.SetGatewayProxyBaseURL("betterclaude", currentServer.URL)
+	svc.storeGatewayTestResult("betterclaude-current", ProxyPoolTestResult{
+		Success:    true,
+		URL:        currentServer.URL,
+		DurationMS: 500,
+	})
+
+	result, err := svc.TestGatewayProxy(context.Background(), "betterclaude-faster")
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	assert.Equal(t, fasterServer.URL, channel.GatewayProxyBaseURL("betterclaude"))
+}
+
+func TestProxyPoolServiceTestGatewayProxyKeepsCurrentWhenManualResultIsSlower(t *testing.T) {
+	previous := channel.GatewayProxyBaseURL("betterclaude")
+	t.Cleanup(func() {
+		channel.SetGatewayProxyBaseURL("betterclaude", previous)
+	})
+
+	currentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer currentServer.Close()
+	slowerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(10 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer slowerServer.Close()
+
+	svc := setupProxyPoolServiceWithOptions(
+		t,
+		WithGatewayProxyOptions([]GatewayProxyOption{
+			{Type: "gateway", Label: "current", Value: "betterclaude", CandidateID: "betterclaude-current", URL: currentServer.URL},
+			{Type: "gateway", Label: "slower", Value: "betterclaude", CandidateID: "betterclaude-slower", URL: slowerServer.URL},
+		}),
+		WithGatewayProxySampling(1, 0),
+	)
+	channel.SetGatewayProxyBaseURL("betterclaude", currentServer.URL)
+	svc.storeGatewayTestResult("betterclaude-current", ProxyPoolTestResult{
+		Success:    true,
+		URL:        currentServer.URL,
+		DurationMS: 0,
+	})
+
+	result, err := svc.TestGatewayProxy(context.Background(), "betterclaude-slower")
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	assert.Equal(t, currentServer.URL, channel.GatewayProxyBaseURL("betterclaude"))
+}
+
 func TestProxyPoolServiceTestGatewayProxyCachesManualFailureWhenResultIsNil(t *testing.T) {
 	t.Parallel()
 

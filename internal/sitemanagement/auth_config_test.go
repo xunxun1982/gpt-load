@@ -245,6 +245,15 @@ func TestParseAuthConfig_EdgeCases(t *testing.T) {
 				"cookie":       "session=test",
 			},
 		},
+		{
+			name:           "sub2api supplemental refresh token is preserved",
+			authType:       "access_token",
+			decryptedValue: `{"access_token":"expired-token","refresh_token":"refresh-token"}`,
+			expectedTypes:  []string{"access_token"},
+			expectedValues: map[string]string{
+				"access_token": "expired-token",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -255,6 +264,9 @@ func TestParseAuthConfig_EdgeCases(t *testing.T) {
 
 			assert.Equal(t, tt.expectedTypes, config.AuthTypes)
 			assert.Equal(t, tt.expectedValues, config.AuthValues)
+			if tt.name == "sub2api supplemental refresh token is preserved" {
+				assert.Equal(t, "refresh-token", config.GetSupplementalValue("refresh_token"))
+			}
 		})
 	}
 }

@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+const (
+	authFieldAuthToken    = "auth_token"
+	authFieldRefreshToken = "refresh_token"
+)
+
 // AuthConfig represents parsed authentication configuration with multiple auth methods.
 // Supports both legacy single-auth format and new multi-auth format.
 type AuthConfig struct {
@@ -12,6 +17,8 @@ type AuthConfig struct {
 	AuthTypes []string
 	// AuthValues maps auth type to its value (e.g., {"access_token": "xxx", "cookie": "yyy"})
 	AuthValues map[string]string
+	// SupplementalValues stores provider-specific fields that are not auth types.
+	SupplementalValues map[string]string
 }
 
 // parseAuthConfig parses auth_type and auth_value fields into AuthConfig.
@@ -29,8 +36,9 @@ type AuthConfig struct {
 // If auth_type is "none" or empty, returns empty config.
 func parseAuthConfig(authType, decryptedAuthValue string) AuthConfig {
 	config := AuthConfig{
-		AuthTypes:  []string{},
-		AuthValues: make(map[string]string),
+		AuthTypes:          []string{},
+		AuthValues:         make(map[string]string),
+		SupplementalValues: make(map[string]string),
 	}
 
 	// Parse auth types (comma-separated)
@@ -60,9 +68,24 @@ func parseAuthConfig(authType, decryptedAuthValue string) AuthConfig {
 	var jsonValues map[string]string
 	if err := json.Unmarshal([]byte(decryptedAuthValue), &jsonValues); err == nil {
 		// Successfully parsed as JSON - only keep values for configured auth types
+		configured := make(map[string]struct{}, len(config.AuthTypes))
+		for _, t := range config.AuthTypes {
+			configured[t] = struct{}{}
+		}
 		for _, t := range config.AuthTypes {
 			if v, ok := jsonValues[t]; ok {
 				config.AuthValues[t] = v
+				continue
+			}
+			if t == AuthTypeAccessToken {
+				if v, ok := jsonValues[authFieldAuthToken]; ok {
+					config.AuthValues[t] = v
+				}
+			}
+		}
+		for k, v := range jsonValues {
+			if _, ok := configured[k]; !ok {
+				config.SupplementalValues[k] = v
 			}
 		}
 		return config
@@ -91,6 +114,14 @@ func (c *AuthConfig) HasAuthType(authType string) bool {
 // Returns empty string if the type is not found.
 func (c *AuthConfig) GetAuthValue(authType string) string {
 	return c.AuthValues[authType]
+}
+
+// GetSupplementalValue returns a provider-specific auth field, such as Sub2API refresh_token.
+func (c *AuthConfig) GetSupplementalValue(name string) string {
+	if c == nil || c.SupplementalValues == nil {
+		return ""
+	}
+	return c.SupplementalValues[name]
 }
 
 // IsEmpty returns true if the config has no auth types.

@@ -11,8 +11,9 @@ on:
       - "*"
 
 env:
-  GO_VERSION: "1.26.3"
-  NODE_VERSION: "26.2.0"
+  GO_VERSION: "1.26.4"
+  NODE_VERSION: "26.4.0"
+  NPM_VERSION: "11.17.0"
 
 jobs:
   # Collect PGO profile from tests and benchmarks
@@ -69,6 +70,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
           cache-dependency-path: "web/package-lock.json"
+
+      - name: Setup npm
+        run: npm install -g npm@${{ env.NPM_VERSION }} --no-audit && npm --version
 
       - name: Build Frontend
         run: npm ci && VITE_VERSION=${{ github.ref_name }} npm run build
