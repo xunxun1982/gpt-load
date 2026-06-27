@@ -7,13 +7,15 @@ import type {
 import http from "@/utils/http";
 
 export type DashboardChartRange =
+  | "last_24_hours"
+  | "last_7_days"
+  | "last_30_days"
   | "today"
   | "yesterday"
   | "this_week"
   | "last_week"
   | "this_month"
-  | "last_month"
-  | "last_30_days";
+  | "last_month";
 
 /**
  * Get basic dashboard statistics data

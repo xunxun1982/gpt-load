@@ -362,14 +362,25 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 		})
 		return
 	}
+	logicalStatusCode, _, hasLogicalFailure := logicalStatusFromContext(c)
+	shouldEstimate := resp.StatusCode < http.StatusBadRequest && (!hasLogicalFailure || logicalStatusCode < http.StatusBadRequest)
+	setTokenUsageOrEstimateFromFullBodyIf(c, responseBody, shouldEstimate)
+	if isFunctionCallEnabled(c) && functionCallTriggerSignal(c) != "" {
+		fcResp := &http.Response{
+			StatusCode: resp.StatusCode,
+			Body:       io.NopCloser(bytes.NewReader(responseBody)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}
+		// Forced OpenAI Responses streams are collected into a normal Responses
+		// payload first; reuse the same XML-to-function_call converter here.
+		ps.handleFunctionCallResponsesNormalResponse(c, fcResp)
+		return
+	}
 
 	// Store response for logging if enabled
 	if shouldCaptureResponse(c) {
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(responseBody, maxResponseCaptureBytes))
 	}
-	logicalStatusCode, _, hasLogicalFailure := logicalStatusFromContext(c)
-	shouldEstimate := resp.StatusCode < http.StatusBadRequest && (!hasLogicalFailure || logicalStatusCode < http.StatusBadRequest)
-	setTokenUsageOrEstimateFromFullBodyIf(c, responseBody, shouldEstimate)
 
 	// c.Data already sets Content-Type, no need for redundant c.Header call
 	c.Data(resp.StatusCode, "application/json", responseBody)

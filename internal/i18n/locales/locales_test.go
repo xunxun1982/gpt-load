@@ -277,6 +277,9 @@ func TestDashboardMessageKeys(t *testing.T) {
 		"dashboard.totalTokens",
 		"dashboard.inputTokens",
 		"dashboard.outputTokens",
+		"dashboard.cacheTokens",
+		"dashboard.thinkingTokens",
+		"dashboard.estimatedTokens",
 		"dashboard.auth_key_missing",
 		"dashboard.encryption_key_missing",
 	}

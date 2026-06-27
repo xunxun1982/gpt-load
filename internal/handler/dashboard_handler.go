@@ -294,7 +294,7 @@ func dashboardChartTimeRange(now time.Time, rangeParam string) (time.Time, time.
 	startOfThisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
 
 	switch rangeParam {
-	case "":
+	case "", "last_24_hours":
 		return endExclusive.Add(-24 * time.Hour), endExclusive, nil
 	case "today":
 		return startOfToday, endExclusive, nil
@@ -313,6 +313,8 @@ func dashboardChartTimeRange(now time.Time, rangeParam string) (time.Time, time.
 		return startOfThisMonth, endExclusive, nil
 	case "last_month":
 		return startOfThisMonth.AddDate(0, -1, 0), startOfThisMonth, nil
+	case "last_7_days":
+		return endExclusive.Add(-7 * 24 * time.Hour), endExclusive, nil
 	case "last_30_days":
 		return endExclusive.Add(-30 * 24 * time.Hour), endExclusive, nil
 	default:
@@ -438,10 +440,14 @@ func (s *Server) getTokenUsageChartData(c *gin.Context, startTime, endTime time.
 	}
 
 	type tokenHourlyStat struct {
-		Time         time.Time `gorm:"column:time"`
-		InputTokens  int64     `gorm:"column:input_tokens"`
-		OutputTokens int64     `gorm:"column:output_tokens"`
-		TotalTokens  int64     `gorm:"column:total_tokens"`
+		Time             time.Time `gorm:"column:time"`
+		InputTokens      int64     `gorm:"column:input_tokens"`
+		OutputTokens     int64     `gorm:"column:output_tokens"`
+		TotalTokens      int64     `gorm:"column:total_tokens"`
+		CacheReadTokens  int64     `gorm:"column:cache_read_tokens"`
+		CacheWriteTokens int64     `gorm:"column:cache_write_tokens"`
+		ThinkingTokens   int64     `gorm:"column:thinking_tokens"`
+		EstimatedTokens  int64     `gorm:"column:estimated_tokens"`
 	}
 
 	var hourlyStats []tokenHourlyStat
@@ -454,7 +460,11 @@ func (s *Server) getTokenUsageChartData(c *gin.Context, startTime, endTime time.
 		time,
 		COALESCE(SUM(input_tokens), 0) AS input_tokens,
 		COALESCE(SUM(output_tokens), 0) AS output_tokens,
-		COALESCE(SUM(total_tokens), 0) AS total_tokens`,
+		COALESCE(SUM(total_tokens), 0) AS total_tokens,
+		COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+		COALESCE(SUM(thinking_tokens), 0) AS thinking_tokens,
+		COALESCE(SUM(estimated_tokens), 0) AS estimated_tokens`,
 	).Group("time").
 		Scan(&hourlyStats).Error
 	if err != nil {
@@ -465,6 +475,9 @@ func (s *Server) getTokenUsageChartData(c *gin.Context, startTime, endTime time.
 	inputData := make([]int64, hours)
 	outputData := make([]int64, hours)
 	totalData := make([]int64, hours)
+	cacheData := make([]int64, hours)
+	thinkingData := make([]int64, hours)
+	estimatedData := make([]int64, hours)
 
 	for i := 0; i < hours; i++ {
 		labels[i] = startTime.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)
@@ -479,6 +492,9 @@ func (s *Server) getTokenUsageChartData(c *gin.Context, startTime, endTime time.
 		inputData[idx] += stat.InputTokens
 		outputData[idx] += stat.OutputTokens
 		totalData[idx] += stat.TotalTokens
+		cacheData[idx] += stat.CacheReadTokens + stat.CacheWriteTokens
+		thinkingData[idx] += stat.ThinkingTokens
+		estimatedData[idx] += stat.EstimatedTokens
 	}
 
 	return models.ChartData{
@@ -498,6 +514,21 @@ func (s *Server) getTokenUsageChartData(c *gin.Context, startTime, endTime time.
 				Label: i18n.Message(c, "dashboard.outputTokens"),
 				Data:  outputData,
 				Color: "rgba(15, 118, 110, 1)",
+			},
+			{
+				Label: i18n.Message(c, "dashboard.cacheTokens"),
+				Data:  cacheData,
+				Color: "rgba(202, 138, 4, 1)",
+			},
+			{
+				Label: i18n.Message(c, "dashboard.thinkingTokens"),
+				Data:  thinkingData,
+				Color: "rgba(124, 58, 237, 1)",
+			},
+			{
+				Label: i18n.Message(c, "dashboard.estimatedTokens"),
+				Data:  estimatedData,
+				Color: "rgba(100, 116, 139, 1)",
 			},
 		},
 	}, nil

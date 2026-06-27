@@ -95,11 +95,22 @@ type CodexSummaryItem struct {
 	Text string `json:"text"`
 }
 
+type TokenUsageDetails struct {
+	CachedTokens    int `json:"cached_tokens,omitempty"`
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+}
+
 // CodexUsage represents usage information in Codex/Responses API format.
 type CodexUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens         int                `json:"input_tokens"`
+	OutputTokens        int                `json:"output_tokens"`
+	TotalTokens         int                `json:"total_tokens"`
+	InputTokensDetails  *TokenUsageDetails `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails *TokenUsageDetails `json:"output_tokens_details,omitempty"`
+	// Extra fields preserve upstream cache/thinking counters for request logs.
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	ThinkingTokens   int `json:"thinking_tokens,omitempty"`
 }
 
 // CodexResponse represents a Codex/Responses API response.

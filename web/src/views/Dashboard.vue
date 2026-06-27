@@ -5,6 +5,7 @@ import EncryptionMismatchAlert from "@/components/EncryptionMismatchAlert.vue";
 import LineChart from "@/components/LineChart.vue";
 import SecurityAlert from "@/components/SecurityAlert.vue";
 import TokenUsagePanel from "@/components/TokenUsagePanel.vue";
+import { DEFAULT_DASHBOARD_RANGE } from "@/constants/dashboard";
 import type { DashboardStatsResponse } from "@/types/models";
 import { NRadioButton, NRadioGroup, NSpace } from "naive-ui";
 import { onMounted, ref } from "vue";
@@ -13,7 +14,7 @@ import { useI18n } from "vue-i18n";
 const { t } = useI18n();
 const dashboardStats = ref<DashboardStatsResponse | null>(null);
 const selectedAnalysis = ref<"trend" | "tokens">("trend");
-const selectedRange = ref<DashboardChartRange>("today");
+const selectedRange = ref<DashboardChartRange>(DEFAULT_DASHBOARD_RANGE);
 
 onMounted(async () => {
   try {

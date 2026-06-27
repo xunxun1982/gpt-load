@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,14 @@ type functionCall struct {
 	Name string
 	Args map[string]any
 }
+
+type functionCallRequestSchema int
+
+const (
+	functionCallSchemaChat functionCallRequestSchema = iota
+	functionCallSchemaResponses
+	functionCallSchemaAnthropic
+)
 
 // safeGroupName returns the group name for logging, with nil-safe access.
 // This prevents panic when group is unexpectedly nil (e.g., tests, misconfiguration).
@@ -925,7 +934,7 @@ func isPotentialMalformedTagStart(s string) bool {
 	return false
 }
 
-// applyFunctionCallRequestRewrite rewrites an OpenAI chat completions request body
+// applyFunctionCallRequestRewrite rewrites supported tool-call request schemas
 // to enable middleware-based function call. It injects a system prompt describing
 // available tools and removes native tools/tool_choice fields so the upstream model
 // only sees the prompt-based contract.
@@ -968,17 +977,22 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 		return bodyBytes, "", nil
 	}
 
-	// Extract messages array. Skip rewrite if messages is missing or malformed,
-	// as this indicates a non-chat request that shouldn't be rewritten.
-	msgsVal, hasMessages := req["messages"]
-	if !hasMessages {
-		logrus.WithField("group", safeGroupName(group)).Debug("applyFunctionCallRequestRewrite: No 'messages' field in request")
-		return bodyBytes, "", nil
-	}
-	messages, ok := msgsVal.([]any)
-	if !ok {
-		// Unexpected messages structure - skip rewrite to avoid breaking request
-		return bodyBytes, "", nil
+	schema := detectFunctionCallRequestSchema(c, group)
+	var messages []any
+	if schema == functionCallSchemaChat || schema == functionCallSchemaAnthropic {
+		// Extract messages array. Skip rewrite if messages is missing or malformed,
+		// as this indicates a request schema that shouldn't be rewritten.
+		msgsVal, hasMessages := req["messages"]
+		if !hasMessages {
+			logrus.WithField("group", safeGroupName(group)).Debug("applyFunctionCallRequestRewrite: No 'messages' field in request")
+			return bodyBytes, "", nil
+		}
+		var ok bool
+		messages, ok = msgsVal.([]any)
+		if !ok {
+			// Unexpected messages structure - skip rewrite to avoid breaking request
+			return bodyBytes, "", nil
+		}
 	}
 
 	// Check if this is a follow-up request with tool results.
@@ -992,7 +1006,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	// understand the conversation context even without native function calling.
 	//
 	// Reference: snow-cli useConversation.ts and Toolify preprocess_messages()
-	hasToolHistory := hasToolResults(messages)
+	hasToolHistory := schema == functionCallSchemaChat && hasToolResults(messages)
 	hasToolErrors := false
 	if hasToolHistory {
 		// Preprocess messages: convert tool_calls and tool results to text format
@@ -1179,28 +1193,35 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 		prompt += toolChoicePrompt
 	}
 
-	newMessages := make([]any, 0, len(messages)+1)
-	newMessages = append(newMessages, map[string]any{
-		"role":    "system",
-		"content": prompt,
-	})
-	if len(messages) > 0 {
-		newMessages = append(newMessages, messages...)
-	}
+	switch schema {
+	case functionCallSchemaResponses:
+		injectFunctionCallPromptIntoResponses(req, prompt)
+	case functionCallSchemaAnthropic:
+		injectFunctionCallPromptIntoAnthropicSystem(req, prompt)
+	default:
+		newMessages := make([]any, 0, len(messages)+1)
+		newMessages = append(newMessages, map[string]any{
+			"role":    "system",
+			"content": prompt,
+		})
+		if len(messages) > 0 {
+			newMessages = append(newMessages, messages...)
+		}
 
-	// Append ANTML role hint to the last message to guide the model to continue
-	// responding as an assistant. This follows b4u2cc reference implementation.
-	if len(newMessages) > 0 {
-		lastIdx := len(newMessages) - 1
-		if lastMsg, ok := newMessages[lastIdx].(map[string]any); ok {
-			if content, ok := lastMsg["content"].(string); ok {
-				lastMsg["content"] = content + "\n\n<antml\\b:role>\n\nPlease continue responding as an assistant.\n\n</antml>"
-				newMessages[lastIdx] = lastMsg
+		// Append ANTML role hint to the last message to guide the model to continue
+		// responding as an assistant. This follows b4u2cc reference implementation.
+		if len(newMessages) > 0 {
+			lastIdx := len(newMessages) - 1
+			if lastMsg, ok := newMessages[lastIdx].(map[string]any); ok {
+				if content, ok := lastMsg["content"].(string); ok {
+					lastMsg["content"] = content + "\n\n<antml\\b:role>\n\nPlease continue responding as an assistant.\n\n</antml>"
+					newMessages[lastIdx] = lastMsg
+				}
 			}
 		}
-	}
 
-	req["messages"] = newMessages
+		req["messages"] = newMessages
+	}
 
 	// IMPORTANT: When force_function_call is enabled, we MUST remove native tools
 	// from the request. The function call middleware injects tools via system prompt,
@@ -1213,6 +1234,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	// 3. Even if formats match, sending both prompt-based and native tools is redundant
 	delete(req, "tools")
 	delete(req, "tool_choice")
+	delete(req, "parallel_tool_calls")
 
 	// Remove reasoning_effort when force_function_call is enabled.
 	// Many OpenAI-compatible upstreams don't support this field, and it can cause
@@ -1694,6 +1716,309 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	}
 }
 
+func (ps *ProxyServer) handleFunctionCallNormalResponseByChannel(c *gin.Context, resp *http.Response, group *models.Group) {
+	if group == nil {
+		ps.handleFunctionCallNormalResponse(c, resp)
+		return
+	}
+	switch group.ChannelType {
+	case "openai-response":
+		ps.handleFunctionCallResponsesNormalResponse(c, resp)
+	case "anthropic":
+		ps.handleFunctionCallAnthropicNormalResponse(c, resp)
+	default:
+		ps.handleFunctionCallNormalResponse(c, resp)
+	}
+}
+
+type functionCallSSEEvent struct {
+	Event string
+	Data  string
+	Lines []string
+}
+
+type functionCallSSEReadResult struct {
+	Events      []functionCallSSEEvent
+	Passthrough io.Reader
+}
+
+func (ps *ProxyServer) handleFunctionCallResponsesNormalResponse(c *gin.Context, resp *http.Response) {
+	body, ok := readFunctionCallNormalResponseBody(c, resp)
+	if !ok {
+		return
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), false)
+		return
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), false)
+		return
+	}
+
+	triggerSignal := functionCallTriggerSignal(c)
+	if triggerSignal == "" {
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
+		return
+	}
+
+	text := extractResponsesOutputText(payload)
+	calls := parseFunctionCallsXML(text, triggerSignal)
+	if len(calls) == 0 {
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
+		return
+	}
+
+	cleaned := strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))
+	output := make([]any, 0, len(calls)+1)
+	if cleaned != "" {
+		output = append(output, map[string]any{
+			"type":   "message",
+			"id":     "msg_" + utils.GenerateRandomSuffix(),
+			"role":   "assistant",
+			"status": "completed",
+			"content": []any{
+				map[string]any{"type": "output_text", "text": cleaned},
+			},
+		})
+		payload["output_text"] = cleaned
+	} else {
+		delete(payload, "output_text")
+	}
+	for i, call := range calls {
+		if call.Name == "" {
+			continue
+		}
+		argsJSON, err := json.Marshal(call.Args)
+		if err != nil {
+			logrus.WithError(err).Debug("Failed to marshal Responses function call arguments")
+			continue
+		}
+		suffix := utils.GenerateRandomSuffix()
+		output = append(output, map[string]any{
+			"type":      "function_call",
+			"id":        fmt.Sprintf("fc_%s_%d", suffix, i),
+			"call_id":   fmt.Sprintf("call_%s_%d", suffix, i),
+			"name":      call.Name,
+			"arguments": string(argsJSON),
+			"status":    "completed",
+		})
+	}
+	if len(output) == 0 {
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
+		return
+	}
+	payload["output"] = output
+	payload["status"] = "completed"
+
+	out, err := json.Marshal(payload)
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to marshal modified Responses function call response")
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
+		return
+	}
+	writeFunctionCallModifiedBody(c, out, triggerSignal, len(body), shouldCaptureResponse(c))
+}
+
+func (ps *ProxyServer) handleFunctionCallAnthropicNormalResponse(c *gin.Context, resp *http.Response) {
+	body, ok := readFunctionCallNormalResponseBody(c, resp)
+	if !ok {
+		return
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), false)
+		return
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), false)
+		return
+	}
+
+	triggerSignal := functionCallTriggerSignal(c)
+	if triggerSignal == "" {
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
+		return
+	}
+
+	text := extractAnthropicTextContent(payload)
+	calls := parseFunctionCallsXML(text, triggerSignal)
+	if len(calls) == 0 {
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
+		return
+	}
+
+	content := make([]any, 0, len(calls)+1)
+	cleaned := strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))
+	if cleaned != "" {
+		content = append(content, map[string]any{"type": "text", "text": cleaned})
+	}
+	for _, call := range calls {
+		if call.Name == "" {
+			continue
+		}
+		content = append(content, map[string]any{
+			"type":  "tool_use",
+			"id":    "toolu_" + utils.GenerateRandomSuffix(),
+			"name":  call.Name,
+			"input": call.Args,
+		})
+	}
+	if len(content) == 0 {
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
+		return
+	}
+	payload["content"] = content
+	payload["stop_reason"] = "tool_use"
+
+	out, err := json.Marshal(payload)
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to marshal modified Anthropic function call response")
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
+		return
+	}
+	writeFunctionCallModifiedBody(c, out, triggerSignal, len(body), shouldCaptureResponse(c))
+}
+
+func readFunctionCallNormalResponseBody(c *gin.Context, resp *http.Response) ([]byte, bool) {
+	rawBody, err := readAllWithLimit(resp.Body, maxUpstreamResponseBodySize)
+	if err != nil {
+		logUpstreamError("reading response body", err)
+		clearUpstreamEncodingHeaders(c)
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"message": "Upstream response body is too large",
+				"type":    "server_error",
+			},
+		})
+		return nil, false
+	}
+	body := rawBody
+	if contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding")); contentEncoding != "" {
+		if !supportedUpstreamContentEncoding(contentEncoding) {
+			logrus.WithField("content_encoding", contentEncoding).Debug("Unsupported upstream content encoding")
+			writeUpstreamDecompressionFailure(c, "Failed to decompress upstream response body")
+			return nil, false
+		}
+		decompressedReader, decompressErr := utils.NewDecompressReader(contentEncoding, io.NopCloser(bytes.NewReader(rawBody)))
+		if decompressErr != nil {
+			logUpstreamError("decompressing response body", decompressErr)
+			writeUpstreamDecompressionFailure(c, "Failed to decompress upstream response body")
+			return nil, false
+		}
+		defer func() {
+			if closer, ok := decompressedReader.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		}()
+		decompressed, readErr := readAllWithLimit(decompressedReader, maxUpstreamResponseBodySize)
+		if readErr != nil {
+			logUpstreamError("reading decompressed response body", readErr)
+			writeUpstreamDecompressionFailure(c, "Failed to decompress upstream response body")
+			return nil, false
+		}
+		body = decompressed
+		clearUpstreamEncodingHeaders(c)
+	}
+	return body, true
+}
+
+func functionCallTriggerSignal(c *gin.Context) string {
+	triggerVal, exists := c.Get(ctxKeyTriggerSignal)
+	if !exists {
+		return ""
+	}
+	triggerSignal, ok := triggerVal.(string)
+	if !ok {
+		return ""
+	}
+	return triggerSignal
+}
+
+func writeFunctionCallPassthrough(c *gin.Context, body []byte, shouldCapture bool, estimateUsage bool) {
+	if estimateUsage {
+		setTokenUsageOrEstimateFromFullBodyIf(c, body, true)
+	}
+	if shouldCapture {
+		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
+	}
+	if _, werr := c.Writer.Write(body); werr != nil {
+		logUpstreamError("writing response body", werr)
+	}
+}
+
+func writeFunctionCallModifiedBody(c *gin.Context, body []byte, triggerSignal string, originalBodyBytes int, shouldCapture bool) {
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"trigger_signal":      triggerSignal,
+			"original_body_bytes": originalBodyBytes,
+			"modified_bytes":      len(body),
+		}).Debug("Function call response: body modified")
+	}
+	if shouldCapture {
+		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
+	}
+	clearUpstreamEncodingHeaders(c)
+	if _, werr := c.Writer.Write(body); werr != nil {
+		logUpstreamError("writing response body", werr)
+	}
+}
+
+func extractResponsesOutputText(payload map[string]any) string {
+	output, ok := payload["output"].([]any)
+	if !ok {
+		if text, ok := payload["output_text"].(string); ok {
+			return text
+		}
+		return ""
+	}
+	var parts []string
+	for _, item := range output {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := itemMap["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, part := range content {
+			partMap, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text, ok := partMap["text"].(string); ok && text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func extractAnthropicTextContent(payload map[string]any) string {
+	content, ok := payload["content"].([]any)
+	if !ok {
+		return ""
+	}
+	var parts []string
+	for _, item := range content {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if itemType, _ := itemMap["type"].(string); itemType != "text" {
+			continue
+		}
+		if text, ok := itemMap["text"].(string); ok && text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 func writeUpstreamDecompressionFailure(c *gin.Context, message string) {
 	clearUpstreamEncodingHeaders(c)
 	c.Header("Content-Type", "application/json; charset=utf-8")
@@ -1824,6 +2149,15 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 				closer.Close()
 			}
 		}()
+	}
+
+	switch detectFunctionCallRequestSchema(c, functionCallGroupFromContext(c)) {
+	case functionCallSchemaResponses:
+		ps.handleFunctionCallResponsesStreamingBody(c, streamBody, flusher, triggerSignal)
+		return
+	case functionCallSchemaAnthropic:
+		ps.handleFunctionCallAnthropicStreamingBody(c, streamBody, flusher, triggerSignal)
+		return
 	}
 
 	reader := bufio.NewReader(streamBody)
@@ -2423,6 +2757,710 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	}
 	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 	flusher.Flush()
+}
+
+func (ps *ProxyServer) handleFunctionCallResponsesStreamingBody(c *gin.Context, body io.Reader, flusher http.Flusher, triggerSignal string) {
+	result, err := readFunctionCallSSEEvents(body)
+	if err != nil {
+		logUpstreamError("reading Responses function call stream", err)
+		writeUpstreamErrorBodyReadFailure(c)
+		return
+	}
+	if result.Passthrough != nil {
+		if err := copyFunctionCallSSEPassthrough(c, result.Passthrough, flusher); err != nil {
+			logUpstreamError("passing through Responses function call stream", err)
+		}
+		return
+	}
+	events := result.Events
+
+	text, responseID, model := collectResponsesFunctionCallStreamText(c, events)
+	calls := parseFunctionCallsXML(text, triggerSignal)
+	if len(calls) == 0 && strings.Contains(text, "<function_calls>") {
+		calls = parseFunctionCallsXML(text, "")
+	}
+	if len(calls) == 0 {
+		if functionCallStreamHasProtocolMarkers(text, triggerSignal) {
+			if err := emitResponsesTextOnlyStream(c, flusher, responseID, model, strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))); err != nil {
+				logUpstreamError("writing cleaned Responses function call stream", err)
+			}
+			return
+		}
+		if err := replayFunctionCallSSEEvents(c, events, flusher); err != nil {
+			logUpstreamError("replaying Responses function call stream", err)
+		}
+		return
+	}
+
+	cleaned := strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))
+	if responseID == "" {
+		responseID = "resp_" + utils.GenerateRandomSuffix()
+	}
+	if err := writeSSENamedJSON(c, flusher, "response.created", map[string]any{
+		"type": "response.created",
+		"response": map[string]any{
+			"id":     responseID,
+			"object": "response",
+			"status": "in_progress",
+			"model":  model,
+			"output": []any{},
+		},
+	}); err != nil {
+		logUpstreamError("writing Responses created event", err)
+		return
+	}
+	output := make([]any, 0, len(calls)+1)
+	outputIndex := 0
+	if cleaned != "" {
+		msgID := "msg_" + utils.GenerateRandomSuffix()
+		msgItem := map[string]any{
+			"type":   "message",
+			"id":     msgID,
+			"role":   "assistant",
+			"status": "completed",
+			"content": []any{
+				map[string]any{"type": "output_text", "text": cleaned},
+			},
+		}
+		output = append(output, msgItem)
+		if err := writeSSENamedJSON(c, flusher, "response.output_item.added", map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":    "message",
+				"id":      msgID,
+				"role":    "assistant",
+				"status":  "in_progress",
+				"content": []any{},
+			},
+		}); err != nil {
+			logUpstreamError("writing Responses message item", err)
+			return
+		}
+		if err := writeSSENamedJSON(c, flusher, "response.output_text.delta", map[string]any{
+			"type":          "response.output_text.delta",
+			"item_id":       msgID,
+			"output_index":  outputIndex,
+			"content_index": 0,
+			"delta":         cleaned,
+		}); err != nil {
+			logUpstreamError("writing Responses text delta", err)
+			return
+		}
+		if err := writeSSENamedJSON(c, flusher, "response.output_item.done", map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": outputIndex,
+			"item":         msgItem,
+		}); err != nil {
+			logUpstreamError("writing Responses message done", err)
+			return
+		}
+		outputIndex++
+	}
+
+	for _, call := range calls {
+		if call.Name == "" {
+			continue
+		}
+		argsJSON, err := json.Marshal(call.Args)
+		if err != nil {
+			logrus.WithError(err).Debug("Failed to marshal Responses streaming function call arguments")
+			continue
+		}
+		fcID := "fc_" + utils.GenerateRandomSuffix()
+		callID := "call_" + utils.GenerateRandomSuffix()
+		doneItem := map[string]any{
+			"type":      "function_call",
+			"id":        fcID,
+			"call_id":   callID,
+			"name":      call.Name,
+			"arguments": string(argsJSON),
+			"status":    "completed",
+		}
+		output = append(output, doneItem)
+		if err := writeSSENamedJSON(c, flusher, "response.output_item.added", map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":      "function_call",
+				"id":        fcID,
+				"call_id":   callID,
+				"name":      call.Name,
+				"arguments": "",
+				"status":    "in_progress",
+			},
+		}); err != nil {
+			logUpstreamError("writing Responses function call item", err)
+			return
+		}
+		if err := writeSSENamedJSON(c, flusher, "response.function_call_arguments.delta", map[string]any{
+			"type":         "response.function_call_arguments.delta",
+			"item_id":      fcID,
+			"output_index": outputIndex,
+			"delta":        string(argsJSON),
+		}); err != nil {
+			logUpstreamError("writing Responses function call arguments", err)
+			return
+		}
+		if err := writeSSENamedJSON(c, flusher, "response.function_call_arguments.done", map[string]any{
+			"type":         "response.function_call_arguments.done",
+			"item_id":      fcID,
+			"output_index": outputIndex,
+			"arguments":    string(argsJSON),
+		}); err != nil {
+			logUpstreamError("writing Responses function call arguments done", err)
+			return
+		}
+		if err := writeSSENamedJSON(c, flusher, "response.output_item.done", map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": outputIndex,
+			"item":         doneItem,
+		}); err != nil {
+			logUpstreamError("writing Responses function call done", err)
+			return
+		}
+		outputIndex++
+	}
+	if len(output) == 0 {
+		if err := replayFunctionCallSSEEvents(c, events, flusher); err != nil {
+			logUpstreamError("replaying Responses function call stream", err)
+		}
+		return
+	}
+
+	completed := map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":     responseID,
+			"object": "response",
+			"status": "completed",
+			"model":  model,
+			"output": output,
+		},
+	}
+	if err := writeSSENamedJSON(c, flusher, "response.completed", completed); err != nil {
+		logUpstreamError("writing Responses completed event", err)
+		return
+	}
+	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	flusher.Flush()
+}
+
+func (ps *ProxyServer) handleFunctionCallAnthropicStreamingBody(c *gin.Context, body io.Reader, flusher http.Flusher, triggerSignal string) {
+	result, err := readFunctionCallSSEEvents(body)
+	if err != nil {
+		logUpstreamError("reading Anthropic function call stream", err)
+		writeUpstreamErrorBodyReadFailure(c)
+		return
+	}
+	if result.Passthrough != nil {
+		if err := copyFunctionCallSSEPassthrough(c, result.Passthrough, flusher); err != nil {
+			logUpstreamError("passing through Anthropic function call stream", err)
+		}
+		return
+	}
+	events := result.Events
+
+	text, messageID, model, inputTokens, outputTokens := collectAnthropicFunctionCallStreamText(c, events)
+	calls := parseFunctionCallsXML(text, triggerSignal)
+	if len(calls) == 0 && strings.Contains(text, "<function_calls>") {
+		calls = parseFunctionCallsXML(text, "")
+	}
+	if len(calls) == 0 {
+		if functionCallStreamHasProtocolMarkers(text, triggerSignal) {
+			if err := emitAnthropicTextOnlyStream(c, flusher, messageID, model, inputTokens, outputTokens, strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))); err != nil {
+				logUpstreamError("writing cleaned Anthropic function call stream", err)
+			}
+			return
+		}
+		if err := replayFunctionCallSSEEvents(c, events, flusher); err != nil {
+			logUpstreamError("replaying Anthropic function call stream", err)
+		}
+		return
+	}
+
+	if messageID == "" {
+		messageID = "msg_" + utils.GenerateRandomSuffix()
+	}
+	startPayload := map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id":            messageID,
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []any{},
+			"model":         model,
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage":         map[string]any{"input_tokens": inputTokens, "output_tokens": 0},
+		},
+	}
+	if err := writeSSENamedJSON(c, flusher, "message_start", startPayload); err != nil {
+		logUpstreamError("writing Anthropic message_start", err)
+		return
+	}
+
+	blockIndex := 0
+	cleaned := strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))
+	if cleaned != "" {
+		if err := emitAnthropicTextBlock(c, flusher, blockIndex, cleaned); err != nil {
+			logUpstreamError("writing Anthropic text block", err)
+			return
+		}
+		blockIndex++
+	}
+	for _, call := range calls {
+		if call.Name == "" {
+			continue
+		}
+		argsJSON, err := json.Marshal(call.Args)
+		if err != nil {
+			logrus.WithError(err).Debug("Failed to marshal Anthropic streaming tool_use input")
+			continue
+		}
+		if err := emitAnthropicToolUseBlock(c, flusher, blockIndex, call.Name, string(argsJSON)); err != nil {
+			logUpstreamError("writing Anthropic tool_use block", err)
+			return
+		}
+		blockIndex++
+	}
+	if blockIndex == 0 {
+		if err := replayFunctionCallSSEEvents(c, events, flusher); err != nil {
+			logUpstreamError("replaying Anthropic function call stream", err)
+		}
+		return
+	}
+
+	if err := writeSSENamedJSON(c, flusher, "message_delta", map[string]any{
+		"type":  "message_delta",
+		"delta": map[string]any{"stop_reason": "tool_use", "stop_sequence": nil},
+		"usage": map[string]any{"output_tokens": outputTokens},
+	}); err != nil {
+		logUpstreamError("writing Anthropic message_delta", err)
+		return
+	}
+	if err := writeSSENamedJSON(c, flusher, "message_stop", map[string]any{"type": "message_stop"}); err != nil {
+		logUpstreamError("writing Anthropic message_stop", err)
+		return
+	}
+}
+
+func readFunctionCallSSEEvents(body io.Reader) (functionCallSSEReadResult, error) {
+	reader := bufio.NewReaderSize(body, 64*1024)
+	var raw bytes.Buffer
+	var events []functionCallSSEEvent
+	var lines []string
+	var dataParts []string
+	eventName := ""
+	var collectedBytes int64
+	var lineBuf bytes.Buffer
+
+	flushEvent := func() {
+		if len(lines) == 0 && eventName == "" && len(dataParts) == 0 {
+			return
+		}
+		events = append(events, functionCallSSEEvent{
+			Event: eventName,
+			Data:  strings.Join(dataParts, "\n"),
+			Lines: append([]string(nil), lines...),
+		})
+		lines = nil
+		dataParts = nil
+		eventName = ""
+	}
+	passthrough := func() functionCallSSEReadResult {
+		// Parse limits should degrade to raw passthrough, not fail valid long streams.
+		return functionCallSSEReadResult{
+			Passthrough: io.MultiReader(bytes.NewReader(raw.Bytes()), reader),
+		}
+	}
+	processLine := func(line string) {
+		trimmedLine := strings.TrimRight(line, "\r\n")
+		if strings.TrimSpace(trimmedLine) == "" {
+			flushEvent()
+			return
+		}
+		lines = append(lines, line)
+		trimmed := strings.TrimSpace(trimmedLine)
+		if strings.HasPrefix(trimmed, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+			return
+		}
+		if strings.HasPrefix(trimmed, "data:") {
+			dataParts = append(dataParts, strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")))
+		}
+	}
+
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			raw.Write(fragment)
+			collectedBytes += int64(len(fragment))
+			if collectedBytes > maxCodexStreamCollectBytes {
+				return passthrough(), nil
+			}
+			if lineBuf.Len()+len(fragment) > maxCodexStreamLineBytes {
+				return passthrough(), nil
+			}
+			lineBuf.Write(fragment)
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				if lineBuf.Len() > 0 {
+					processLine(lineBuf.String())
+				}
+				flushEvent()
+				return functionCallSSEReadResult{Events: events}, nil
+			}
+			return functionCallSSEReadResult{}, err
+		}
+		processLine(lineBuf.String())
+		lineBuf.Reset()
+	}
+}
+
+func copyFunctionCallSSEPassthrough(c *gin.Context, reader io.Reader, flusher http.Flusher) error {
+	if _, err := io.Copy(c.Writer, reader); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
+}
+
+func replayFunctionCallSSEEvents(c *gin.Context, events []functionCallSSEEvent, flusher http.Flusher) error {
+	for _, event := range events {
+		if len(event.Lines) == 0 {
+			continue
+		}
+		for _, line := range event.Lines {
+			if _, err := c.Writer.Write([]byte(line)); err != nil {
+				return err
+			}
+		}
+		if _, err := c.Writer.Write([]byte("\n")); err != nil {
+			return err
+		}
+		flusher.Flush()
+	}
+	return nil
+}
+
+func collectResponsesFunctionCallStreamText(c *gin.Context, events []functionCallSSEEvent) (string, string, string) {
+	var text strings.Builder
+	responseID := ""
+	model := ""
+	var outputEstimate estimatedTokenCapture
+	for _, event := range events {
+		if event.Data == "" || strings.TrimSpace(event.Data) == "[DONE]" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
+			continue
+		}
+		eventType, _ := payload["type"].(string)
+		if eventType == "" {
+			eventType = event.Event
+		}
+		if resp, ok := payload["response"].(map[string]any); ok {
+			if id, _ := resp["id"].(string); id != "" {
+				responseID = id
+			}
+			if m, _ := resp["model"].(string); m != "" {
+				model = m
+			}
+			if eventType == "response.completed" && text.Len() == 0 {
+				text.WriteString(extractResponsesOutputText(resp))
+			}
+		}
+		switch eventType {
+		case "response.output_text.delta":
+			if delta, _ := payload["delta"].(string); delta != "" {
+				outputEstimate.addString(delta)
+				if text.Len()+len(delta) <= maxCodexStreamCollectBytes {
+					text.WriteString(delta)
+				}
+			}
+		case "response.output_item.done":
+			if text.Len() == 0 {
+				if item, ok := payload["item"].(map[string]any); ok {
+					text.WriteString(extractResponsesOutputText(map[string]any{"output": []any{item}}))
+				}
+			}
+		}
+	}
+	if _, _, ok := getTokenUsage(c); !ok {
+		setEstimatedOutputTokens(c, outputEstimate.Tokens())
+	}
+	return text.String(), responseID, model
+}
+
+func collectAnthropicFunctionCallStreamText(c *gin.Context, events []functionCallSSEEvent) (string, string, string, int, int) {
+	var text strings.Builder
+	messageID := ""
+	model := ""
+	inputTokens := 0
+	outputTokens := 0
+	var outputEstimate estimatedTokenCapture
+	for _, event := range events {
+		if event.Data == "" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
+			continue
+		}
+		eventType, _ := payload["type"].(string)
+		if eventType == "" {
+			eventType = event.Event
+		}
+		switch eventType {
+		case "message_start":
+			if message, ok := payload["message"].(map[string]any); ok {
+				if id, _ := message["id"].(string); id != "" {
+					messageID = id
+				}
+				if m, _ := message["model"].(string); m != "" {
+					model = m
+				}
+				if usage, ok := message["usage"].(map[string]any); ok {
+					inputTokens = intFromAny(usage["input_tokens"])
+				}
+			}
+		case "content_block_delta":
+			if delta, ok := payload["delta"].(map[string]any); ok {
+				if deltaType, _ := delta["type"].(string); deltaType == "text_delta" {
+					if part, _ := delta["text"].(string); part != "" {
+						outputEstimate.addString(part)
+						if text.Len()+len(part) <= maxCodexStreamCollectBytes {
+							text.WriteString(part)
+						}
+					}
+				}
+			}
+		case "message_delta":
+			if usage, ok := payload["usage"].(map[string]any); ok {
+				outputTokens = intFromAny(usage["output_tokens"])
+			}
+		}
+	}
+	if _, _, ok := getTokenUsage(c); !ok {
+		setEstimatedOutputTokens(c, outputEstimate.Tokens())
+	}
+	return text.String(), messageID, model, inputTokens, outputTokens
+}
+
+func writeSSENamedJSON(c *gin.Context, flusher http.Flusher, event string, payload map[string]any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := c.Writer.Write([]byte("event: " + event + "\n")); err != nil {
+		return err
+	}
+	if _, err := c.Writer.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
+}
+
+func functionCallStreamHasProtocolMarkers(text, triggerSignal string) bool {
+	if triggerSignal != "" && strings.Contains(text, triggerSignal) {
+		return true
+	}
+	return strings.Contains(text, "<invoke") ||
+		strings.Contains(text, "<function_calls>") ||
+		strings.Contains(text, "<function_call>")
+}
+
+func emitResponsesTextOnlyStream(c *gin.Context, flusher http.Flusher, responseID, model, text string) error {
+	if responseID == "" {
+		responseID = "resp_" + utils.GenerateRandomSuffix()
+	}
+	output := make([]any, 0, 1)
+	if err := writeSSENamedJSON(c, flusher, "response.created", map[string]any{
+		"type": "response.created",
+		"response": map[string]any{
+			"id":     responseID,
+			"object": "response",
+			"status": "in_progress",
+			"model":  model,
+			"output": []any{},
+		},
+	}); err != nil {
+		return err
+	}
+	if text != "" {
+		msgID := "msg_" + utils.GenerateRandomSuffix()
+		msgItem := map[string]any{
+			"type":   "message",
+			"id":     msgID,
+			"role":   "assistant",
+			"status": "completed",
+			"content": []any{
+				map[string]any{"type": "output_text", "text": text},
+			},
+		}
+		output = append(output, msgItem)
+		if err := writeSSENamedJSON(c, flusher, "response.output_item.added", map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": 0,
+			"item": map[string]any{
+				"type":    "message",
+				"id":      msgID,
+				"role":    "assistant",
+				"status":  "in_progress",
+				"content": []any{},
+			},
+		}); err != nil {
+			return err
+		}
+		if err := writeSSENamedJSON(c, flusher, "response.output_text.delta", map[string]any{
+			"type":          "response.output_text.delta",
+			"item_id":       msgID,
+			"output_index":  0,
+			"content_index": 0,
+			"delta":         text,
+		}); err != nil {
+			return err
+		}
+		if err := writeSSENamedJSON(c, flusher, "response.output_item.done", map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": 0,
+			"item":         msgItem,
+		}); err != nil {
+			return err
+		}
+	}
+	if err := writeSSENamedJSON(c, flusher, "response.completed", map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":     responseID,
+			"object": "response",
+			"status": "completed",
+			"model":  model,
+			"output": output,
+		},
+	}); err != nil {
+		return err
+	}
+	_, err := c.Writer.Write([]byte("data: [DONE]\n\n"))
+	flusher.Flush()
+	return err
+}
+
+func emitAnthropicTextOnlyStream(c *gin.Context, flusher http.Flusher, messageID, model string, inputTokens, outputTokens int, text string) error {
+	if messageID == "" {
+		messageID = "msg_" + utils.GenerateRandomSuffix()
+	}
+	if err := writeSSENamedJSON(c, flusher, "message_start", map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id":            messageID,
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []any{},
+			"model":         model,
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage":         map[string]any{"input_tokens": inputTokens, "output_tokens": 0},
+		},
+	}); err != nil {
+		return err
+	}
+	if text != "" {
+		if err := emitAnthropicTextBlock(c, flusher, 0, text); err != nil {
+			return err
+		}
+	}
+	if err := writeSSENamedJSON(c, flusher, "message_delta", map[string]any{
+		"type":  "message_delta",
+		"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
+		"usage": map[string]any{"output_tokens": outputTokens},
+	}); err != nil {
+		return err
+	}
+	return writeSSENamedJSON(c, flusher, "message_stop", map[string]any{"type": "message_stop"})
+}
+
+func emitAnthropicTextBlock(c *gin.Context, flusher http.Flusher, index int, text string) error {
+	if err := writeSSENamedJSON(c, flusher, "content_block_start", map[string]any{
+		"type":          "content_block_start",
+		"index":         index,
+		"content_block": map[string]any{"type": "text", "text": ""},
+	}); err != nil {
+		return err
+	}
+	if err := writeSSENamedJSON(c, flusher, "content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": index,
+		"delta": map[string]any{"type": "text_delta", "text": text},
+	}); err != nil {
+		return err
+	}
+	return writeSSENamedJSON(c, flusher, "content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": index,
+	})
+}
+
+func emitAnthropicToolUseBlock(c *gin.Context, flusher http.Flusher, index int, name, inputJSON string) error {
+	toolID := "toolu_" + utils.GenerateRandomSuffix()
+	if err := writeSSENamedJSON(c, flusher, "content_block_start", map[string]any{
+		"type":  "content_block_start",
+		"index": index,
+		"content_block": map[string]any{
+			"type":  "tool_use",
+			"id":    toolID,
+			"name":  name,
+			"input": map[string]any{},
+		},
+	}); err != nil {
+		return err
+	}
+	if err := writeSSENamedJSON(c, flusher, "content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": index,
+		"delta": map[string]any{"type": "input_json_delta", "partial_json": inputJSON},
+	}); err != nil {
+		return err
+	}
+	return writeSSENamedJSON(c, flusher, "content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": index,
+	})
+}
+
+func functionCallGroupFromContext(c *gin.Context) *models.Group {
+	if c == nil {
+		return nil
+	}
+	groupVal, ok := c.Get("group")
+	if !ok {
+		return nil
+	}
+	group, _ := groupVal.(*models.Group)
+	return group
+}
+
+func intFromAny(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		i, _ := v.Int64()
+		return int(i)
+	default:
+		return 0
+	}
 }
 
 // processGLMBlockContent processes the content inside a <glm_block> tag.
@@ -5999,6 +7037,55 @@ type functionToolDefinition struct {
 	Parameters  map[string]any
 }
 
+func detectFunctionCallRequestSchema(c *gin.Context, group *models.Group) functionCallRequestSchema {
+	if group != nil {
+		switch group.ChannelType {
+		case "openai-response":
+			return functionCallSchemaResponses
+		case "anthropic":
+			return functionCallSchemaAnthropic
+		}
+	}
+	if c != nil && c.Request != nil {
+		path := c.Request.URL.Path
+		if isOpenAIResponsesEndpoint(path) {
+			return functionCallSchemaResponses
+		}
+		if isAnthropicMessagesEndpoint(path, c.Request.Method) {
+			return functionCallSchemaAnthropic
+		}
+	}
+	return functionCallSchemaChat
+}
+
+func injectFunctionCallPromptIntoResponses(req map[string]any, prompt string) {
+	if existing, ok := req["instructions"].(string); ok && strings.TrimSpace(existing) != "" {
+		req["instructions"] = prompt + "\n\n" + existing
+		return
+	}
+	req["instructions"] = prompt
+}
+
+func injectFunctionCallPromptIntoAnthropicSystem(req map[string]any, prompt string) {
+	switch existing := req["system"].(type) {
+	case string:
+		if strings.TrimSpace(existing) != "" {
+			req["system"] = prompt + "\n\n" + existing
+			return
+		}
+	case []any:
+		systemBlocks := make([]any, 0, len(existing)+1)
+		systemBlocks = append(systemBlocks, map[string]any{
+			"type": "text",
+			"text": prompt,
+		})
+		systemBlocks = append(systemBlocks, existing...)
+		req["system"] = systemBlocks
+		return
+	}
+	req["system"] = prompt
+}
+
 func collectFunctionToolDefs(toolsSlice []any) []functionToolDefinition {
 	defs := make([]functionToolDefinition, 0, len(toolsSlice))
 	for _, t := range toolsSlice {
@@ -6006,13 +7093,14 @@ func collectFunctionToolDefs(toolsSlice []any) []functionToolDefinition {
 		if !ok {
 			continue
 		}
-		funcVal, ok := toolMap["function"]
-		if !ok {
-			continue
-		}
-		fn, ok := funcVal.(map[string]any)
-		if !ok {
-			continue
+
+		fn := toolMap
+		if funcVal, ok := toolMap["function"]; ok {
+			nested, ok := funcVal.(map[string]any)
+			if !ok {
+				continue
+			}
+			fn = nested
 		}
 
 		name, _ := fn["name"].(string)
@@ -6022,6 +7110,9 @@ func collectFunctionToolDefs(toolsSlice []any) []functionToolDefinition {
 
 		desc, _ := fn["description"].(string)
 		params, _ := fn["parameters"].(map[string]any)
+		if params == nil {
+			params, _ = fn["input_schema"].(map[string]any)
+		}
 
 		defs = append(defs, functionToolDefinition{
 			Name:        name,

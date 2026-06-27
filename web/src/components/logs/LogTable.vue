@@ -78,8 +78,16 @@ const totalPages = computed(() => {
 // Display text for pagination info
 const totalRecordsText = computed(() => {
   if (total.value < 0) {
-    // Fast log pagination intentionally skips COUNT(*) on large tables.
-    return t("logs.calculatingTotal");
+    if (loading.value) {
+      return t("common.loading");
+    }
+    if (logs.value.length === 0) {
+      return t("logs.currentPageNoRecords");
+    }
+    // Fast log pagination skips COUNT(*); show the visible item range instead.
+    const start = (currentPage.value - 1) * pageSize.value + 1;
+    const end = start + logs.value.length - 1;
+    return t("logs.currentPageRange", { start, end });
   }
   return t("logs.totalRecords", { total: total.value });
 });

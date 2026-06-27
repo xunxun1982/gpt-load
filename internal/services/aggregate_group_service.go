@@ -84,9 +84,9 @@ func isGroupCCSupportEnabled(group *models.Group) bool {
 }
 
 // getEffectiveEndpointForAggregation returns the effective validation endpoint for a sub-group
-// in the context of an aggregate group. CC-compatible sub-groups in Anthropic aggregates
-// are exposed through the Claude messages endpoint before channel-specific conversion.
-func getEffectiveEndpointForAggregation(subGroup *models.Group, aggregateChannelType string, usesClaudeEndpoint bool) string {
+// in the context of an aggregate group. Forced child groups expose the parent protocol endpoint
+// before channel-specific conversion.
+func getEffectiveEndpointForAggregation(subGroup *models.Group, aggregateChannelType string, usesClaudeEndpoint bool, usesCodexEndpoint bool) string {
 	// If sub-group has custom validation endpoint, use it
 	if subGroup.ValidationEndpoint != "" {
 		// CC sub-groups in Anthropic aggregates should match Claude's endpoint
@@ -94,12 +94,18 @@ func getEffectiveEndpointForAggregation(subGroup *models.Group, aggregateChannel
 		if aggregateChannelType == "anthropic" && usesClaudeEndpoint {
 			return "/v1/messages"
 		}
+		if aggregateChannelType == "openai-response" && usesCodexEndpoint {
+			return "/v1/responses"
+		}
 		return subGroup.ValidationEndpoint
 	}
 
 	// CC sub-groups in Anthropic aggregates use Claude's endpoint for validation consistency.
 	if aggregateChannelType == "anthropic" && usesClaudeEndpoint {
 		return "/v1/messages"
+	}
+	if aggregateChannelType == "openai-response" && usesCodexEndpoint {
+		return "/v1/responses"
 	}
 
 	// Otherwise use the standard endpoint for the sub-group's channel type
@@ -155,14 +161,22 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_cannot_be_aggregate", nil)
 		}
 
-		// Channel type compatibility check
-		// For Anthropic aggregate groups, allow Anthropic channels and CC-compatible channels.
+		// Channel type compatibility check.
+		// Anthropic aggregates allow native Anthropic groups and forced-CC children.
+		// OpenAI Responses aggregates allow native Responses groups and forced-Codex children.
 		isOpenAIWithCC := sg.ChannelType == "openai" && isGroupCCSupportEnabled(&sg)
 		isOpenAIResponseWithCC := sg.ChannelType == "openai-response" && isGroupCCSupportEnabled(&sg)
 		isGeminiWithCC := sg.ChannelType == "gemini" && isGroupCCSupportEnabled(&sg)
+		isOpenAIWithCodex := sg.ChannelType == "openai" && utils.IsGroupCodexSupportEnabled(&sg)
+		isAnthropicWithCodex := sg.ChannelType == "anthropic" && utils.IsGroupCodexSupportEnabled(&sg)
 		if channelType == "anthropic" {
 			isAnthropic := sg.ChannelType == "anthropic"
 			if !isAnthropic && !isOpenAIWithCC && !isOpenAIResponseWithCC && !isGeminiWithCC {
+				return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_channel_mismatch", nil)
+			}
+		} else if channelType == "openai-response" {
+			isOpenAIResponse := sg.ChannelType == "openai-response"
+			if !isOpenAIResponse && !isOpenAIWithCodex && !isAnthropicWithCodex {
 				return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_channel_mismatch", nil)
 			}
 		} else {
@@ -176,7 +190,8 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		// For Anthropic aggregates with CC-compatible sub-groups, the CC endpoint uses /v1/messages
 		// (via /claude/v1/messages route) instead of the native endpoint.
 		usesClaudeEndpoint := isOpenAIWithCC || isOpenAIResponseWithCC || isGeminiWithCC
-		effectiveEndpoint := getEffectiveEndpointForAggregation(&sg, channelType, usesClaudeEndpoint)
+		usesCodexEndpoint := isOpenAIWithCodex || isAnthropicWithCodex
+		effectiveEndpoint := getEffectiveEndpointForAggregation(&sg, channelType, usesClaudeEndpoint, usesCodexEndpoint)
 
 		// Validate endpoint consistency
 		if validationEndpoint == "" {
@@ -325,7 +340,10 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 			isOpenAIResponseWithCC := existingGroup.ChannelType == "openai-response" && isGroupCCSupportEnabled(&existingGroup)
 			isGeminiWithCC := existingGroup.ChannelType == "gemini" && isGroupCCSupportEnabled(&existingGroup)
 			usesClaudeEndpoint := isOpenAIWithCC || isOpenAIResponseWithCC || isGeminiWithCC
-			existingEndpoint = getEffectiveEndpointForAggregation(&existingGroup, group.ChannelType, usesClaudeEndpoint)
+			isOpenAIWithCodex := existingGroup.ChannelType == "openai" && utils.IsGroupCodexSupportEnabled(&existingGroup)
+			isAnthropicWithCodex := existingGroup.ChannelType == "anthropic" && utils.IsGroupCodexSupportEnabled(&existingGroup)
+			usesCodexEndpoint := isOpenAIWithCodex || isAnthropicWithCodex
+			existingEndpoint = getEffectiveEndpointForAggregation(&existingGroup, group.ChannelType, usesClaudeEndpoint, usesCodexEndpoint)
 		}
 	}
 

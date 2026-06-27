@@ -59,7 +59,7 @@ func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Gro
 	if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
 		return true
 	}
-	if isCCEnabled(c) || isFunctionCallEnabled(c) || isOpenAIResponseForcedStream(c) {
+	if isCCEnabled(c) || isCodexEnabled(c) || isFunctionCallEnabled(c) || isOpenAIResponseForcedStream(c) {
 		return true
 	}
 	return false

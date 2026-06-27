@@ -215,6 +215,24 @@ func restoreOriginalPath(c *gin.Context, retryCtx *retryContext) {
 	}
 }
 
+// clearForceProtocolContext prevents one aggregate sub-group attempt from
+// leaking forced CC/Codex/function-call state into the next selected sub-group.
+func clearForceProtocolContext(c *gin.Context) {
+	if c == nil || c.Keys == nil {
+		return
+	}
+	delete(c.Keys, ctxKeyCCEnabled)
+	delete(c.Keys, ctxKeyOriginalFormat)
+	delete(c.Keys, ctxKeyOpenAIResponseCC)
+	delete(c.Keys, ctxKeyGeminiCC)
+	delete(c.Keys, ctxKeyCodexEnabled)
+	delete(c.Keys, ctxKeyCodexUpstreamFormat)
+	delete(c.Keys, ctxKeyFunctionCallEnabled)
+	delete(c.Keys, ctxKeyTriggerSignal)
+	delete(c.Keys, "cc_was_claude_path")
+	delete(c.Keys, "codex_was_codex_path")
+}
+
 func forcedAggregateSubGroup(group *models.Group, forcedID uint, excluded map[uint]bool) (string, uint, bool) {
 	if group == nil || forcedID == 0 || excluded[forcedID] {
 		return "", 0, false
@@ -316,7 +334,7 @@ func parseSubMaxRetries(config map[string]any) int {
 }
 
 // isForceFunctionCallEnabled checks whether the force_function_call flag is enabled
-// for the given group. This flag is currently only meaningful for OpenAI channel groups
+// for the given group. The middleware is limited to known non-Gemini tool schemas
 // and is stored in the group-level JSON config rather than global system settings.
 //
 // NOTE: ForceFunctionCall is a group-only override key and is not part of the
@@ -328,8 +346,9 @@ func isForceFunctionCallEnabled(group *models.Group) bool {
 		return false
 	}
 
-	// Only enable function call middleware for OpenAI channel groups.
-	if group.ChannelType != "openai" {
+	switch group.ChannelType {
+	case "openai", "openai-response", "anthropic":
+	default:
 		return false
 	}
 
@@ -440,6 +459,22 @@ func isOpenAIResponsesEndpoint(path string) bool {
 		return true
 	}
 	return strings.HasSuffix(path, "/v1/responses")
+}
+
+func isFunctionCallRewriteEndpoint(group *models.Group, path, method string) bool {
+	if group == nil {
+		return false
+	}
+	switch group.ChannelType {
+	case "openai":
+		return isChatCompletionsEndpoint(path, method)
+	case "openai-response":
+		return method == http.MethodPost && isOpenAIResponsesEndpoint(path)
+	case "anthropic":
+		return isAnthropicMessagesEndpoint(path, method)
+	default:
+		return false
+	}
 }
 
 // isOpenAIResponseForcedStream returns true if OpenAI Responses forced streaming was applied.
@@ -870,6 +905,19 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		}).Debug("CC support: rewritten Claude path for channel type and sanitized query params")
 	}
 
+	wasCodexPath := isCodexPath(c.Request.URL.Path, group.Name)
+	if isCodexEndpointSupported(group) && wasCodexPath {
+		originalPath := c.Request.URL.Path
+		c.Request.URL.Path = rewriteCodexPathToOpenAIGeneric(c.Request.URL.Path)
+		c.Set("codex_was_codex_path", true)
+		logrus.WithFields(logrus.Fields{
+			"group":         group.Name,
+			"channel_type":  group.ChannelType,
+			"original_path": originalPath,
+			"new_path":      c.Request.URL.Path,
+		}).Debug("Force Codex: rewritten Codex path for channel type")
+	}
+
 	if c.Request.Method == "GET" || len(bodyBytes) == 0 {
 		finalBodyBytes = bodyBytes
 		isStream = false
@@ -907,7 +955,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			// when wasClaudePath is true. Non-Claude paths don't need sanitization as they are
 			// direct API calls that should preserve their original query parameters.
 			// Also check /v1beta/messages for Gemini CC conversion (path may be rewritten to /v1beta/messages)
-			if isCCSupportEnabled(group) && (strings.HasSuffix(c.Request.URL.Path, "/v1/messages") || strings.HasSuffix(c.Request.URL.Path, "/v1beta/messages")) {
+			if isCCSupportEnabled(group) && wasClaudePath && (strings.HasSuffix(c.Request.URL.Path, "/v1/messages") || strings.HasSuffix(c.Request.URL.Path, "/v1beta/messages")) {
 				// Handle channel-specific CC support conversions
 				switch group.ChannelType {
 				case "openai-response":
@@ -991,6 +1039,40 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				}
 			}
 
+			if group.ChannelType == "openai-response" && wasCodexPath && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+				c.Set("codex_was_codex_path", true)
+				c.Set(ctxKeyCodexEnabled, true)
+				setCodexUpstreamFormat(c, codexUpstreamResponses)
+			}
+			if isCodexSupportEnabled(group) && wasCodexPath && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+				convertedBody, converted, codexErr := ps.applyForceCodexRequestConversion(c, group, finalBodyBytes)
+				if codexErr != nil {
+					logrus.WithError(codexErr).WithFields(logrus.Fields{
+						"group": group.Name,
+						"path":  c.Request.URL.Path,
+					}).Error("Failed to convert Codex request")
+					response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("Codex conversion failed: %v", codexErr)))
+					return
+				} else if converted {
+					finalBodyBytes = convertedBody
+					finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+					if err != nil {
+						logrus.WithError(err).Warn("Failed to re-apply param overrides after Codex conversion")
+					}
+					switch group.ChannelType {
+					case "openai":
+						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/responses", "/v1/chat/completions", 1)
+					case "anthropic":
+						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/responses", "/v1/messages", 1)
+					}
+					logrus.WithFields(logrus.Fields{
+						"group":        group.Name,
+						"channel_type": group.ChannelType,
+						"new_path":     c.Request.URL.Path,
+					}).Debug("Force Codex: converted Responses request to upstream format")
+				}
+			}
+
 			// Apply parallel_tool_calls config for OpenAI channel when force_function_call is NOT enabled.
 			// When force_function_call is enabled, native tools are removed and replaced with prompt-based
 			// tool injection, so parallel_tool_calls is not applicable.
@@ -1003,8 +1085,8 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				}
 			}
 
-			// Apply function call request rewrite for eligible OpenAI groups.
-			if isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+			// Apply function call request rewrite for eligible channel endpoints.
+			if isForceFunctionCallEnabled(group) && isFunctionCallRewriteEndpoint(group, c.Request.URL.Path, c.Request.Method) {
 				rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(c, group, finalBodyBytes)
 				if fcErr != nil {
 					logrus.WithError(fcErr).WithFields(logrus.Fields{
@@ -1326,10 +1408,12 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			ccEnabled := isCCEnabled(c)
 			codexCCMode := isOpenAIResponseCCMode(c)
 			geminiCCMode := isGeminiCCMode(c)
+			forceCodexMode := isCodexEnabled(c)
 			logrus.WithFields(logrus.Fields{
 				"cc_enabled":     ccEnabled,
 				"codex_cc_mode":  codexCCMode,
 				"gemini_cc_mode": geminiCCMode,
+				"force_codex":    forceCodexMode,
 				"is_stream":      isStream,
 			}).Debug("Response handler selection")
 			if ccEnabled {
@@ -1340,6 +1424,8 @@ func (ps *ProxyServer) executeRequestWithRetry(
 				} else {
 					ps.handleCCStreamingResponse(c, resp)
 				}
+			} else if forceCodexMode {
+				ps.handleForceCodexStreamingResponse(c, resp)
 			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {
@@ -1352,11 +1438,13 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			codexCCMode := isOpenAIResponseCCMode(c)
 			geminiCCMode := isGeminiCCMode(c)
 			codexForcedStream := isOpenAIResponseForcedStream(c)
+			forceCodexMode := isCodexEnabled(c)
 			logrus.WithFields(logrus.Fields{
 				"cc_enabled":          ccEnabled,
 				"codex_cc_mode":       codexCCMode,
 				"gemini_cc_mode":      geminiCCMode,
 				"codex_forced_stream": codexForcedStream,
+				"force_codex":         forceCodexMode,
 				"is_stream":           isStream,
 			}).Debug("Response handler selection")
 			if ccEnabled {
@@ -1367,11 +1455,13 @@ func (ps *ProxyServer) executeRequestWithRetry(
 				} else {
 					ps.handleCCNormalResponse(c, resp)
 				}
+			} else if forceCodexMode {
+				ps.handleForceCodexNormalResponse(c, resp)
 			} else if codexForcedStream {
 				// Codex forced streaming: collect stream response and return as non-stream
 				ps.handleCodexForcedStreamResponse(c, resp)
 			} else if isFunctionCallEnabled(c) {
-				ps.handleFunctionCallNormalResponse(c, resp)
+				ps.handleFunctionCallNormalResponseByChannel(c, resp, group)
 			} else {
 				ps.handleNormalResponse(c, resp)
 			}
@@ -1395,6 +1485,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Restore original path for retry attempts to allow each sub-group to apply its own CC support
 	// This is necessary because different sub-groups may have different CC support settings.
 	restoreOriginalPath(c, retryCtx)
+	clearForceProtocolContext(c)
 
 	// Get max retries from aggregate group config
 	maxRetries := parseMaxRetries(originalGroup.Config)
@@ -1528,8 +1619,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Apply CC support for eligible OpenAI sub-groups.
 	// Clear any stale CC state from previous sub-group attempts.
 	c.Set(ctxKeyCCEnabled, false)
+	c.Set(ctxKeyCodexEnabled, false)
+	c.Set(ctxKeyCodexUpstreamFormat, "")
 	// Use originalGroup.Name for path check since request path is /proxy/{aggregate_group}/claude/v1/...
 	wasClaudePath := isClaudePath(c.Request.URL.Path, originalGroup.Name)
+	wasCodexPath := isCodexPath(c.Request.URL.Path, originalGroup.Name)
 
 	// Handle CC support path rewriting for sub-groups
 	// This rewrites /claude/ paths to standard OpenAI paths. For groups named "claude",
@@ -1561,6 +1655,19 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}).Debug("CC support: rewritten Claude path for sub-group channel type and sanitized query params")
 	}
 
+	if isCodexEndpointSupported(group) && wasCodexPath {
+		originalPath := c.Request.URL.Path
+		c.Request.URL.Path = rewriteCodexPathToOpenAIGeneric(c.Request.URL.Path)
+		c.Set("codex_was_codex_path", true)
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group": originalGroup.Name,
+			"sub_group":       group.Name,
+			"channel_type":    group.ChannelType,
+			"original_path":   originalPath,
+			"new_path":        c.Request.URL.Path,
+		}).Debug("Force Codex: rewritten Codex path for sub-group channel type")
+	}
+
 	// Convert Claude messages request to target format (OpenAI, OpenAI Responses, or Gemini)
 	// Note: Path has already been rewritten from /claude/v1/messages to /v1/messages (or /v1beta/messages for Gemini)
 	// Clear any stale OpenAI Responses CC state from previous sub-group attempts.
@@ -1569,7 +1676,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Check for both /v1/messages (OpenAI, OpenAI Responses, Anthropic) and /v1beta/messages (Gemini)
 	isMessagesEndpoint := strings.HasSuffix(c.Request.URL.Path, "/v1/messages") ||
 		strings.HasSuffix(c.Request.URL.Path, "/v1beta/messages")
-	if isCCSupportEnabled(group) && isMessagesEndpoint {
+	shouldConvertCCForSubGroup := isCCSupportEnabled(group) && isMessagesEndpoint &&
+		(wasClaudePath || originalGroup.ChannelType == "anthropic")
+	if shouldConvertCCForSubGroup {
 		// Handle channel-specific CC support conversions
 		switch group.ChannelType {
 		case "openai-response":
@@ -1697,6 +1806,42 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
+	shouldUseCodexEndpointForSubGroup := isCodexEndpointSupported(group) &&
+		(wasCodexPath || originalGroup.ChannelType == "openai-response")
+	if group.ChannelType == "openai-response" && shouldUseCodexEndpointForSubGroup && wasCodexPath && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+		c.Set("codex_was_codex_path", true)
+	}
+	if isCodexSupportEnabled(group) && shouldUseCodexEndpointForSubGroup && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+		convertedBody, converted, codexErr := ps.applyForceCodexRequestConversion(c, group, finalBodyBytes)
+		if codexErr != nil {
+			logrus.WithError(codexErr).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+				"path":            c.Request.URL.Path,
+			}).Error("Failed to convert Codex request for sub-group")
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, fmt.Sprintf("Codex conversion failed: %v", codexErr)))
+			return
+		} else if converted {
+			finalBodyBytes = convertedBody
+			finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+			if err != nil {
+				logrus.WithError(err).Warn("Failed to re-apply param overrides after Codex conversion for sub-group")
+			}
+			switch group.ChannelType {
+			case "openai":
+				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/responses", "/v1/chat/completions", 1)
+			case "anthropic":
+				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/responses", "/v1/messages", 1)
+			}
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+				"channel_type":    group.ChannelType,
+				"new_path":        c.Request.URL.Path,
+			}).Debug("Force Codex: converted Responses request for sub-group")
+		}
+	}
+
 	// Apply parallel_tool_calls config for OpenAI sub-groups when force_function_call is NOT enabled.
 	// This mirrors the behavior in the main HandleProxy path for standard groups.
 	// When force_function_call is enabled, native tools are removed and replaced with prompt-based
@@ -1711,12 +1856,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
-	// Apply function call request rewrite for eligible OpenAI sub-groups.
+	// Apply function call request rewrite for eligible sub-group endpoints.
 	// Clear any stale function call state from previous sub-group attempts
 	// so that downstream response handlers do not see outdated flags.
 	c.Set(ctxKeyFunctionCallEnabled, false)
 	c.Set(ctxKeyTriggerSignal, "")
-	if isForceFunctionCallEnabled(group) && isChatCompletionsEndpoint(c.Request.URL.Path, c.Request.Method) {
+	if isForceFunctionCallEnabled(group) && isFunctionCallRewriteEndpoint(group, c.Request.URL.Path, c.Request.Method) {
 		rewrittenBody, triggerSignal, fcErr := ps.applyFunctionCallRequestRewrite(c, group, finalBodyBytes)
 		if fcErr != nil {
 			logrus.WithError(fcErr).WithFields(logrus.Fields{
@@ -2081,10 +2226,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			ccEnabled := isCCEnabled(c)
 			codexCCMode := isOpenAIResponseCCMode(c)
 			geminiCCMode := isGeminiCCMode(c)
+			forceCodexMode := isCodexEnabled(c)
 			logrus.WithFields(logrus.Fields{
 				"cc_enabled":     ccEnabled,
 				"codex_cc_mode":  codexCCMode,
 				"gemini_cc_mode": geminiCCMode,
+				"force_codex":    forceCodexMode,
 				"is_stream":      isStream,
 			}).Debug("Aggregate response handler selection")
 			if ccEnabled {
@@ -2095,6 +2242,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				} else {
 					ps.handleCCStreamingResponse(c, resp)
 				}
+			} else if forceCodexMode {
+				ps.handleForceCodexStreamingResponse(c, resp)
 			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {
@@ -2116,11 +2265,13 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			codexCCMode := isOpenAIResponseCCMode(c)
 			geminiCCMode := isGeminiCCMode(c)
 			codexForcedStream := isOpenAIResponseForcedStream(c)
+			forceCodexMode := isCodexEnabled(c)
 			logrus.WithFields(logrus.Fields{
 				"cc_enabled":          ccEnabled,
 				"codex_cc_mode":       codexCCMode,
 				"gemini_cc_mode":      geminiCCMode,
 				"codex_forced_stream": codexForcedStream,
+				"force_codex":         forceCodexMode,
 				"is_stream":           isStream,
 			}).Debug("Aggregate response handler selection")
 			if ccEnabled {
@@ -2131,11 +2282,13 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				} else {
 					ps.handleCCNormalResponse(c, resp)
 				}
+			} else if forceCodexMode {
+				ps.handleForceCodexNormalResponse(c, resp)
 			} else if codexForcedStream {
 				// Codex forced streaming: collect stream response and return as non-stream
 				ps.handleCodexForcedStreamResponse(c, resp)
 			} else if isFunctionCallEnabled(c) {
-				ps.handleFunctionCallNormalResponse(c, resp)
+				ps.handleFunctionCallNormalResponseByChannel(c, resp, group)
 			} else {
 				ps.handleNormalResponse(c, resp)
 			}

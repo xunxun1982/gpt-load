@@ -225,6 +225,58 @@ func TestChart(t *testing.T) {
 	}
 }
 
+func TestDashboardChartTimeRangeRollingRanges(t *testing.T) {
+	t.Parallel()
+
+	loc := time.FixedZone("test", 8*60*60)
+	now := time.Date(2026, 6, 27, 15, 42, 17, 0, loc)
+	endExclusive := time.Date(2026, 6, 27, 16, 0, 0, 0, loc)
+
+	tests := []struct {
+		name      string
+		rangeKey  string
+		wantStart time.Time
+		wantEnd   time.Time
+	}{
+		{
+			name:      "default_is_last_24_hours",
+			rangeKey:  "",
+			wantStart: endExclusive.Add(-24 * time.Hour),
+			wantEnd:   endExclusive,
+		},
+		{
+			name:      "last_24_hours",
+			rangeKey:  "last_24_hours",
+			wantStart: endExclusive.Add(-24 * time.Hour),
+			wantEnd:   endExclusive,
+		},
+		{
+			name:      "last_7_days",
+			rangeKey:  "last_7_days",
+			wantStart: endExclusive.Add(-7 * 24 * time.Hour),
+			wantEnd:   endExclusive,
+		},
+		{
+			name:      "last_30_days_keeps_recent_one_month_compatibility",
+			rangeKey:  "last_30_days",
+			wantStart: endExclusive.Add(-30 * 24 * time.Hour),
+			wantEnd:   endExclusive,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotStart, gotEnd, err := dashboardChartTimeRange(now, tt.rangeKey)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantStart, gotStart)
+			assert.Equal(t, tt.wantEnd, gotEnd)
+		})
+	}
+}
+
 func TestTokenUsage(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -255,6 +307,9 @@ func TestTokenUsage(t *testing.T) {
 			InputTokens:           20,
 			OutputTokens:          10,
 			TotalTokens:           30,
+			CacheReadTokens:       7,
+			CacheWriteTokens:      2,
+			ThinkingTokens:        4,
 			EstimatedTokens:       30,
 			EstimatedRequestCount: 1,
 		},
@@ -273,13 +328,18 @@ func TestTokenUsage(t *testing.T) {
 	data := resp["data"].(map[string]any)
 	summary := data["summary"].(map[string]any)
 	assert.Equal(t, float64(45), summary["total_tokens"])
+	assert.Equal(t, float64(9), summary["cache_read_tokens"].(float64)+summary["cache_write_tokens"].(float64))
+	assert.Equal(t, float64(4), summary["thinking_tokens"])
 	assert.Equal(t, float64(30), summary["estimated_tokens"])
 	assert.Equal(t, float64(1), summary["estimated_request_count"])
 	assert.Len(t, data["models"].([]any), 2)
 	chart := data["chart"].(map[string]any)
 	datasets := chart["datasets"].([]any)
-	require.Len(t, datasets, 3)
+	require.Len(t, datasets, 6)
 	assert.Equal(t, float64(45), sumChartDataset(t, datasets[0]))
+	assert.Equal(t, float64(9), sumChartDataset(t, datasets[3]))
+	assert.Equal(t, float64(4), sumChartDataset(t, datasets[4]))
+	assert.Equal(t, float64(30), sumChartDataset(t, datasets[5]))
 
 	w = httptest.NewRecorder()
 	c, _ = gin.CreateTestContext(w)
@@ -325,8 +385,11 @@ func TestTokenUsage(t *testing.T) {
 	assert.Equal(t, "gpt-4o", modelsUsage[0].(map[string]any)["model"])
 	chart = data["chart"].(map[string]any)
 	datasets = chart["datasets"].([]any)
-	require.Len(t, datasets, 3)
+	require.Len(t, datasets, 6)
 	assert.Equal(t, float64(15), sumChartDataset(t, datasets[0]))
+	assert.Equal(t, float64(0), sumChartDataset(t, datasets[3]))
+	assert.Equal(t, float64(0), sumChartDataset(t, datasets[4]))
+	assert.Equal(t, float64(0), sumChartDataset(t, datasets[5]))
 }
 
 func TestTokenUsageGroupFilterErrors(t *testing.T) {

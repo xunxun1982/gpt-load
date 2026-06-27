@@ -380,6 +380,21 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid codex_support",
+			config: map[string]any{
+				"codex_support": true,
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid codex_support type",
+			config: map[string]any{
+				"codex_support": "true",
+			},
+			expectError: true,
+			errorMsg:    "expected a boolean",
+		},
+		{
 			name: "valid thinking_model with cc_support",
 			config: map[string]any{
 				"cc_support":     true,
