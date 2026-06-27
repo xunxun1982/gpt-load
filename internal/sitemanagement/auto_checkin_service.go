@@ -340,10 +340,14 @@ func (s *AutoCheckinService) setStatus(status AutoCheckinStatus) {
 }
 
 func withCheckinMetadata(status AutoCheckinStatus) AutoCheckinStatus {
+	return withCheckinMetadataAt(status, time.Now())
+}
+
+func withCheckinMetadataAt(status AutoCheckinStatus, now time.Time) AutoCheckinStatus {
 	_, timezone := checkinLocationWithName()
-	status.CurrentCheckinDay = GetBeijingCheckinDay()
+	status.CurrentCheckinDay = GetBeijingCheckinDayAt(now)
 	status.Timezone = timezone
-	status.NextCheckinResetAt = nextCheckinResetAt(time.Now()).UTC().Format(time.RFC3339)
+	status.NextCheckinResetAt = nextCheckinResetAt(now).UTC().Format(time.RFC3339)
 	return status
 }
 

@@ -75,11 +75,12 @@ import {
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const message = useMessage();
 const dialog = useDialog();
 const route = useRoute();
 const router = useRouter();
+const statusTimeLocale = computed(() => locale.value || undefined);
 
 // Emit for navigation to group
 interface Emits {
@@ -248,9 +249,19 @@ function formatLocalDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function nextLocalMidnight(): Date {
-  const now = new Date();
+function nextLocalMidnight(now = new Date()): Date {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+}
+
+function resolveCheckinDayRefreshTarget(status: AutoCheckinStatus | null, now = Date.now()): Date {
+  const resetAt = status?.next_checkin_reset_at
+    ? new Date(status.next_checkin_reset_at)
+    : nextLocalMidnight(new Date(now));
+  // Stale reset metadata should not create a tight reload loop after refresh failures.
+  if (Number.isNaN(resetAt.getTime()) || resetAt.getTime() <= now) {
+    return nextLocalMidnight(new Date(now));
+  }
+  return resetAt;
 }
 
 function scheduleCheckinDayRefresh(status: AutoCheckinStatus | null) {
@@ -259,11 +270,9 @@ function scheduleCheckinDayRefresh(status: AutoCheckinStatus | null) {
     checkinDayRefreshTimer.value = undefined;
   }
 
-  const resetAt = status?.next_checkin_reset_at
-    ? new Date(status.next_checkin_reset_at)
-    : nextLocalMidnight();
-  const target = Number.isNaN(resetAt.getTime()) ? nextLocalMidnight() : resetAt;
-  const delay = Math.min(Math.max(target.getTime() - Date.now() + 1000, 1000), 2_147_483_647);
+  const now = Date.now();
+  const target = resolveCheckinDayRefreshTarget(status, now);
+  const delay = Math.min(Math.max(target.getTime() - now + 1000, 1000), 2_147_483_647);
 
   checkinDayRefreshTimer.value = window.setTimeout(() => {
     void (async () => {
@@ -1706,9 +1715,9 @@ function formatStatusTime(value: string): string {
     }
     const timezone = autoCheckinStatus.value?.timezone;
     if (timezone) {
-      return utcDate.toLocaleString("zh-CN", { timeZone: timezone });
+      return utcDate.toLocaleString(statusTimeLocale.value, { timeZone: timezone });
     }
-    return `${utcDate.toLocaleString("zh-CN")} (${t("siteManagement.clientLocalTime")})`;
+    return `${utcDate.toLocaleString(statusTimeLocale.value)} (${t("siteManagement.clientLocalTime")})`;
   } catch {
     return value;
   }

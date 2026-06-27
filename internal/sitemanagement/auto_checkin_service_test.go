@@ -1272,6 +1272,22 @@ func TestAutoCheckinStatusIncludesServerTimezoneMetadata(t *testing.T) {
 	assert.True(t, resetAt.After(time.Now()))
 }
 
+func TestWithCheckinMetadataUsesSingleBaseTime(t *testing.T) {
+	t.Setenv("TZ", "America/New_York")
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	now := time.Date(2026, 6, 1, 23, 59, 59, 0, loc)
+
+	status := withCheckinMetadataAt(AutoCheckinStatus{}, now)
+
+	assert.Equal(t, "2026-06-01", status.CurrentCheckinDay)
+	assert.Equal(t, "America/New_York", status.Timezone)
+	resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 6, 2, 0, 0, 0, 0, loc).UTC(), resetAt)
+}
+
 func TestAutoCheckinDeterministicScheduleSkipsTodayAfterSuccess(t *testing.T) {
 	t.Parallel()
 

@@ -41,3 +41,26 @@ test("Sub2API locale hints tell users where auth_token and refresh_token come fr
     assert.match(locale, /refresh_token/);
   }
 });
+
+test("auto check-in refresh falls back when reset metadata is stale", () => {
+  assert.match(panel, /function resolveCheckinDayRefreshTarget/);
+  assert.match(
+    panel,
+    /Number\.isNaN\(resetAt\.getTime\(\)\) \|\| resetAt\.getTime\(\) <= now[\s\S]+nextLocalMidnight\(new Date\(now\)\)/
+  );
+  assert.match(
+    panel,
+    /const now = Date\.now\(\);\s+const target = resolveCheckinDayRefreshTarget\(status, now\)/
+  );
+});
+
+test("auto check-in status time uses active i18n locale", () => {
+  assert.match(panel, /const \{ t,\s*locale \} = useI18n\(\)/);
+  assert.match(panel, /const statusTimeLocale = computed\(\(\) => locale\.value \|\| undefined\)/);
+  assert.match(
+    panel,
+    /utcDate\.toLocaleString\(statusTimeLocale\.value, \{ timeZone: timezone \}\)/
+  );
+  assert.match(panel, /utcDate\.toLocaleString\(statusTimeLocale\.value\)/);
+  assert.doesNotMatch(panel, /toLocaleString\("zh-CN"/);
+});
