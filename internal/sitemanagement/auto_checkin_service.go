@@ -598,7 +598,8 @@ func computeRandomTrigger(windowStart, windowEnd string, now time.Time) (time.Ti
 		}
 	}
 
-	if localNow.After(end) {
+	// Treat window end as an exclusive cutoff so the next run stays randomized.
+	if !localNow.Before(end) {
 		start = start.AddDate(0, 0, 1)
 		end = end.AddDate(0, 0, 1)
 	} else if localNow.After(start) {
@@ -607,7 +608,7 @@ func computeRandomTrigger(windowStart, windowEnd string, now time.Time) (time.Ti
 
 	duration := end.Sub(start)
 	if duration <= 0 {
-		return localNow.AddDate(0, 0, 1), nil
+		return computeNextScheduleDayRandomTrigger(windowStart, windowEnd, localNow)
 	}
 	offset := time.Duration(rand.Int63n(int64(duration)))
 	return start.Add(offset), nil

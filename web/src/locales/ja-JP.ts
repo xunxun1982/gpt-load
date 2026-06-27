@@ -1139,7 +1139,8 @@ export default {
     nextScheduled: "次回予定",
     lastRun: "前回実行",
     checkinSummary: "成功 {success} / 失敗 {failed} / スキップ {skipped}",
-    serverTimezoneNote: "時刻はサーバーの TZ タイムゾーンを使用し、未設定時は北京時間 (UTC+8) です",
+    serverTimezoneNote:
+      "時刻はサーバーの TZ タイムゾーンを使用し、未設定または無効な場合は北京時間 (UTC+8) です",
     clientLocalTime: "クライアントのローカル時刻",
     checkin: "チェックイン",
     logs: "ログ",

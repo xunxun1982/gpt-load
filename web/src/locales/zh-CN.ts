@@ -1103,7 +1103,7 @@ export default {
     nextScheduled: "下次执行",
     lastRun: "上次执行",
     checkinSummary: "成功 {success} / 失败 {failed} / 跳过 {skipped}",
-    serverTimezoneNote: "所有时间按服务端 TZ 时区执行，未设置时默认北京时间 (UTC+8)",
+    serverTimezoneNote: "所有时间按服务端 TZ 时区执行；未设置或无效时默认北京时间 (UTC+8)",
     clientLocalTime: "客户端本地时间",
     checkin: "签到",
     logs: "日志",

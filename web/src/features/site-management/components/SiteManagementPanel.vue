@@ -1614,6 +1614,7 @@ async function loadAutoCheckinConfig() {
     autoCheckinStatus.value = status;
     scheduleCheckinDayRefresh(status);
   } catch (_) {
+    scheduleCheckinDayRefresh(autoCheckinStatus.value);
     /* handled by centralized error handler */
   } finally {
     autoCheckinLoading.value = false;
