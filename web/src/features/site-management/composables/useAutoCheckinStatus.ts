@@ -100,7 +100,7 @@ export function useAutoCheckinStatus({
       }
       const timezone = autoCheckinStatus.value?.timezone;
       if (timezone) {
-        return utcDate.toLocaleString(statusTimeLocale.value, { timeZone: timezone });
+        return `${utcDate.toLocaleString(statusTimeLocale.value, { timeZone: timezone })} (${timezone})`;
       }
       return `${utcDate.toLocaleString(statusTimeLocale.value)} (${t("siteManagement.clientLocalTime")})`;
     } catch {

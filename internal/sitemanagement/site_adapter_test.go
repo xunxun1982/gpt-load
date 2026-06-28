@@ -17,6 +17,7 @@ func TestResolveManagedSiteAdapterCapabilities(t *testing.T) {
 		wantCheckin      bool
 		wantBalance      bool
 		wantBalanceRoute string
+		wantParser       balanceParserKind
 	}{
 		{
 			name:             "new api compatible",
@@ -25,6 +26,7 @@ func TestResolveManagedSiteAdapterCapabilities(t *testing.T) {
 			wantCheckin:      true,
 			wantBalance:      true,
 			wantBalanceRoute: "/api/user/self",
+			wantParser:       balanceParserNewAPI,
 		},
 		{
 			name:             "legacy veloera compatible",
@@ -33,6 +35,7 @@ func TestResolveManagedSiteAdapterCapabilities(t *testing.T) {
 			wantCheckin:      true,
 			wantBalance:      true,
 			wantBalanceRoute: "/api/user/self",
+			wantParser:       balanceParserNewAPI,
 		},
 		{
 			name:             "one hub compatible",
@@ -41,6 +44,7 @@ func TestResolveManagedSiteAdapterCapabilities(t *testing.T) {
 			wantCheckin:      true,
 			wantBalance:      true,
 			wantBalanceRoute: "/api/user/self",
+			wantParser:       balanceParserNewAPI,
 		},
 		{
 			name:             "done hub compatible",
@@ -49,6 +53,7 @@ func TestResolveManagedSiteAdapterCapabilities(t *testing.T) {
 			wantCheckin:      true,
 			wantBalance:      true,
 			wantBalanceRoute: "/api/user/self",
+			wantParser:       balanceParserNewAPI,
 		},
 		{
 			name:             "sub2api",
@@ -57,6 +62,7 @@ func TestResolveManagedSiteAdapterCapabilities(t *testing.T) {
 			wantCheckin:      true,
 			wantBalance:      true,
 			wantBalanceRoute: "/api/v1/user/profile",
+			wantParser:       balanceParserSub2API,
 		},
 		{
 			name:             "wong gongyi compatible",
@@ -65,6 +71,7 @@ func TestResolveManagedSiteAdapterCapabilities(t *testing.T) {
 			wantCheckin:      true,
 			wantBalance:      true,
 			wantBalanceRoute: "/api/user/self",
+			wantParser:       balanceParserNewAPI,
 		},
 		{
 			name:        "anyrouter checkin only",
@@ -104,6 +111,7 @@ func TestResolveManagedSiteAdapterCapabilities(t *testing.T) {
 			assert.Equal(t, tt.wantCheckin, capabilities.SupportsCheckin)
 			assert.Equal(t, tt.wantBalance, capabilities.SupportsBalance)
 			assert.Equal(t, tt.wantBalanceRoute, capabilities.BalanceEndpoint)
+			assert.Equal(t, tt.wantParser, capabilities.balanceParser)
 			assert.Equal(t, capabilities, adapter.Capabilities())
 		})
 	}

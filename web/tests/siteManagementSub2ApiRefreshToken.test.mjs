@@ -82,7 +82,7 @@ test("auto check-in status time uses active i18n locale", () => {
   assert.match(panel, /const statusTimeLocale = computed\(\(\) => locale\.value \|\| undefined\)/);
   assert.match(
     autoCheckinComposable,
-    /utcDate\.toLocaleString\(statusTimeLocale\.value, \{ timeZone: timezone \}\)/
+    /\$\{utcDate\.toLocaleString\(statusTimeLocale\.value, \{ timeZone: timezone \}\)\} \(\$\{timezone\}\)/
   );
   assert.match(autoCheckinComposable, /utcDate\.toLocaleString\(statusTimeLocale\.value\)/);
   assert.doesNotMatch(autoCheckinComposable, /toLocaleString\("zh-CN"/);

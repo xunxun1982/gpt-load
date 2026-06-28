@@ -1,16 +1,51 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import ts from "typescript";
 
 const modal = readFileSync("src/components/keys/GroupFormModal.vue", "utf8");
 const zhLocale = readFileSync("src/locales/zh-CN.ts", "utf8");
 const enLocale = readFileSync("src/locales/en-US.ts", "utf8");
 const jaLocale = readFileSync("src/locales/ja-JP.ts", "utf8");
 
-test("model redirect notice only appears when redirect rules are configured", () => {
+async function loadModelRedirectUtils() {
+  const source = readFileSync("src/utils/model-redirect.ts", "utf8");
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.ES2022,
+      target: ts.ScriptTarget.ES2022,
+    },
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+}
+
+test("model redirect notice only appears when effective redirect rules are configured", async () => {
+  const { hasEffectiveModelRedirectItems, hasEffectiveModelRedirectJson } =
+    await loadModelRedirectUtils();
+
+  assert.equal(
+    hasEffectiveModelRedirectItems([
+      { from: "", targets: [{ model: "", weight: 100, enabled: true }] },
+    ]),
+    false
+  );
+  assert.equal(
+    hasEffectiveModelRedirectItems([
+      { from: "GLM-5.2", targets: [{ model: "glm-5.2-air", weight: 100, enabled: true }] },
+    ]),
+    true
+  );
+  assert.equal(hasEffectiveModelRedirectJson("{"), false);
+  assert.equal(hasEffectiveModelRedirectJson('{"GLM-5.2":{"targets":[]}}'), false);
+  assert.equal(
+    hasEffectiveModelRedirectJson('{"GLM-5.2":{"targets":[{"model":"glm-5.2-air"}]}}'),
+    true
+  );
+
   assert.match(modal, /const hasModelRedirectRulesConfigured = computed/);
-  assert.match(modal, /formData\.model_redirect_items_v2\.some/);
-  assert.match(modal, /modelRedirectJsonStr\.value\.trim\(\)/);
+  assert.match(modal, /hasEffectiveModelRedirectJson\(modelRedirectJsonStr\.value\)/);
+  assert.match(modal, /hasEffectiveModelRedirectItems\(formData\.model_redirect_items_v2\)/);
   assert.match(modal, /v-if="hasModelRedirectRulesConfigured"/);
   assert.match(modal, /t\("keys\.modelRedirectBehaviorNotice"\)/);
 });

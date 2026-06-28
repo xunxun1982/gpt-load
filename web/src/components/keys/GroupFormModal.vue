@@ -14,6 +14,16 @@ import type {
 } from "@/types/models";
 import { formatEffectiveWeight, formatHealthScore, formatPercentage } from "@/utils/display";
 import {
+  hasEffectiveModelRedirectItems,
+  hasEffectiveModelRedirectJson,
+  mergeModelRedirectItems,
+  modelRedirectItemsV2ToFormattedJson,
+  modelRedirectItemsV2ToJson,
+  parseJsonToModelRedirectItemsV2,
+  type ModelRedirectItemV2,
+  type ModelRedirectTargetItem,
+} from "@/utils/model-redirect";
+import {
   Add,
   Close,
   CloudDownloadOutline,
@@ -92,19 +102,6 @@ const modelRedirectEditMode = ref<"gui" | "json">("gui");
 const modelRedirectJsonStr = ref("");
 // JSON validation error message
 const modelRedirectJsonError = ref("");
-
-// Model redirect target type (V2: one-to-many with weight)
-interface ModelRedirectTargetItem {
-  model: string;
-  weight: number;
-  enabled: boolean;
-}
-
-// Model redirect V2 item type
-interface ModelRedirectItemV2 {
-  from: string;
-  targets: ModelRedirectTargetItem[];
-}
 
 // Form data interface
 interface GroupFormData {
@@ -227,13 +224,10 @@ const upstreamProxySelectionOptions = computed(() => [
 const modelRedirectDynamicWeights = ref<ModelRedirectDynamicWeight[]>([]);
 const hasModelRedirectRulesConfigured = computed(() => {
   if (modelRedirectEditMode.value === "json") {
-    const json = modelRedirectJsonStr.value.trim();
-    return json !== "" && json !== "{}";
+    return hasEffectiveModelRedirectJson(modelRedirectJsonStr.value);
   }
 
-  return formData.model_redirect_items_v2.some(
-    rule => rule.from.trim() !== "" || rule.targets.length > 0
-  );
+  return hasEffectiveModelRedirectItems(formData.model_redirect_items_v2);
 });
 const controlledConfigKeys = new Set([
   "force_function_call",
@@ -997,148 +991,6 @@ function getHealthScoreClass(score: number): string {
     return "health-warning";
   }
   return "health-critical";
-}
-
-// V2: Convert V2 items to JSON for submission
-function modelRedirectItemsV2ToJson(items: ModelRedirectItemV2[]): string {
-  if (!items || items.length === 0) {
-    return "";
-  }
-  const obj: Record<
-    string,
-    { targets: Array<{ model: string; weight?: number; enabled?: boolean }> }
-  > = {};
-  items.forEach(item => {
-    if (item.from.trim()) {
-      const validTargets = item.targets
-        .filter(t => t.model.trim())
-        .map(t => ({
-          model: t.model.trim(),
-          weight: t.weight !== 100 ? t.weight : undefined,
-          enabled: t.enabled === false ? false : undefined,
-        }));
-      if (validTargets.length > 0) {
-        obj[item.from.trim()] = { targets: validTargets };
-      }
-    }
-  });
-  return Object.keys(obj).length > 0 ? JSON.stringify(obj) : "";
-}
-
-// Convert V2 items to formatted JSON string for display
-function modelRedirectItemsV2ToFormattedJson(items: ModelRedirectItemV2[]): string {
-  if (!items || items.length === 0) {
-    return "{}";
-  }
-  const obj: Record<
-    string,
-    { targets: Array<{ model: string; weight?: number; enabled?: boolean }> }
-  > = {};
-  items.forEach(item => {
-    if (item.from.trim()) {
-      const validTargets = item.targets
-        .filter(t => t.model.trim())
-        .map(t => ({
-          model: t.model.trim(),
-          weight: t.weight !== 100 ? t.weight : undefined,
-          enabled: t.enabled === false ? false : undefined,
-        }));
-      if (validTargets.length > 0) {
-        obj[item.from.trim()] = { targets: validTargets };
-      }
-    }
-  });
-  return JSON.stringify(obj, null, 2);
-}
-
-// Parse JSON string to V2 items
-function parseJsonToModelRedirectItemsV2(jsonStr: string): ModelRedirectItemV2[] {
-  if (!jsonStr || jsonStr.trim() === "" || jsonStr.trim() === "{}") {
-    return [];
-  }
-  try {
-    const obj = JSON.parse(jsonStr);
-    const items: ModelRedirectItemV2[] = [];
-    for (const [from, rule] of Object.entries(obj)) {
-      const ruleObj = rule as {
-        targets?: Array<{ model: string; weight?: number; enabled?: boolean }>;
-      };
-      if (ruleObj.targets && Array.isArray(ruleObj.targets)) {
-        items.push({
-          from,
-          targets: ruleObj.targets.map(t => ({
-            model: t.model || "",
-            weight: t.weight ?? 100,
-            enabled: t.enabled !== false,
-          })),
-        });
-      }
-    }
-    // Automatically merge duplicate rules after parsing
-    return mergeModelRedirectItems(items);
-  } catch {
-    return [];
-  }
-}
-
-// Merge duplicate model redirect rules by combining targets
-// When multiple rules have the same "from" model, their targets are merged into a single rule
-// Duplicate targets (same model name) are deduplicated, keeping the first occurrence
-function mergeModelRedirectItems(items: ModelRedirectItemV2[]): ModelRedirectItemV2[] {
-  if (!items || items.length === 0) {
-    return items;
-  }
-
-  // Use map to merge rules with same "from" model
-  const mergedMap = new Map<string, ModelRedirectItemV2>();
-
-  for (const item of items) {
-    const from = item.from.trim();
-    if (!from) {
-      continue; // Skip empty "from" values
-    }
-
-    if (mergedMap.has(from)) {
-      // Merge targets into existing rule
-      const existing = mergedMap.get(from);
-      if (!existing) {
-        continue;
-      }
-      // Normalize existing target models before dedupe to avoid whitespace duplicates
-      const seenModels = new Set(existing.targets.map(t => t.model.trim()));
-
-      for (const target of item.targets) {
-        const model = target.model.trim();
-        if (model && !seenModels.has(model)) {
-          // Normalize target model before pushing to avoid storing whitespace
-          existing.targets.push({ ...target, model });
-          seenModels.add(model);
-        }
-      }
-    } else {
-      // Add new rule, deduplicating targets within the rule
-      const seenModels = new Set<string>();
-      const uniqueTargets: ModelRedirectTargetItem[] = [];
-
-      for (const target of item.targets) {
-        const model = target.model.trim();
-        if (model && !seenModels.has(model)) {
-          // Normalize target model before adding to avoid storing whitespace
-          uniqueTargets.push({ ...target, model });
-          seenModels.add(model);
-        }
-      }
-
-      if (uniqueTargets.length > 0) {
-        mergedMap.set(from, {
-          from,
-          targets: uniqueTargets,
-        });
-      }
-    }
-  }
-
-  return Array.from(mergedMap.values());
 }
 
 // Switch between GUI and JSON edit modes
