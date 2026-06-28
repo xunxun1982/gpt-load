@@ -22,6 +22,7 @@ import {
   Remove,
 } from "@vicons/ionicons5";
 import {
+  NAlert,
   NButton,
   NButtonGroup,
   NCard,
@@ -224,6 +225,16 @@ const upstreamProxySelectionOptions = computed(() => [
   })),
 ]);
 const modelRedirectDynamicWeights = ref<ModelRedirectDynamicWeight[]>([]);
+const hasModelRedirectRulesConfigured = computed(() => {
+  if (modelRedirectEditMode.value === "json") {
+    const json = modelRedirectJsonStr.value.trim();
+    return json !== "" && json !== "{}";
+  }
+
+  return formData.model_redirect_items_v2.some(
+    rule => rule.from.trim() !== "" || rule.targets.length > 0
+  );
+});
 const controlledConfigKeys = new Set([
   "force_function_call",
   "parallel_tool_calls",
@@ -2455,6 +2466,15 @@ async function handleSubmit() {
                       </n-button>
                     </div>
 
+                    <n-alert
+                      v-if="hasModelRedirectRulesConfigured"
+                      type="info"
+                      :bordered="false"
+                      class="model-redirect-notice"
+                    >
+                      {{ t("keys.modelRedirectBehaviorNotice") }}
+                    </n-alert>
+
                     <!-- GUI Mode: V2 Rules List (one-to-many mapping with weights) -->
                     <template v-if="modelRedirectEditMode === 'gui'">
                       <div style="font-size: 12px; color: #999; margin-bottom: 8px">
@@ -3480,6 +3500,10 @@ async function handleSubmit() {
 .model-redirect-wrapper {
   width: 100%;
   --redirect-item-height: 36px;
+}
+
+.model-redirect-notice {
+  margin-bottom: 12px;
 }
 
 .model-redirect-row {

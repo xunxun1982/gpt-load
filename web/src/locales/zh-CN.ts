@@ -479,6 +479,8 @@ export default {
     modelRedirectLooseInfo: "宽松模式下，未配置重定向的模型将直接透传给上游服务",
     modelRedirectRules: "模型重定向规则",
     modelRedirectTooltip: "配置模型重定向规则，键为用户请求的模型名，值为实际请求上游的模型名",
+    modelRedirectBehaviorNotice:
+      "模型名大小写敏感，重定向只按客户端请求的源模型名精确匹配；GPT-Load 不会自动转换大小写，也不会按目标模型名反查。若上游会做大小写归一、存在大小写归一后重名或同时暴露大小写变体，请注意：配置 GLM-5.2 → glm-5.2 只会接管请求 GLM-5.2；请求 glm-5.2 若未单独配置为源模型，不会因为它是目标模型名而被这条规则接管。宽松模式会保持原名交给上游处理，最终命中哪个上游模型由上游决定；严格模式会由代理拒绝。需要代理层也明确允许该名称时，请添加自映射（如 glm-5.2 → glm-5.2）。",
     modelRedirectMode: "重定向模式",
     modelRedirectSimpleMode: "简单模式",
     modelRedirectAdvancedMode: "高级模式",

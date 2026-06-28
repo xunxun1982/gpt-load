@@ -500,6 +500,8 @@ export default {
     modelRedirectRules: "Model Redirect Rules",
     modelRedirectTooltip:
       "Configure model redirect rules, key is the model name requested by user, value is the actual model name sent to upstream",
+    modelRedirectBehaviorNotice:
+      "Model names are case-sensitive. Redirects match only the source model name requested by the client; GPT-Load does not normalize case or reverse-match target names. If an upstream normalizes case, has models that collide after case normalization, or exposes uppercase/lowercase variants, note: GLM-5.2 → glm-5.2 only takes over requests for GLM-5.2. A request for glm-5.2 that is not also configured as a source model is not taken over just because it is a target name. In loose mode it is sent upstream unchanged, and the upstream decides which model it resolves to; in strict mode the proxy rejects it. Add a self-redirect such as glm-5.2 → glm-5.2 to explicitly allow that name at the proxy layer too.",
     modelRedirectMode: "Redirect Mode",
     modelRedirectSimpleMode: "Simple Mode",
     modelRedirectAdvancedMode: "Advanced Mode",
