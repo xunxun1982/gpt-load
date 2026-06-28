@@ -45,7 +45,11 @@ export function useAutoCheckinStatus({
     checkinDayRefreshTimer.value = window.setTimeout(() => {
       void (async () => {
         await loadAutoCheckinConfig();
-        await refreshSites();
+        try {
+          await refreshSites();
+        } catch {
+          /* Keep scheduled refresh failures from surfacing as unhandled rejections. */
+        }
       })();
     }, delay);
   }

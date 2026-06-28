@@ -45,12 +45,12 @@ function modelRedirectItemsV2ToObject(
 }
 
 export function modelRedirectItemsV2ToJson(items: ModelRedirectItemV2[]): string {
-  const obj = modelRedirectItemsV2ToObject(items);
+  const obj = modelRedirectItemsV2ToObject(mergeModelRedirectItems(items));
   return Object.keys(obj).length > 0 ? JSON.stringify(obj) : "";
 }
 
 export function modelRedirectItemsV2ToFormattedJson(items: ModelRedirectItemV2[]): string {
-  return JSON.stringify(modelRedirectItemsV2ToObject(items), null, 2);
+  return JSON.stringify(modelRedirectItemsV2ToObject(mergeModelRedirectItems(items)), null, 2);
 }
 
 export function parseJsonToModelRedirectItemsV2(jsonStr: string): ModelRedirectItemV2[] {

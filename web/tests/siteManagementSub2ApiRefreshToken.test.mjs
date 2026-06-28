@@ -101,6 +101,7 @@ test("auto check-in config load failure retries before the next midnight", () =>
     autoCheckinComposable,
     /scheduleCheckinDayRefresh\(autoCheckinStatus\.value, CHECKIN_REFRESH_ERROR_RETRY_MS\)/
   );
+  assert.match(autoCheckinComposable, /try\s*\{\s*await refreshSites\(\);\s*\}\s*catch/);
   assert.doesNotMatch(panel, /const CHECKIN_REFRESH_ERROR_RETRY_MS = 5 \* 60 \* 1000/);
 });
 
@@ -122,6 +123,7 @@ test("auto check-in fallback day boundaries use the server timezone", async () =
 
   assert.equal(formatServerCheckinDay(now, "America/New_York"), "2026-06-28");
   assert.equal(formatServerCheckinDay(now, undefined), "2026-06-29");
+  assert.equal(formatServerCheckinDay(now, "Invalid/Timezone"), "2026-06-29");
 
   assert.equal(
     resolveCheckinDayRefreshTarget(
@@ -134,4 +136,8 @@ test("auto check-in fallback day boundaries use the server timezone", async () =
     "2026-06-29T04:00:01.000Z"
   );
   assert.equal(resolveCheckinDayRefreshTarget(null, now).toISOString(), "2026-06-29T16:00:01.000Z");
+  assert.equal(
+    resolveCheckinDayRefreshTarget({ timezone: "Invalid/Timezone" }, now).toISOString(),
+    "2026-06-29T16:00:01.000Z"
+  );
 });

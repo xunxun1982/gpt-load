@@ -596,7 +596,7 @@ func computeRandomTrigger(windowStart, windowEnd string, now time.Time) (time.Ti
 	if end.Before(start) || end.Equal(start) {
 		end = end.AddDate(0, 0, 1)
 		// Window crosses midnight and we're after midnight but before the end.
-		if localNow.Before(start) && nowMin <= endMin {
+		if localNow.Before(start) && nowMin < endMin {
 			start = start.AddDate(0, 0, -1)
 			end = end.AddDate(0, 0, -1)
 		}

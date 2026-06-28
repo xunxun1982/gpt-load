@@ -54,6 +54,22 @@ test("model redirect notice only appears when effective redirect rules are confi
   assert.match(modal, /t\("keys\.modelRedirectBehaviorNotice"\)/);
 });
 
+test("model redirect serialization merges duplicate source rules", async () => {
+  const { modelRedirectItemsV2ToJson, modelRedirectItemsV2ToFormattedJson } =
+    await loadModelRedirectUtils();
+  const duplicateItems = [
+    { from: "GLM-5.2", targets: [{ model: "glm-5.2-air", weight: 100, enabled: true }] },
+    { from: " GLM-5.2 ", targets: [{ model: "glm-5.2-pro", weight: 80, enabled: true }] },
+  ];
+
+  assert.equal(
+    modelRedirectItemsV2ToJson(duplicateItems),
+    '{"GLM-5.2":{"targets":[{"model":"glm-5.2-air"},{"model":"glm-5.2-pro","weight":80}]}}'
+  );
+  assert.match(modelRedirectItemsV2ToFormattedJson(duplicateItems), /glm-5\.2-air/);
+  assert.match(modelRedirectItemsV2ToFormattedJson(duplicateItems), /glm-5\.2-pro/);
+});
+
 test("model redirect notice copy explains case-sensitive matching and strict mode self mapping", () => {
   assert.match(zhLocale, /modelRedirectBehaviorNotice:/);
   assert.match(zhLocale, /大小写敏感/);

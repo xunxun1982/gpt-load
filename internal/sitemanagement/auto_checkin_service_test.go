@@ -1207,6 +1207,20 @@ func TestComputeRandomTriggerTreatsWindowEndAsCutoff(t *testing.T) {
 		"window end should advance to the next day's random window")
 }
 
+func TestComputeRandomTriggerTreatsCrossMidnightWindowEndAsCutoff(t *testing.T) {
+	t.Setenv("TZ", "Asia/Shanghai")
+
+	now := time.Date(2026, 6, 13, 2, 0, 0, 0, beijingLocation)
+
+	next, err := computeRandomTrigger("23:00", "02:00", now)
+
+	require.NoError(t, err)
+	localNext := next.In(beijingLocation)
+	assert.True(t, !localNext.Before(time.Date(2026, 6, 13, 23, 0, 0, 0, beijingLocation)) &&
+		localNext.Before(time.Date(2026, 6, 14, 2, 0, 0, 0, beijingLocation)),
+		"cross-midnight window end should advance to the next random window")
+}
+
 func TestRandomScheduleDayStartTreatsCrossMidnightWindowEndAsExclusive(t *testing.T) {
 	t.Setenv("TZ", "Asia/Shanghai")
 
@@ -1257,7 +1271,7 @@ func TestComputeMultipleTriggerKeepsWallClockTimeAcrossDST(t *testing.T) {
 	loc, err := time.LoadLocation("America/New_York")
 	require.NoError(t, err)
 
-	now := time.Date(2026, 3, 8, 23, 0, 0, 0, loc)
+	now := time.Date(2026, 3, 8, 1, 0, 0, 0, loc)
 
 	next := computeMultipleTrigger([]string{"00:30"}, now)
 
@@ -1267,10 +1281,13 @@ func TestComputeMultipleTriggerKeepsWallClockTimeAcrossDST(t *testing.T) {
 	assert.Equal(t, 9, localNext.Day())
 	assert.Equal(t, 0, localNext.Hour())
 	assert.Equal(t, 30, localNext.Minute())
+	assert.Equal(t, "-04:00", localNext.Format("-07:00"))
 }
 
 func TestAutoCheckinStatusIncludesServerTimezoneMetadata(t *testing.T) {
 	t.Setenv("TZ", "America/New_York")
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
 
 	db := setupTestDB(t)
 	encSvc := setupTestEncryption(t)
@@ -1278,11 +1295,36 @@ func TestAutoCheckinStatusIncludesServerTimezoneMetadata(t *testing.T) {
 
 	status := service.GetStatus()
 
-	assert.Equal(t, GetBeijingCheckinDay(), status.CurrentCheckinDay)
+	assert.Equal(t, time.Now().In(loc).Format("2006-01-02"), status.CurrentCheckinDay)
 	assert.Equal(t, "America/New_York", status.Timezone)
 	resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
 	require.NoError(t, err)
 	assert.True(t, resetAt.After(time.Now()))
+}
+
+func TestAutoCheckinStatusMetadataFallsBackToBeijingTimezone(t *testing.T) {
+	now := time.Date(2026, 6, 28, 16, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		tz   string
+	}{
+		{name: "unset TZ", tz: ""},
+		{name: "invalid TZ", tz: "Invalid/Timezone"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TZ", tt.tz)
+
+			status := withCheckinMetadataAt(AutoCheckinStatus{}, now)
+
+			assert.Equal(t, "2026-06-29", status.CurrentCheckinDay)
+			assert.Equal(t, fallbackTimezoneName, status.Timezone)
+			resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
+			require.NoError(t, err)
+			assert.Equal(t, time.Date(2026, 6, 29, 16, 0, 0, 0, time.UTC), resetAt)
+		})
+	}
 }
 
 func TestWithCheckinMetadataUsesSingleBaseTime(t *testing.T) {

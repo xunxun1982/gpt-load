@@ -1,3 +1,8 @@
+import {
+  DEFAULT_CLAUDE_CODE_VERSION,
+  DEFAULT_CODEX_VERSION,
+} from "@/utils/simulated-client-defaults";
+
 export default {
   auth: {
     noAuthKeyFound: "認証情報が見つかりません、エクスポートできません",
@@ -557,11 +562,11 @@ export default {
     simulatedClientTip:
       "オフでは透過します。有効にすると選択したクライアントの指紋ヘッダーを適用します。",
     simulatedCodexVersion: "Codex バージョン",
-    simulatedCodexVersionPlaceholder: "デフォルト 0.142.3",
+    simulatedCodexVersionPlaceholder: `デフォルト ${DEFAULT_CODEX_VERSION}`,
     simulatedCodexVersionTip:
       "codex-tui/<version> User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
     simulatedClaudeCodeVersion: "Claude Code バージョン",
-    simulatedClaudeCodeVersionPlaceholder: "デフォルト 2.1.195",
+    simulatedClaudeCodeVersionPlaceholder: `デフォルト ${DEFAULT_CLAUDE_CODE_VERSION}`,
     simulatedClaudeCodeVersionTip:
       "claude-cli User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
     invalidSimulatedClientVersion:

@@ -1,3 +1,8 @@
+import {
+  DEFAULT_CLAUDE_CODE_VERSION,
+  DEFAULT_CODEX_VERSION,
+} from "@/utils/simulated-client-defaults";
+
 export default {
   auth: {
     noAuthKeyFound: "No authentication found, cannot export",
@@ -557,11 +562,11 @@ export default {
     simulatedClientTip:
       "Off keeps passthrough. Enabled modes apply the selected client fingerprint.",
     simulatedCodexVersion: "Codex Version",
-    simulatedCodexVersionPlaceholder: "Default 0.142.3",
+    simulatedCodexVersionPlaceholder: `Default ${DEFAULT_CODEX_VERSION}`,
     simulatedCodexVersionTip:
       "Builds the codex-tui/<version> User-Agent. Leave empty to use the default version.",
     simulatedClaudeCodeVersion: "Claude Code Version",
-    simulatedClaudeCodeVersionPlaceholder: "Default 2.1.195",
+    simulatedClaudeCodeVersionPlaceholder: `Default ${DEFAULT_CLAUDE_CODE_VERSION}`,
     simulatedClaudeCodeVersionTip:
       "Builds the claude-cli User-Agent. Leave empty to use the default version.",
     invalidSimulatedClientVersion:
