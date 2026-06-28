@@ -2,15 +2,19 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { URL } from "node:url";
 import ts from "typescript";
 
-const modal = readFileSync("src/components/keys/GroupFormModal.vue", "utf8");
-const zhLocale = readFileSync("src/locales/zh-CN.ts", "utf8");
-const enLocale = readFileSync("src/locales/en-US.ts", "utf8");
-const jaLocale = readFileSync("src/locales/ja-JP.ts", "utf8");
+const modal = readFileSync(
+  new URL("../src/components/keys/GroupFormModal.vue", import.meta.url),
+  "utf8"
+);
+const zhLocale = readFileSync(new URL("../src/locales/zh-CN.ts", import.meta.url), "utf8");
+const enLocale = readFileSync(new URL("../src/locales/en-US.ts", import.meta.url), "utf8");
+const jaLocale = readFileSync(new URL("../src/locales/ja-JP.ts", import.meta.url), "utf8");
 
 async function loadModelRedirectUtils() {
-  const source = readFileSync("src/utils/model-redirect.ts", "utf8");
+  const source = readFileSync(new URL("../src/utils/model-redirect.ts", import.meta.url), "utf8");
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: {
       module: ts.ModuleKind.ES2022,

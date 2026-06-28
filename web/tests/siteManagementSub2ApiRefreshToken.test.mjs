@@ -1,19 +1,48 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { URL } from "node:url";
+import ts from "typescript";
 
 const panel = readFileSync(
-  "src/features/site-management/components/SiteManagementPanel.vue",
+  new URL("../src/features/site-management/components/SiteManagementPanel.vue", import.meta.url),
   "utf8"
 );
-const autoCheckinComposablePath =
-  "src/features/site-management/composables/useAutoCheckinStatus.ts";
-const autoCheckinComposable = existsSync(autoCheckinComposablePath)
-  ? readFileSync(autoCheckinComposablePath, "utf8")
+const autoCheckinComposableUrl = new URL(
+  "../src/features/site-management/composables/useAutoCheckinStatus.ts",
+  import.meta.url
+);
+const autoCheckinTimeUtilsUrl = new URL(
+  "../src/features/site-management/utils/checkin-time.ts",
+  import.meta.url
+);
+const autoCheckinComposable = existsSync(autoCheckinComposableUrl)
+  ? readFileSync(autoCheckinComposableUrl, "utf8")
   : "";
-const zhSiteLocale = readFileSync("src/locales/site-management/zh-CN.ts", "utf8");
-const enSiteLocale = readFileSync("src/locales/site-management/en-US.ts", "utf8");
-const jaSiteLocale = readFileSync("src/locales/site-management/ja-JP.ts", "utf8");
+const zhSiteLocale = readFileSync(
+  new URL("../src/locales/site-management/zh-CN.ts", import.meta.url),
+  "utf8"
+);
+const enSiteLocale = readFileSync(
+  new URL("../src/locales/site-management/en-US.ts", import.meta.url),
+  "utf8"
+);
+const jaSiteLocale = readFileSync(
+  new URL("../src/locales/site-management/ja-JP.ts", import.meta.url),
+  "utf8"
+);
+
+async function loadAutoCheckinTimeUtils() {
+  const source = readFileSync(autoCheckinTimeUtilsUrl, "utf8");
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.ES2022,
+      target: ts.ScriptTarget.ES2022,
+    },
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+}
 
 test("Sub2API access token auth has a separate refresh token input", () => {
   assert.match(panel, /refresh_token:\s*""/);
@@ -48,13 +77,11 @@ test("Sub2API locale hints tell users where auth_token and refresh_token come fr
 });
 
 test("auto check-in refresh falls back when reset metadata is stale", () => {
-  assert.ok(existsSync(autoCheckinComposablePath));
+  assert.ok(existsSync(autoCheckinComposableUrl));
+  assert.ok(existsSync(autoCheckinTimeUtilsUrl));
   assert.match(panel, /useAutoCheckinStatus/);
-  assert.match(autoCheckinComposable, /function resolveCheckinDayRefreshTarget/);
-  assert.match(
-    autoCheckinComposable,
-    /Number\.isNaN\(resetAt\.getTime\(\)\) \|\| resetAt\.getTime\(\) <= now[\s\S]+nextLocalMidnight\(new Date\(now\)\)/
-  );
+  assert.match(autoCheckinComposable, /resolveCheckinDayRefreshTarget\(status,\s*now\)/);
+  assert.doesNotMatch(autoCheckinComposable, /nextLocalMidnight\(new Date\(now\)\)/);
   assert.match(
     autoCheckinComposable,
     /const now = Date\.now\(\);\s+const target = resolveCheckinDayRefreshTarget\(status, now\)/
@@ -63,7 +90,7 @@ test("auto check-in refresh falls back when reset metadata is stale", () => {
 });
 
 test("auto check-in config load failure retries before the next midnight", () => {
-  assert.ok(existsSync(autoCheckinComposablePath));
+  assert.ok(existsSync(autoCheckinComposableUrl));
   assert.match(autoCheckinComposable, /const CHECKIN_REFRESH_ERROR_RETRY_MS = 5 \* 60 \* 1000/);
   assert.match(
     autoCheckinComposable,
@@ -86,4 +113,25 @@ test("auto check-in status time uses active i18n locale", () => {
   );
   assert.match(autoCheckinComposable, /utcDate\.toLocaleString\(statusTimeLocale\.value\)/);
   assert.doesNotMatch(autoCheckinComposable, /toLocaleString\("zh-CN"/);
+});
+
+test("auto check-in fallback day boundaries use the server timezone", async () => {
+  const { formatServerCheckinDay, resolveCheckinDayRefreshTarget } =
+    await loadAutoCheckinTimeUtils();
+  const now = Date.parse("2026-06-29T03:30:00.000Z");
+
+  assert.equal(formatServerCheckinDay(now, "America/New_York"), "2026-06-28");
+  assert.equal(formatServerCheckinDay(now, undefined), "2026-06-29");
+
+  assert.equal(
+    resolveCheckinDayRefreshTarget(
+      {
+        timezone: "America/New_York",
+        next_checkin_reset_at: "2026-06-29T01:00:00.000Z",
+      },
+      now
+    ).toISOString(),
+    "2026-06-29T04:00:01.000Z"
+  );
+  assert.equal(resolveCheckinDayRefreshTarget(null, now).toISOString(), "2026-06-29T16:00:01.000Z");
 });

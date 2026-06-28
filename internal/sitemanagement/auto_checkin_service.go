@@ -652,7 +652,7 @@ func randomScheduleDayStart(t time.Time, startMin, endMin int) time.Time {
 	localTime := t.In(loc)
 	dayStart := time.Date(localTime.Year(), localTime.Month(), localTime.Day(), 0, 0, 0, 0, loc)
 	nowMin := localTime.Hour()*60 + localTime.Minute()
-	if startMin >= endMin && nowMin <= endMin {
+	if startMin >= endMin && nowMin < endMin {
 		return dayStart.AddDate(0, 0, -1)
 	}
 	return dayStart

@@ -3,34 +3,16 @@ import {
   type AutoCheckinConfig,
   type AutoCheckinStatus,
 } from "@/api/site-management";
+import {
+  formatServerCheckinDay,
+  resolveCheckinDayRefreshTarget,
+} from "@/features/site-management/utils/checkin-time";
 import { computed, onUnmounted, ref, type ComputedRef } from "vue";
 
 interface UseAutoCheckinStatusOptions {
   statusTimeLocale: ComputedRef<string | undefined>;
   t: (key: string) => string;
   refreshSites: () => Promise<unknown> | unknown;
-}
-
-function formatLocalDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function nextLocalMidnight(now = new Date()): Date {
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
-}
-
-function resolveCheckinDayRefreshTarget(status: AutoCheckinStatus | null, now = Date.now()): Date {
-  const resetAt = status?.next_checkin_reset_at
-    ? new Date(status.next_checkin_reset_at)
-    : nextLocalMidnight(new Date(now));
-  // Stale reset metadata should not create a tight reload loop after refresh failures.
-  if (Number.isNaN(resetAt.getTime()) || resetAt.getTime() <= now) {
-    return nextLocalMidnight(new Date(now));
-  }
-  return resetAt;
 }
 
 const CHECKIN_REFRESH_ERROR_RETRY_MS = 5 * 60 * 1000;
@@ -68,10 +50,11 @@ export function useAutoCheckinStatus({
     }, delay);
   }
 
-  // Prefer the backend-resolved site-management day. The local fallback only covers
-  // initial loading and older backends that do not return current_checkin_day yet.
+  // Prefer backend metadata; fallback uses the same server timezone default as the backend.
   const currentCheckinDay = computed(
-    () => autoCheckinStatus.value?.current_checkin_day || formatLocalDate(new Date())
+    () =>
+      autoCheckinStatus.value?.current_checkin_day ||
+      formatServerCheckinDay(Date.now(), autoCheckinStatus.value?.timezone)
   );
 
   async function loadAutoCheckinConfig() {

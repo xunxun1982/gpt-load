@@ -557,11 +557,11 @@ export default {
     simulatedClientTip:
       "Off keeps passthrough. Enabled modes apply the selected client fingerprint.",
     simulatedCodexVersion: "Codex Version",
-    simulatedCodexVersionPlaceholder: "Default 0.141.0",
+    simulatedCodexVersionPlaceholder: "Default 0.142.3",
     simulatedCodexVersionTip:
       "Builds the codex-tui/<version> User-Agent. Leave empty to use the default version.",
     simulatedClaudeCodeVersion: "Claude Code Version",
-    simulatedClaudeCodeVersionPlaceholder: "Default 2.1.183",
+    simulatedClaudeCodeVersionPlaceholder: "Default 2.1.195",
     simulatedClaudeCodeVersionTip:
       "Builds the claude-cli User-Agent. Leave empty to use the default version.",
     invalidSimulatedClientVersion:

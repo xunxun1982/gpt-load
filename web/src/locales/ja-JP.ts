@@ -557,11 +557,11 @@ export default {
     simulatedClientTip:
       "オフでは透過します。有効にすると選択したクライアントの指紋ヘッダーを適用します。",
     simulatedCodexVersion: "Codex バージョン",
-    simulatedCodexVersionPlaceholder: "デフォルト 0.141.0",
+    simulatedCodexVersionPlaceholder: "デフォルト 0.142.3",
     simulatedCodexVersionTip:
       "codex-tui/<version> User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
     simulatedClaudeCodeVersion: "Claude Code バージョン",
-    simulatedClaudeCodeVersionPlaceholder: "デフォルト 2.1.183",
+    simulatedClaudeCodeVersionPlaceholder: "デフォルト 2.1.195",
     simulatedClaudeCodeVersionTip:
       "claude-cli User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
     invalidSimulatedClientVersion:

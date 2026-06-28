@@ -1207,6 +1207,19 @@ func TestComputeRandomTriggerTreatsWindowEndAsCutoff(t *testing.T) {
 		"window end should advance to the next day's random window")
 }
 
+func TestRandomScheduleDayStartTreatsCrossMidnightWindowEndAsExclusive(t *testing.T) {
+	t.Setenv("TZ", "Asia/Shanghai")
+
+	startMin := 23 * 60
+	endMin := 2 * 60
+
+	beforeEnd := time.Date(2026, 6, 13, 1, 59, 0, 0, beijingLocation)
+	atEnd := time.Date(2026, 6, 13, 2, 0, 0, 0, beijingLocation)
+
+	assert.Equal(t, "2026-06-12", randomScheduleDayStart(beforeEnd, startMin, endMin).Format("2006-01-02"))
+	assert.Equal(t, "2026-06-13", randomScheduleDayStart(atEnd, startMin, endMin).Format("2006-01-02"))
+}
+
 func TestAutoCheckinMultipleScheduleSkipsRemainingTimesAfterSuccess(t *testing.T) {
 	t.Parallel()
 

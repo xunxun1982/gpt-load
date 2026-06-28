@@ -92,8 +92,8 @@ const formRef = ref();
 const fetchingModels = ref(false);
 const showModelSelector = ref(false);
 const availableModels = ref<string[]>([]);
-const DEFAULT_CODEX_VERSION = "0.141.0";
-const DEFAULT_CLAUDE_CODE_VERSION = "2.1.183";
+const DEFAULT_CODEX_VERSION = "0.142.3";
+const DEFAULT_CLAUDE_CODE_VERSION = "2.1.195";
 const simpleClientVersionPattern = /^[0-9]+(?:\.[0-9]+)+$/;
 
 // Model redirect edit mode: "gui" or "json"

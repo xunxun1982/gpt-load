@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { URL } from "node:url";
 
-const panel = readFileSync("src/features/proxy-pool/components/ProxyPoolPanel.vue", "utf8");
+const panel = readFileSync(
+  new URL("../src/features/proxy-pool/components/ProxyPoolPanel.vue", import.meta.url),
+  "utf8"
+);
 
 test("proxy pool page removes the standalone periodic test switch", () => {
   assert.equal(panel.includes("proxy-pool-auto-test"), false);

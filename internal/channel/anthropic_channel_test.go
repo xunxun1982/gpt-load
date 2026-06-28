@@ -186,7 +186,7 @@ func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testin
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, BuildClaudeCodeUserAgent("2.1.183"), r.Header.Get("User-Agent"))
+		assert.Equal(t, BuildClaudeCodeUserAgent(DefaultClaudeCodeVersion), r.Header.Get("User-Agent"))
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		assert.Equal(t, "cli", r.Header.Get("X-App"))
@@ -260,7 +260,7 @@ func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testin
 	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
 		Config: datatypes.JSONMap{
 			"simulated_client":              "claude_code",
-			"simulated_claude_code_version": "2.1.183",
+			"simulated_claude_code_version": DefaultClaudeCodeVersion,
 			"validation_stream":             true,
 		},
 	})
@@ -298,7 +298,7 @@ func TestAnthropicChannel_ValidateKey_ClaudeCodeDefaultOmitsStream(t *testing.T)
 	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
 		Config: datatypes.JSONMap{
 			"simulated_client":              "claude_code",
-			"simulated_claude_code_version": "2.1.183",
+			"simulated_claude_code_version": DefaultClaudeCodeVersion,
 		},
 	})
 	assert.NoError(t, err)
@@ -335,7 +335,7 @@ func TestAnthropicChannel_ValidateKey_ClaudeCodeHonorsForceNonStream(t *testing.
 	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
 		Config: datatypes.JSONMap{
 			"simulated_client":              "claude_code",
-			"simulated_claude_code_version": "2.1.183",
+			"simulated_claude_code_version": DefaultClaudeCodeVersion,
 			"force_non_stream":              true,
 		},
 	})

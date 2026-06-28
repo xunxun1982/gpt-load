@@ -95,8 +95,8 @@ const (
 // All times are in the site-management timezone.
 type AutoCheckinConfig struct {
 	GlobalEnabled bool `json:"global_enabled"`
-	// ScheduleTimes contains multiple check-in times in "HH:MM" format, comma-separated.
-	// Example: "09:00,12:00,18:00" for three daily check-ins.
+	// ScheduleTimes contains multiple check-in times in "HH:MM" format.
+	// Example: ["09:00", "12:00", "18:00"] for three daily check-ins.
 	// Used when ScheduleMode is "multiple".
 	ScheduleTimes []string `json:"schedule_times"`
 	// WindowStart is the start time in "HH:MM" format (24-hour, site-management timezone).
