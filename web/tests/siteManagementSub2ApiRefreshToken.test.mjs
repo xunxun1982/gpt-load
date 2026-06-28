@@ -54,6 +54,19 @@ test("auto check-in refresh falls back when reset metadata is stale", () => {
   );
 });
 
+test("auto check-in config load failure retries before the next midnight", () => {
+  assert.match(panel, /const CHECKIN_REFRESH_ERROR_RETRY_MS = 5 \* 60 \* 1000/);
+  assert.match(
+    panel,
+    /function scheduleCheckinDayRefresh\(status: AutoCheckinStatus \| null, delayOverride\?: number\)/
+  );
+  assert.match(panel, /delayOverride \?\?\s+Math\.min/);
+  assert.match(
+    panel,
+    /scheduleCheckinDayRefresh\(autoCheckinStatus\.value, CHECKIN_REFRESH_ERROR_RETRY_MS\)/
+  );
+});
+
 test("auto check-in status time uses active i18n locale", () => {
   assert.match(panel, /const \{ t,\s*locale \} = useI18n\(\)/);
   assert.match(panel, /const statusTimeLocale = computed\(\(\) => locale\.value \|\| undefined\)/);

@@ -114,6 +114,7 @@ const autoCheckinStatus = ref<AutoCheckinStatus | null>(null);
 const autoCheckinLoading = ref(false);
 const autoCheckinRunning = ref(false);
 const showAutoCheckinConfig = ref(false);
+const CHECKIN_REFRESH_ERROR_RETRY_MS = 5 * 60 * 1000;
 
 // Pagination state
 const pagination = reactive({
@@ -264,7 +265,7 @@ function resolveCheckinDayRefreshTarget(status: AutoCheckinStatus | null, now = 
   return resetAt;
 }
 
-function scheduleCheckinDayRefresh(status: AutoCheckinStatus | null) {
+function scheduleCheckinDayRefresh(status: AutoCheckinStatus | null, delayOverride?: number) {
   if (checkinDayRefreshTimer.value) {
     window.clearTimeout(checkinDayRefreshTimer.value);
     checkinDayRefreshTimer.value = undefined;
@@ -272,7 +273,8 @@ function scheduleCheckinDayRefresh(status: AutoCheckinStatus | null) {
 
   const now = Date.now();
   const target = resolveCheckinDayRefreshTarget(status, now);
-  const delay = Math.min(Math.max(target.getTime() - now + 1000, 1000), 2_147_483_647);
+  const delay =
+    delayOverride ?? Math.min(Math.max(target.getTime() - now + 1000, 1000), 2_147_483_647);
 
   checkinDayRefreshTimer.value = window.setTimeout(() => {
     void (async () => {
@@ -1623,7 +1625,7 @@ async function loadAutoCheckinConfig() {
     autoCheckinStatus.value = status;
     scheduleCheckinDayRefresh(status);
   } catch (_) {
-    scheduleCheckinDayRefresh(autoCheckinStatus.value);
+    scheduleCheckinDayRefresh(autoCheckinStatus.value, CHECKIN_REFRESH_ERROR_RETRY_MS);
     /* handled by centralized error handler */
   } finally {
     autoCheckinLoading.value = false;

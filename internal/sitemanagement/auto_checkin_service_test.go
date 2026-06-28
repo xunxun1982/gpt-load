@@ -1188,9 +1188,9 @@ func TestAutoCheckinRandomScheduleSkipsCrossMidnightWindowAfterSuccess(t *testin
 	next, err := computeNextRegularTrigger(cfg, now, true)
 
 	require.NoError(t, err)
-	assert.True(t, !next.In(beijingLocation).Before(time.Date(2026, 6, 13, 23, 0, 0, 0, beijingLocation)) &&
-		next.In(beijingLocation).Before(time.Date(2026, 6, 14, 2, 0, 0, 0, beijingLocation)),
-		"successful auto check-in during a cross-midnight random window should skip to the next calendar day's window")
+	assert.True(t, !next.In(beijingLocation).Before(time.Date(2026, 6, 14, 23, 0, 0, 0, beijingLocation)) &&
+		next.In(beijingLocation).Before(time.Date(2026, 6, 15, 2, 0, 0, 0, beijingLocation)),
+		"successful auto check-in during a cross-midnight random window should skip the current local day")
 }
 
 func TestComputeRandomTriggerTreatsWindowEndAsCutoff(t *testing.T) {

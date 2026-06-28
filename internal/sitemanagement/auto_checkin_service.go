@@ -541,7 +541,7 @@ func computeNextRegularTrigger(cfg *AutoCheckinConfig, now time.Time, skipToday 
 		}
 	}
 	if skipToday {
-		return computeNextScheduleDayRandomTrigger(cfg.WindowStart, cfg.WindowEnd, now)
+		return computeNextScheduleDayRandomTrigger(cfg.WindowStart, cfg.WindowEnd, base)
 	}
 	return computeRandomTrigger(cfg.WindowStart, cfg.WindowEnd, base)
 }

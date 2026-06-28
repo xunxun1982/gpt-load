@@ -349,6 +349,7 @@ export interface AutoCheckinStatus {
   last_run_at?: string;
   last_run_result?: string;
   next_scheduled_at?: string;
+  // Kept optional for initial loading and older backends; current GetStatus fills them.
   current_checkin_day?: string;
   timezone?: string;
   next_checkin_reset_at?: string;
