@@ -1127,20 +1127,14 @@ type checkinProvider interface {
 }
 
 func resolveProvider(siteType string) checkinProvider {
-	switch siteType {
-	case SiteTypeNewAPI, SiteTypeVeloera, SiteTypeOneHub, SiteTypeDoneHub:
-		// NewAPI-compatible sites share the same checkin endpoint: POST /api/user/checkin
-		return newAPIProvider{}
-	case SiteTypeSub2API:
-		return sub2APIProvider{}
-	case SiteTypeWongGongyi:
-		return wongProvider{}
-	case SiteTypeAnyrouter:
-		return anyrouterProvider{}
-	// Note: SiteTypeBrand, SiteTypeUnknown do not have dedicated checkin providers
-	default:
+	adapter := resolveManagedSiteAdapter(siteType)
+	if adapter == nil {
 		return nil
 	}
+	if registered, ok := adapter.(registeredSiteAdapter); ok {
+		return registered.provider
+	}
+	return adapter
 }
 
 // extractBaseURL extracts the base URL (scheme + host) from a full URL.

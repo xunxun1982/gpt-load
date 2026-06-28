@@ -269,20 +269,21 @@ func (s *BalanceService) updateSiteBalance(ctx context.Context, siteID uint, bal
 
 // supportsBalance checks if a site type supports balance fetching
 func (s *BalanceService) supportsBalance(siteType string) bool {
-	switch siteType {
-	case SiteTypeNewAPI, SiteTypeSub2API, SiteTypeVeloera, SiteTypeOneHub, SiteTypeDoneHub, SiteTypeWongGongyi:
-		return true
-	default:
-		return false
-	}
+	return resolveSiteCapabilities(siteType).SupportsBalance
 }
 
 // fetchBalanceFromAPI fetches balance from the site's provider-specific profile endpoint.
 func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedSite, authConfig AuthConfig, userID string) *string {
-	if site.SiteType == SiteTypeSub2API {
-		return s.fetchBalanceWithParser(ctx, site, authConfig, userID, "/api/v1/user/profile", s.parseSub2APIBalanceResponse)
+	capabilities := resolveSiteCapabilities(site.SiteType)
+	if !capabilities.SupportsBalance || capabilities.BalanceEndpoint == "" {
+		return nil
 	}
-	return s.fetchBalanceWithParser(ctx, site, authConfig, userID, "/api/user/self", s.parseBalanceResponse)
+	switch capabilities.balanceParser {
+	case balanceParserSub2API:
+		return s.fetchBalanceWithParser(ctx, site, authConfig, userID, capabilities.BalanceEndpoint, s.parseSub2APIBalanceResponse)
+	default:
+		return s.fetchBalanceWithParser(ctx, site, authConfig, userID, capabilities.BalanceEndpoint, s.parseBalanceResponse)
+	}
 }
 
 func (s *BalanceService) fetchBalanceWithParser(
