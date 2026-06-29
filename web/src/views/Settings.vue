@@ -656,7 +656,7 @@ checkDebugMode();
                     style="width: 100%"
                     size="small"
                   />
-                  <n-space align="center" :size="8" :wrap="false" class="retry-backoff-row">
+                  <n-space align="center" :size="8" :wrap="true" class="retry-backoff-row">
                     <n-tooltip trigger="hover" placement="top">
                       <template #trigger>
                         <n-switch
@@ -853,6 +853,7 @@ checkDebugMode();
 }
 
 .retry-backoff-percent {
-  width: 96px;
+  width: 128px;
+  flex: 0 0 128px;
 }
 </style>

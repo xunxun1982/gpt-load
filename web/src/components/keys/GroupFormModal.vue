@@ -75,6 +75,8 @@ interface ConfigItem {
   value: number | string | boolean;
   retryBackoffEnabled: boolean;
   retryBackoffMaxPercent: number;
+  retryDelayInherited: boolean;
+  retryDelayInitialValue: number;
 }
 
 // Header rule type
@@ -671,7 +673,18 @@ function loadGroupData() {
     .map(([key, value]) => {
       return buildConfigItem(key, value, rawConfig);
     });
-  // Do not synthesize retry_delay_ms for backoff-only config; absence means inherit.
+  if (
+    !configItems.some(item => item.key === retryDelayConfigKey) &&
+    (Object.prototype.hasOwnProperty.call(rawConfig, retryBackoffEnabledConfigKey) ||
+      Object.prototype.hasOwnProperty.call(rawConfig, retryBackoffMaxPercentConfigKey))
+  ) {
+    const retryDelayDefault = numberConfigValue(
+      getConfigOption(retryDelayConfigKey)?.default_value,
+      0
+    );
+    // Show inherited retry_delay_ms for backoff-only config without persisting it unchanged.
+    configItems.push(buildConfigItem(retryDelayConfigKey, retryDelayDefault, rawConfig, true));
+  }
   Object.assign(formData, {
     name: props.group.name || "",
     display_name: props.group.display_name || "",
@@ -904,13 +917,15 @@ function retryBackoffMaxPercentDefault(): number {
 function buildConfigItem(
   key: string,
   value: unknown,
-  rawConfig: Record<string, unknown> = {}
+  rawConfig: Record<string, unknown> = {},
+  retryDelayInherited = false
 ): ConfigItem {
   const defaultBackoffEnabled = retryBackoffEnabledDefault();
   const defaultBackoffMaxPercent = retryBackoffMaxPercentDefault();
+  const normalizedValue = normalizeConfigItemValue(value);
   return {
     key,
-    value: normalizeConfigItemValue(value),
+    value: normalizedValue,
     retryBackoffEnabled:
       key === retryDelayConfigKey
         ? booleanConfigValue(rawConfig[retryBackoffEnabledConfigKey], defaultBackoffEnabled)
@@ -919,6 +934,8 @@ function buildConfigItem(
       key === retryDelayConfigKey
         ? numberConfigValue(rawConfig[retryBackoffMaxPercentConfigKey], defaultBackoffMaxPercent)
         : retryBackoffDefaultMaxPercent,
+    retryDelayInherited: key === retryDelayConfigKey ? retryDelayInherited : false,
+    retryDelayInitialValue: key === retryDelayConfigKey ? numberConfigValue(normalizedValue, 0) : 0,
   };
 }
 
@@ -929,6 +946,8 @@ function addConfigItem() {
     value: "",
     retryBackoffEnabled: retryBackoffDefaultEnabled,
     retryBackoffMaxPercent: retryBackoffDefaultMaxPercent,
+    retryDelayInherited: false,
+    retryDelayInitialValue: 0,
   });
 }
 
@@ -1173,6 +1192,9 @@ function handleConfigKeyChange(index: number, key: string) {
       key === retryDelayConfigKey ? retryBackoffEnabledDefault() : retryBackoffDefaultEnabled;
     target.retryBackoffMaxPercent =
       key === retryDelayConfigKey ? retryBackoffMaxPercentDefault() : retryBackoffDefaultMaxPercent;
+    target.retryDelayInherited = false;
+    target.retryDelayInitialValue =
+      key === retryDelayConfigKey ? numberConfigValue(option.default_value, 0) : 0;
   }
 }
 
@@ -1352,7 +1374,13 @@ async function handleSubmit() {
           return;
         }
 
-        config[item.key] = numValue;
+        if (item.key === retryDelayConfigKey) {
+          if (!item.retryDelayInherited || numValue !== item.retryDelayInitialValue) {
+            config[item.key] = numValue;
+          }
+        } else {
+          config[item.key] = numValue;
+        }
       } else {
         config[item.key] = item.value;
       }
@@ -3435,7 +3463,8 @@ async function handleSubmit() {
 }
 
 .retry-backoff-percent {
-  width: 96px;
+  width: 128px;
+  flex: 0 0 128px;
 }
 
 .config-actions {

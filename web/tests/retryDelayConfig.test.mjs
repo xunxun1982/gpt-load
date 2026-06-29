@@ -37,12 +37,28 @@ test("retry delay backoff is configured through one visible option", () => {
     groupFormModal,
     /buildConfigItem\(retryDelayConfigKey,\s*rawConfig\[retryDelayConfigKey\]\s*\?\?\s*0,\s*rawConfig\)/
   );
+  assert.match(groupFormModal, /retryDelayInherited/);
+  assert.match(
+    groupFormModal,
+    /Object\.prototype\.hasOwnProperty\.call\(rawConfig,\s*retryBackoffEnabledConfigKey\)/
+  );
+  assert.match(
+    groupFormModal,
+    /Object\.prototype\.hasOwnProperty\.call\(rawConfig,\s*retryBackoffMaxPercentConfigKey\)/
+  );
+  assert.match(
+    groupFormModal,
+    /if \(!item\.retryDelayInherited \|\| numValue !== item\.retryDelayInitialValue\)/
+  );
 
   assert.match(
     settingsView,
     /hiddenSettingKeys = new Set\(\["retry_backoff_enabled", "retry_backoff_max_percent"\]\)/
   );
   assert.match(settingsView, /item\.key === 'retry_delay_ms'/);
+  assert.match(settingsView, /:wrap="true"/);
   assert.match(settingsView, /v-model:value="form\.retry_backoff_enabled as boolean"/);
   assert.match(settingsView, /v-model:value="form\.retry_backoff_max_percent as number"/);
+  assert.match(settingsView, /width: 128px/);
+  assert.match(groupFormModal, /width: 128px/);
 });
