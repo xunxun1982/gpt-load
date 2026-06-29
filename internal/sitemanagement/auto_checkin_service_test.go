@@ -1293,13 +1293,15 @@ func TestAutoCheckinStatusIncludesServerTimezoneMetadata(t *testing.T) {
 	encSvc := setupTestEncryption(t)
 	service := NewAutoCheckinService(db, store.NewMemoryStore(), encSvc)
 
+	before := time.Now()
 	status := service.GetStatus()
 
-	assert.Equal(t, time.Now().In(loc).Format("2006-01-02"), status.CurrentCheckinDay)
 	assert.Equal(t, "America/New_York", status.Timezone)
 	resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
 	require.NoError(t, err)
-	assert.True(t, resetAt.After(time.Now()))
+	// Derive the day from resetAt to avoid another live clock read near midnight.
+	assert.Equal(t, resetAt.In(loc).Add(-time.Second).Format("2006-01-02"), status.CurrentCheckinDay)
+	assert.True(t, resetAt.After(before))
 }
 
 func TestAutoCheckinStatusMetadataFallsBackToBeijingTimezone(t *testing.T) {

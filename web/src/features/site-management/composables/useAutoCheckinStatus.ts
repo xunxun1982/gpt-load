@@ -48,7 +48,8 @@ export function useAutoCheckinStatus({
         try {
           await refreshSites();
         } catch {
-          /* Keep scheduled refresh failures from surfacing as unhandled rejections. */
+          scheduleCheckinDayRefresh(autoCheckinStatus.value, CHECKIN_REFRESH_ERROR_RETRY_MS);
+          /* Retry stale site-list refresh without surfacing an unhandled rejection. */
         }
       })();
     }, delay);

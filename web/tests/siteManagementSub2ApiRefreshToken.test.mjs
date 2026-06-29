@@ -102,6 +102,10 @@ test("auto check-in config load failure retries before the next midnight", () =>
     /scheduleCheckinDayRefresh\(autoCheckinStatus\.value, CHECKIN_REFRESH_ERROR_RETRY_MS\)/
   );
   assert.match(autoCheckinComposable, /try\s*\{\s*await refreshSites\(\);\s*\}\s*catch/);
+  assert.match(
+    autoCheckinComposable,
+    /catch\s*\{\s*scheduleCheckinDayRefresh\(autoCheckinStatus\.value, CHECKIN_REFRESH_ERROR_RETRY_MS\);\s*\/\* Retry stale site-list refresh/
+  );
   assert.doesNotMatch(panel, /const CHECKIN_REFRESH_ERROR_RETRY_MS = 5 \* 60 \* 1000/);
 });
 
