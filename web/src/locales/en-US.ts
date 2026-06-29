@@ -1158,7 +1158,7 @@ export default {
     lastRun: "Last Run",
     checkinSummary: "Success {success} / Failed {failed} / Skipped {skipped}",
     serverTimezoneNote:
-      "Times use the server TZ timezone; if unset or invalid, they default to Beijing time (UTC+8)",
+      "Times use the server TZ timezone; if TZ is unset, they use the server local timezone; if invalid, they fall back to Beijing time (UTC+8)",
     clientLocalTime: "Client Local Time",
     minutes: "min",
     statusIdle: "Idle",

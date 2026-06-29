@@ -8,6 +8,12 @@ import (
 )
 
 func TestGetBeijingCheckinDayAt(t *testing.T) {
+	originalLocal := time.Local
+	time.Local = beijingLocation
+	t.Cleanup(func() {
+		time.Local = originalLocal
+	})
+
 	tests := []struct {
 		name         string
 		tz           string
@@ -72,6 +78,24 @@ func TestGetBeijingCheckinDayAt(t *testing.T) {
 			assert.Equal(t, tt.expectedDate, result)
 		})
 	}
+}
+
+func TestCheckinLocationWithNameUsesServerLocalTimezoneWhenTZUnset(t *testing.T) {
+	originalLocal := time.Local
+	local, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Local = local
+	t.Cleanup(func() {
+		time.Local = originalLocal
+	})
+	t.Setenv("TZ", "")
+
+	loc, name := checkinLocationWithName()
+
+	assert.Equal(t, "America/New_York", name)
+	assert.Equal(t, "2024-01-14", time.Date(2024, 1, 15, 4, 59, 0, 0, time.UTC).In(loc).Format("2006-01-02"))
 }
 
 func TestGetBeijingCheckinDay_CurrentTime(t *testing.T) {

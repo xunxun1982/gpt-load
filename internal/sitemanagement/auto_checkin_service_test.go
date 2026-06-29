@@ -1378,29 +1378,37 @@ func TestAutoCheckinStatusIncludesServerTimezoneMetadata(t *testing.T) {
 	assert.True(t, resetAt.After(before))
 }
 
+func TestAutoCheckinStatusMetadataUsesServerLocalTimezoneWhenTZUnset(t *testing.T) {
+	originalLocal := time.Local
+	local, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	time.Local = local
+	t.Cleanup(func() {
+		time.Local = originalLocal
+	})
+	t.Setenv("TZ", "")
+
+	status := withCheckinMetadataAt(AutoCheckinStatus{}, time.Date(2026, 6, 29, 3, 30, 0, 0, time.UTC))
+
+	assert.Equal(t, "2026-06-28", status.CurrentCheckinDay)
+	assert.Equal(t, "America/New_York", status.Timezone)
+	resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 6, 29, 4, 0, 0, 0, time.UTC), resetAt)
+}
+
 func TestAutoCheckinStatusMetadataFallsBackToBeijingTimezone(t *testing.T) {
 	now := time.Date(2026, 6, 28, 16, 30, 0, 0, time.UTC)
 
-	tests := []struct {
-		name string
-		tz   string
-	}{
-		{name: "unset TZ", tz: ""},
-		{name: "invalid TZ", tz: "Invalid/Timezone"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("TZ", tt.tz)
+	t.Setenv("TZ", "Invalid/Timezone")
 
-			status := withCheckinMetadataAt(AutoCheckinStatus{}, now)
+	status := withCheckinMetadataAt(AutoCheckinStatus{}, now)
 
-			assert.Equal(t, "2026-06-29", status.CurrentCheckinDay)
-			assert.Equal(t, fallbackTimezoneName, status.Timezone)
-			resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
-			require.NoError(t, err)
-			assert.Equal(t, time.Date(2026, 6, 29, 16, 0, 0, 0, time.UTC), resetAt)
-		})
-	}
+	assert.Equal(t, "2026-06-29", status.CurrentCheckinDay)
+	assert.Equal(t, fallbackTimezoneName, status.Timezone)
+	resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 6, 29, 16, 0, 0, 0, time.UTC), resetAt)
 }
 
 func TestWithCheckinMetadataUsesSingleBaseTime(t *testing.T) {

@@ -16,6 +16,7 @@ export interface RetryConfigFormState {
   retryBackoffMaxPercentExplicit: boolean;
   retryDelayInherited: boolean;
   retryDelayInitialValue: number;
+  retryDelayInitialValueValid: boolean;
 }
 
 export function hasOwnConfigValue(config: Record<string, unknown>, key: string): boolean {
@@ -23,8 +24,23 @@ export function hasOwnConfigValue(config: Record<string, unknown>, key: string):
 }
 
 export function numberConfigValue(value: unknown, fallback: number): number {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : fallback;
+  const numeric = parseNumberConfigValue(value);
+  return numeric ?? fallback;
+}
+
+function parseNumberConfigValue(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  return null;
+}
+
+export function hasNumberConfigValue(value: unknown): boolean {
+  return parseNumberConfigValue(value) !== null;
 }
 
 export function booleanConfigValue(value: unknown, fallback: boolean): boolean {
@@ -40,6 +56,7 @@ export function buildRetryConfigState(
 ): RetryConfigFormState {
   const hasBackoffEnabled = hasOwnConfigValue(rawConfig, retryBackoffEnabledConfigKey);
   const hasBackoffMaxPercent = hasOwnConfigValue(rawConfig, retryBackoffMaxPercentConfigKey);
+  const retryDelayInitialValue = key === retryDelayConfigKey ? parseNumberConfigValue(value) : null;
   return {
     key,
     value,
@@ -60,12 +77,16 @@ export function buildRetryConfigState(
     retryBackoffEnabledExplicit: key === retryDelayConfigKey ? hasBackoffEnabled : false,
     retryBackoffMaxPercentExplicit: key === retryDelayConfigKey ? hasBackoffMaxPercent : false,
     retryDelayInherited: key === retryDelayConfigKey ? retryDelayInherited : false,
-    retryDelayInitialValue: key === retryDelayConfigKey ? numberConfigValue(value, 0) : 0,
+    retryDelayInitialValue: retryDelayInitialValue ?? 0,
+    retryDelayInitialValueValid: retryDelayInitialValue !== null,
   };
 }
 
 export function shouldWriteRetryDelay(item: RetryConfigFormState, value: number): boolean {
-  return !item.retryDelayInherited || value !== item.retryDelayInitialValue;
+  if (!item.retryDelayInherited) {
+    return true;
+  }
+  return !item.retryDelayInitialValueValid || value !== item.retryDelayInitialValue;
 }
 
 export function writeRetryBackoffConfig(

@@ -21,6 +21,7 @@ async function loadTsModule(path) {
 test("retry delay backoff state preserves inherited delay and hidden sibling keys", async () => {
   const {
     buildRetryConfigState,
+    numberConfigValue,
     retryBackoffEnabledConfigKey,
     retryBackoffMaxPercentConfigKey,
     retryDelayConfigKey,
@@ -42,7 +43,13 @@ test("retry delay backoff state preserves inherited delay and hidden sibling key
   assert.equal(backoffOnly.retryBackoffEnabledExplicit, true);
   assert.equal(backoffOnly.retryBackoffMaxPercent, 500);
   assert.equal(backoffOnly.retryBackoffMaxPercentExplicit, false);
-  assert.equal(shouldWriteRetryDelay(backoffOnly, 0), false);
+  assert.equal(backoffOnly.retryDelayInitialValueValid, false);
+  assert.equal(shouldWriteRetryDelay(backoffOnly, 0), true);
+  assert.equal(numberConfigValue(null, 125), 125);
+  assert.equal(numberConfigValue(false, 125), 125);
+  assert.equal(numberConfigValue("", 125), 125);
+  assert.equal(numberConfigValue(" 250 ", 125), 250);
+  assert.equal(numberConfigValue(0, 125), 0);
 
   const config = {};
   writeRetryBackoffConfig(config, backoffOnly, backoffOnly.retryBackoffMaxPercent);

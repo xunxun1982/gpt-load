@@ -983,7 +983,7 @@ func TestExecuteRequestWithRetryKeepsRetryDelayInsideNonStreamTimeout(t *testing
 	ps.executeRequestWithRetry(c, &testChannelProxy{client: upstream.Client(), url: upstream.URL}, group, group, body, false, start, 0)
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&attempts))
-	assert.Equal(t, statusClientClosedRequest, w.Code)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Less(t, time.Since(start), 1400*time.Millisecond)
 }
 
@@ -1875,7 +1875,7 @@ func TestExecuteRequestWithAggregateRetryKeepsSubGroupDelayInsideNonStreamTimeou
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, start, retryCtx)
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&attempts))
-	assert.Equal(t, statusClientClosedRequest, w.Code)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Less(t, time.Since(start), 1400*time.Millisecond)
 }
 

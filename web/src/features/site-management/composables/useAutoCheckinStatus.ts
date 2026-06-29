@@ -6,6 +6,7 @@ import {
 import {
   formatServerCheckinDay,
   resolveCheckinDayRefreshTarget,
+  resolveServerTimezone,
 } from "@/features/site-management/utils/checkin-time";
 import { computed, onUnmounted, ref, type ComputedRef } from "vue";
 
@@ -19,7 +20,6 @@ const CHECKIN_REFRESH_ERROR_RETRY_MS = 5 * 60 * 1000;
 
 export function useAutoCheckinStatus({
   statusTimeLocale,
-  t,
   refreshSites,
 }: UseAutoCheckinStatusOptions) {
   const autoCheckinConfig = ref<AutoCheckinConfig | null>(null);
@@ -100,11 +100,8 @@ export function useAutoCheckinStatus({
       if (Number.isNaN(utcDate.getTime())) {
         return value;
       }
-      const timezone = autoCheckinStatus.value?.timezone;
-      if (timezone) {
-        return `${utcDate.toLocaleString(statusTimeLocale.value, { timeZone: timezone })} (${timezone})`;
-      }
-      return `${utcDate.toLocaleString(statusTimeLocale.value)} (${t("siteManagement.clientLocalTime")})`;
+      const timezone = resolveServerTimezone(autoCheckinStatus.value?.timezone);
+      return `${utcDate.toLocaleString(statusTimeLocale.value, { timeZone: timezone })} (${timezone})`;
     } catch {
       return value;
     }

@@ -1,4 +1,4 @@
-const SERVER_FALLBACK_TIMEZONE = "Asia/Shanghai";
+export const SERVER_FALLBACK_TIMEZONE = "Asia/Shanghai";
 
 type AutoCheckinStatusTimeMetadata = {
   timezone?: string;
@@ -14,7 +14,7 @@ type ZonedDateTimeParts = {
   second: number;
 };
 
-function resolveServerTimezone(timezone?: string): string {
+export function resolveServerTimezone(timezone?: string): string {
   const candidate = timezone?.trim() || SERVER_FALLBACK_TIMEZONE;
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date(0));

@@ -35,6 +35,9 @@ const jaSiteLocale = readFileSync(
   new URL("../src/locales/site-management/ja-JP.ts", import.meta.url),
   "utf8"
 );
+const zhRootLocale = readFileSync(new URL("../src/locales/zh-CN.ts", import.meta.url), "utf8");
+const enRootLocale = readFileSync(new URL("../src/locales/en-US.ts", import.meta.url), "utf8");
+const jaRootLocale = readFileSync(new URL("../src/locales/ja-JP.ts", import.meta.url), "utf8");
 const siteManagementApi = readFileSync(
   new URL("../src/api/site-management.ts", import.meta.url),
   "utf8"
@@ -71,12 +74,12 @@ async function loadAutoCheckinStatusComposable(apiMock) {
   ).toString("base64")}`;
 
   const source = readFileSync(autoCheckinComposableUrl, "utf8")
-    .replaceAll(`from "@/api/site-management";`, `from ${JSON.stringify(apiMockUrl)};`)
-    .replaceAll(
-      `from "@/features/site-management/utils/checkin-time";`,
+    .replace(/from\s+["']@\/api\/site-management["'];?/g, `from ${JSON.stringify(apiMockUrl)};`)
+    .replace(
+      /from\s+["']@\/features\/site-management\/utils\/checkin-time["'];?/g,
       `from ${JSON.stringify(timeUtilsUrl)};`
     )
-    .replaceAll(`from "vue";`, `from ${JSON.stringify(vueMockUrl)};`);
+    .replace(/from\s+["']vue["'];?/g, `from ${JSON.stringify(vueMockUrl)};`);
   const output = ts.transpileModule(source, {
     compilerOptions: {
       module: ts.ModuleKind.ES2022,
@@ -207,12 +210,50 @@ test("auto check-in fallback day uses a reactive clock at scheduled refresh", as
 test("auto check-in status time uses active i18n locale", () => {
   assert.match(panel, /const \{ t,\s*locale \} = useI18n\(\)/);
   assert.match(panel, /const statusTimeLocale = computed\(\(\) => locale\.value \|\| undefined\)/);
+  assert.match(autoCheckinComposable, /resolveServerTimezone/);
   assert.match(
     autoCheckinComposable,
     /\$\{utcDate\.toLocaleString\(statusTimeLocale\.value, \{ timeZone: timezone \}\)\} \(\$\{timezone\}\)/
   );
-  assert.match(autoCheckinComposable, /utcDate\.toLocaleString\(statusTimeLocale\.value\)/);
   assert.doesNotMatch(autoCheckinComposable, /toLocaleString\("zh-CN"/);
+});
+
+test("auto check-in status time falls back to the server timezone default", async () => {
+  const { useAutoCheckinStatus } = await loadAutoCheckinStatusComposable({
+    getConfig: async () => ({ enabled: true }),
+    getStatus: async () => ({
+      is_running: false,
+      next_scheduled_at: "2026-06-29T03:30:00.000Z",
+      pending_retry: false,
+    }),
+  });
+  const originalWindow = globalThis.window;
+  globalThis.window = {
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+  };
+  try {
+    const state = useAutoCheckinStatus({
+      statusTimeLocale: { value: "en-US" },
+      t: key => key,
+      refreshSites: async () => {},
+    });
+
+    await state.loadAutoCheckinConfig();
+
+    assert.match(state.nextScheduledDisplay.value, /\(Asia\/Shanghai\)$/);
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
+test("auto check-in timezone note distinguishes unset and invalid TZ", () => {
+  assert.match(zhRootLocale, /TZ 未设置时使用服务端本地时区/);
+  assert.match(zhRootLocale, /TZ 无效时回退北京时间/);
+  assert.match(enRootLocale, /if TZ is unset, they use the server local timezone/);
+  assert.match(enRootLocale, /if invalid, they fall back to Beijing time/);
+  assert.match(jaRootLocale, /TZ 未設定時はサーバーのローカルタイムゾーン/);
+  assert.match(jaRootLocale, /無効時は北京時間/);
 });
 
 test("auto check-in fallback day boundaries use the server timezone", async () => {

@@ -7,6 +7,7 @@ import ModelSelectorModal from "@/components/keys/ModelSelectorModal.vue";
 import {
   booleanConfigValue,
   buildRetryConfigState,
+  hasNumberConfigValue,
   hasOwnConfigValue,
   numberConfigValue,
   retryBackoffEnabledConfigKey,
@@ -939,6 +940,7 @@ function addConfigItem() {
     retryBackoffMaxPercentExplicit: false,
     retryDelayInherited: false,
     retryDelayInitialValue: 0,
+    retryDelayInitialValueValid: false,
   });
 }
 
@@ -1188,6 +1190,8 @@ function handleConfigKeyChange(index: number, key: string) {
     target.retryDelayInherited = false;
     target.retryDelayInitialValue =
       key === retryDelayConfigKey ? numberConfigValue(option.default_value, 0) : 0;
+    target.retryDelayInitialValueValid =
+      key === retryDelayConfigKey ? hasNumberConfigValue(option.default_value) : false;
   }
 }
 

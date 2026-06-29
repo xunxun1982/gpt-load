@@ -1147,7 +1147,7 @@ export default {
     lastRun: "前回実行",
     checkinSummary: "成功 {success} / 失敗 {failed} / スキップ {skipped}",
     serverTimezoneNote:
-      "時刻はサーバーの TZ タイムゾーンを使用し、未設定または無効な場合は北京時間 (UTC+8) です",
+      "時刻はサーバーの TZ タイムゾーンを使用し、TZ 未設定時はサーバーのローカルタイムゾーン、無効時は北京時間 (UTC+8) を使用します",
     clientLocalTime: "クライアントのローカル時刻",
     checkin: "チェックイン",
     logs: "ログ",

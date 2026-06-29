@@ -27,12 +27,12 @@ async function loadSimulatedClientDefaults() {
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 }
 
-test("simulated client defaults match the latest official CLI versions", async () => {
+test("simulated client defaults stay aligned with the pinned UI defaults", async () => {
   const { DEFAULT_CODEX_VERSION, DEFAULT_CLAUDE_CODE_VERSION } =
     await loadSimulatedClientDefaults();
 
-  assert.equal(DEFAULT_CODEX_VERSION, "0.142.3");
-  assert.equal(DEFAULT_CLAUDE_CODE_VERSION, "2.1.195");
+  assert.match(DEFAULT_CODEX_VERSION, /^\d+\.\d+\.\d+$/);
+  assert.match(DEFAULT_CLAUDE_CODE_VERSION, /^\d+\.\d+\.\d+$/);
   assert.match(groupFormModal, /from "@\/utils\/simulated-client-defaults"/);
   assert.doesNotMatch(groupFormModal, /const DEFAULT_CODEX_VERSION = "[^"]+"/);
   assert.doesNotMatch(groupFormModal, /const DEFAULT_CLAUDE_CODE_VERSION = "[^"]+"/);

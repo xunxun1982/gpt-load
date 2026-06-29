@@ -1326,6 +1326,19 @@ func writeRetryLifecycleError(c *gin.Context, statusCode int, err error) {
 	response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", internalError))
 }
 
+func retryLifecycleErrorStatus(ctx context.Context) (int, error) {
+	ctxErr := ctx.Err()
+	if ctxErr == nil {
+		ctxErr = context.Canceled
+	}
+	// Retry sleeps share the client.Do lifecycle budget. Deadline expiry is a
+	// server-side timeout; only parent request cancellation should be logged as 499.
+	if errors.Is(ctxErr, context.DeadlineExceeded) {
+		return http.StatusInternalServerError, ctxErr
+	}
+	return statusClientClosedRequest, ctxErr
+}
+
 func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	c *gin.Context,
 	channelHandler channel.ChannelProxy,
@@ -1543,12 +1556,9 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		}
 
 		if !waitBeforeRetry(lifecycleCtx, retryDelayForAttempt(cfg, retryCount)) {
-			ctxErr := lifecycleCtx.Err()
-			if ctxErr == nil {
-				ctxErr = context.Canceled
-			}
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, statusClientClosedRequest, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
-			writeRetryLifecycleError(c, statusClientClosedRequest, ctxErr)
+			statusCode, ctxErr := retryLifecycleErrorStatus(lifecycleCtx)
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+			writeRetryLifecycleError(c, statusCode, ctxErr)
 			return
 		}
 
@@ -2353,13 +2363,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			restoreOriginalPath(c, retryCtx)
 
 			if !waitBeforeRetry(retryCtx.lifecycleCtx, retryDelayForAttempt(subGroupCfg, subGroupKeyRetryCount)) {
-				ctxErr := retryCtx.lifecycleCtx.Err()
-				if ctxErr == nil {
-					ctxErr = context.Canceled
-				}
-				ps.logRequest(c, originalGroup, group, apiKey, startTime, statusClientClosedRequest, sanitizeInternalError(ctxErr), isStream,
+				statusCode, ctxErr := retryLifecycleErrorStatus(retryCtx.lifecycleCtx)
+				ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(ctxErr), isStream,
 					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
-				writeRetryLifecycleError(c, statusClientClosedRequest, ctxErr)
+				writeRetryLifecycleError(c, statusCode, ctxErr)
 				return
 			}
 
