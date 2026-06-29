@@ -1740,7 +1740,7 @@ func (p sub2APIProvider) refreshTokens(
 	if err != nil {
 		resp := parseGenericCheckInResponse(data)
 		if strings.TrimSpace(resp.Message) != "" {
-			return sub2APIRefreshResult{}, fmt.Errorf("refresh http %d: %s", statusCode, resp.Message)
+			return sub2APIRefreshResult{}, fmt.Errorf("refresh http %d: upstream rejected token refresh", statusCode)
 		}
 		return sub2APIRefreshResult{}, fmt.Errorf("refresh http %d: %w", statusCode, err)
 	}

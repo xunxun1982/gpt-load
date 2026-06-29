@@ -671,15 +671,7 @@ function loadGroupData() {
     .map(([key, value]) => {
       return buildConfigItem(key, value, rawConfig);
     });
-  if (
-    !configItems.some(item => item.key === retryDelayConfigKey) &&
-    (Object.prototype.hasOwnProperty.call(rawConfig, retryBackoffEnabledConfigKey) ||
-      Object.prototype.hasOwnProperty.call(rawConfig, retryBackoffMaxPercentConfigKey))
-  ) {
-    configItems.push(
-      buildConfigItem(retryDelayConfigKey, rawConfig[retryDelayConfigKey] ?? 0, rawConfig)
-    );
-  }
+  // Do not synthesize retry_delay_ms for backoff-only config; absence means inherit.
   Object.assign(formData, {
     name: props.group.name || "",
     display_name: props.group.display_name || "",

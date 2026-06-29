@@ -792,7 +792,8 @@ func TestSub2APIProviderReportsRefreshFailureOnUnauthorized(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, CheckinResultFailed, result.Status)
-	assert.Equal(t, "HTTP 401: Token has expired; token refresh failed: refresh http 401: refresh token expired", result.Message)
+	assert.Equal(t, "HTTP 401: Token has expired; token refresh failed: refresh http 401: upstream rejected token refresh", result.Message)
+	assert.NotContains(t, result.Message, "refresh token expired")
 	assert.NotContains(t, result.Message, "expired-refresh-token")
 }
 

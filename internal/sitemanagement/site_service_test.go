@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
@@ -242,14 +243,16 @@ func TestSiteService_RecordSiteOpened(t *testing.T) {
 	require.NoError(t, err)
 
 	// Record site opened
+	expectedDayBefore := time.Now().In(checkinLocation()).Format("2006-01-02")
 	err = service.RecordSiteOpened(context.Background(), dto.ID)
 	require.NoError(t, err)
+	expectedDayAfter := time.Now().In(checkinLocation()).Format("2006-01-02")
 
 	// Verify record
 	var site ManagedSite
 	err = db.First(&site, dto.ID).Error
 	require.NoError(t, err)
-	assert.Equal(t, GetBeijingCheckinDay(), site.LastSiteOpenedDate)
+	assert.Contains(t, []string{expectedDayBefore, expectedDayAfter}, site.LastSiteOpenedDate)
 }
 
 // TestSiteService_AutoCheckinConfig tests auto-checkin config management

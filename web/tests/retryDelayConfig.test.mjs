@@ -33,6 +33,10 @@ test("retry delay backoff is configured through one visible option", () => {
     groupFormModal,
     /config\[retryBackoffMaxPercentConfigKey\] = Math\.trunc\(maxPercent\)/
   );
+  assert.doesNotMatch(
+    groupFormModal,
+    /buildConfigItem\(retryDelayConfigKey,\s*rawConfig\[retryDelayConfigKey\]\s*\?\?\s*0,\s*rawConfig\)/
+  );
 
   assert.match(
     settingsView,
