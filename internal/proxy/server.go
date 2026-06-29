@@ -40,6 +40,7 @@ const (
 	requestLogUserAgentMaxRunes = 512
 	retryBackoffRampRetries     = 100
 	retryDelayJitterRatio       = 0.30
+	statusClientClosedRequest   = 499
 )
 
 var quotaExhaustedRateMarkers = []string{
@@ -1279,6 +1280,52 @@ func requestLifecycleContext(parent context.Context, cfg types.SystemSettings, i
 	return effectiveNonStreamRequestContext(parent, cfg)
 }
 
+func lifecycleTimeoutSeconds(cfg types.SystemSettings, isStream bool) int {
+	if isStream {
+		return cfg.StreamRequestTimeout
+	}
+	if cfg.NonStreamRequestTimeout > 0 {
+		return cfg.NonStreamRequestTimeout
+	}
+	return cfg.RequestTimeout
+}
+
+func (ps *ProxyServer) aggregateRetryLifecycleConfig(originalGroup *models.Group, isStream bool) types.SystemSettings {
+	cfg := originalGroup.EffectiveConfig
+	timeout := lifecycleTimeoutSeconds(cfg, isStream)
+	for _, relation := range originalGroup.SubGroups {
+		if !relation.SubGroupEnabled {
+			continue
+		}
+		subGroup, err := ps.groupManager.GetGroupByID(relation.SubGroupID)
+		if err != nil {
+			continue
+		}
+		subTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, isStream)
+		if subTimeout > 0 && (timeout <= 0 || subTimeout < timeout) {
+			timeout = subTimeout
+		}
+	}
+	if timeout > 0 {
+		if isStream {
+			cfg.StreamRequestTimeout = timeout
+		} else {
+			cfg.NonStreamRequestTimeout = timeout
+			cfg.RequestTimeout = timeout
+		}
+	}
+	return cfg
+}
+
+func writeRetryLifecycleError(c *gin.Context, statusCode int, err error) {
+	internalError := sanitizeInternalErrorMessage(err.Error())
+	if isCCEnabled(c) {
+		returnClaudeError(c, statusCode, internalError)
+		return
+	}
+	response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", internalError))
+}
+
 func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	c *gin.Context,
 	channelHandler channel.ChannelProxy,
@@ -1500,7 +1547,8 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 			if ctxErr == nil {
 				ctxErr = context.Canceled
 			}
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, statusClientClosedRequest, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+			writeRetryLifecycleError(c, statusClientClosedRequest, ctxErr)
 			return
 		}
 
@@ -1610,6 +1658,14 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Get max retries from aggregate group config
 	maxRetries := parseMaxRetries(originalGroup.Config)
+
+	if retryCtx.lifecycleCtx == nil {
+		// Merge the parent and enabled sub-group timeouts once so the total retry
+		// budget is deterministic and does not depend on selection order.
+		retryLifecycleCfg := ps.aggregateRetryLifecycleConfig(originalGroup, isStream)
+		retryCtx.lifecycleCtx, retryCtx.lifecycleCancel = requestLifecycleContext(c.Request.Context(), retryLifecycleCfg, isStream)
+		defer retryCtx.lifecycleCancel()
+	}
 
 	// When aggregate group has no explicit max_retries configured (key not present),
 	// provide an intelligent default based on sub-group count to prevent immediate
@@ -2050,8 +2106,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
-	cfg := group.EffectiveConfig
-
 	// Store group in context for response handlers to access
 	c.Set("group", group)
 	if c.Keys != nil {
@@ -2091,11 +2145,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to select upstream: empty result"))
 		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, errors.New("failed to select upstream: empty result"), isStream, "", nil, "", subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 		return
-	}
-
-	if retryCtx.lifecycleCtx == nil {
-		retryCtx.lifecycleCtx, retryCtx.lifecycleCancel = requestLifecycleContext(c.Request.Context(), cfg, isStream)
-		defer retryCtx.lifecycleCancel()
 	}
 
 	req, err := http.NewRequestWithContext(retryCtx.lifecycleCtx, c.Request.Method, upstreamSelection.URL, bytes.NewReader(finalBodyBytes))
@@ -2308,8 +2357,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				if ctxErr == nil {
 					ctxErr = context.Canceled
 				}
-				ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, sanitizeInternalError(ctxErr), isStream,
+				ps.logRequest(c, originalGroup, group, apiKey, startTime, statusClientClosedRequest, sanitizeInternalError(ctxErr), isStream,
 					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+				writeRetryLifecycleError(c, statusClientClosedRequest, ctxErr)
 				return
 			}
 

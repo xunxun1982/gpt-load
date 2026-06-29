@@ -162,6 +162,11 @@ function generateValidationRules(item: Setting): FormItemRule[] {
   return rules;
 }
 
+function settingRules(key: string): FormItemRule[] {
+  const setting = getSetting(key);
+  return setting ? generateValidationRules(setting) : [];
+}
+
 // Export full system configuration
 async function handleExportAll() {
   const { askExportMode } = await import("@/utils/export-import");
@@ -662,11 +667,19 @@ checkDebugMode();
                   <n-space align="center" :size="8" :wrap="true" class="retry-backoff-row">
                     <n-tooltip trigger="hover" placement="top">
                       <template #trigger>
-                        <n-switch
-                          :value="Boolean(form.retry_backoff_enabled)"
-                          @update:value="value => setSettingValue('retry_backoff_enabled', value)"
-                          size="small"
-                        />
+                        <n-form-item
+                          path="retry_backoff_enabled"
+                          :rule="settingRules('retry_backoff_enabled')"
+                          :show-label="false"
+                          :show-feedback="false"
+                          class="retry-backoff-form-item"
+                        >
+                          <n-switch
+                            :value="Boolean(form.retry_backoff_enabled)"
+                            @update:value="value => setSettingValue('retry_backoff_enabled', value)"
+                            size="small"
+                          />
+                        </n-form-item>
                       </template>
                       {{ getSetting("retry_backoff_enabled")?.description }}
                     </n-tooltip>
@@ -675,20 +688,28 @@ checkDebugMode();
                     </span>
                     <n-tooltip trigger="hover" placement="top">
                       <template #trigger>
-                        <n-input-number
-                          :value="settingNumberValue('retry_backoff_max_percent')"
-                          @update:value="
-                            value => setSettingValue('retry_backoff_max_percent', value)
-                          "
-                          :min="0"
-                          :disabled="!form.retry_backoff_enabled"
-                          :placeholder="t('settings.inputNumber')"
-                          :precision="0"
-                          size="small"
-                          class="retry-backoff-percent"
+                        <n-form-item
+                          path="retry_backoff_max_percent"
+                          :rule="settingRules('retry_backoff_max_percent')"
+                          :show-label="false"
+                          :show-feedback="false"
+                          class="retry-backoff-form-item"
                         >
-                          <template #suffix>%</template>
-                        </n-input-number>
+                          <n-input-number
+                            :value="settingNumberValue('retry_backoff_max_percent')"
+                            @update:value="
+                              value => setSettingValue('retry_backoff_max_percent', value)
+                            "
+                            :min="0"
+                            :disabled="!form.retry_backoff_enabled"
+                            :placeholder="t('settings.inputNumber')"
+                            :precision="0"
+                            size="small"
+                            class="retry-backoff-percent"
+                          >
+                            <template #suffix>%</template>
+                          </n-input-number>
+                        </n-form-item>
                       </template>
                       {{ getSetting("retry_backoff_max_percent")?.description }}
                     </n-tooltip>
@@ -856,6 +877,10 @@ checkDebugMode();
 
 .retry-backoff-row {
   min-height: 28px;
+}
+
+.retry-backoff-form-item {
+  margin-bottom: 0;
 }
 
 .retry-backoff-label {

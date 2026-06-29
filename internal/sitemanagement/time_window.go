@@ -23,6 +23,9 @@ func checkinLocationWithName() (*time.Location, string) {
 	if tz == "" {
 		return beijingLocation, fallbackTimezoneName
 	}
+	// Only IANA location names are accepted here. Go's time.LoadLocation does
+	// not parse POSIX TZ strings or absolute TZ paths; unsupported values keep
+	// the existing site-management fallback to Beijing time.
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
 		return beijingLocation, fallbackTimezoneName

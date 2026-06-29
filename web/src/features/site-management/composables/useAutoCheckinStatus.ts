@@ -58,11 +58,19 @@ export function useAutoCheckinStatus({
   }
 
   // Prefer backend metadata; fallback uses the same server timezone default as the backend.
-  const currentCheckinDay = computed(
-    () =>
-      autoCheckinStatus.value?.current_checkin_day ||
-      formatServerCheckinDay(fallbackNow.value, autoCheckinStatus.value?.timezone)
-  );
+  const currentCheckinDay = computed(() => {
+    const status = autoCheckinStatus.value;
+    const resetAt = status?.next_checkin_reset_at ? new Date(status.next_checkin_reset_at) : null;
+    if (
+      status?.current_checkin_day &&
+      resetAt &&
+      !Number.isNaN(resetAt.getTime()) &&
+      resetAt.getTime() > fallbackNow.value
+    ) {
+      return status.current_checkin_day;
+    }
+    return formatServerCheckinDay(fallbackNow.value, status?.timezone);
+  });
 
   async function loadAutoCheckinConfig() {
     autoCheckinLoading.value = true;

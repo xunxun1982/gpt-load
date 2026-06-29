@@ -178,7 +178,9 @@ test("auto check-in fallback day uses a reactive clock at scheduled refresh", as
       getConfig: async () => ({ enabled: true }),
       getStatus: async () => ({
         is_running: false,
+        current_checkin_day: "2026-06-29",
         timezone: "Asia/Shanghai",
+        next_checkin_reset_at: "2026-06-29T16:00:00.000Z",
         pending_retry: false,
       }),
     });

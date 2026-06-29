@@ -367,15 +367,19 @@ const rules: FormRules = {
 // Watch dialog visibility
 watch(
   () => props.show,
-  show => {
+  async show => {
     if (show) {
       if (!channelTypesFetched.value) {
-        fetchChannelTypes();
+        void fetchChannelTypes();
       }
       if (!configOptionsFetched.value) {
-        fetchGroupConfigOptions();
+        try {
+          await fetchGroupConfigOptions();
+        } catch (error) {
+          console.error("Failed to fetch group config options:", error);
+        }
       }
-      fetchProxyPoolOptions();
+      void fetchProxyPoolOptions();
       resetForm();
       if (props.group) {
         loadGroupData();
