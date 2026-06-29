@@ -73,6 +73,8 @@ interface Emits {
 interface ConfigItem {
   key: string;
   value: number | string | boolean;
+  retryBackoffEnabled: boolean;
+  retryBackoffMaxPercent: number;
 }
 
 // Header rule type
@@ -203,6 +205,7 @@ const formData = reactive<GroupFormData>({
 });
 
 const channelTypeOptions = ref<{ label: string; value: string }[]>([]);
+const allConfigOptions = ref<GroupConfigOption[]>([]);
 const configOptions = ref<GroupConfigOption[]>([]);
 const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
@@ -231,6 +234,12 @@ const hasModelRedirectRulesConfigured = computed(() => {
 
   return hasEffectiveModelRedirectItems(formData.model_redirect_items_v2);
 });
+const retryDelayConfigKey = "retry_delay_ms";
+const retryBackoffEnabledConfigKey = "retry_backoff_enabled";
+const retryBackoffMaxPercentConfigKey = "retry_backoff_max_percent";
+const retryBackoffDefaultEnabled = false;
+const retryBackoffDefaultMaxPercent = 500;
+
 const controlledConfigKeys = new Set([
   "force_function_call",
   "parallel_tool_calls",
@@ -249,7 +258,11 @@ const controlledConfigKeys = new Set([
   "codex_instructions",
   "codex_instructions_mode",
 ]);
-const hiddenConfigOptionKeys = new Set(controlledConfigKeys);
+const hiddenConfigOptionKeys = new Set([
+  ...controlledConfigKeys,
+  retryBackoffEnabledConfigKey,
+  retryBackoffMaxPercentConfigKey,
+]);
 
 // Check if current group is a child group (has parent_group_id)
 const isChildGroup = computed(() => {
@@ -654,13 +667,19 @@ function loadGroupData() {
       : "auto";
 
   const configItems = Object.entries(rawConfig)
-    .filter(([key]) => !controlledConfigKeys.has(key))
+    .filter(([key]) => !hiddenConfigOptionKeys.has(key))
     .map(([key, value]) => {
-      return {
-        key,
-        value,
-      };
+      return buildConfigItem(key, value, rawConfig);
     });
+  if (
+    !configItems.some(item => item.key === retryDelayConfigKey) &&
+    (Object.prototype.hasOwnProperty.call(rawConfig, retryBackoffEnabledConfigKey) ||
+      Object.prototype.hasOwnProperty.call(rawConfig, retryBackoffMaxPercentConfigKey))
+  ) {
+    configItems.push(
+      buildConfigItem(retryDelayConfigKey, rawConfig[retryDelayConfigKey] ?? 0, rawConfig)
+    );
+  }
   Object.assign(formData, {
     name: props.group.name || "",
     display_name: props.group.display_name || "",
@@ -809,8 +828,9 @@ function removeUpstream(index: number) {
 
 async function fetchGroupConfigOptions() {
   const options = await keysApi.getGroupConfigOptions();
+  allConfigOptions.value = options || [];
   // Hide keys that have first-class controls; keep backend-provided system overrides visible.
-  const normalized = (options || []).filter(opt => !hiddenConfigOptionKeys.has(opt.key));
+  const normalized = allConfigOptions.value.filter(opt => !hiddenConfigOptionKeys.has(opt.key));
   configOptions.value = normalized;
   configOptionsFetched.value = true;
 }
@@ -855,11 +875,68 @@ async function fetchProxyPoolOptions() {
   }
 }
 
+function normalizeConfigItemValue(value: unknown): number | string | boolean {
+  if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  return String(value ?? "");
+}
+
+function numberConfigValue(value: unknown, fallback: number): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function booleanConfigValue(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function getConfigOption(key: string) {
+  return allConfigOptions.value.find(opt => opt.key === key);
+}
+
+function retryBackoffEnabledDefault(): boolean {
+  return booleanConfigValue(
+    getConfigOption(retryBackoffEnabledConfigKey)?.default_value,
+    retryBackoffDefaultEnabled
+  );
+}
+
+function retryBackoffMaxPercentDefault(): number {
+  return numberConfigValue(
+    getConfigOption(retryBackoffMaxPercentConfigKey)?.default_value,
+    retryBackoffDefaultMaxPercent
+  );
+}
+
+function buildConfigItem(
+  key: string,
+  value: unknown,
+  rawConfig: Record<string, unknown> = {}
+): ConfigItem {
+  const defaultBackoffEnabled = retryBackoffEnabledDefault();
+  const defaultBackoffMaxPercent = retryBackoffMaxPercentDefault();
+  return {
+    key,
+    value: normalizeConfigItemValue(value),
+    retryBackoffEnabled:
+      key === retryDelayConfigKey
+        ? booleanConfigValue(rawConfig[retryBackoffEnabledConfigKey], defaultBackoffEnabled)
+        : retryBackoffDefaultEnabled,
+    retryBackoffMaxPercent:
+      key === retryDelayConfigKey
+        ? numberConfigValue(rawConfig[retryBackoffMaxPercentConfigKey], defaultBackoffMaxPercent)
+        : retryBackoffDefaultMaxPercent,
+  };
+}
+
 // Add config item
 function addConfigItem() {
   formData.configItems.push({
     key: "",
     value: "",
+    retryBackoffEnabled: retryBackoffDefaultEnabled,
+    retryBackoffMaxPercent: retryBackoffDefaultMaxPercent,
   });
 }
 
@@ -1096,16 +1173,16 @@ function validateHeaderKeyUniqueness(
 
 // Set default value when config key changes
 function handleConfigKeyChange(index: number, key: string) {
-  const option = configOptions.value.find(opt => opt.key === key);
+  const option = getConfigOption(key);
   const target = formData.configItems[index];
   if (option && target) {
     target.value = option.default_value;
+    target.retryBackoffEnabled =
+      key === retryDelayConfigKey ? retryBackoffEnabledDefault() : retryBackoffDefaultEnabled;
+    target.retryBackoffMaxPercent =
+      key === retryDelayConfigKey ? retryBackoffMaxPercentDefault() : retryBackoffDefaultMaxPercent;
   }
 }
-
-const getConfigOption = (key: string) => {
-  return configOptions.value.find(opt => opt.key === key);
-};
 
 // Close modal
 function handleClose() {
@@ -1267,7 +1344,7 @@ async function handleSubmit() {
         continue;
       }
 
-      const option = configOptions.value.find(opt => opt.key === item.key);
+      const option = getConfigOption(item.key);
       if (option && typeof option.default_value === "number") {
         const rawValue = item.value;
         const strValue = typeof rawValue === "string" ? rawValue : String(rawValue);
@@ -1278,7 +1355,7 @@ async function handleSubmit() {
         }
         const numValue = Number(strValue);
 
-        if (Number.isNaN(numValue)) {
+        if (!Number.isFinite(numValue)) {
           message.error(t("keys.invalidNumericConfig", { key: item.key }));
           return;
         }
@@ -1286,6 +1363,16 @@ async function handleSubmit() {
         config[item.key] = numValue;
       } else {
         config[item.key] = item.value;
+      }
+
+      if (item.key === retryDelayConfigKey) {
+        const maxPercent = Number(item.retryBackoffMaxPercent);
+        if (!Number.isFinite(maxPercent) || maxPercent < 0) {
+          message.error(t("keys.invalidNumericConfig", { key: retryBackoffMaxPercentConfigKey }));
+          return;
+        }
+        config[retryBackoffEnabledConfigKey] = Boolean(item.retryBackoffEnabled);
+        config[retryBackoffMaxPercentConfigKey] = Math.trunc(maxPercent);
       }
     }
 
@@ -1918,7 +2005,56 @@ async function handleSubmit() {
                         />
                       </div>
                       <div class="config-value">
-                        <n-tooltip trigger="hover" placement="top">
+                        <div
+                          v-if="configItem.key === retryDelayConfigKey"
+                          class="retry-delay-config"
+                        >
+                          <n-tooltip trigger="hover" placement="top">
+                            <template #trigger>
+                              <n-input-number
+                                v-model:value="configItem.value as number"
+                                :min="0"
+                                :precision="0"
+                                :placeholder="t('keys.paramValue')"
+                                style="width: 100%"
+                              />
+                            </template>
+                            {{
+                              getConfigOption(configItem.key)?.description ||
+                              t("keys.setConfigValue")
+                            }}
+                          </n-tooltip>
+                          <div class="retry-backoff-controls">
+                            <n-tooltip trigger="hover" placement="top">
+                              <template #trigger>
+                                <n-switch
+                                  v-model:value="configItem.retryBackoffEnabled"
+                                  size="small"
+                                />
+                              </template>
+                              {{ getConfigOption(retryBackoffEnabledConfigKey)?.description }}
+                            </n-tooltip>
+                            <span class="retry-backoff-label">
+                              {{ getConfigOption(retryBackoffEnabledConfigKey)?.name }}
+                            </span>
+                            <n-tooltip trigger="hover" placement="top">
+                              <template #trigger>
+                                <n-input-number
+                                  v-model:value="configItem.retryBackoffMaxPercent"
+                                  :min="0"
+                                  :precision="0"
+                                  :disabled="!configItem.retryBackoffEnabled"
+                                  size="small"
+                                  class="retry-backoff-percent"
+                                >
+                                  <template #suffix>%</template>
+                                </n-input-number>
+                              </template>
+                              {{ getConfigOption(retryBackoffMaxPercentConfigKey)?.description }}
+                            </n-tooltip>
+                          </div>
+                        </div>
+                        <n-tooltip v-else trigger="hover" placement="top">
                           <template #trigger>
                             <n-input-number
                               v-if="typeof configItem.value === 'number'"
@@ -3286,6 +3422,30 @@ async function handleSubmit() {
   flex: 1;
 }
 
+.retry-delay-config {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.retry-backoff-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.retry-backoff-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.retry-backoff-percent {
+  width: 96px;
+}
+
 .config-actions {
   flex: 0 0 32px;
   display: flex;
@@ -3589,6 +3749,10 @@ async function handleSubmit() {
 
   .config-value {
     flex: 1;
+  }
+
+  .retry-backoff-controls {
+    flex-wrap: wrap;
   }
 
   .simulated-client-select,

@@ -762,6 +762,40 @@ func TestSub2APIProviderKeepsExpiredTokenMessageOnUnauthorized(t *testing.T) {
 	assert.Equal(t, "HTTP 401: Token has expired", result.Message)
 }
 
+func TestSub2APIProviderReportsRefreshFailureOnUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/user/check-in":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"message":"Token has expired"}`))
+		case "/api/v1/auth/refresh":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"message":"refresh token expired"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := sub2APIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:          []string{AuthTypeAccessToken},
+		AuthValues:         map[string]string{AuthTypeAccessToken: "expired-token"},
+		SupplementalValues: map[string]string{authFieldRefreshToken: "expired-refresh-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Equal(t, "HTTP 401: Token has expired; token refresh failed: refresh http 401: refresh token expired", result.Message)
+	assert.NotContains(t, result.Message, "expired-refresh-token")
+}
+
 func TestAutoCheckinRefreshesSub2APITokenOnExpiredAccessToken(t *testing.T) {
 	t.Parallel()
 

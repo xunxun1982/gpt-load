@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -37,6 +38,8 @@ const (
 	maxEstimatedTokenBodyBytes  = 256 * 1024
 	quotaExhaustedRatePressure  = int64(4)
 	requestLogUserAgentMaxRunes = 512
+	retryBackoffRampRetries     = 100
+	retryDelayJitterRatio       = 0.30
 )
 
 var quotaExhaustedRateMarkers = []string{
@@ -95,6 +98,97 @@ func setRateLimitPressureContextForAttempt(c *gin.Context, resp *http.Response, 
 		return
 	}
 	c.Set(ctxKeyRateLimitPressure, retryAfterRateLimitPressureFromHeader(resp.Header.Get("Retry-After"), now))
+}
+
+func retryDelayForAttempt(cfg types.SystemSettings, retryCount int) time.Duration {
+	if cfg.RetryDelayMs <= 0 {
+		return 0
+	}
+
+	// Retry-After is intentionally not folded into this user setting: retry_delay_ms
+	// must preserve the old zero-delay default, while rate-limit pressure is handled separately.
+	delayMs := int64(cfg.RetryDelayMs)
+	maxDelayMs := int64((time.Duration(1<<63-1) / time.Millisecond))
+	if delayMs > maxDelayMs {
+		delayMs = maxDelayMs
+	}
+	baseDelay := time.Duration(delayMs) * time.Millisecond
+	if !cfg.RetryBackoffEnabled {
+		return baseDelay
+	}
+
+	maxExtraDelay := retryBackoffMaxExtra(baseDelay, cfg.RetryBackoffMaxPercent)
+	if maxExtraDelay <= 0 {
+		return baseDelay
+	}
+
+	extraDelay := retryBackoffExtraForAttempt(retryCount, maxExtraDelay)
+	delay := baseDelay + extraDelay
+	maxDelay := baseDelay + maxExtraDelay
+	jitterLimit := time.Duration(float64(baseDelay) * retryDelayJitterRatio)
+	if jitterLimit > maxExtraDelay {
+		jitterLimit = maxExtraDelay
+	}
+	if jitterLimit <= 0 {
+		return delay
+	}
+
+	jitter := time.Duration(rand.Float64()*float64(2*jitterLimit)) - jitterLimit
+	if jitter > 0 {
+		if delay > maxDelay-jitter {
+			return maxDelay
+		}
+		return delay + jitter
+	}
+	if delay < -jitter {
+		return 0
+	}
+	return delay + jitter
+}
+
+func retryBackoffMaxExtra(baseDelay time.Duration, percent int) time.Duration {
+	if baseDelay <= 0 || percent <= 0 {
+		return 0
+	}
+	if percent > 100000 {
+		percent = 100000
+	}
+	maxExtra := float64(baseDelay) * float64(percent) / 100
+	if maxExtra > float64(time.Duration(1<<63-1)-baseDelay) {
+		return time.Duration(1<<63-1) - baseDelay
+	}
+	return time.Duration(maxExtra)
+}
+
+func retryBackoffExtraForAttempt(retryCount int, maxExtraDelay time.Duration) time.Duration {
+	if maxExtraDelay <= 0 {
+		return 0
+	}
+	retryAttempt := retryCount + 1
+	if retryAttempt >= retryBackoffRampRetries {
+		return maxExtraDelay
+	}
+	if retryAttempt <= 0 {
+		return 0
+	}
+	ratio := float64(retryAttempt) / retryBackoffRampRetries
+	return time.Duration(float64(maxExtraDelay) * (math.Pow(2, ratio) - 1))
+}
+
+func waitBeforeRetry(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func quotaExhaustedRateLimitPressureFromContext(c *gin.Context) int64 {
@@ -1344,6 +1438,8 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			}
 
 			errorBody = decompressUpstreamErrorBody(resp, errorBody)
+			_ = resp.Body.Close()
+			resp.Body = http.NoBody
 
 			// Store error response body in context for logging.
 			// Per AI review: sanitize sensitive data before storing to prevent
@@ -1380,6 +1476,15 @@ func (ps *ProxyServer) executeRequestWithRetry(
 				return
 			}
 			response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", internalError))
+			return
+		}
+
+		if !waitBeforeRetry(c.Request.Context(), retryDelayForAttempt(cfg, retryCount)) {
+			ctxErr := c.Request.Context().Err()
+			if ctxErr == nil {
+				ctxErr = context.Canceled
+			}
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
 			return
 		}
 
@@ -2117,6 +2222,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}
 
 			errorBody = decompressUpstreamErrorBody(resp, errorBody)
+			_ = resp.Body.Close()
+			resp.Body = http.NoBody
 
 			// Store sanitized error response body in context for logging.
 			// Per AI review: sanitize to prevent leaking secrets/PII in logs.
@@ -2187,6 +2294,16 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 			// Restore original path for retry (CC support may have modified it)
 			restoreOriginalPath(c, retryCtx)
+
+			if !waitBeforeRetry(c.Request.Context(), retryDelayForAttempt(subGroupCfg, subGroupKeyRetryCount)) {
+				ctxErr := c.Request.Context().Err()
+				if ctxErr == nil {
+					ctxErr = context.Canceled
+				}
+				ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, sanitizeInternalError(ctxErr), isStream,
+					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+				return
+			}
 
 			// Retry with same sub-group but different key (SelectKey will choose a different one)
 			retryCtx.forcedSubGroupID = subGroupID

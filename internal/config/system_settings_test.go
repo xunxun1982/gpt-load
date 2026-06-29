@@ -136,6 +136,34 @@ func TestValidateSettings(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid retry delay disabled",
+			settings: map[string]any{
+				"retry_delay_ms": float64(0),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid retry delay",
+			settings: map[string]any{
+				"retry_delay_ms": float64(1000),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid retry backoff enabled",
+			settings: map[string]any{
+				"retry_backoff_enabled": true,
+			},
+			expectError: false,
+		},
+		{
+			name: "valid retry backoff max percent",
+			settings: map[string]any{
+				"retry_backoff_max_percent": float64(500),
+			},
+			expectError: false,
+		},
+		{
 			name: "valid non-stream timeout disabled",
 			settings: map[string]any{
 				"non_stream_request_timeout": float64(0),
@@ -229,6 +257,14 @@ func TestValidateSettings(t *testing.T) {
 			name: "non-stream timeout below minimum",
 			settings: map[string]any{
 				"non_stream_request_timeout": float64(-1),
+			},
+			expectError: true,
+			errorMsg:    "below minimum value",
+		},
+		{
+			name: "retry delay below minimum",
+			settings: map[string]any{
+				"retry_delay_ms": float64(-1),
 			},
 			expectError: true,
 			errorMsg:    "below minimum value",
@@ -342,6 +378,35 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 				"sub_max_retries": float64(3),
 			},
 			expectError: false,
+		},
+		{
+			name: "valid retry_delay_ms",
+			config: map[string]any{
+				"retry_delay_ms": float64(1000),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid retry_backoff_enabled",
+			config: map[string]any{
+				"retry_backoff_enabled": true,
+			},
+			expectError: false,
+		},
+		{
+			name: "valid retry_backoff_max_percent",
+			config: map[string]any{
+				"retry_backoff_max_percent": float64(500),
+			},
+			expectError: false,
+		},
+		{
+			name: "negative retry_delay_ms",
+			config: map[string]any{
+				"retry_delay_ms": float64(-1),
+			},
+			expectError: true,
+			errorMsg:    "below minimum value",
 		},
 		{
 			name: "invalid sub_max_retries type",
@@ -768,6 +833,20 @@ func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t 
 
 	assert.Equal(t, 0, cfg.NonStreamRequestTimeout)
 	assert.Equal(t, 0, cfg.RequestTimeout)
+}
+
+func TestGetEffectiveConfigRetryDelayOverride(t *testing.T) {
+	manager := NewSystemSettingsManager()
+
+	cfg := manager.GetEffectiveConfig(map[string]any{
+		"retry_delay_ms":            float64(1500),
+		"retry_backoff_enabled":     true,
+		"retry_backoff_max_percent": float64(300),
+	})
+
+	assert.Equal(t, 1500, cfg.RetryDelayMs)
+	assert.True(t, cfg.RetryBackoffEnabled)
+	assert.Equal(t, 300, cfg.RetryBackoffMaxPercent)
 }
 
 func TestGetEffectiveConfigResolvesSystemProxyWhenGroupConfigMarshalFails(t *testing.T) {

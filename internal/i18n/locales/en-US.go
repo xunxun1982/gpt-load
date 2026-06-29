@@ -224,6 +224,12 @@ var MessagesEnUS = map[string]string{
 	// Key config related
 	"config.max_retries":                     "Max Retries",
 	"config.max_retries_desc":                "Maximum number of retries for a single request using different keys, 0 for no retries.",
+	"config.retry_delay_ms":                  "Retry Delay (ms)",
+	"config.retry_delay_ms_desc":             "Base retry delay for standard groups; 0 means no delay. The backoff switch and max backoff percent take effect with this setting.",
+	"config.retry_backoff_enabled":           "Enable Retry Backoff",
+	"config.retry_backoff_enabled_desc":      "Works with retry delay; when enabled, extra waiting grows by the max backoff percent, reaches the maximum on the 100th consecutive retry, and adds small random jitter.",
+	"config.retry_backoff_max_percent":       "Max Backoff Percent",
+	"config.retry_backoff_max_percent_desc":  "Maximum extra backoff wait as a percentage of retry delay. For example, 500 means up to 5x extra delay, reached after 100 consecutive retries.",
 	"config.blacklist_threshold":             "Blacklist Threshold",
 	"config.blacklist_threshold_desc":        "After how many cumulative failures the key is blacklisted, 0 to disable blacklisting.",
 	"config.failover_status_codes":           "Failover Status Codes",

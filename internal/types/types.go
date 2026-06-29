@@ -46,6 +46,9 @@ type SystemSettings struct {
 
 	// Key configuration
 	MaxRetries                   int    `json:"max_retries" default:"3" name:"config.max_retries" category:"config.category.key" desc:"config.max_retries_desc" validate:"required,min=0"`
+	RetryDelayMs                 int    `json:"retry_delay_ms" default:"0" name:"config.retry_delay_ms" category:"config.category.key" desc:"config.retry_delay_ms_desc" validate:"required,min=0"`
+	RetryBackoffEnabled          bool   `json:"retry_backoff_enabled" default:"false" name:"config.retry_backoff_enabled" category:"config.category.key" desc:"config.retry_backoff_enabled_desc"`
+	RetryBackoffMaxPercent       int    `json:"retry_backoff_max_percent" default:"500" name:"config.retry_backoff_max_percent" category:"config.category.key" desc:"config.retry_backoff_max_percent_desc" validate:"required,min=0"`
 	BlacklistThreshold           int    `json:"blacklist_threshold" default:"3" name:"config.blacklist_threshold" category:"config.category.key" desc:"config.blacklist_threshold_desc" validate:"required,min=0"`
 	FailoverStatusCodes          string `json:"failover_status_codes" default:"400-403,405-999" name:"config.failover_status_codes" category:"config.category.key" desc:"config.failover_status_codes_desc" validate:"required"`
 	KeyValidationIntervalMinutes int    `json:"key_validation_interval_minutes" default:"60" name:"config.key_validation_interval" category:"config.category.key" desc:"config.key_validation_interval_desc" validate:"required,min=1"`

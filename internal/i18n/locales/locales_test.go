@@ -207,6 +207,9 @@ func TestConfigMessageKeys(t *testing.T) {
 		"config.gateway_proxy_auto_test_interval_minutes_desc",
 		"config.category.proxy_pool",
 		"config.max_retries",
+		"config.retry_delay_ms",
+		"config.retry_backoff_enabled",
+		"config.retry_backoff_max_percent",
 	}
 
 	for _, key := range configKeys {

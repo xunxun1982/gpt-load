@@ -132,6 +132,46 @@ func setupTestGroupService(tb testing.TB, db *gorm.DB) *GroupService {
 	return svc
 }
 
+func TestGetGroupConfigOptionsIncludesRetryDelayAndBackoff(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	options, err := svc.GetGroupConfigOptions()
+	require.NoError(t, err)
+
+	var retryDelay *ConfigOption
+	var retryBackoff *ConfigOption
+	var retryBackoffMaxPercent *ConfigOption
+	for i := range options {
+		require.NotEqual(t, "retry_exponential_backoff", options[i].Key)
+		if options[i].Key == "retry_delay_ms" {
+			retryDelay = &options[i]
+		}
+		if options[i].Key == "retry_backoff_enabled" {
+			retryBackoff = &options[i]
+		}
+		if options[i].Key == "retry_backoff_max_percent" {
+			retryBackoffMaxPercent = &options[i]
+		}
+	}
+
+	require.NotNil(t, retryDelay)
+	assert.Equal(t, "config.retry_delay_ms", retryDelay.Name)
+	assert.Equal(t, "config.retry_delay_ms_desc", retryDelay.Description)
+	assert.Equal(t, 0, retryDelay.DefaultValue)
+
+	require.NotNil(t, retryBackoff)
+	assert.Equal(t, "config.retry_backoff_enabled", retryBackoff.Name)
+	assert.Equal(t, "config.retry_backoff_enabled_desc", retryBackoff.Description)
+	assert.Equal(t, false, retryBackoff.DefaultValue)
+
+	require.NotNil(t, retryBackoffMaxPercent)
+	assert.Equal(t, "config.retry_backoff_max_percent", retryBackoffMaxPercent.Name)
+	assert.Equal(t, "config.retry_backoff_max_percent_desc", retryBackoffMaxPercent.Description)
+	assert.Equal(t, 500, retryBackoffMaxPercent.DefaultValue)
+}
+
 // TestCreateGroup tests group creation
 func TestCreateGroup(t *testing.T) {
 	t.Parallel()
@@ -883,12 +923,12 @@ func TestUpdateGroupPreventsDisablingCodexSupportUsedByCodexAggregate(t *testing
 	}
 	require.NoError(t, db.Create(&aggregateGroup).Error)
 	require.NoError(t, db.Create(&models.GroupSubGroup{
-		GroupID:             aggregateGroup.ID,
-		SubGroupID:          subGroup.ID,
-		Weight:              100,
-		MinEffectiveWeight:  1,
-		SubGroupName:        subGroup.Name,
-		SubGroupEnabled:     true,
+		GroupID:            aggregateGroup.ID,
+		SubGroupID:         subGroup.ID,
+		Weight:             100,
+		MinEffectiveWeight: 1,
+		SubGroupName:       subGroup.Name,
+		SubGroupEnabled:    true,
 	}).Error)
 
 	_, err := svc.UpdateGroup(context.Background(), subGroup.ID, GroupUpdateParams{

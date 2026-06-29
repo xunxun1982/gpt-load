@@ -732,6 +732,9 @@ func (sm *SystemSettingsManager) DisplaySystemConfig(settings types.SystemSettin
 
 	logrus.Info("  --- Key & Group Behavior ---")
 	logrus.Infof("    Max Retries: %d", settings.MaxRetries)
+	logrus.Infof("    Retry Delay: %d ms", settings.RetryDelayMs)
+	logrus.Infof("    Retry Backoff Enabled: %t", settings.RetryBackoffEnabled)
+	logrus.Infof("    Retry Backoff Max Percent: %d", settings.RetryBackoffMaxPercent)
 	logrus.Infof("    Blacklist Threshold: %d", settings.BlacklistThreshold)
 	logrus.Infof("    Failover Status Codes: %s", settings.FailoverStatusCodes)
 	logrus.Infof("    Key Validation Interval: %d minutes", settings.KeyValidationIntervalMinutes)

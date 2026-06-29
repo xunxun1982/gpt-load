@@ -1613,6 +1613,7 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 			refreshed, refreshErr := p.refreshTokens(ctx, client, site, authValue, refreshToken, useStealth)
 			if refreshErr != nil {
 				logrus.WithError(refreshErr).WithField("endpoint", pathForLog(apiURL)).Warn("Sub2API token refresh failed")
+				result.Message = sub2APIRefreshFailureMessage(result.Message, refreshErr)
 				return withAuthUpdates(result), nil
 			}
 			authValue = refreshed.AccessToken
@@ -1632,6 +1633,21 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 	}
 
 	return withAuthUpdates(providerResult{Status: CheckinResultFailed, Message: "check-in endpoint not configured"}), nil
+}
+
+func sub2APIRefreshFailureMessage(checkinMessage string, refreshErr error) string {
+	message := strings.TrimSpace(checkinMessage)
+	if message == "" {
+		message = "check-in failed"
+	}
+	if refreshErr == nil {
+		return message
+	}
+	refreshMessage := strings.TrimSpace(refreshErr.Error())
+	if refreshMessage == "" {
+		return message
+	}
+	return fmt.Sprintf("%s; token refresh failed: %s", message, truncateString(refreshMessage, 200))
 }
 
 func (p sub2APIProvider) requestCheckIn(
@@ -1722,6 +1738,10 @@ func (p sub2APIProvider) refreshTokens(
 		data, statusCode, err = doJSONRequest(ctx, client, http.MethodPost, endpoint, headers, body)
 	}
 	if err != nil {
+		resp := parseGenericCheckInResponse(data)
+		if strings.TrimSpace(resp.Message) != "" {
+			return sub2APIRefreshResult{}, fmt.Errorf("refresh http %d: %s", statusCode, resp.Message)
+		}
 		return sub2APIRefreshResult{}, fmt.Errorf("refresh http %d: %w", statusCode, err)
 	}
 

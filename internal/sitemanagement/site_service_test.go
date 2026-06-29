@@ -249,7 +249,7 @@ func TestSiteService_RecordSiteOpened(t *testing.T) {
 	var site ManagedSite
 	err = db.First(&site, dto.ID).Error
 	require.NoError(t, err)
-	assert.NotEmpty(t, site.LastSiteOpenedDate)
+	assert.Equal(t, GetBeijingCheckinDay(), site.LastSiteOpenedDate)
 }
 
 // TestSiteService_AutoCheckinConfig tests auto-checkin config management

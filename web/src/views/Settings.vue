@@ -45,6 +45,7 @@ const proxyPoolSelectOptions = computed(() => [
   { label: t("settings.noProxy"), value: "" },
   ...proxyPoolOptions.value,
 ]);
+const hiddenSettingKeys = new Set(["retry_backoff_enabled", "retry_backoff_max_percent"]);
 
 fetchSettings();
 fetchProxyPoolOptions();
@@ -70,6 +71,20 @@ function initForm() {
     },
     {}
   );
+}
+
+function visibleSettings(category: SettingCategory) {
+  return (category.settings || []).filter(setting => !hiddenSettingKeys.has(setting.key));
+}
+
+function getSetting(key: string): Setting | undefined {
+  for (const category of settingList.value) {
+    const found = category.settings?.find(setting => setting.key === key);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
 }
 
 async function fetchProxyPoolOptions() {
@@ -611,7 +626,7 @@ checkDebugMode();
         >
           <n-grid :x-gap="36" :y-gap="0" responsive="screen" cols="1 s:2 m:2 l:4 xl:4">
             <n-grid-item
-              v-for="item in category.settings"
+              v-for="item in visibleSettings(category)"
               :key="item.key"
               :span="item.key === 'proxy_keys' ? 3 : 1"
             >
@@ -632,8 +647,48 @@ checkDebugMode();
                   </n-space>
                 </template>
 
+                <div v-if="item.key === 'retry_delay_ms'" class="retry-delay-control">
+                  <n-input-number
+                    v-model:value="form[item.key] as number"
+                    :min="item.min_value !== undefined && item.min_value >= 0 ? item.min_value : 0"
+                    :placeholder="t('settings.inputNumber')"
+                    clearable
+                    style="width: 100%"
+                    size="small"
+                  />
+                  <n-space align="center" :size="8" :wrap="false" class="retry-backoff-row">
+                    <n-tooltip trigger="hover" placement="top">
+                      <template #trigger>
+                        <n-switch
+                          v-model:value="form.retry_backoff_enabled as boolean"
+                          size="small"
+                        />
+                      </template>
+                      {{ getSetting("retry_backoff_enabled")?.description }}
+                    </n-tooltip>
+                    <span class="retry-backoff-label">
+                      {{ getSetting("retry_backoff_enabled")?.name }}
+                    </span>
+                    <n-tooltip trigger="hover" placement="top">
+                      <template #trigger>
+                        <n-input-number
+                          v-model:value="form.retry_backoff_max_percent as number"
+                          :min="0"
+                          :disabled="!form.retry_backoff_enabled"
+                          :placeholder="t('settings.inputNumber')"
+                          :precision="0"
+                          size="small"
+                          class="retry-backoff-percent"
+                        >
+                          <template #suffix>%</template>
+                        </n-input-number>
+                      </template>
+                      {{ getSetting("retry_backoff_max_percent")?.description }}
+                    </n-tooltip>
+                  </n-space>
+                </div>
                 <n-input-number
-                  v-if="item.type === 'int'"
+                  v-else-if="item.type === 'int'"
                   v-model:value="form[item.key] as number"
                   :min="
                     item.min_value !== undefined && item.min_value >= 0 ? item.min_value : undefined
@@ -778,3 +833,26 @@ checkDebugMode();
     />
   </n-space>
 </template>
+
+<style scoped>
+.retry-delay-control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.retry-backoff-row {
+  min-height: 28px;
+}
+
+.retry-backoff-label {
+  white-space: nowrap;
+  color: var(--text-color-2);
+  font-size: 13px;
+}
+
+.retry-backoff-percent {
+  width: 96px;
+}
+</style>
