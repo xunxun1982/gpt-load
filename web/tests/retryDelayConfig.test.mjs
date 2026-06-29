@@ -57,8 +57,21 @@ test("retry delay backoff is configured through one visible option", () => {
   );
   assert.match(settingsView, /item\.key === 'retry_delay_ms'/);
   assert.match(settingsView, /:wrap="true"/);
-  assert.match(settingsView, /v-model:value="form\.retry_backoff_enabled as boolean"/);
-  assert.match(settingsView, /v-model:value="form\.retry_backoff_max_percent as number"/);
+  assert.doesNotMatch(settingsView, /v-model(?::value)?="[^"]+\bas\b/);
+  assert.doesNotMatch(groupFormModal, /v-model(?::value)?="[^"]+\bas\b/);
+  assert.match(settingsView, /@update:value="value => setSettingValue\(item\.key, value\)"/);
+  assert.match(
+    settingsView,
+    /@update:value="value => setSettingValue\('retry_backoff_enabled', value\)"/
+  );
+  assert.match(
+    settingsView,
+    /@update:value="\s*value => setSettingValue\('retry_backoff_max_percent', value\)\s*"/
+  );
+  assert.match(
+    groupFormModal,
+    /@update:value="\s*value => updateConfigItemValue\(configItem, value\)\s*"/
+  );
   assert.match(settingsView, /width: 128px/);
   assert.match(groupFormModal, /width: 128px/);
 });

@@ -34,7 +34,8 @@ const { t } = useI18n();
 
 const settingList = ref<SettingCategory[]>([]);
 const formRef = ref();
-const form = ref<Record<string, string | number | boolean>>({});
+type SettingFormValue = string | number | boolean | null;
+const form = ref<Record<string, SettingFormValue>>({});
 const isSaving = ref(false);
 const proxyPoolOptions = ref<{ label: string; value: string }[]>([]);
 const message = useMessage();
@@ -61,16 +62,26 @@ async function fetchSettings() {
 }
 
 function initForm() {
-  form.value = settingList.value.reduce(
-    (acc: Record<string, string | number | boolean>, category) => {
-      category.settings?.forEach(setting => {
-        acc[setting.key] =
-          setting.key === "proxy_url" ? String(setting.value || "") : setting.value;
-      });
-      return acc;
-    },
-    {}
-  );
+  form.value = settingList.value.reduce((acc: Record<string, SettingFormValue>, category) => {
+    category.settings?.forEach(setting => {
+      acc[setting.key] = setting.key === "proxy_url" ? String(setting.value || "") : setting.value;
+    });
+    return acc;
+  }, {});
+}
+
+function setSettingValue(key: string, value: SettingFormValue) {
+  form.value[key] = value;
+}
+
+function settingNumberValue(key: string): number | null {
+  const value = form.value[key];
+  return typeof value === "number" ? value : null;
+}
+
+function settingStringValue(key: string): string | null {
+  const value = form.value[key];
+  return typeof value === "string" ? value : null;
 }
 
 function visibleSettings(category: SettingCategory) {
@@ -118,7 +129,7 @@ async function handleSubmit() {
 }
 
 function normalizedSettingsPayload(): SettingsUpdatePayload {
-  const payload: SettingsUpdatePayload = { ...form.value };
+  const payload = { ...form.value } as SettingsUpdatePayload;
   const proxyValue = (payload as Record<string, unknown>).proxy_url;
   // Naive UI clearable select emits null, while the backend expects "" for no proxy.
   if (
@@ -649,7 +660,8 @@ checkDebugMode();
 
                 <div v-if="item.key === 'retry_delay_ms'" class="retry-delay-control">
                   <n-input-number
-                    v-model:value="form[item.key] as number"
+                    :value="settingNumberValue(item.key)"
+                    @update:value="value => setSettingValue(item.key, value)"
                     :min="item.min_value !== undefined && item.min_value >= 0 ? item.min_value : 0"
                     :placeholder="t('settings.inputNumber')"
                     clearable
@@ -660,7 +672,8 @@ checkDebugMode();
                     <n-tooltip trigger="hover" placement="top">
                       <template #trigger>
                         <n-switch
-                          v-model:value="form.retry_backoff_enabled as boolean"
+                          :value="Boolean(form.retry_backoff_enabled)"
+                          @update:value="value => setSettingValue('retry_backoff_enabled', value)"
                           size="small"
                         />
                       </template>
@@ -672,7 +685,10 @@ checkDebugMode();
                     <n-tooltip trigger="hover" placement="top">
                       <template #trigger>
                         <n-input-number
-                          v-model:value="form.retry_backoff_max_percent as number"
+                          :value="settingNumberValue('retry_backoff_max_percent')"
+                          @update:value="
+                            value => setSettingValue('retry_backoff_max_percent', value)
+                          "
                           :min="0"
                           :disabled="!form.retry_backoff_enabled"
                           :placeholder="t('settings.inputNumber')"
@@ -689,7 +705,8 @@ checkDebugMode();
                 </div>
                 <n-input-number
                   v-else-if="item.type === 'int'"
-                  v-model:value="form[item.key] as number"
+                  :value="settingNumberValue(item.key)"
+                  @update:value="value => setSettingValue(item.key, value)"
                   :min="
                     item.min_value !== undefined && item.min_value >= 0 ? item.min_value : undefined
                   "
@@ -700,18 +717,21 @@ checkDebugMode();
                 />
                 <n-switch
                   v-else-if="item.type === 'bool'"
-                  v-model:value="form[item.key] as boolean"
+                  :value="Boolean(form[item.key])"
+                  @update:value="value => setSettingValue(item.key, value)"
                   size="small"
                 />
                 <proxy-keys-input
                   v-else-if="item.key === 'proxy_keys'"
-                  v-model="form[item.key] as string"
+                  :model-value="String(form[item.key] ?? '')"
+                  @update:model-value="value => setSettingValue(item.key, value)"
                   :placeholder="t('settings.inputContent')"
                   size="small"
                 />
                 <n-select
                   v-else-if="item.key === 'proxy_url'"
-                  v-model:value="form[item.key] as string"
+                  :value="settingStringValue(item.key)"
+                  @update:value="value => setSettingValue(item.key, value)"
                   :options="proxyPoolSelectOptions"
                   :placeholder="t('settings.noProxy')"
                   size="small"
@@ -721,7 +741,8 @@ checkDebugMode();
                 />
                 <n-input
                   v-else
-                  v-model:value="form[item.key] as string"
+                  :value="String(form[item.key] ?? '')"
+                  @update:value="value => setSettingValue(item.key, value)"
                   :placeholder="t('settings.inputContent')"
                   clearable
                   size="small"

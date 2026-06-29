@@ -522,6 +522,10 @@ func lastRunSucceededForCurrentScheduleDay(cfg *AutoCheckinConfig, st AutoChecki
 }
 
 func computeNextRegularTrigger(cfg *AutoCheckinConfig, now time.Time, skipToday bool) (time.Time, error) {
+	if skipToday && cfg.ScheduleMode == AutoCheckinScheduleModeRandom {
+		return computeNextScheduleDayRandomTrigger(cfg.WindowStart, cfg.WindowEnd, now)
+	}
+
 	base := now
 	if skipToday {
 		loc := checkinLocation()
@@ -1643,11 +1647,7 @@ func sub2APIRefreshFailureMessage(checkinMessage string, refreshErr error) strin
 	if refreshErr == nil {
 		return message
 	}
-	refreshMessage := strings.TrimSpace(refreshErr.Error())
-	if refreshMessage == "" {
-		return message
-	}
-	return fmt.Sprintf("%s; token refresh failed: %s", message, truncateString(refreshMessage, 200))
+	return fmt.Sprintf("%s; token refresh failed: upstream rejected token refresh", message)
 }
 
 func (p sub2APIProvider) requestCheckIn(
@@ -1758,7 +1758,7 @@ func (p sub2APIProvider) refreshTokens(
 	}
 	if resp.Code != 0 || strings.TrimSpace(resp.Data.AccessToken) == "" || strings.TrimSpace(resp.Data.RefreshToken) == "" {
 		if resp.Msg != "" {
-			return sub2APIRefreshResult{}, errors.New(resp.Msg)
+			return sub2APIRefreshResult{}, errors.New("upstream rejected token refresh")
 		}
 		return sub2APIRefreshResult{}, errors.New("invalid refresh response")
 	}

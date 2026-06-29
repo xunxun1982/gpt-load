@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -792,7 +793,7 @@ func TestSub2APIProviderReportsRefreshFailureOnUnauthorized(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, CheckinResultFailed, result.Status)
-	assert.Equal(t, "HTTP 401: Token has expired; token refresh failed: refresh http 401: upstream rejected token refresh", result.Message)
+	assert.Equal(t, "HTTP 401: Token has expired; token refresh failed: upstream rejected token refresh", result.Message)
 	assert.NotContains(t, result.Message, "refresh token expired")
 	assert.NotContains(t, result.Message, "expired-refresh-token")
 }
@@ -1223,9 +1224,47 @@ func TestAutoCheckinRandomScheduleSkipsCrossMidnightWindowAfterSuccess(t *testin
 	next, err := computeNextRegularTrigger(cfg, now, true)
 
 	require.NoError(t, err)
-	assert.True(t, !next.In(beijingLocation).Before(time.Date(2026, 6, 14, 23, 0, 0, 0, beijingLocation)) &&
-		next.In(beijingLocation).Before(time.Date(2026, 6, 15, 2, 0, 0, 0, beijingLocation)),
-		"successful auto check-in during a cross-midnight random window should skip the current local day")
+	assert.True(t, !next.In(beijingLocation).Before(time.Date(2026, 6, 13, 23, 0, 0, 0, beijingLocation)) &&
+		next.In(beijingLocation).Before(time.Date(2026, 6, 14, 2, 0, 0, 0, beijingLocation)),
+		"random skip should preserve the current schedule day for a cross-midnight window")
+}
+
+func TestSub2APIRefreshFailureMessageDoesNotExposeRefreshError(t *testing.T) {
+	t.Parallel()
+
+	message := sub2APIRefreshFailureMessage(
+		"HTTP 401: access token expired",
+		errors.New("refresh http 401: echoed refresh_token secret"),
+	)
+
+	assert.Equal(t, "HTTP 401: access token expired; token refresh failed: upstream rejected token refresh", message)
+	assert.NotContains(t, message, "secret")
+	assert.NotContains(t, message, "refresh_token")
+}
+
+func TestSub2APIRefreshTokensDoesNotExposeApplicationMessage(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/auth/refresh", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":1,"message":"echoed refresh_token secret"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := sub2APIProvider{}.refreshTokens(
+		context.Background(),
+		server.Client(),
+		ManagedSite{BaseURL: server.URL},
+		"old-access",
+		"old-refresh",
+		false,
+	)
+
+	require.Error(t, err)
+	assert.Equal(t, "upstream rejected token refresh", err.Error())
+	assert.NotContains(t, err.Error(), "secret")
+	assert.NotContains(t, err.Error(), "refresh_token")
 }
 
 func TestComputeRandomTriggerTreatsWindowEndAsCutoff(t *testing.T) {

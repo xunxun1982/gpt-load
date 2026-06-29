@@ -1198,6 +1198,14 @@ function handleConfigKeyChange(index: number, key: string) {
   }
 }
 
+function updateConfigItemValue(item: ConfigItem, value: number | null) {
+  item.value = value ?? 0;
+}
+
+function configItemNumberValue(item: ConfigItem): number {
+  return numberConfigValue(item.value, 0);
+}
+
 // Close modal
 function handleClose() {
   emit("update:show", false);
@@ -2032,7 +2040,8 @@ async function handleSubmit() {
                           <n-tooltip trigger="hover" placement="top">
                             <template #trigger>
                               <n-input-number
-                                v-model:value="configItem.value as number"
+                                :value="configItemNumberValue(configItem)"
+                                @update:value="value => updateConfigItemValue(configItem, value)"
                                 :min="0"
                                 :precision="0"
                                 :placeholder="t('keys.paramValue')"

@@ -32,6 +32,10 @@ const jaSiteLocale = readFileSync(
   new URL("../src/locales/site-management/ja-JP.ts", import.meta.url),
   "utf8"
 );
+const siteManagementApi = readFileSync(
+  new URL("../src/api/site-management.ts", import.meta.url),
+  "utf8"
+);
 
 async function loadAutoCheckinTimeUtils() {
   const source = readFileSync(autoCheckinTimeUtilsUrl, "utf8");
@@ -144,4 +148,20 @@ test("auto check-in fallback day boundaries use the server timezone", async () =
     resolveCheckinDayRefreshTarget({ timezone: "Invalid/Timezone" }, now).toISOString(),
     "2026-06-29T16:00:01.000Z"
   );
+
+  const dstNow = Date.parse("2026-03-08T06:30:00.000Z");
+  assert.equal(formatServerCheckinDay(dstNow, "America/New_York"), "2026-03-08");
+  assert.equal(
+    resolveCheckinDayRefreshTarget({ timezone: "America/New_York" }, dstNow).toISOString(),
+    "2026-03-09T04:00:01.000Z"
+  );
+});
+
+test("auto check-in status DTO exposes attempts metadata", () => {
+  const statusInterface = siteManagementApi.match(
+    /export interface AutoCheckinStatus \{[\s\S]*?\n\}/
+  )?.[0];
+
+  assert.ok(statusInterface);
+  assert.match(statusInterface, /attempts\?:\s*AutoCheckinAttemptsTracker/);
 });

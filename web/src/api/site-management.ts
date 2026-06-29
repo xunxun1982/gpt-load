@@ -344,6 +344,11 @@ export interface AutoCheckinRunSummary {
   needs_retry: boolean;
 }
 
+export interface AutoCheckinAttemptsTracker {
+  day: string;
+  attempts: number;
+}
+
 export interface AutoCheckinStatus {
   is_running: boolean;
   last_run_at?: string;
@@ -354,6 +359,7 @@ export interface AutoCheckinStatus {
   timezone?: string;
   next_checkin_reset_at?: string;
   summary?: AutoCheckinRunSummary;
+  attempts?: AutoCheckinAttemptsTracker;
   pending_retry: boolean;
 }
 
