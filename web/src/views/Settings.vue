@@ -7,6 +7,7 @@ import {
 } from "@/api/settings";
 import { proxyPoolApi } from "@/api/proxy-pool";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
+import { buildSettingsUpdatePayload, type SettingFormValue } from "@/views/settings-payload";
 import http from "@/utils/http";
 import { HelpCircle, Save, CloudDownloadOutline, CloudUploadOutline } from "@vicons/ionicons5";
 import {
@@ -34,7 +35,6 @@ const { t } = useI18n();
 
 const settingList = ref<SettingCategory[]>([]);
 const formRef = ref();
-type SettingFormValue = string | number | boolean | null;
 const form = ref<Record<string, SettingFormValue>>({});
 const isSaving = ref(false);
 const proxyPoolOptions = ref<{ label: string; value: string }[]>([]);
@@ -129,16 +129,7 @@ async function handleSubmit() {
 }
 
 function normalizedSettingsPayload(): SettingsUpdatePayload {
-  const payload = { ...form.value } as SettingsUpdatePayload;
-  const proxyValue = (payload as Record<string, unknown>).proxy_url;
-  // Naive UI clearable select emits null, while the backend expects "" for no proxy.
-  if (
-    Object.prototype.hasOwnProperty.call(payload, "proxy_url") &&
-    (proxyValue === null || proxyValue === undefined)
-  ) {
-    payload.proxy_url = "";
-  }
-  return payload;
+  return buildSettingsUpdatePayload(settingList.value, form.value);
 }
 
 function generateValidationRules(item: Setting): FormItemRule[] {

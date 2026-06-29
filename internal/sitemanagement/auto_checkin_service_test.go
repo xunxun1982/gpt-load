@@ -1224,9 +1224,9 @@ func TestAutoCheckinRandomScheduleSkipsCrossMidnightWindowAfterSuccess(t *testin
 	next, err := computeNextRegularTrigger(cfg, now, true)
 
 	require.NoError(t, err)
-	assert.True(t, !next.In(beijingLocation).Before(time.Date(2026, 6, 13, 23, 0, 0, 0, beijingLocation)) &&
-		next.In(beijingLocation).Before(time.Date(2026, 6, 14, 2, 0, 0, 0, beijingLocation)),
-		"random skip should preserve the current schedule day for a cross-midnight window")
+	assert.True(t, !next.In(beijingLocation).Before(time.Date(2026, 6, 14, 23, 0, 0, 0, beijingLocation)) &&
+		next.In(beijingLocation).Before(time.Date(2026, 6, 15, 2, 0, 0, 0, beijingLocation)),
+		"random skip should advance to the next local day for a cross-midnight window")
 }
 
 func TestSub2APIRefreshFailureMessageDoesNotExposeRefreshError(t *testing.T) {

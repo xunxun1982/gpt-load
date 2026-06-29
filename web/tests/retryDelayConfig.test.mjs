@@ -1,77 +1,113 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { URL } from "node:url";
+import ts from "typescript";
 
-const groupFormModal = readFileSync(
-  new URL("../src/components/keys/GroupFormModal.vue", import.meta.url),
-  "utf8"
-);
-const settingsView = readFileSync(new URL("../src/views/Settings.vue", import.meta.url), "utf8");
+async function loadTsModule(path) {
+  const source = readFileSync(new URL(path, import.meta.url), "utf8");
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.ES2022,
+      target: ts.ScriptTarget.ES2022,
+    },
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+}
 
-test("retry delay backoff is configured through one visible option", () => {
-  assert.match(groupFormModal, /const retryDelayConfigKey = "retry_delay_ms"/);
-  assert.match(groupFormModal, /const retryBackoffEnabledConfigKey = "retry_backoff_enabled"/);
-  assert.match(
-    groupFormModal,
-    /const retryBackoffMaxPercentConfigKey = "retry_backoff_max_percent"/
-  );
-  assert.match(groupFormModal, /hiddenConfigOptionKeys = new Set\(\[/);
-  assert.match(groupFormModal, /retryBackoffEnabledConfigKey,/);
-  assert.match(groupFormModal, /retryBackoffMaxPercentConfigKey,/);
-  assert.match(groupFormModal, /getConfigOption\(retryBackoffEnabledConfigKey\)\?\.default_value/);
-  assert.match(
-    groupFormModal,
-    /getConfigOption\(retryBackoffMaxPercentConfigKey\)\?\.default_value/
-  );
-  assert.match(groupFormModal, /v-if="configItem\.key === retryDelayConfigKey"/);
-  assert.match(
-    groupFormModal,
-    /config\[retryBackoffEnabledConfigKey\] = Boolean\(item\.retryBackoffEnabled\)/
-  );
-  assert.match(
-    groupFormModal,
-    /config\[retryBackoffMaxPercentConfigKey\] = Math\.trunc\(maxPercent\)/
-  );
-  assert.doesNotMatch(
-    groupFormModal,
-    /buildConfigItem\(retryDelayConfigKey,\s*rawConfig\[retryDelayConfigKey\]\s*\?\?\s*0,\s*rawConfig\)/
-  );
-  assert.match(groupFormModal, /retryDelayInherited/);
-  assert.match(
-    groupFormModal,
-    /Object\.prototype\.hasOwnProperty\.call\(rawConfig,\s*retryBackoffEnabledConfigKey\)/
-  );
-  assert.match(
-    groupFormModal,
-    /Object\.prototype\.hasOwnProperty\.call\(rawConfig,\s*retryBackoffMaxPercentConfigKey\)/
-  );
-  assert.match(
-    groupFormModal,
-    /if \(!item\.retryDelayInherited \|\| numValue !== item\.retryDelayInitialValue\)/
+// DOM mounting would require adding a test DOM dependency; these tests exercise
+// the runtime helpers used by the components instead of pinning source strings.
+test("retry delay backoff state preserves inherited delay and hidden sibling keys", async () => {
+  const {
+    buildRetryConfigState,
+    retryBackoffEnabledConfigKey,
+    retryBackoffMaxPercentConfigKey,
+    retryDelayConfigKey,
+    shouldWriteRetryDelay,
+    writeRetryBackoffConfig,
+  } = await loadTsModule("../src/components/keys/retry-config.ts");
+
+  const backoffOnly = buildRetryConfigState(
+    retryDelayConfigKey,
+    null,
+    { [retryBackoffEnabledConfigKey]: true },
+    { backoffEnabled: false, backoffMaxPercent: 500 },
+    true
   );
 
-  assert.match(
-    settingsView,
-    /hiddenSettingKeys = new Set\(\["retry_backoff_enabled", "retry_backoff_max_percent"\]\)/
+  assert.equal(backoffOnly.value, null);
+  assert.equal(backoffOnly.retryDelayInherited, true);
+  assert.equal(backoffOnly.retryBackoffEnabled, true);
+  assert.equal(backoffOnly.retryBackoffEnabledExplicit, true);
+  assert.equal(backoffOnly.retryBackoffMaxPercent, 500);
+  assert.equal(backoffOnly.retryBackoffMaxPercentExplicit, false);
+  assert.equal(shouldWriteRetryDelay(backoffOnly, 0), false);
+
+  const config = {};
+  writeRetryBackoffConfig(config, backoffOnly, backoffOnly.retryBackoffMaxPercent);
+  assert.deepEqual(config, { [retryBackoffEnabledConfigKey]: true });
+
+  backoffOnly.retryBackoffMaxPercent = 300;
+  backoffOnly.retryBackoffMaxPercentExplicit = true;
+  writeRetryBackoffConfig(config, backoffOnly, backoffOnly.retryBackoffMaxPercent);
+  assert.deepEqual(config, {
+    [retryBackoffEnabledConfigKey]: true,
+    [retryBackoffMaxPercentConfigKey]: 300,
+  });
+});
+
+test("retry delay explicit row does not materialize inherited backoff siblings", async () => {
+  const {
+    buildRetryConfigState,
+    retryBackoffEnabledConfigKey,
+    retryBackoffMaxPercentConfigKey,
+    retryDelayConfigKey,
+    shouldWriteRetryDelay,
+    writeRetryBackoffConfig,
+  } = await loadTsModule("../src/components/keys/retry-config.ts");
+
+  const retryDelay = buildRetryConfigState(
+    retryDelayConfigKey,
+    250,
+    { [retryDelayConfigKey]: 250 },
+    { backoffEnabled: false, backoffMaxPercent: 500 },
+    false
   );
-  assert.match(settingsView, /item\.key === 'retry_delay_ms'/);
-  assert.match(settingsView, /:wrap="true"/);
-  assert.doesNotMatch(settingsView, /v-model(?::value)?="[^"]+\bas\b/);
-  assert.doesNotMatch(groupFormModal, /v-model(?::value)?="[^"]+\bas\b/);
-  assert.match(settingsView, /@update:value="value => setSettingValue\(item\.key, value\)"/);
-  assert.match(
-    settingsView,
-    /@update:value="value => setSettingValue\('retry_backoff_enabled', value\)"/
-  );
-  assert.match(
-    settingsView,
-    /@update:value="\s*value => setSettingValue\('retry_backoff_max_percent', value\)\s*"/
-  );
-  assert.match(
-    groupFormModal,
-    /@update:value="\s*value => updateConfigItemValue\(configItem, value\)\s*"/
-  );
-  assert.match(settingsView, /width: 128px/);
-  assert.match(groupFormModal, /width: 128px/);
+  const config = {};
+
+  assert.equal(shouldWriteRetryDelay(retryDelay, 250), true);
+  writeRetryBackoffConfig(config, retryDelay, retryDelay.retryBackoffMaxPercent);
+
+  assert.equal(retryDelay.retryBackoffEnabledExplicit, false);
+  assert.equal(retryDelay.retryBackoffMaxPercentExplicit, false);
+  assert.equal(Object.hasOwn(config, retryBackoffEnabledConfigKey), false);
+  assert.equal(Object.hasOwn(config, retryBackoffMaxPercentConfigKey), false);
+});
+
+test("settings payload omits nullable clearable numbers and normalizes empty proxy", async () => {
+  const { buildSettingsUpdatePayload } = await loadTsModule("../src/views/settings-payload.ts");
+  const categories = [
+    {
+      category_name: "test",
+      settings: [
+        { key: "retry_delay_ms", type: "int" },
+        { key: "retry_backoff_max_percent", type: "int" },
+        { key: "retry_backoff_enabled", type: "bool" },
+        { key: "proxy_url", type: "string" },
+      ],
+    },
+  ];
+
+  const payload = buildSettingsUpdatePayload(categories, {
+    retry_delay_ms: null,
+    retry_backoff_max_percent: null,
+    retry_backoff_enabled: false,
+    proxy_url: null,
+  });
+
+  assert.deepEqual(payload, {
+    retry_backoff_enabled: false,
+    proxy_url: "",
+  });
 });

@@ -4,6 +4,18 @@ import { proxyPoolApi } from "@/api/proxy-pool";
 import { settingsApi } from "@/api/settings";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
 import ModelSelectorModal from "@/components/keys/ModelSelectorModal.vue";
+import {
+  booleanConfigValue,
+  buildRetryConfigState,
+  hasOwnConfigValue,
+  numberConfigValue,
+  retryBackoffEnabledConfigKey,
+  retryBackoffMaxPercentConfigKey,
+  retryDelayConfigKey,
+  shouldWriteRetryDelay,
+  type RetryConfigFormState,
+  writeRetryBackoffConfig,
+} from "@/components/keys/retry-config";
 import type {
   Group,
   GroupConfigOption,
@@ -69,15 +81,7 @@ interface Emits {
   (e: "switchToGroup", groupId: number): void;
 }
 
-// Configuration item type
-interface ConfigItem {
-  key: string;
-  value: number | string | boolean;
-  retryBackoffEnabled: boolean;
-  retryBackoffMaxPercent: number;
-  retryDelayInherited: boolean;
-  retryDelayInitialValue: number;
-}
+type ConfigItem = RetryConfigFormState;
 
 // Header rule type
 interface HeaderRuleItem {
@@ -236,9 +240,6 @@ const hasModelRedirectRulesConfigured = computed(() => {
 
   return hasEffectiveModelRedirectItems(formData.model_redirect_items_v2);
 });
-const retryDelayConfigKey = "retry_delay_ms";
-const retryBackoffEnabledConfigKey = "retry_backoff_enabled";
-const retryBackoffMaxPercentConfigKey = "retry_backoff_max_percent";
 const retryBackoffDefaultEnabled = false;
 const retryBackoffDefaultMaxPercent = 500;
 
@@ -675,15 +676,11 @@ function loadGroupData() {
     });
   if (
     !configItems.some(item => item.key === retryDelayConfigKey) &&
-    (Object.prototype.hasOwnProperty.call(rawConfig, retryBackoffEnabledConfigKey) ||
-      Object.prototype.hasOwnProperty.call(rawConfig, retryBackoffMaxPercentConfigKey))
+    (hasOwnConfigValue(rawConfig, retryBackoffEnabledConfigKey) ||
+      hasOwnConfigValue(rawConfig, retryBackoffMaxPercentConfigKey))
   ) {
-    const retryDelayDefault = numberConfigValue(
-      getConfigOption(retryDelayConfigKey)?.default_value,
-      0
-    );
-    // Show inherited retry_delay_ms for backoff-only config without persisting it unchanged.
-    configItems.push(buildConfigItem(retryDelayConfigKey, retryDelayDefault, rawConfig, true));
+    // Backend does not currently expose the effective inherited delay here, so keep it blank.
+    configItems.push(buildConfigItem(retryDelayConfigKey, null, rawConfig, true));
   }
   Object.assign(formData, {
     name: props.group.name || "",
@@ -880,20 +877,14 @@ async function fetchProxyPoolOptions() {
   }
 }
 
-function normalizeConfigItemValue(value: unknown): number | string | boolean {
+function normalizeConfigItemValue(value: unknown): number | string | boolean | null {
+  if (value === null) {
+    return null;
+  }
   if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
     return value;
   }
   return String(value ?? "");
-}
-
-function numberConfigValue(value: unknown, fallback: number): number {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : fallback;
-}
-
-function booleanConfigValue(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
 }
 
 function getConfigOption(key: string) {
@@ -920,23 +911,17 @@ function buildConfigItem(
   rawConfig: Record<string, unknown> = {},
   retryDelayInherited = false
 ): ConfigItem {
-  const defaultBackoffEnabled = retryBackoffEnabledDefault();
-  const defaultBackoffMaxPercent = retryBackoffMaxPercentDefault();
   const normalizedValue = normalizeConfigItemValue(value);
-  return {
+  return buildRetryConfigState(
     key,
-    value: normalizedValue,
-    retryBackoffEnabled:
-      key === retryDelayConfigKey
-        ? booleanConfigValue(rawConfig[retryBackoffEnabledConfigKey], defaultBackoffEnabled)
-        : retryBackoffDefaultEnabled,
-    retryBackoffMaxPercent:
-      key === retryDelayConfigKey
-        ? numberConfigValue(rawConfig[retryBackoffMaxPercentConfigKey], defaultBackoffMaxPercent)
-        : retryBackoffDefaultMaxPercent,
-    retryDelayInherited: key === retryDelayConfigKey ? retryDelayInherited : false,
-    retryDelayInitialValue: key === retryDelayConfigKey ? numberConfigValue(normalizedValue, 0) : 0,
-  };
+    normalizedValue,
+    rawConfig,
+    {
+      backoffEnabled: retryBackoffEnabledDefault(),
+      backoffMaxPercent: retryBackoffMaxPercentDefault(),
+    },
+    retryDelayInherited
+  );
 }
 
 // Add config item
@@ -946,6 +931,8 @@ function addConfigItem() {
     value: "",
     retryBackoffEnabled: retryBackoffDefaultEnabled,
     retryBackoffMaxPercent: retryBackoffDefaultMaxPercent,
+    retryBackoffEnabledExplicit: false,
+    retryBackoffMaxPercentExplicit: false,
     retryDelayInherited: false,
     retryDelayInitialValue: 0,
   });
@@ -1192,6 +1179,8 @@ function handleConfigKeyChange(index: number, key: string) {
       key === retryDelayConfigKey ? retryBackoffEnabledDefault() : retryBackoffDefaultEnabled;
     target.retryBackoffMaxPercent =
       key === retryDelayConfigKey ? retryBackoffMaxPercentDefault() : retryBackoffDefaultMaxPercent;
+    target.retryBackoffEnabledExplicit = false;
+    target.retryBackoffMaxPercentExplicit = false;
     target.retryDelayInherited = false;
     target.retryDelayInitialValue =
       key === retryDelayConfigKey ? numberConfigValue(option.default_value, 0) : 0;
@@ -1199,10 +1188,26 @@ function handleConfigKeyChange(index: number, key: string) {
 }
 
 function updateConfigItemValue(item: ConfigItem, value: number | null) {
-  item.value = value ?? 0;
+  item.value = value;
+  if (item.key === retryDelayConfigKey) {
+    item.retryDelayInherited = value === null;
+  }
 }
 
-function configItemNumberValue(item: ConfigItem): number {
+function updateRetryBackoffEnabled(item: ConfigItem, value: boolean) {
+  item.retryBackoffEnabled = value;
+  item.retryBackoffEnabledExplicit = true;
+}
+
+function updateRetryBackoffMaxPercent(item: ConfigItem, value: number | null) {
+  item.retryBackoffMaxPercent = value ?? retryBackoffMaxPercentDefault();
+  item.retryBackoffMaxPercentExplicit = true;
+}
+
+function configItemNumberValue(item: ConfigItem): number | null {
+  if (item.value === null) {
+    return null;
+  }
   return numberConfigValue(item.value, 0);
 }
 
@@ -1369,28 +1374,37 @@ async function handleSubmit() {
       const option = getConfigOption(item.key);
       if (option && typeof option.default_value === "number") {
         const rawValue = item.value;
-        const strValue = typeof rawValue === "string" ? rawValue : String(rawValue);
-
-        if (typeof rawValue === "string" && rawValue.trim() === "") {
+        if (item.key === retryDelayConfigKey && rawValue === null && item.retryDelayInherited) {
+          // Keep inherited retry delay absent from group config when no effective value is available.
+        } else if (rawValue === null) {
           message.error(t("keys.invalidNumericConfig", { key: item.key }));
           return;
-        }
-        const numValue = Number(strValue);
+        } else {
+          const strValue = typeof rawValue === "string" ? rawValue : String(rawValue);
 
-        if (!Number.isFinite(numValue)) {
-          message.error(t("keys.invalidNumericConfig", { key: item.key }));
-          return;
-        }
+          if (typeof rawValue === "string" && rawValue.trim() === "") {
+            message.error(t("keys.invalidNumericConfig", { key: item.key }));
+            return;
+          }
+          const numValue = Number(strValue);
 
-        if (item.key === retryDelayConfigKey) {
-          if (!item.retryDelayInherited || numValue !== item.retryDelayInitialValue) {
+          if (!Number.isFinite(numValue)) {
+            message.error(t("keys.invalidNumericConfig", { key: item.key }));
+            return;
+          }
+
+          if (item.key === retryDelayConfigKey) {
+            if (shouldWriteRetryDelay(item, numValue)) {
+              config[item.key] = numValue;
+            }
+          } else {
             config[item.key] = numValue;
           }
-        } else {
-          config[item.key] = numValue;
         }
       } else {
-        config[item.key] = item.value;
+        if (item.value !== null) {
+          config[item.key] = item.value;
+        }
       }
 
       if (item.key === retryDelayConfigKey) {
@@ -1399,8 +1413,7 @@ async function handleSubmit() {
           message.error(t("keys.invalidNumericConfig", { key: retryBackoffMaxPercentConfigKey }));
           return;
         }
-        config[retryBackoffEnabledConfigKey] = Boolean(item.retryBackoffEnabled);
-        config[retryBackoffMaxPercentConfigKey] = Math.trunc(maxPercent);
+        writeRetryBackoffConfig(config, item, maxPercent);
       }
     }
 
@@ -2057,7 +2070,10 @@ async function handleSubmit() {
                             <n-tooltip trigger="hover" placement="top">
                               <template #trigger>
                                 <n-switch
-                                  v-model:value="configItem.retryBackoffEnabled"
+                                  :value="configItem.retryBackoffEnabled"
+                                  @update:value="
+                                    value => updateRetryBackoffEnabled(configItem, value)
+                                  "
                                   size="small"
                                 />
                               </template>
@@ -2069,7 +2085,10 @@ async function handleSubmit() {
                             <n-tooltip trigger="hover" placement="top">
                               <template #trigger>
                                 <n-input-number
-                                  v-model:value="configItem.retryBackoffMaxPercent"
+                                  :value="configItem.retryBackoffMaxPercent"
+                                  @update:value="
+                                    value => updateRetryBackoffMaxPercent(configItem, value)
+                                  "
                                   :min="0"
                                   :precision="0"
                                   :disabled="!configItem.retryBackoffEnabled"

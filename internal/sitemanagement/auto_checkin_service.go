@@ -522,16 +522,15 @@ func lastRunSucceededForCurrentScheduleDay(cfg *AutoCheckinConfig, st AutoChecki
 }
 
 func computeNextRegularTrigger(cfg *AutoCheckinConfig, now time.Time, skipToday bool) (time.Time, error) {
-	if skipToday && cfg.ScheduleMode == AutoCheckinScheduleModeRandom {
-		return computeNextScheduleDayRandomTrigger(cfg.WindowStart, cfg.WindowEnd, now)
-	}
-
 	base := now
 	if skipToday {
 		loc := checkinLocation()
 		localNow := now.In(loc)
 		nextDay := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 23, 59, 59, 0, loc)
 		base = nextDay
+	}
+	if skipToday && cfg.ScheduleMode == AutoCheckinScheduleModeRandom {
+		return computeNextScheduleDayRandomTrigger(cfg.WindowStart, cfg.WindowEnd, base)
 	}
 
 	switch cfg.ScheduleMode {

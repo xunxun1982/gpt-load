@@ -26,6 +26,7 @@ export function useAutoCheckinStatus({
   const autoCheckinStatus = ref<AutoCheckinStatus | null>(null);
   const autoCheckinLoading = ref(false);
   const checkinDayRefreshTimer = ref<number | undefined>(undefined);
+  const fallbackNow = ref(Date.now());
 
   function clearCheckinDayRefresh() {
     if (checkinDayRefreshTimer.value) {
@@ -38,11 +39,12 @@ export function useAutoCheckinStatus({
     clearCheckinDayRefresh();
 
     const now = Date.now();
+    fallbackNow.value = now;
     const target = resolveCheckinDayRefreshTarget(status, now);
-    const delay =
-      delayOverride ?? Math.min(Math.max(target.getTime() - now + 1000, 1000), 2_147_483_647);
+    const delay = delayOverride ?? Math.min(Math.max(target.getTime() - now, 1000), 2_147_483_647);
 
     checkinDayRefreshTimer.value = window.setTimeout(() => {
+      fallbackNow.value = Date.now();
       void (async () => {
         await loadAutoCheckinConfig();
         try {
@@ -59,22 +61,26 @@ export function useAutoCheckinStatus({
   const currentCheckinDay = computed(
     () =>
       autoCheckinStatus.value?.current_checkin_day ||
-      formatServerCheckinDay(Date.now(), autoCheckinStatus.value?.timezone)
+      formatServerCheckinDay(fallbackNow.value, autoCheckinStatus.value?.timezone)
   );
 
   async function loadAutoCheckinConfig() {
     autoCheckinLoading.value = true;
     try {
-      const [config, status] = await Promise.all([
+      const [configResult, statusResult] = await Promise.allSettled([
         autoCheckinApi.getConfig(),
         autoCheckinApi.getStatus(),
       ]);
-      autoCheckinConfig.value = config;
-      autoCheckinStatus.value = status;
-      scheduleCheckinDayRefresh(status);
-    } catch (_) {
-      scheduleCheckinDayRefresh(autoCheckinStatus.value, CHECKIN_REFRESH_ERROR_RETRY_MS);
-      /* handled by centralized error handler */
+
+      if (configResult.status === "fulfilled") {
+        autoCheckinConfig.value = configResult.value;
+      }
+      if (statusResult.status === "fulfilled") {
+        autoCheckinStatus.value = statusResult.value;
+        scheduleCheckinDayRefresh(statusResult.value);
+      } else {
+        scheduleCheckinDayRefresh(autoCheckinStatus.value, CHECKIN_REFRESH_ERROR_RETRY_MS);
+      }
     } finally {
       autoCheckinLoading.value = false;
     }

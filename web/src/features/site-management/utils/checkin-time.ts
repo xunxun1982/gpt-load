@@ -98,7 +98,7 @@ function nextServerMidnight(now: number, timezone?: string): Date {
       ...nextDay,
       hour: 0,
       minute: 0,
-      second: 1,
+      second: 0,
     },
     resolvedTimezone
   );

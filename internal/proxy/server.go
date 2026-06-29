@@ -270,6 +270,8 @@ type retryContext struct {
 	originalPath        string        // Original request path (for CC support restoration)
 	subGroupKeyRetryMap map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
 	forcedSubGroupID    uint          // Keeps key-level retries on the selected sub-group until its retry budget is exhausted
+	lifecycleCtx        context.Context
+	lifecycleCancel     context.CancelFunc
 }
 
 // safeProxyURL returns the proxy URL value with credentials redacted for safe logging.
@@ -1262,6 +1264,33 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	retryCount int,
 ) {
 	cfg := group.EffectiveConfig
+	lifecycleCtx, lifecycleCancel := requestLifecycleContext(c.Request.Context(), cfg, isStream)
+	defer lifecycleCancel()
+	ps.executeRequestWithRetryLifecycle(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount, lifecycleCtx)
+}
+
+func requestLifecycleContext(parent context.Context, cfg types.SystemSettings, isStream bool) (context.Context, context.CancelFunc) {
+	if isStream {
+		if cfg.StreamRequestTimeout > 0 {
+			return context.WithTimeout(parent, time.Duration(cfg.StreamRequestTimeout)*time.Second)
+		}
+		return context.WithCancel(parent)
+	}
+	return effectiveNonStreamRequestContext(parent, cfg)
+}
+
+func (ps *ProxyServer) executeRequestWithRetryLifecycle(
+	c *gin.Context,
+	channelHandler channel.ChannelProxy,
+	originalGroup *models.Group,
+	group *models.Group,
+	bodyBytes []byte,
+	isStream bool,
+	startTime time.Time,
+	retryCount int,
+	lifecycleCtx context.Context,
+) {
+	cfg := group.EffectiveConfig
 
 	// Store group in context for response handlers to access
 	c.Set("group", group)
@@ -1290,20 +1319,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		return
 	}
 
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if isStream {
-		if cfg.StreamRequestTimeout > 0 {
-			ctx, cancel = context.WithTimeout(c.Request.Context(), time.Duration(cfg.StreamRequestTimeout)*time.Second)
-		} else {
-			ctx, cancel = context.WithCancel(c.Request.Context())
-		}
-	} else {
-		ctx, cancel = effectiveNonStreamRequestContext(c.Request.Context(), cfg)
-	}
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, c.Request.Method, upstreamSelection.URL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(lifecycleCtx, c.Request.Method, upstreamSelection.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		logrus.Errorf("Failed to create upstream request: %v", err)
 		response.Error(c, app_errors.ErrInternalServer)
@@ -1479,8 +1495,8 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			return
 		}
 
-		if !waitBeforeRetry(c.Request.Context(), retryDelayForAttempt(cfg, retryCount)) {
-			ctxErr := c.Request.Context().Err()
+		if !waitBeforeRetry(lifecycleCtx, retryDelayForAttempt(cfg, retryCount)) {
+			ctxErr := lifecycleCtx.Err()
 			if ctxErr == nil {
 				ctxErr = context.Canceled
 			}
@@ -1488,7 +1504,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			return
 		}
 
-		ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount+1)
+		ps.executeRequestWithRetryLifecycle(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount+1, lifecycleCtx)
 		return
 	}
 
@@ -2077,20 +2093,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		return
 	}
 
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if isStream {
-		if cfg.StreamRequestTimeout > 0 {
-			ctx, cancel = context.WithTimeout(c.Request.Context(), time.Duration(cfg.StreamRequestTimeout)*time.Second)
-		} else {
-			ctx, cancel = context.WithCancel(c.Request.Context())
-		}
-	} else {
-		ctx, cancel = effectiveNonStreamRequestContext(c.Request.Context(), cfg)
+	if retryCtx.lifecycleCtx == nil {
+		retryCtx.lifecycleCtx, retryCtx.lifecycleCancel = requestLifecycleContext(c.Request.Context(), cfg, isStream)
+		defer retryCtx.lifecycleCancel()
 	}
-	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, c.Request.Method, upstreamSelection.URL, bytes.NewReader(finalBodyBytes))
+	req, err := http.NewRequestWithContext(retryCtx.lifecycleCtx, c.Request.Method, upstreamSelection.URL, bytes.NewReader(finalBodyBytes))
 	if err != nil {
 		logrus.Errorf("Failed to create upstream request: %v", err)
 		response.Error(c, app_errors.ErrInternalServer)
@@ -2295,8 +2303,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			// Restore original path for retry (CC support may have modified it)
 			restoreOriginalPath(c, retryCtx)
 
-			if !waitBeforeRetry(c.Request.Context(), retryDelayForAttempt(subGroupCfg, subGroupKeyRetryCount)) {
-				ctxErr := c.Request.Context().Err()
+			if !waitBeforeRetry(retryCtx.lifecycleCtx, retryDelayForAttempt(subGroupCfg, subGroupKeyRetryCount)) {
+				ctxErr := retryCtx.lifecycleCtx.Err()
 				if ctxErr == nil {
 					ctxErr = context.Canceled
 				}

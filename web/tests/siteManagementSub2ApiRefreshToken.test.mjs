@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import test from "node:test";
-import { URL } from "node:url";
+import { pathToFileURL, URL } from "node:url";
 import ts from "typescript";
+
+const require = createRequire(import.meta.url);
 
 const panel = readFileSync(
   new URL("../src/features/site-management/components/SiteManagementPanel.vue", import.meta.url),
@@ -48,6 +51,41 @@ async function loadAutoCheckinTimeUtils() {
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 }
 
+async function loadAutoCheckinStatusComposable(apiMock) {
+  const timeUtilsSource = readFileSync(autoCheckinTimeUtilsUrl, "utf8");
+  const timeUtilsOutput = ts.transpileModule(timeUtilsSource, {
+    compilerOptions: {
+      module: ts.ModuleKind.ES2022,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const timeUtilsUrl = `data:text/javascript;base64,${Buffer.from(timeUtilsOutput).toString("base64")}`;
+
+  const vueUrl = pathToFileURL(require.resolve("vue")).href;
+  const vueMockUrl = `data:text/javascript;base64,${Buffer.from(
+    `export { computed, ref } from ${JSON.stringify(vueUrl)}; export function onUnmounted() {}`
+  ).toString("base64")}`;
+  globalThis.__autoCheckinApiMock = apiMock;
+  const apiMockUrl = `data:text/javascript;base64,${Buffer.from(
+    `export const autoCheckinApi = new Proxy({}, { get: (_target, prop) => globalThis.__autoCheckinApiMock[prop] });`
+  ).toString("base64")}`;
+
+  const source = readFileSync(autoCheckinComposableUrl, "utf8")
+    .replaceAll(`from "@/api/site-management";`, `from ${JSON.stringify(apiMockUrl)};`)
+    .replaceAll(
+      `from "@/features/site-management/utils/checkin-time";`,
+      `from ${JSON.stringify(timeUtilsUrl)};`
+    )
+    .replaceAll(`from "vue";`, `from ${JSON.stringify(vueMockUrl)};`);
+  const output = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.ES2022,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  return import(`data:text/javascript;base64,${Buffer.from(output).toString("base64")}`);
+}
+
 test("Sub2API access token auth has a separate refresh token input", () => {
   assert.match(panel, /refresh_token:\s*""/);
   assert.match(panel, /authValueInputs\.refresh_token\s*=\s*""/);
@@ -80,37 +118,88 @@ test("Sub2API locale hints tell users where auth_token and refresh_token come fr
   }
 });
 
-test("auto check-in refresh falls back when reset metadata is stale", () => {
+test("auto check-in status still updates when config refresh fails", async () => {
   assert.ok(existsSync(autoCheckinComposableUrl));
   assert.ok(existsSync(autoCheckinTimeUtilsUrl));
   assert.match(panel, /useAutoCheckinStatus/);
-  assert.match(autoCheckinComposable, /resolveCheckinDayRefreshTarget\(status,\s*now\)/);
-  assert.doesNotMatch(autoCheckinComposable, /nextLocalMidnight\(new Date\(now\)\)/);
-  assert.match(
-    autoCheckinComposable,
-    /const now = Date\.now\(\);\s+const target = resolveCheckinDayRefreshTarget\(status, now\)/
-  );
   assert.doesNotMatch(panel, /function resolveCheckinDayRefreshTarget/);
+
+  const originalWindow = globalThis.window;
+  const originalDateNow = Date.now;
+  globalThis.window = {
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+  };
+  Date.now = () => Date.parse("2026-06-29T03:30:00.000Z");
+  try {
+    const { useAutoCheckinStatus } = await loadAutoCheckinStatusComposable({
+      getConfig: async () => {
+        throw new Error("config failed");
+      },
+      getStatus: async () => ({
+        is_running: false,
+        current_checkin_day: "2026-06-28",
+        timezone: "America/New_York",
+        next_checkin_reset_at: "2026-06-29T04:00:00.000Z",
+        pending_retry: false,
+      }),
+    });
+    const state = useAutoCheckinStatus({
+      statusTimeLocale: { value: "en-US" },
+      t: key => key,
+      refreshSites: async () => {},
+    });
+
+    await state.loadAutoCheckinConfig();
+
+    assert.equal(state.autoCheckinConfig.value, null);
+    assert.equal(state.autoCheckinStatus.value.current_checkin_day, "2026-06-28");
+    assert.equal(state.currentCheckinDay.value, "2026-06-28");
+  } finally {
+    Date.now = originalDateNow;
+    globalThis.window = originalWindow;
+  }
 });
 
-test("auto check-in config load failure retries before the next midnight", () => {
-  assert.ok(existsSync(autoCheckinComposableUrl));
-  assert.match(autoCheckinComposable, /const CHECKIN_REFRESH_ERROR_RETRY_MS = 5 \* 60 \* 1000/);
-  assert.match(
-    autoCheckinComposable,
-    /function scheduleCheckinDayRefresh\(status: AutoCheckinStatus \| null, delayOverride\?: number\)/
-  );
-  assert.match(autoCheckinComposable, /delayOverride \?\?\s+Math\.min/);
-  assert.match(
-    autoCheckinComposable,
-    /scheduleCheckinDayRefresh\(autoCheckinStatus\.value, CHECKIN_REFRESH_ERROR_RETRY_MS\)/
-  );
-  assert.match(autoCheckinComposable, /try\s*\{\s*await refreshSites\(\);\s*\}\s*catch/);
-  assert.match(
-    autoCheckinComposable,
-    /catch\s*\{\s*scheduleCheckinDayRefresh\(autoCheckinStatus\.value, CHECKIN_REFRESH_ERROR_RETRY_MS\);\s*\/\* Retry stale site-list refresh/
-  );
-  assert.doesNotMatch(panel, /const CHECKIN_REFRESH_ERROR_RETRY_MS = 5 \* 60 \* 1000/);
+test("auto check-in fallback day uses a reactive clock at scheduled refresh", async () => {
+  let scheduledCallback;
+  const originalWindow = globalThis.window;
+  const originalDateNow = Date.now;
+  globalThis.window = {
+    setTimeout: callback => {
+      scheduledCallback = callback;
+      return 1;
+    },
+    clearTimeout: () => {},
+  };
+  Date.now = () => Date.parse("2026-06-29T15:59:00.000Z");
+  try {
+    const { useAutoCheckinStatus } = await loadAutoCheckinStatusComposable({
+      getConfig: async () => ({ enabled: true }),
+      getStatus: async () => ({
+        is_running: false,
+        timezone: "Asia/Shanghai",
+        pending_retry: false,
+      }),
+    });
+    const state = useAutoCheckinStatus({
+      statusTimeLocale: { value: "zh-CN" },
+      t: key => key,
+      refreshSites: async () => {},
+    });
+
+    await state.loadAutoCheckinConfig();
+    assert.equal(state.currentCheckinDay.value, "2026-06-29");
+
+    Date.now = () => Date.parse("2026-06-29T16:00:00.000Z");
+    scheduledCallback();
+
+    assert.equal(state.currentCheckinDay.value, "2026-06-30");
+    await new Promise(resolve => globalThis.setTimeout(resolve, 0));
+  } finally {
+    Date.now = originalDateNow;
+    globalThis.window = originalWindow;
+  }
 });
 
 test("auto check-in status time uses active i18n locale", () => {
@@ -141,19 +230,19 @@ test("auto check-in fallback day boundaries use the server timezone", async () =
       },
       now
     ).toISOString(),
-    "2026-06-29T04:00:01.000Z"
+    "2026-06-29T04:00:00.000Z"
   );
-  assert.equal(resolveCheckinDayRefreshTarget(null, now).toISOString(), "2026-06-29T16:00:01.000Z");
+  assert.equal(resolveCheckinDayRefreshTarget(null, now).toISOString(), "2026-06-29T16:00:00.000Z");
   assert.equal(
     resolveCheckinDayRefreshTarget({ timezone: "Invalid/Timezone" }, now).toISOString(),
-    "2026-06-29T16:00:01.000Z"
+    "2026-06-29T16:00:00.000Z"
   );
 
   const dstNow = Date.parse("2026-03-08T06:30:00.000Z");
   assert.equal(formatServerCheckinDay(dstNow, "America/New_York"), "2026-03-08");
   assert.equal(
     resolveCheckinDayRefreshTarget({ timezone: "America/New_York" }, dstNow).toISOString(),
-    "2026-03-09T04:00:01.000Z"
+    "2026-03-09T04:00:00.000Z"
   );
 });
 
