@@ -3660,9 +3660,20 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		// CRITICAL: Sanitize thinking content to remove malformed XML/JSON that can cause
 		// CC auto-pause issues. This handles cases where model outputs malformed content
 		// like <>[": "task",Form":...] or </antml\b:format> inside thinking blocks.
-		thinking := sanitizeText(strings.TrimSpace(content))
-		if thinking == "" {
+		leadingWhitespace := content[:len(content)-len(strings.TrimLeft(content, " \t\r\n"))]
+		trailingWhitespace := content[len(strings.TrimRight(content, " \t\r\n")):]
+		thinking := sanitizeText(content)
+		if strings.TrimSpace(thinking) == "" {
 			return
+		}
+		if thinkingBlockOpen && leadingWhitespace != "" && !strings.HasPrefix(thinking, leadingWhitespace) {
+			thinking = leadingWhitespace + thinking
+		}
+		if trailingWhitespace != "" && !strings.HasSuffix(thinking, trailingWhitespace) {
+			thinking += trailingWhitespace
+		}
+		if !thinkingBlockOpen {
+			thinking = strings.TrimLeft(thinking, " \t\r\n")
 		}
 		if err := ensureThinkingBlock(); err != nil {
 			logrus.WithError(err).Debug("CC: Failed to start thinking block")

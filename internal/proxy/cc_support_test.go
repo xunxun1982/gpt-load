@@ -1153,6 +1153,38 @@ data: [DONE]
 	}
 }
 
+func TestCCStreamingResponse_ReasoningContentPreservesChunkSpacing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	sseData := `data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Need "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"context."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":"stop"}]}
+
+data: [DONE]
+`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sseData)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("original_model", "deepseek-reasoner")
+	c.Set("thinking_model_applied", true)
+
+	ps := &ProxyServer{}
+	ps.handleCCStreamingResponse(c, resp)
+
+	output := w.Body.String()
+	if !strings.Contains(output, `"thinking":"Need "`) || !strings.Contains(output, `"thinking":"context."`) {
+		t.Errorf("expected reasoning chunks to preserve spacing, got: %s", output)
+	}
+}
+
 // TestCCStreamingResponse_ReasoningContentWithToolCall tests that reasoning_content
 // is properly handled when followed by tool calls.
 func TestCCStreamingResponse_ReasoningContentWithToolCall(t *testing.T) {

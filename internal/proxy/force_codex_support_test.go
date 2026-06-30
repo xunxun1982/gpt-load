@@ -416,8 +416,12 @@ data: [DONE]
 	var completedPayload map[string]any
 	for _, line := range lines {
 		if strings.HasPrefix(line, "data: ") && !strings.Contains(line, "[DONE]") {
-			require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &completedPayload))
-			break
+			var payload map[string]any
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &payload))
+			if payload["type"] == "response.completed" {
+				completedPayload = payload
+				break
+			}
 		}
 	}
 	require.NotNil(t, completedPayload)
@@ -426,6 +430,71 @@ data: [DONE]
 	require.True(t, ok)
 	assert.Equal(t, "response", responsePayload["object"])
 	assert.Equal(t, "deepseek-test", responsePayload["model"])
+}
+
+func TestHandleForceCodexStreamingResponseEmitsResponsesDeltas(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	stream := []byte(`data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"reasoning_content":"Need context. "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}
+
+data: [DONE]
+
+`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamOpenAIChat)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(stream)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleForceCodexStreamingResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	out := w.Body.String()
+	assert.Contains(t, out, "event: response.created")
+	assert.Contains(t, out, "event: response.reasoning_summary_text.delta")
+	assert.Contains(t, out, `"delta":"Need context."`)
+	assert.Contains(t, out, "event: response.output_text.delta")
+	assert.Contains(t, out, `"delta":"hello"`)
+	assert.Contains(t, out, "event: response.completed")
+	assert.Contains(t, out, `"input_tokens":3`)
+	assert.NotContains(t, out, "event: response.in_progress")
+	assert.NotContains(t, out, "event: response.content_part.added")
+	assert.NotContains(t, out, "event: response.output_text.done")
+}
+
+func TestCollectOpenAIChatStreamToResponsePreservesReasoningAndUsageOnlyChunk(t *testing.T) {
+	t.Parallel()
+
+	stream := []byte(`data: {"id":"chatcmpl_reason","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"reasoning_content":"think"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_reason","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl_reason","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}
+
+`)
+
+	openaiResp := collectOpenAIChatStreamToResponse(stream)
+	require.Len(t, openaiResp.Choices, 1)
+	require.NotNil(t, openaiResp.Choices[0].Message.ReasoningContent)
+	assert.Equal(t, "think", *openaiResp.Choices[0].Message.ReasoningContent)
+	require.NotNil(t, openaiResp.Usage)
+	assert.Equal(t, 7, openaiResp.Usage.TotalTokens)
+
+	codexResp := convertOpenAIChatToCodexResponse(openaiResp, "")
+	require.Len(t, codexResp.Output, 2)
+	assert.Equal(t, "reasoning", codexResp.Output[0].Type)
+	assert.Equal(t, "message", codexResp.Output[1].Type)
+	assert.Equal(t, 7, codexResp.Usage.TotalTokens)
 }
 
 func TestConvertCodexRequestToClaude(t *testing.T) {

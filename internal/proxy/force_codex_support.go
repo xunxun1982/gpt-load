@@ -1066,21 +1066,205 @@ func (ps *ProxyServer) handleForceCodexStreamingResponse(c *gin.Context, resp *h
 	clearUpstreamEncodingHeaders(c)
 	c.Header("Content-Type", "text/event-stream")
 	c.Status(statusCode)
-	eventPayload := map[string]any{
-		"type":     "response.completed",
-		"response": streamResp,
-	}
-	eventBytes, err := json.Marshal(eventPayload)
-	if err != nil {
-		writeForceCodexGatewayError(c, "Failed to marshal completed Codex stream event")
+	if err := writeForceCodexCollectedStreamEvents(c, streamResp); err != nil {
+		writeForceCodexGatewayError(c, "Failed to marshal collected Codex stream event")
 		return
 	}
-	_, _ = c.Writer.Write([]byte("event: response.completed\n"))
-	_, _ = c.Writer.Write([]byte("data: " + string(eventBytes) + "\n\n"))
-	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 	if flusher, ok := c.Writer.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+func writeForceCodexCollectedStreamEvents(c *gin.Context, streamResp *CodexResponse) error {
+	responseForStatus := func(status string) *CodexResponse {
+		cp := *streamResp
+		cp.Status = status
+		if status != "completed" {
+			cp.Output = []CodexOutputItem{}
+		}
+		return &cp
+	}
+
+	var captured strings.Builder
+	writeEvent := func(event string, payload any) error {
+		eventBytes, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		chunk := "event: " + event + "\n" + "data: " + string(eventBytes) + "\n\n"
+		if captured.Len() < maxResponseCaptureBytes {
+			remaining := maxResponseCaptureBytes - captured.Len()
+			if len(chunk) > remaining {
+				captured.WriteString(chunk[:remaining])
+			} else {
+				captured.WriteString(chunk)
+			}
+		}
+		_, err = c.Writer.Write([]byte(chunk))
+		return err
+	}
+
+	if err := writeEvent("response.created", map[string]any{
+		"type":     "response.created",
+		"response": responseForStatus("in_progress"),
+	}); err != nil {
+		return err
+	}
+
+	for outputIndex := range streamResp.Output {
+		item := &streamResp.Output[outputIndex]
+		ensureCodexStreamOutputItemID(streamResp, item, outputIndex)
+		if err := writeForceCodexOutputItemEvents(writeEvent, *item, outputIndex); err != nil {
+			return err
+		}
+	}
+
+	if err := writeEvent("response.completed", map[string]any{
+		"type":     "response.completed",
+		"response": streamResp,
+	}); err != nil {
+		return err
+	}
+	doneChunk := "data: [DONE]\n\n"
+	if captured.Len() < maxResponseCaptureBytes {
+		remaining := maxResponseCaptureBytes - captured.Len()
+		if len(doneChunk) > remaining {
+			captured.WriteString(doneChunk[:remaining])
+		} else {
+			captured.WriteString(doneChunk)
+		}
+	}
+	if _, err := c.Writer.Write([]byte(doneChunk)); err != nil {
+		return err
+	}
+	if shouldCaptureResponse(c) && captured.Len() > 0 {
+		c.Set("response_body", sanitizeAndTruncateStringForLog(captured.String(), maxResponseCaptureBytes))
+	}
+	return nil
+}
+
+func ensureCodexStreamOutputItemID(resp *CodexResponse, item *CodexOutputItem, outputIndex int) {
+	if item.ID != "" {
+		return
+	}
+	prefix := "item"
+	switch item.Type {
+	case "reasoning":
+		prefix = "rs"
+	case "message":
+		prefix = "msg"
+	case "function_call":
+		prefix = "fc"
+	}
+	base := strings.TrimPrefix(resp.ID, "resp_")
+	if base == "" {
+		base = "stream"
+	}
+	item.ID = fmt.Sprintf("%s_%s_%d", prefix, base, outputIndex)
+}
+
+func writeForceCodexOutputItemEvents(writeEvent func(string, any) error, item CodexOutputItem, outputIndex int) error {
+	addedItem := item
+	addedItem.Status = "in_progress"
+	switch item.Type {
+	case "reasoning":
+		addedItem.Summary = []CodexSummaryItem{}
+	case "message":
+		addedItem.Content = []CodexContentBlock{}
+	case "function_call":
+		addedItem.Arguments = ""
+	}
+	if err := writeEvent("response.output_item.added", map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": outputIndex,
+		"item":         addedItem,
+	}); err != nil {
+		return err
+	}
+
+	switch item.Type {
+	case "reasoning":
+		text := codexReasoningSummaryText(item)
+		if text != "" {
+			if err := writeEvent("response.reasoning_summary_part.added", map[string]any{
+				"type":          "response.reasoning_summary_part.added",
+				"item_id":       item.ID,
+				"output_index":  outputIndex,
+				"summary_index": 0,
+				"part": map[string]any{
+					"type": "summary_text",
+					"text": "",
+				},
+			}); err != nil {
+				return err
+			}
+			if err := writeEvent("response.reasoning_summary_text.delta", map[string]any{
+				"type":          "response.reasoning_summary_text.delta",
+				"item_id":       item.ID,
+				"output_index":  outputIndex,
+				"summary_index": 0,
+				"delta":         text,
+			}); err != nil {
+				return err
+			}
+			if err := writeEvent("response.reasoning_summary_part.done", map[string]any{
+				"type":          "response.reasoning_summary_part.done",
+				"item_id":       item.ID,
+				"output_index":  outputIndex,
+				"summary_index": 0,
+				"part": map[string]any{
+					"type": "summary_text",
+					"text": text,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+	case "message":
+		for contentIndex, content := range item.Content {
+			if content.Type != "output_text" || content.Text == "" {
+				continue
+			}
+			if err := writeEvent("response.output_text.delta", map[string]any{
+				"type":          "response.output_text.delta",
+				"item_id":       item.ID,
+				"output_index":  outputIndex,
+				"content_index": contentIndex,
+				"delta":         content.Text,
+			}); err != nil {
+				return err
+			}
+		}
+	case "function_call":
+		if item.Arguments != "" {
+			if err := writeEvent("response.function_call_arguments.delta", map[string]any{
+				"type":         "response.function_call_arguments.delta",
+				"item_id":      item.ID,
+				"output_index": outputIndex,
+				"delta":        item.Arguments,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	doneItem := item
+	doneItem.Status = "completed"
+	return writeEvent("response.output_item.done", map[string]any{
+		"type":         "response.output_item.done",
+		"output_index": outputIndex,
+		"item":         doneItem,
+	})
+}
+
+func codexReasoningSummaryText(item CodexOutputItem) string {
+	var b strings.Builder
+	for _, summary := range item.Summary {
+		if summary.Text != "" {
+			b.WriteString(summary.Text)
+		}
+	}
+	return b.String()
 }
 
 func (ps *ProxyServer) convertForceCodexCollectedStream(c *gin.Context, statusCode int, format string, bodyBytes []byte) (*CodexResponse, int) {
@@ -1113,6 +1297,7 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 		}},
 	}
 	var content strings.Builder
+	var reasoningContent strings.Builder
 	toolCallsByIndex := make(map[int]*OpenAIToolCall)
 	finishReason := ""
 	for _, data := range extractSSEDataPayloads(bodyBytes) {
@@ -1132,6 +1317,9 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 		if chunk.Model != "" {
 			resp.Model = chunk.Model
 		}
+		if chunk.Usage != nil {
+			resp.Usage = chunk.Usage
+		}
 		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta == nil {
 			continue
 		}
@@ -1141,6 +1329,9 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 		delta := chunk.Choices[0].Delta
 		if delta.Content != nil {
 			content.WriteString(*delta.Content)
+		}
+		if delta.ReasoningContent != nil {
+			reasoningContent.WriteString(*delta.ReasoningContent)
 		}
 		for idx, tc := range delta.ToolCalls {
 			key := idx
@@ -1170,6 +1361,10 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 	if content.Len() > 0 {
 		text := content.String()
 		resp.Choices[0].Message.Content = &text
+	}
+	if reasoningContent.Len() > 0 {
+		reasoning := reasoningContent.String()
+		resp.Choices[0].Message.ReasoningContent = &reasoning
 	}
 	if finishReason != "" {
 		resp.Choices[0].FinishReason = &finishReason
