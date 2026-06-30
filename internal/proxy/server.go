@@ -182,9 +182,7 @@ func markAggregateSubGroupFinal(c *gin.Context) func() {
 	}
 	c.Set(ctxKeyAggregateSubGroupFinal, true)
 	return func() {
-		if c.Keys != nil {
-			delete(c.Keys, ctxKeyAggregateSubGroupFinal)
-		}
+		c.Set(ctxKeyAggregateSubGroupFinal, false)
 	}
 }
 
@@ -2122,6 +2120,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		(wasCodexPath || originalGroup.ChannelType == "openai-response")
 	if group.ChannelType == "openai-response" && shouldUseCodexEndpointForSubGroup && wasCodexPath && isOpenAIResponsesCodexEndpoint(c.Request.URL.Path) {
 		c.Set("codex_was_codex_path", true)
+		c.Set(ctxKeyCodexEnabled, true)
+		setCodexUpstreamFormat(c, codexUpstreamResponses)
 	}
 	if isCodexSupportEnabled(group) && shouldUseCodexEndpointForSubGroup && isOpenAIResponsesCodexEndpoint(c.Request.URL.Path) {
 		convertedBody, converted, codexErr := ps.applyForceCodexRequestConversion(c, group, finalBodyBytes)

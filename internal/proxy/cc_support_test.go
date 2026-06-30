@@ -1182,10 +1182,19 @@ data: [DONE]
 	ps.handleCCStreamingResponse(c, resp)
 
 	output := w.Body.String()
-	for _, want := range []string{`"thinking":"Need"`, `"thinking":" "`, `"thinking":"context."`} {
-		if !strings.Contains(output, want) {
+	wants := []string{`"thinking":"Need"`, `"thinking":" "`, `"thinking":"context."`}
+	last := -1
+	for _, want := range wants {
+		idx := strings.Index(output, want)
+		if idx == -1 {
 			t.Errorf("expected reasoning chunks to preserve %s, got: %s", want, output)
+			return
 		}
+		if idx < last {
+			t.Errorf("expected reasoning chunks in order %v, got: %s", wants, output)
+			return
+		}
+		last = idx
 	}
 }
 

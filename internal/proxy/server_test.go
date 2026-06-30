@@ -1306,6 +1306,70 @@ func TestHandleProxyForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
 	assert.NotContains(t, payload, "stream")
 }
 
+func TestHandleProxyAggregateForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	receivedPath := make(chan string, 1)
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedPath <- r.URL.Path
+		receivedBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "codex-compact-aggregate-sub", "openai-response")
+	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	require.NoError(t, db.Save(subGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "codex-compact-aggregate",
+		ChannelType: "openai-response",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config:      map[string]any{"max_retries": 0},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      subGroup.ID,
+		SubGroupName:    subGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, subGroup.ID, "sk-codex-compact-aggregate", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	body := []byte(`{"model":"gpt-5","input":[],"prompt_cache_key":"compact-key"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/codex/v1/responses/compact", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: aggregateGroup.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, isCodexEnabled(c))
+	assert.Equal(t, codexUpstreamResponses, getCodexUpstreamFormat(c))
+	assert.Equal(t, "/v1/responses/compact", <-receivedPath)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &payload))
+	assert.NotContains(t, payload, "stream")
+}
+
 func TestExecuteRequestWithRetrySanitizesUpstreamHTTPError(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -2499,6 +2563,24 @@ func TestExecuteRequestWithAggregateRetryPinsSubGroupDuringKeyRetries(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), groupMetrics.Requests180d)
 	assert.Equal(t, int64(1), groupMetrics.Successes180d)
+}
+
+func TestMarkAggregateSubGroupFinalRestoresFalseValue(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	restore := markAggregateSubGroupFinal(c)
+	require.True(t, isAggregateSubGroupFinal(c))
+
+	restore()
+
+	value, exists := c.Get(ctxKeyAggregateSubGroupFinal)
+	require.True(t, exists)
+	assert.Equal(t, false, value)
+	assert.False(t, isAggregateSubGroupFinal(c))
 }
 
 func TestAggregateRetryAttemptsUpdateDynamicHealthAcrossChannels(t *testing.T) {
