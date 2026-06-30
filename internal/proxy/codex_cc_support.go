@@ -46,6 +46,8 @@ type CodexTool struct {
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 	Strict      bool            `json:"strict,omitempty"`
+	Tools       []CodexTool     `json:"tools,omitempty"`
+	Children    []CodexTool     `json:"children,omitempty"`
 }
 
 // CodexRequest represents a Codex/Responses API request.
@@ -85,8 +87,31 @@ type CodexOutputItem struct {
 	// Each summary item has type "summary_text" and text field.
 	Summary   []CodexSummaryItem `json:"summary,omitempty"`
 	CallID    string             `json:"call_id,omitempty"`
+	Namespace string             `json:"namespace,omitempty"`
 	Name      string             `json:"name,omitempty"`
 	Arguments string             `json:"arguments,omitempty"`
+	Input     any                `json:"input,omitempty"`
+	Execution string             `json:"execution,omitempty"`
+}
+
+func (item CodexOutputItem) MarshalJSON() ([]byte, error) {
+	type alias CodexOutputItem
+	out, err := json.Marshal(alias(item))
+	if err != nil {
+		return nil, err
+	}
+	if item.Type != "tool_search_call" || strings.TrimSpace(item.Arguments) == "" {
+		return out, nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return out, nil
+	}
+	var args any
+	if err := json.Unmarshal([]byte(item.Arguments), &args); err == nil {
+		payload["arguments"] = args
+	}
+	return json.Marshal(payload)
 }
 
 // CodexSummaryItem represents a summary item in reasoning output.

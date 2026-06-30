@@ -497,6 +497,21 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid codex_affinity_enabled",
+			config: map[string]any{
+				"codex_affinity_enabled": true,
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid codex_affinity_enabled type",
+			config: map[string]any{
+				"codex_affinity_enabled": "true",
+			},
+			expectError: true,
+			errorMsg:    "expected a boolean",
+		},
+		{
 			name: "invalid codex_support type",
 			config: map[string]any{
 				"codex_support": "true",

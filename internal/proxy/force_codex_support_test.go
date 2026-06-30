@@ -161,6 +161,62 @@ func TestConvertCodexRequestToOpenAIChat(t *testing.T) {
 	assert.True(t, got.Stream)
 }
 
+func TestConvertCodexRequestToOpenAIChatPreservesCodexToolKinds(t *testing.T) {
+	t.Parallel()
+
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"custom_tool_call","call_id":"call_custom","name":"apply_patch","input":"*** Begin Patch"},
+			{"type":"tool_search_call","call_id":"call_search","arguments":{"query":"gmail","limit":2}},
+			{"type":"function_call","call_id":"call_ns","namespace":"mcp__gmail","name":"send_email","arguments":"{\"to\":\"a@example.com\"}"},
+			{"type":"custom_tool_call_output","call_id":"call_custom","output":"ok"},
+			{"type":"tool_search_output","call_id":"call_search","output":"[]"}
+		]`),
+		Tools: []CodexTool{
+			{Type: "custom", Name: "apply_patch", Description: "Apply a patch"},
+			{Type: "tool_search"},
+			{
+				Type: "namespace",
+				Name: "mcp__gmail",
+				Tools: []CodexTool{{
+					Type:        "function",
+					Name:        "send_email",
+					Description: "Send email",
+					Parameters:  json.RawMessage(`{"type":"object","properties":{"to":{"type":"string"}}}`),
+				}},
+			},
+		},
+		ToolChoice: map[string]any{"type": "function", "namespace": "mcp__gmail", "name": "send_email"},
+	}
+
+	got, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 3)
+	assert.Equal(t, "apply_patch", got.Tools[0].Function.Name)
+	assert.JSONEq(t, `{"type":"object","properties":{"input":{"type":"string","description":"Raw string input for the original custom tool."}},"required":["input"]}`, string(got.Tools[0].Function.Parameters))
+	assert.Equal(t, "tool_search", got.Tools[1].Function.Name)
+	assert.Equal(t, "mcp__gmail__send_email", got.Tools[2].Function.Name)
+	assert.Equal(t, map[string]any{
+		"type": "function",
+		"function": map[string]string{
+			"name": "mcp__gmail__send_email",
+		},
+	}, got.ToolChoice)
+
+	require.Len(t, got.Messages, 5)
+	assert.Equal(t, "apply_patch", got.Messages[0].ToolCalls[0].Function.Name)
+	assert.JSONEq(t, `{"input":"*** Begin Patch"}`, got.Messages[0].ToolCalls[0].Function.Arguments)
+	assert.Equal(t, "tool_search", got.Messages[1].ToolCalls[0].Function.Name)
+	assert.JSONEq(t, `{"query":"gmail","limit":2}`, got.Messages[1].ToolCalls[0].Function.Arguments)
+	assert.Equal(t, "mcp__gmail__send_email", got.Messages[2].ToolCalls[0].Function.Name)
+	assert.Equal(t, "tool", got.Messages[3].Role)
+	assert.Equal(t, "call_custom", got.Messages[3].ToolCallID)
+	assert.Equal(t, "tool", got.Messages[4].Role)
+	assert.Equal(t, "call_search", got.Messages[4].ToolCallID)
+}
+
 func TestConvertOpenAIChatResponseToCodex(t *testing.T) {
 	t.Parallel()
 
@@ -219,6 +275,48 @@ func TestConvertOpenAIChatResponseToCodex(t *testing.T) {
 	assert.Equal(t, 5, got.Usage.OutputTokensDetails.ReasoningTokens)
 	assert.Equal(t, 3, got.Usage.CacheReadTokens)
 	assert.Equal(t, 5, got.Usage.ThinkingTokens)
+}
+
+func TestConvertOpenAIChatResponseToCodexRestoresCodexToolKinds(t *testing.T) {
+	t.Parallel()
+
+	toolCtx := newCodexToolContext([]CodexTool{
+		{Type: "custom", Name: "apply_patch"},
+		{Type: "tool_search"},
+		{
+			Type: "namespace",
+			Name: "mcp__gmail",
+			Tools: []CodexTool{{
+				Type: "function",
+				Name: "send_email",
+			}},
+		},
+	})
+	openaiResp := &OpenAIResponse{
+		ID:      "chatcmpl_1",
+		Created: 123,
+		Model:   "gpt-test",
+		Choices: []OpenAIChoice{{
+			Message: &OpenAIRespMessage{
+				ToolCalls: []OpenAIToolCall{
+					{ID: "call_custom", Type: "function", Function: OpenAIFunctionCall{Name: "apply_patch", Arguments: `{"input":"*** Begin Patch"}`}},
+					{ID: "call_search", Type: "function", Function: OpenAIFunctionCall{Name: "tool_search", Arguments: `{"query":"gmail"}`}},
+					{ID: "call_ns", Type: "function", Function: OpenAIFunctionCall{Name: "mcp__gmail__send_email", Arguments: `{"to":"a@example.com"}`}},
+				},
+			},
+		}},
+	}
+
+	got := convertOpenAIChatToCodexResponse(openaiResp, "", toolCtx)
+	require.Len(t, got.Output, 3)
+	assert.Equal(t, "custom_tool_call", got.Output[0].Type)
+	assert.Equal(t, "apply_patch", got.Output[0].Name)
+	assert.Equal(t, "*** Begin Patch", got.Output[0].Input)
+	assert.Equal(t, "tool_search_call", got.Output[1].Type)
+	assert.Equal(t, "client", got.Output[1].Execution)
+	assert.Equal(t, "function_call", got.Output[2].Type)
+	assert.Equal(t, "mcp__gmail", got.Output[2].Namespace)
+	assert.Equal(t, "send_email", got.Output[2].Name)
 }
 
 func TestCollectOpenAIChatStreamToResponseUsesToolCallIndex(t *testing.T) {
@@ -289,6 +387,47 @@ data: [DONE]
 	assert.Zero(t, getEstimatedOutputTokens(c))
 }
 
+func TestHandleForceCodexStreamingResponseWrapsCompletedEvent(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	stream := []byte(`data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamOpenAIChat)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(stream)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleForceCodexStreamingResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	lines := strings.Split(w.Body.String(), "\n")
+	var completedPayload map[string]any
+	for _, line := range lines {
+		if strings.HasPrefix(line, "data: ") && !strings.Contains(line, "[DONE]") {
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &completedPayload))
+			break
+		}
+	}
+	require.NotNil(t, completedPayload)
+	assert.Equal(t, "response.completed", completedPayload["type"])
+	responsePayload, ok := completedPayload["response"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "response", responsePayload["object"])
+	assert.Equal(t, "deepseek-test", responsePayload["model"])
+}
+
 func TestConvertCodexRequestToClaude(t *testing.T) {
 	t.Parallel()
 
@@ -321,6 +460,46 @@ func TestConvertCodexRequestToClaude(t *testing.T) {
 	assert.Equal(t, "read_file", got.Tools[0].Name)
 	assert.JSONEq(t, `{"type":"tool","name":"read_file"}`, string(got.ToolChoice))
 	assert.True(t, got.Stream)
+}
+
+func TestConvertCodexRequestToClaudePreservesCodexToolKinds(t *testing.T) {
+	t.Parallel()
+
+	req := &CodexRequest{
+		Model: "claude-test",
+		Input: json.RawMessage(`[
+			{"type":"custom_tool_call","call_id":"call_custom","name":"apply_patch","input":"*** Begin Patch"},
+			{"type":"tool_search_call","call_id":"call_search","arguments":{"query":"gmail"}},
+			{"type":"function_call","call_id":"call_ns","namespace":"mcp__gmail","name":"send_email","arguments":"{\"to\":\"a@example.com\"}"}
+		]`),
+		Tools: []CodexTool{
+			{Type: "custom", Name: "apply_patch", Description: "Apply a patch"},
+			{Type: "tool_search"},
+			{
+				Type: "namespace",
+				Name: "mcp__gmail",
+				Tools: []CodexTool{{
+					Type:       "function",
+					Name:       "send_email",
+					Parameters: json.RawMessage(`{"type":"object","properties":{"to":{"type":"string"}}}`),
+				}},
+			},
+		},
+		ToolChoice: map[string]any{"type": "tool_search"},
+	}
+
+	got, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, got.Tools, 3)
+	assert.Equal(t, "apply_patch", got.Tools[0].Name)
+	assert.Equal(t, "tool_search", got.Tools[1].Name)
+	assert.Equal(t, "mcp__gmail__send_email", got.Tools[2].Name)
+	assert.JSONEq(t, `{"type":"tool","name":"tool_search"}`, string(got.ToolChoice))
+
+	require.Len(t, got.Messages, 3)
+	assert.JSONEq(t, `[{"type":"tool_use","id":"custom","name":"apply_patch","input":{"input":"*** Begin Patch"}}]`, string(got.Messages[0].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"search","name":"tool_search","input":{"query":"gmail"}}]`, string(got.Messages[1].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"ns","name":"mcp__gmail__send_email","input":{"to":"a@example.com"}}]`, string(got.Messages[2].Content))
 }
 
 func TestConvertClaudeResponseToCodex(t *testing.T) {
@@ -365,6 +544,42 @@ func TestConvertClaudeResponseToCodex(t *testing.T) {
 	assert.Equal(t, 4, got.Usage.CacheReadTokens)
 	assert.Equal(t, 2, got.Usage.CacheWriteTokens)
 	assert.Equal(t, 6, got.Usage.ThinkingTokens)
+}
+
+func TestConvertClaudeResponseToCodexRestoresCodexToolKinds(t *testing.T) {
+	t.Parallel()
+
+	toolCtx := newCodexToolContext([]CodexTool{
+		{Type: "custom", Name: "apply_patch"},
+		{Type: "tool_search"},
+		{
+			Type: "namespace",
+			Name: "mcp__gmail",
+			Tools: []CodexTool{{
+				Type: "function",
+				Name: "send_email",
+			}},
+		},
+	})
+	claudeResp := &ClaudeResponse{
+		ID:    "msg_1",
+		Model: "claude-test",
+		Content: []ClaudeContentBlock{
+			{Type: "tool_use", ID: "custom", Name: "apply_patch", Input: json.RawMessage(`{"input":"*** Begin Patch"}`)},
+			{Type: "tool_use", ID: "search", Name: "tool_search", Input: json.RawMessage(`{"query":"gmail"}`)},
+			{Type: "tool_use", ID: "ns", Name: "mcp__gmail__send_email", Input: json.RawMessage(`{"to":"a@example.com"}`)},
+		},
+	}
+
+	got := convertClaudeToCodexResponse(claudeResp, toolCtx)
+	require.Len(t, got.Output, 3)
+	assert.Equal(t, "custom_tool_call", got.Output[0].Type)
+	assert.Equal(t, "*** Begin Patch", got.Output[0].Input)
+	assert.Equal(t, "tool_search_call", got.Output[1].Type)
+	assert.Equal(t, "client", got.Output[1].Execution)
+	assert.Equal(t, "function_call", got.Output[2].Type)
+	assert.Equal(t, "mcp__gmail", got.Output[2].Namespace)
+	assert.Equal(t, "send_email", got.Output[2].Name)
 }
 
 func TestHandleProxyForceCodexOpenAIChatNonStreaming(t *testing.T) {

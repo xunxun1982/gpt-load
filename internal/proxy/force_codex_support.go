@@ -20,10 +20,13 @@ import (
 const (
 	ctxKeyCodexEnabled        = "codex_enabled"
 	ctxKeyCodexUpstreamFormat = "codex_upstream_format"
+	ctxKeyCodexToolContext    = "codex_tool_context"
 
 	codexUpstreamOpenAIChat = "openai_chat"
 	codexUpstreamClaude     = "claude"
 	codexUpstreamResponses  = "openai_response"
+
+	codexToolSearchProxyName = "tool_search"
 )
 
 // isCodexPath detects the explicit /codex force endpoint without confusing it
@@ -84,10 +87,104 @@ func getCodexUpstreamFormat(c *gin.Context) string {
 	return ""
 }
 
+type codexToolKind string
+
+const (
+	codexToolKindFunction   codexToolKind = "function"
+	codexToolKindCustom     codexToolKind = "custom"
+	codexToolKindToolSearch codexToolKind = "tool_search"
+)
+
+type codexToolSpec struct {
+	Kind      codexToolKind
+	Name      string
+	Namespace string
+}
+
+type codexToolContext struct {
+	byChatName map[string]codexToolSpec
+}
+
+func newCodexToolContext(tools []CodexTool) *codexToolContext {
+	ctx := &codexToolContext{byChatName: make(map[string]codexToolSpec)}
+	for _, tool := range tools {
+		ctx.addTool(tool, "")
+	}
+	return ctx
+}
+
+func codexToolContextFromGin(c *gin.Context) *codexToolContext {
+	if c == nil {
+		return nil
+	}
+	if v, ok := c.Get(ctxKeyCodexToolContext); ok {
+		if toolCtx, ok := v.(*codexToolContext); ok {
+			return toolCtx
+		}
+	}
+	return nil
+}
+
+func (ctx *codexToolContext) addTool(tool CodexTool, namespace string) {
+	if ctx == nil {
+		return
+	}
+	switch tool.Type {
+	case "", "function":
+		chatName := codexChatToolName(tool.Name, namespace)
+		if chatName != "" {
+			ctx.byChatName[chatName] = codexToolSpec{Kind: codexToolKindFunction, Name: tool.Name, Namespace: namespace}
+		}
+	case "custom":
+		if tool.Name != "" {
+			ctx.byChatName[tool.Name] = codexToolSpec{Kind: codexToolKindCustom, Name: tool.Name}
+		}
+	case "tool_search":
+		ctx.byChatName[codexToolSearchProxyName] = codexToolSpec{Kind: codexToolKindToolSearch, Name: codexToolSearchProxyName}
+	case "namespace":
+		for _, child := range codexNamespaceChildren(tool) {
+			ctx.addTool(child, tool.Name)
+		}
+	}
+}
+
+func (ctx *codexToolContext) chatNameFor(name, namespace string) string {
+	if namespace != "" {
+		return codexChatToolName(name, namespace)
+	}
+	return name
+}
+
+func (ctx *codexToolContext) lookup(chatName string) (codexToolSpec, bool) {
+	if ctx == nil || chatName == "" {
+		return codexToolSpec{}, false
+	}
+	spec, ok := ctx.byChatName[chatName]
+	return spec, ok
+}
+
+func codexChatToolName(name, namespace string) string {
+	if name == "" {
+		return ""
+	}
+	if namespace == "" {
+		return name
+	}
+	return namespace + "__" + name
+}
+
+func codexNamespaceChildren(tool CodexTool) []CodexTool {
+	if len(tool.Tools) > 0 {
+		return tool.Tools
+	}
+	return tool.Children
+}
+
 func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, error) {
 	if codexReq == nil {
 		return nil, fmt.Errorf("codex request is nil")
 	}
+	toolCtx := newCodexToolContext(codexReq.Tools)
 	req := &OpenAIRequest{
 		Model:             codexReq.Model,
 		Stream:            codexReq.Stream,
@@ -104,7 +201,7 @@ func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, er
 		})
 	}
 
-	messages, err := convertCodexInputToOpenAIMessages(codexReq.Input)
+	messages, err := convertCodexInputToOpenAIMessages(codexReq.Input, toolCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -113,20 +210,10 @@ func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, er
 	if len(codexReq.Tools) > 0 {
 		req.Tools = make([]OpenAITool, 0, len(codexReq.Tools))
 		for _, tool := range codexReq.Tools {
-			if tool.Type != "" && tool.Type != "function" {
-				continue
-			}
-			req.Tools = append(req.Tools, OpenAITool{
-				Type: "function",
-				Function: OpenAIFunction{
-					Name:        tool.Name,
-					Description: tool.Description,
-					Parameters:  normalizeToolParameters(tool.Parameters),
-				},
-			})
+			appendCodexToolToOpenAIChat(&req.Tools, tool, "")
 		}
 	}
-	req.ToolChoice = convertResponsesToolChoiceToOpenAIChat(codexReq.ToolChoice)
+	req.ToolChoice = convertResponsesToolChoiceToOpenAIChat(codexReq.ToolChoice, toolCtx)
 	return req, nil
 }
 
@@ -134,6 +221,7 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 	if codexReq == nil {
 		return nil, fmt.Errorf("codex request is nil")
 	}
+	toolCtx := newCodexToolContext(codexReq.Tools)
 	req := &ClaudeRequest{
 		Model:       codexReq.Model,
 		Stream:      codexReq.Stream,
@@ -147,7 +235,7 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 		req.System = marshalStringAsJSONRaw("codex_instructions", codexReq.Instructions)
 	}
 
-	messages, err := convertCodexInputToClaudeMessages(codexReq.Input)
+	messages, err := convertCodexInputToClaudeMessages(codexReq.Input, toolCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -156,21 +244,14 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 	if len(codexReq.Tools) > 0 {
 		req.Tools = make([]ClaudeTool, 0, len(codexReq.Tools))
 		for _, tool := range codexReq.Tools {
-			if tool.Type != "" && tool.Type != "function" {
-				continue
-			}
-			req.Tools = append(req.Tools, ClaudeTool{
-				Name:        tool.Name,
-				Description: tool.Description,
-				InputSchema: normalizeToolParameters(tool.Parameters),
-			})
+			appendCodexToolToClaude(&req.Tools, tool, "")
 		}
 	}
-	req.ToolChoice = convertResponsesToolChoiceToClaude(codexReq.ToolChoice)
+	req.ToolChoice = convertResponsesToolChoiceToClaude(codexReq.ToolChoice, toolCtx)
 	return req, nil
 }
 
-func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal string) *CodexResponse {
+func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal string, toolCtxOpt ...*codexToolContext) *CodexResponse {
 	if openaiResp == nil {
 		return &CodexResponse{
 			ID:        "resp_" + time.Now().Format("20060102150405"),
@@ -256,18 +337,15 @@ func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal 
 					})
 				}
 			}
+			var toolCtx *codexToolContext
+			if len(toolCtxOpt) > 0 {
+				toolCtx = toolCtxOpt[0]
+			}
 			for _, tc := range msg.ToolCalls {
 				if tc.ID == "" || tc.Function.Name == "" || !isValidToolCallArguments(tc.Function.Name, tc.Function.Arguments) {
 					continue
 				}
-				resp.Output = append(resp.Output, CodexOutputItem{
-					Type:      "function_call",
-					ID:        "fc_" + strings.TrimPrefix(tc.ID, "call_"),
-					Status:    "completed",
-					CallID:    tc.ID,
-					Name:      tc.Function.Name,
-					Arguments: tc.Function.Arguments,
-				})
+				resp.Output = append(resp.Output, codexOutputItemFromChatToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments, toolCtx))
 			}
 			if len(msg.ToolCalls) == 0 {
 				appendParsedFunctionCallsToCodex(resp, parsedCalls)
@@ -295,7 +373,7 @@ func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal 
 	return resp
 }
 
-func convertClaudeToCodexResponse(claudeResp *ClaudeResponse) *CodexResponse {
+func convertClaudeToCodexResponse(claudeResp *ClaudeResponse, toolCtxOpt ...*codexToolContext) *CodexResponse {
 	if claudeResp == nil {
 		return &CodexResponse{
 			ID:        "resp_" + time.Now().Format("20060102150405"),
@@ -315,6 +393,10 @@ func convertClaudeToCodexResponse(claudeResp *ClaudeResponse) *CodexResponse {
 	}
 	if resp.ID == "" {
 		resp.ID = "resp_" + time.Now().Format("20060102150405")
+	}
+	var toolCtx *codexToolContext
+	if len(toolCtxOpt) > 0 {
+		toolCtx = toolCtxOpt[0]
 	}
 	for _, block := range claudeResp.Content {
 		switch block.Type {
@@ -343,14 +425,7 @@ func convertClaudeToCodexResponse(claudeResp *ClaudeResponse) *CodexResponse {
 			}
 		case "tool_use":
 			if block.ID != "" && block.Name != "" {
-				resp.Output = append(resp.Output, CodexOutputItem{
-					Type:      "function_call",
-					ID:        "fc_" + block.ID,
-					Status:    "completed",
-					CallID:    "call_" + block.ID,
-					Name:      block.Name,
-					Arguments: string(block.Input),
-				})
+				resp.Output = append(resp.Output, codexOutputItemFromChatToolCall("call_"+block.ID, block.Name, string(block.Input), toolCtx))
 			}
 		}
 	}
@@ -384,6 +459,61 @@ func codexTotalTokensFromClaudeUsage(usage *ClaudeUsage) int {
 	return total
 }
 
+func codexOutputItemFromChatToolCall(callID, chatName, arguments string, toolCtx *codexToolContext) CodexOutputItem {
+	spec, ok := toolCtx.lookup(chatName)
+	if ok {
+		switch spec.Kind {
+		case codexToolKindCustom:
+			return CodexOutputItem{
+				Type:   "custom_tool_call",
+				ID:     "ctc_" + strings.TrimPrefix(callID, "call_"),
+				Status: "completed",
+				CallID: callID,
+				Name:   spec.Name,
+				Input:  codexCustomToolInputFromArguments(arguments),
+			}
+		case codexToolKindToolSearch:
+			return CodexOutputItem{
+				Type:      "tool_search_call",
+				ID:        "tsc_" + strings.TrimPrefix(callID, "call_"),
+				Status:    "completed",
+				CallID:    callID,
+				Execution: "client",
+				Arguments: arguments,
+			}
+		case codexToolKindFunction:
+			return CodexOutputItem{
+				Type:      "function_call",
+				ID:        "fc_" + strings.TrimPrefix(callID, "call_"),
+				Status:    "completed",
+				CallID:    callID,
+				Namespace: spec.Namespace,
+				Name:      spec.Name,
+				Arguments: arguments,
+			}
+		}
+	}
+	return CodexOutputItem{
+		Type:      "function_call",
+		ID:        "fc_" + strings.TrimPrefix(callID, "call_"),
+		Status:    "completed",
+		CallID:    callID,
+		Name:      chatName,
+		Arguments: arguments,
+	}
+}
+
+func codexCustomToolInputFromArguments(arguments string) any {
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil {
+		return arguments
+	}
+	if input, ok := parsed["input"]; ok {
+		return input
+	}
+	return arguments
+}
+
 func codexInputTokenDetailsFromOpenAI(details *TokenUsageDetails) *TokenUsageDetails {
 	if details == nil || details.CachedTokens <= 0 {
 		return nil
@@ -398,7 +528,7 @@ func codexOutputTokenDetailsFromOpenAI(details *TokenUsageDetails) *TokenUsageDe
 	return &TokenUsageDetails{ReasoningTokens: details.ReasoningTokens}
 }
 
-func convertCodexInputToOpenAIMessages(input json.RawMessage) ([]OpenAIMessage, error) {
+func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexToolContext) ([]OpenAIMessage, error) {
 	var raw any
 	if err := json.Unmarshal(input, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse Codex input: %w", err)
@@ -431,12 +561,22 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage) ([]OpenAIMessage, 
 				role = "system"
 			}
 			messages = append(messages, OpenAIMessage{Role: role, Content: marshalStringAsJSONRaw("codex_message", text)})
-		case "function_call":
+		case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
 			callID := stringFromMap(m, "call_id")
 			if callID == "" {
 				callID = stringFromMap(m, "id")
 			}
 			name := stringFromMap(m, "name")
+			arguments := stringFromMap(m, "arguments")
+			if itemType == "custom_tool_call" {
+				inputValue := m["input"]
+				inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
+				arguments = string(inputBytes)
+			} else if itemType == "tool_search_call" {
+				name = codexToolSearchProxyName
+			} else if len(toolCtx) > 0 && toolCtx[0] != nil {
+				name = toolCtx[0].chatNameFor(name, stringFromMap(m, "namespace"))
+			}
 			if callID == "" || name == "" {
 				continue
 			}
@@ -447,11 +587,11 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage) ([]OpenAIMessage, 
 					Type: "function",
 					Function: OpenAIFunctionCall{
 						Name:      name,
-						Arguments: stringFromMap(m, "arguments"),
+						Arguments: arguments,
 					},
 				}},
 			})
-		case "function_call_output":
+		case "function_call_output", "custom_tool_call_output", "tool_search_output", "mcp_tool_call_output":
 			callID := stringFromMap(m, "call_id")
 			output := stringFromMap(m, "output")
 			messages = append(messages, OpenAIMessage{
@@ -464,7 +604,7 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage) ([]OpenAIMessage, 
 	return messages, nil
 }
 
-func convertCodexInputToClaudeMessages(input json.RawMessage) ([]ClaudeMessage, error) {
+func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexToolContext) ([]ClaudeMessage, error) {
 	var raw any
 	if err := json.Unmarshal(input, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse Codex input: %w", err)
@@ -496,9 +636,19 @@ func convertCodexInputToClaudeMessages(input json.RawMessage) ([]ClaudeMessage, 
 			}
 			content, _ := json.Marshal([]ClaudeContentBlock{{Type: "text", Text: text}})
 			messages = append(messages, ClaudeMessage{Role: role, Content: content})
-		case "function_call":
+		case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
 			callID := strings.TrimPrefix(stringFromMap(m, "call_id"), "call_")
 			name := stringFromMap(m, "name")
+			arguments := stringFromMap(m, "arguments")
+			if itemType == "custom_tool_call" {
+				inputValue := m["input"]
+				inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
+				arguments = string(inputBytes)
+			} else if itemType == "tool_search_call" {
+				name = codexToolSearchProxyName
+			} else if len(toolCtx) > 0 && toolCtx[0] != nil {
+				name = toolCtx[0].chatNameFor(name, stringFromMap(m, "namespace"))
+			}
 			if callID == "" || name == "" {
 				continue
 			}
@@ -506,10 +656,10 @@ func convertCodexInputToClaudeMessages(input json.RawMessage) ([]ClaudeMessage, 
 				Type:  "tool_use",
 				ID:    callID,
 				Name:  name,
-				Input: json.RawMessage(stringFromMap(m, "arguments")),
+				Input: json.RawMessage(arguments),
 			}})
 			messages = append(messages, ClaudeMessage{Role: "assistant", Content: content})
-		case "function_call_output":
+		case "function_call_output", "custom_tool_call_output", "tool_search_output", "mcp_tool_call_output":
 			callID := strings.TrimPrefix(stringFromMap(m, "call_id"), "call_")
 			output := stringFromMap(m, "output")
 			content, _ := json.Marshal([]ClaudeContentBlock{{
@@ -570,19 +720,125 @@ func stringFromMap(m map[string]any, key string) string {
 	}
 }
 
-func convertResponsesToolChoiceToOpenAIChat(toolChoice any) any {
+func appendCodexToolToOpenAIChat(tools *[]OpenAITool, tool CodexTool, namespace string) {
+	switch tool.Type {
+	case "", "function":
+		name := codexChatToolName(tool.Name, namespace)
+		if name == "" {
+			return
+		}
+		*tools = append(*tools, OpenAITool{
+			Type: "function",
+			Function: OpenAIFunction{
+				Name:        name,
+				Description: tool.Description,
+				Parameters:  normalizeToolParameters(tool.Parameters),
+			},
+		})
+	case "custom":
+		if tool.Name == "" {
+			return
+		}
+		*tools = append(*tools, OpenAITool{
+			Type: "function",
+			Function: OpenAIFunction{
+				Name:        tool.Name,
+				Description: codexCustomToolDescription(tool),
+				Parameters:  codexCustomToolParameters(),
+			},
+		})
+	case "tool_search":
+		*tools = append(*tools, OpenAITool{
+			Type: "function",
+			Function: OpenAIFunction{
+				Name:        codexToolSearchProxyName,
+				Description: "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task.",
+				Parameters:  codexToolSearchParameters(),
+			},
+		})
+	case "namespace":
+		for _, child := range codexNamespaceChildren(tool) {
+			appendCodexToolToOpenAIChat(tools, child, tool.Name)
+		}
+	}
+}
+
+func appendCodexToolToClaude(tools *[]ClaudeTool, tool CodexTool, namespace string) {
+	switch tool.Type {
+	case "", "function":
+		name := codexChatToolName(tool.Name, namespace)
+		if name == "" {
+			return
+		}
+		*tools = append(*tools, ClaudeTool{
+			Name:        name,
+			Description: tool.Description,
+			InputSchema: normalizeToolParameters(tool.Parameters),
+		})
+	case "custom":
+		if tool.Name == "" {
+			return
+		}
+		*tools = append(*tools, ClaudeTool{
+			Name:        tool.Name,
+			Description: codexCustomToolDescription(tool),
+			InputSchema: codexCustomToolParameters(),
+		})
+	case "tool_search":
+		*tools = append(*tools, ClaudeTool{
+			Name:        codexToolSearchProxyName,
+			Description: "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task.",
+			InputSchema: codexToolSearchParameters(),
+		})
+	case "namespace":
+		for _, child := range codexNamespaceChildren(tool) {
+			appendCodexToolToClaude(tools, child, tool.Name)
+		}
+	}
+}
+
+func codexCustomToolDescription(tool CodexTool) string {
+	if tool.Description == "" {
+		return "Original Codex custom tool. Pass raw input in the input field."
+	}
+	return tool.Description
+}
+
+func codexCustomToolParameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"input":{"type":"string","description":"Raw string input for the original custom tool."}},"required":["input"]}`)
+}
+
+func codexToolSearchParameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}`)
+}
+
+func convertResponsesToolChoiceToOpenAIChat(toolChoice any, toolCtx ...*codexToolContext) any {
 	switch v := toolChoice.(type) {
 	case nil:
 		return nil
 	case string:
 		return v
 	case map[string]any:
-		if t, _ := v["type"].(string); t == "function" {
+		if t, _ := v["type"].(string); t == "function" || t == "custom" || t == "tool_search" {
 			if name, _ := v["name"].(string); name != "" {
+				if t == "tool_search" {
+					name = codexToolSearchProxyName
+				} else if len(toolCtx) > 0 && toolCtx[0] != nil {
+					namespace, _ := v["namespace"].(string)
+					name = toolCtx[0].chatNameFor(name, namespace)
+				}
 				return map[string]any{
 					"type": "function",
 					"function": map[string]string{
 						"name": name,
+					},
+				}
+			}
+			if t == "tool_search" {
+				return map[string]any{
+					"type": "function",
+					"function": map[string]string{
+						"name": codexToolSearchProxyName,
 					},
 				}
 			}
@@ -593,7 +849,7 @@ func convertResponsesToolChoiceToOpenAIChat(toolChoice any) any {
 	}
 }
 
-func convertResponsesToolChoiceToClaude(toolChoice any) json.RawMessage {
+func convertResponsesToolChoiceToClaude(toolChoice any, toolCtx ...*codexToolContext) json.RawMessage {
 	switch v := toolChoice.(type) {
 	case nil:
 		return nil
@@ -610,9 +866,19 @@ func convertResponsesToolChoiceToClaude(toolChoice any) json.RawMessage {
 		out, _ := json.Marshal(mapped)
 		return out
 	case map[string]any:
-		if t, _ := v["type"].(string); t == "function" {
+		if t, _ := v["type"].(string); t == "function" || t == "custom" || t == "tool_search" {
 			if name, _ := v["name"].(string); name != "" {
+				if t == "tool_search" {
+					name = codexToolSearchProxyName
+				} else if len(toolCtx) > 0 && toolCtx[0] != nil {
+					namespace, _ := v["namespace"].(string)
+					name = toolCtx[0].chatNameFor(name, namespace)
+				}
 				out, _ := json.Marshal(map[string]any{"type": "tool", "name": name})
+				return out
+			}
+			if t == "tool_search" {
+				out, _ := json.Marshal(map[string]any{"type": "tool", "name": codexToolSearchProxyName})
 				return out
 			}
 		}
@@ -647,6 +913,8 @@ func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *m
 	if err := json.Unmarshal(bodyBytes, &codexReq); err != nil {
 		return bodyBytes, false, fmt.Errorf("failed to parse Codex request: %w", err)
 	}
+	toolCtx := newCodexToolContext(codexReq.Tools)
+	c.Set(ctxKeyCodexToolContext, toolCtx)
 
 	switch group.ChannelType {
 	case "openai":
@@ -721,7 +989,7 @@ func (ps *ProxyServer) handleForceCodexNormalResponse(c *gin.Context, resp *http
 				return
 			}
 		} else {
-			codexResp = convertOpenAIChatToCodexResponse(&openaiResp, functionCallTriggerSignal(c))
+			codexResp = convertOpenAIChatToCodexResponse(&openaiResp, functionCallTriggerSignal(c), codexToolContextFromGin(c))
 		}
 	case codexUpstreamClaude:
 		var claudeResp ClaudeResponse
@@ -733,7 +1001,7 @@ func (ps *ProxyServer) handleForceCodexNormalResponse(c *gin.Context, resp *http
 				return
 			}
 		} else {
-			codexResp = convertClaudeToCodexResponse(&claudeResp)
+			codexResp = convertClaudeToCodexResponse(&claudeResp, codexToolContextFromGin(c))
 		}
 	default:
 		writeForceCodexPassthrough(c, resp, bodyBytes)
@@ -790,8 +1058,17 @@ func (ps *ProxyServer) handleForceCodexStreamingResponse(c *gin.Context, resp *h
 	clearUpstreamEncodingHeaders(c)
 	c.Header("Content-Type", "text/event-stream")
 	c.Status(statusCode)
+	eventPayload := map[string]any{
+		"type":     "response.completed",
+		"response": streamResp,
+	}
+	eventBytes, err := json.Marshal(eventPayload)
+	if err != nil {
+		writeForceCodexGatewayError(c, "Failed to marshal completed Codex stream event")
+		return
+	}
 	_, _ = c.Writer.Write([]byte("event: response.completed\n"))
-	_, _ = c.Writer.Write([]byte("data: " + string(out) + "\n\n"))
+	_, _ = c.Writer.Write([]byte("data: " + string(eventBytes) + "\n\n"))
 	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 	if flusher, ok := c.Writer.(http.Flusher); ok {
 		flusher.Flush()
@@ -806,10 +1083,10 @@ func (ps *ProxyServer) convertForceCodexCollectedStream(c *gin.Context, statusCo
 	switch format {
 	case codexUpstreamOpenAIChat:
 		openaiResp := collectOpenAIChatStreamToResponse(bodyBytes)
-		return convertOpenAIChatToCodexResponse(openaiResp, functionCallTriggerSignal(c)), statusCode
+		return convertOpenAIChatToCodexResponse(openaiResp, functionCallTriggerSignal(c), codexToolContextFromGin(c)), statusCode
 	case codexUpstreamClaude:
 		claudeResp := collectClaudeStreamToResponse(bodyBytes)
-		return convertClaudeToCodexResponse(claudeResp), statusCode
+		return convertClaudeToCodexResponse(claudeResp, codexToolContextFromGin(c)), statusCode
 	default:
 		return rawCodexErrorResponse(http.StatusBadGateway, []byte("unsupported Codex stream conversion")), http.StatusBadGateway
 	}

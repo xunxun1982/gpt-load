@@ -108,6 +108,45 @@ func TestSelectSubGroupWithRetry_WithExclusion(t *testing.T) {
 	assert.True(t, id == 20 || id == 30, "expected id 20 or 30 but got %d", id)
 }
 
+func TestSelectSubGroupWithRetryAffinityStableAndRespectsExclusion(t *testing.T) {
+	t.Parallel()
+
+	manager, mockStore := newTestManager(t)
+
+	group := &models.Group{
+		ID:        1,
+		Name:      "aggregate-group",
+		GroupType: "aggregate",
+		SubGroups: []models.GroupSubGroup{
+			{SubGroupID: 10, SubGroupName: "sub1", Weight: 10, SubGroupEnabled: true},
+			{SubGroupID: 20, SubGroupName: "sub2", Weight: 10, SubGroupEnabled: true},
+			{SubGroupID: 30, SubGroupName: "sub3", Weight: 10, SubGroupEnabled: true},
+		},
+	}
+
+	mockStore.LPush("group:10:active_keys", "key1")
+	mockStore.LPush("group:20:active_keys", "key2")
+	mockStore.LPush("group:30:active_keys", "key3")
+
+	firstName, firstID, err := manager.SelectSubGroupWithRetryAffinity(group, nil, "codex-session-a")
+	assert.NoError(t, err)
+	assert.NotEmpty(t, firstName)
+	assert.NotZero(t, firstID)
+
+	for i := 0; i < 10; i++ {
+		name, id, err := manager.SelectSubGroupWithRetryAffinity(group, nil, "codex-session-a")
+		assert.NoError(t, err)
+		assert.Equal(t, firstName, name)
+		assert.Equal(t, firstID, id)
+	}
+
+	excluded := map[uint]bool{firstID: true}
+	nextName, nextID, err := manager.SelectSubGroupWithRetryAffinity(group, excluded, "codex-session-a")
+	assert.NoError(t, err)
+	assert.NotEmpty(t, nextName)
+	assert.NotEqual(t, firstID, nextID)
+}
+
 func TestRebuildSelectors(t *testing.T) {
 	t.Parallel()
 

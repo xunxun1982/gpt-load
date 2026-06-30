@@ -182,7 +182,7 @@ function getOptionsForItem(index: number) {
 
 // Keep integer enforcement shared between input, form validation, and submit payload.
 function isValidWeight(value: number | null | undefined): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1000;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 5000;
 }
 
 function validateWeight(value: number | null | undefined) {
@@ -195,7 +195,7 @@ function validateWeight(value: number | null | undefined) {
   if (value < 0) {
     return new Error(t("keys.weightCannotBeNegative"));
   }
-  if (value > 1000) {
+  if (value > 5000) {
     return new Error(t("keys.weightMaxExceeded"));
   }
   return true;
@@ -433,7 +433,7 @@ function filterOption(pattern: string, option: SelectOption): boolean {
                       <n-input-number
                         :value="item.weight"
                         :min="0"
-                        :max="1000"
+                        :max="5000"
                         :precision="0"
                         :validator="isValidWeight"
                         :placeholder="t('keys.weight')"

@@ -333,8 +333,8 @@ export default {
     enterWeight: "Please enter weight",
     weightCannotBeNegative: "Weight cannot be negative",
     weightMustBeInteger: "Weight must be an integer",
-    weightMaxExceeded: "Weight cannot exceed 1000",
-    weightRangeHint: "Range: 0-1000 (0 = disabled)",
+    weightMaxExceeded: "Weight cannot exceed 5000",
+    weightRangeHint: "Range: 0-5000 (0 = disabled)",
     newWeight: "New Weight",
     currentWeight: "Current Weight",
     minEffectiveWeight: "Minimum Effective Weight",
@@ -414,6 +414,9 @@ export default {
     healthResetEveryDays: "Every {count} days",
     healthResetHint:
       "Aligned from 00:00 each day; resets every sub-group's health in this aggregate group",
+    codexAffinity: "Codex Affinity",
+    codexAffinityHint:
+      "Off by default. When enabled, the same Codex session prefers a stable sub-group. If that sub-group is unavailable or fails, remaining available sub-groups are selected by effective weight. Routing only; request headers and body are not modified.",
     precondition: "Precondition",
     preconditions: "Preconditions",
     preconditionMaxRequestSize: "Request Size Limit",

@@ -176,6 +176,87 @@ func retryBackoffExtraForAttempt(retryCount int, maxExtraDelay time.Duration) ti
 	return time.Duration(float64(maxExtraDelay) * (math.Pow(2, ratio) - 1))
 }
 
+func markAggregateSubGroupFinal(c *gin.Context) func() {
+	if c == nil {
+		return func() {}
+	}
+	c.Set(ctxKeyAggregateSubGroupFinal, true)
+	return func() {
+		if c.Keys != nil {
+			delete(c.Keys, ctxKeyAggregateSubGroupFinal)
+		}
+	}
+}
+
+func isAggregateSubGroupFinal(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	value, exists := c.Get(ctxKeyAggregateSubGroupFinal)
+	if !exists {
+		return false
+	}
+	enabled, _ := value.(bool)
+	return enabled
+}
+
+func codexAggregateAffinityKey(c *gin.Context, group *models.Group, bodyBytes []byte) string {
+	if c == nil || group == nil || group.GroupType != "aggregate" || group.ChannelType != "openai-response" ||
+		!getGroupConfigBool(group, "codex_affinity_enabled") || !isCodexClientRequest(c, group) {
+		return ""
+	}
+
+	if value := firstNonEmptyHeader(c, "Session_ID", "session_id"); value != "" {
+		return value
+	}
+	if value := firstNonEmptyHeader(c, "Conversation_ID", "conversation_id"); value != "" {
+		return value
+	}
+	if value := firstNonEmptyHeader(c, "X-Codex-Window-Id", "x-codex-window-id"); value != "" {
+		return value
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return ""
+	}
+	if value, ok := payload["prompt_cache_key"].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+func isCodexClientRequest(c *gin.Context, group *models.Group) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	if isCodexPath(c.Request.URL.Path, group.Name) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Request.Header.Get("Originator")), "codex_cli_rs") {
+		return true
+	}
+	userAgent := strings.ToLower(c.Request.Header.Get("User-Agent"))
+	if strings.Contains(userAgent, "codex") {
+		return true
+	}
+	for name := range c.Request.Header {
+		if strings.HasPrefix(strings.ToLower(name), "x-codex-") {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmptyHeader(c *gin.Context, names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(c.Request.Header.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func waitBeforeRetry(ctx context.Context, delay time.Duration) bool {
 	if delay <= 0 {
 		return true
@@ -245,6 +326,7 @@ const (
 	ctxKeyTriggerSignal               = "fc_trigger_signal"
 	ctxKeyFunctionCallEnabled         = "fc_enabled"
 	ctxKeyRateLimitPressure           = "rate_limit_pressure"
+	ctxKeyAggregateSubGroupFinal      = "aggregate_sub_group_final"
 	ctxKeyUpstreamLogicalStatusCode   = "upstream_logical_status_code"
 	ctxKeyUpstreamLogicalErrorMessage = "upstream_logical_error_message"
 	ctxKeyUpstreamUserAgent           = "upstream_user_agent"
@@ -1761,7 +1843,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	} else {
 		retryCtx.forcedSubGroupID = 0
 		var err error
-		subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetry(originalGroup, retryCtx.excludedSubGroups)
+		if affinityKey := codexAggregateAffinityKey(c, originalGroup, bodyBytes); affinityKey != "" {
+			subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetryAffinity(originalGroup, retryCtx.excludedSubGroups, affinityKey)
+		} else {
+			subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetry(originalGroup, retryCtx.excludedSubGroups)
+		}
 		if err != nil {
 			// All sub-groups are unavailable (runtime error)
 			logrus.WithFields(logrus.Fields{
@@ -2578,7 +2664,9 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 		requestType = models.RequestTypeFinal
 	}
 
+	clearAggregateSubGroupFinal := markAggregateSubGroupFinal(c)
 	ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, err, isStream, "", nil, "", channelHandler, bodyBytes, requestType)
+	clearAggregateSubGroupFinal()
 
 	// If this is the last attempt, return error
 	if isLastAttempt {
@@ -2857,7 +2945,7 @@ func (ps *ProxyServer) logRequest(
 	// This ensures that failed sub-group attempts are reflected in health scores,
 	// even when the overall aggregate request succeeds via retry to another sub-group.
 	if ps.dynamicWeightManager != nil {
-		ps.recordDynamicWeightMetrics(c, originalGroup, group, logEntry.IsSuccess, logEntry.StatusCode)
+		ps.recordDynamicWeightMetrics(c, originalGroup, group, logEntry.IsSuccess, logEntry.StatusCode, logEntry.RequestType)
 	}
 }
 
@@ -2868,7 +2956,7 @@ func (ps *ProxyServer) logRequest(
 // or unavailable, it can add tail latency or reduce throughput. The current implementation
 // prioritizes simplicity and correctness. For production deployments with strict latency SLAs,
 // consider async/buffering and ensure strict client timeouts in the store implementation.
-func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup, group *models.Group, isSuccess bool, statusCode int) {
+func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup, group *models.Group, isSuccess bool, statusCode int, requestType string) {
 	if ps.dynamicWeightManager == nil {
 		return
 	}
@@ -2892,7 +2980,8 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 	}
 
 	// Record sub-group metrics for aggregate groups
-	if originalGroup != nil && originalGroup.GroupType == "aggregate" && originalGroup.ID != group.ID {
+	if originalGroup != nil && originalGroup.GroupType == "aggregate" && originalGroup.ID != group.ID &&
+		(requestType == models.RequestTypeFinal || isAggregateSubGroupFinal(c)) {
 		if isSuccess {
 			ps.dynamicWeightManager.RecordSubGroupSuccess(originalGroup.ID, group.ID)
 		} else {
@@ -2905,6 +2994,7 @@ func (ps *ProxyServer) recordDynamicWeightMetrics(c *gin.Context, originalGroup,
 			"is_success":         isSuccess,
 			"is_rate_limit":      isRateLimit,
 			"status_code":        statusCode,
+			"request_type":       requestType,
 		}).Debug("Recorded dynamic weight metrics for sub-group")
 	}
 

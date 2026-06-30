@@ -542,7 +542,7 @@ func TestImportSystemSkipsSubGroupWithInvalidWeight(t *testing.T) {
 				},
 				SubGroups: []SubGroupInfo{
 					{GroupName: "standard-valid-weight", Weight: 5, MinEffectiveWeight: 2},
-					{GroupName: "standard-invalid-weight", Weight: 1001, MinEffectiveWeight: 1},
+					{GroupName: "standard-invalid-weight", Weight: 5001, MinEffectiveWeight: 1},
 				},
 			},
 			{

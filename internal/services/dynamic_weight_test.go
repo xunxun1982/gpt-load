@@ -753,6 +753,43 @@ func TestDynamicWeightManager_SubGroupMinimumEffectiveWeight(t *testing.T) {
 	assert.Equal(t, 0, selectionWeights[1])
 }
 
+func TestDynamicWeightManager_SubGroupWeight5000EffectiveWeightAndPercentage(t *testing.T) {
+	t.Parallel()
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	aggregateGroupID := uint(1)
+	subGroups := []SubGroupWeightInput{
+		{SubGroupID: 1, Weight: 5000, MinEffectiveWeight: 5000},
+		{SubGroupID: 2, Weight: 5000, MinEffectiveWeight: 1},
+	}
+
+	for i := 0; i < 20; i++ {
+		dwm.RecordSubGroupFailure(aggregateGroupID, 1, false)
+		dwm.RecordSubGroupFailure(aggregateGroupID, 2, false)
+	}
+
+	weights := dwm.GetSubGroupDynamicWeights(aggregateGroupID, subGroups)
+	require.Len(t, weights, 2)
+	assert.Equal(t, 5000.0, weights[0].EffectiveWeight)
+	assert.Equal(t, 1.0, weights[1].EffectiveWeight)
+
+	total := weights[0].EffectiveWeight + weights[1].EffectiveWeight
+	require.Greater(t, total, 0.0)
+	firstPercentage := weights[0].EffectiveWeight / total * 100
+	secondPercentage := weights[1].EffectiveWeight / total * 100
+	assert.False(t, math.IsNaN(firstPercentage))
+	assert.False(t, math.IsNaN(secondPercentage))
+	assert.Greater(t, firstPercentage, 99.9)
+	assert.Greater(t, secondPercentage, 0.0)
+	assert.InDelta(t, 100.0, firstPercentage+secondPercentage, 0.0001)
+
+	selectionWeights := dwm.GetEffectiveWeightsForSelection(aggregateGroupID, subGroups)
+	require.Len(t, selectionWeights, 2)
+	assert.Equal(t, 50000, selectionWeights[0])
+	assert.Equal(t, 10, selectionWeights[1])
+}
+
 // TestDynamicWeightManager_DynamicWeightedRandomSelect tests weighted random selection
 func TestDynamicWeightManager_DynamicWeightedRandomSelect(t *testing.T) {
 	memStore := store.NewMemoryStore()
