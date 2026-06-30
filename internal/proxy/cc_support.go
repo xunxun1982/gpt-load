@@ -3663,7 +3663,11 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		leadingWhitespace := content[:len(content)-len(strings.TrimLeft(content, " \t\r\n"))]
 		trailingWhitespace := content[len(strings.TrimRight(content, " \t\r\n")):]
 		thinking := sanitizeText(content)
-		if strings.TrimSpace(thinking) == "" {
+		if thinking == "" && thinkingBlockOpen && strings.TrimSpace(content) == "" {
+			// Once a thinking block exists, whitespace-only chunks are meaningful token separators.
+			thinking = content
+		}
+		if thinking == "" || (!thinkingBlockOpen && strings.TrimSpace(thinking) == "") {
 			return
 		}
 		if thinkingBlockOpen && leadingWhitespace != "" && !strings.HasPrefix(thinking, leadingWhitespace) {

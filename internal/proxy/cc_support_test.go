@@ -1156,7 +1156,9 @@ data: [DONE]
 func TestCCStreamingResponse_ReasoningContentPreservesChunkSpacing(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	sseData := `data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Need "},"finish_reason":null}]}
+	sseData := `data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Need"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":" "},"finish_reason":null}]}
 
 data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"context."},"finish_reason":null}]}
 
@@ -1180,8 +1182,10 @@ data: [DONE]
 	ps.handleCCStreamingResponse(c, resp)
 
 	output := w.Body.String()
-	if !strings.Contains(output, `"thinking":"Need "`) || !strings.Contains(output, `"thinking":"context."`) {
-		t.Errorf("expected reasoning chunks to preserve spacing, got: %s", output)
+	for _, want := range []string{`"thinking":"Need"`, `"thinking":" "`, `"thinking":"context."`} {
+		if !strings.Contains(output, want) {
+			t.Errorf("expected reasoning chunks to preserve %s, got: %s", want, output)
+		}
 	}
 }
 
