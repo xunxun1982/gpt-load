@@ -1260,6 +1260,52 @@ func TestExecuteRequestWithRetryForceStreamSendsStreamTrueToResponsesUpstream(t 
 	assert.Equal(t, true, payload["stream"])
 }
 
+func TestHandleProxyForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	receivedPath := make(chan string, 1)
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedPath <- r.URL.Path
+		receivedBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	group := createTestGroup(t, db, "codex-compact-openai-response", "openai-response")
+	group.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	require.NoError(t, db.Save(group).Error)
+	createTestKey(t, db, group.ID, "sk-codex-compact-openai-response", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	body := []byte(`{"model":"gpt-5","input":[],"prompt_cache_key":"compact-key"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+group.Name+"/codex/v1/responses/compact", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: group.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, isCodexEnabled(c))
+	assert.Equal(t, codexUpstreamResponses, getCodexUpstreamFormat(c))
+	assert.Equal(t, "/v1/responses/compact", <-receivedPath)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &payload))
+	assert.NotContains(t, payload, "stream")
+}
+
 func TestExecuteRequestWithRetrySanitizesUpstreamHTTPError(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

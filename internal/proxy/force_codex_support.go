@@ -96,9 +96,10 @@ const (
 )
 
 type codexToolSpec struct {
-	Kind      codexToolKind
-	Name      string
-	Namespace string
+	Kind                 codexToolKind
+	Name                 string
+	Namespace            string
+	AllowsEmptyArguments bool
 }
 
 type codexToolContext struct {
@@ -133,7 +134,12 @@ func (ctx *codexToolContext) addTool(tool CodexTool, namespace string) {
 	case "", "function":
 		chatName := codexChatToolName(tool.Name, namespace)
 		if chatName != "" {
-			ctx.byChatName[chatName] = codexToolSpec{Kind: codexToolKindFunction, Name: tool.Name, Namespace: namespace}
+			ctx.byChatName[chatName] = codexToolSpec{
+				Kind:                 codexToolKindFunction,
+				Name:                 tool.Name,
+				Namespace:            namespace,
+				AllowsEmptyArguments: codexToolAllowsEmptyArguments(tool),
+			}
 		}
 	case "custom":
 		if tool.Name != "" {
@@ -146,6 +152,29 @@ func (ctx *codexToolContext) addTool(tool CodexTool, namespace string) {
 			ctx.addTool(child, tool.Name)
 		}
 	}
+}
+
+func codexToolAllowsEmptyArguments(tool CodexTool) bool {
+	if len(tool.Parameters) == 0 || string(tool.Parameters) == "null" {
+		return true
+	}
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(tool.Parameters, &schema); err != nil {
+		return false
+	}
+	return len(schema.Required) == 0
+}
+
+func isValidCodexToolCallArguments(toolName, arguments string, toolCtx *codexToolContext) bool {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "{}" {
+		if spec, ok := toolCtx.lookup(toolName); ok && spec.AllowsEmptyArguments {
+			return true
+		}
+	}
+	return isValidToolCallArguments(toolName, arguments)
 }
 
 func (ctx *codexToolContext) chatNameFor(name, namespace string) string {
@@ -342,7 +371,7 @@ func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal 
 				toolCtx = toolCtxOpt[0]
 			}
 			for _, tc := range msg.ToolCalls {
-				if tc.ID == "" || tc.Function.Name == "" || !isValidToolCallArguments(tc.Function.Name, tc.Function.Arguments) {
+				if tc.ID == "" || tc.Function.Name == "" || !isValidCodexToolCallArguments(tc.Function.Name, tc.Function.Arguments, toolCtx) {
 					continue
 				}
 				resp.Output = append(resp.Output, codexOutputItemFromChatToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments, toolCtx))
@@ -1242,6 +1271,14 @@ func writeForceCodexOutputItemEvents(writeEvent func(string, any) error, item Co
 				"item_id":      item.ID,
 				"output_index": outputIndex,
 				"delta":        item.Arguments,
+			}); err != nil {
+				return err
+			}
+			if err := writeEvent("response.function_call_arguments.done", map[string]any{
+				"type":         "response.function_call_arguments.done",
+				"item_id":      item.ID,
+				"output_index": outputIndex,
+				"arguments":    item.Arguments,
 			}); err != nil {
 				return err
 			}

@@ -644,6 +644,19 @@ func isOpenAIResponsesEndpoint(path string) bool {
 	return strings.HasSuffix(path, "/v1/responses")
 }
 
+func isOpenAIResponsesCodexEndpoint(path string) bool {
+	return isOpenAIResponsesEndpoint(path) ||
+		path == "/v1/responses/compact" ||
+		strings.HasSuffix(path, "/v1/responses/compact")
+}
+
+func rewriteCodexResponsesPathToUpstream(path, upstreamPath string) string {
+	if strings.HasSuffix(path, "/v1/responses/compact") {
+		return strings.TrimSuffix(path, "/v1/responses/compact") + upstreamPath
+	}
+	return strings.Replace(path, "/v1/responses", upstreamPath, 1)
+}
+
 func isFunctionCallRewriteEndpoint(group *models.Group, path, method string) bool {
 	if group == nil {
 		return false
@@ -1222,12 +1235,12 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				}
 			}
 
-			if group.ChannelType == "openai-response" && wasCodexPath && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+			if group.ChannelType == "openai-response" && wasCodexPath && isOpenAIResponsesCodexEndpoint(c.Request.URL.Path) {
 				c.Set("codex_was_codex_path", true)
 				c.Set(ctxKeyCodexEnabled, true)
 				setCodexUpstreamFormat(c, codexUpstreamResponses)
 			}
-			if isCodexSupportEnabled(group) && wasCodexPath && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+			if isCodexSupportEnabled(group) && wasCodexPath && isOpenAIResponsesCodexEndpoint(c.Request.URL.Path) {
 				convertedBody, converted, codexErr := ps.applyForceCodexRequestConversion(c, group, finalBodyBytes)
 				if codexErr != nil {
 					logrus.WithError(codexErr).WithFields(logrus.Fields{
@@ -1244,9 +1257,9 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 					}
 					switch group.ChannelType {
 					case "openai":
-						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/responses", "/v1/chat/completions", 1)
+						c.Request.URL.Path = rewriteCodexResponsesPathToUpstream(c.Request.URL.Path, "/v1/chat/completions")
 					case "anthropic":
-						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/responses", "/v1/messages", 1)
+						c.Request.URL.Path = rewriteCodexResponsesPathToUpstream(c.Request.URL.Path, "/v1/messages")
 					}
 					logrus.WithFields(logrus.Fields{
 						"group":        group.Name,
@@ -2107,10 +2120,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	shouldUseCodexEndpointForSubGroup := isCodexEndpointSupported(group) &&
 		(wasCodexPath || originalGroup.ChannelType == "openai-response")
-	if group.ChannelType == "openai-response" && shouldUseCodexEndpointForSubGroup && wasCodexPath && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+	if group.ChannelType == "openai-response" && shouldUseCodexEndpointForSubGroup && wasCodexPath && isOpenAIResponsesCodexEndpoint(c.Request.URL.Path) {
 		c.Set("codex_was_codex_path", true)
 	}
-	if isCodexSupportEnabled(group) && shouldUseCodexEndpointForSubGroup && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+	if isCodexSupportEnabled(group) && shouldUseCodexEndpointForSubGroup && isOpenAIResponsesCodexEndpoint(c.Request.URL.Path) {
 		convertedBody, converted, codexErr := ps.applyForceCodexRequestConversion(c, group, finalBodyBytes)
 		if codexErr != nil {
 			logrus.WithError(codexErr).WithFields(logrus.Fields{
@@ -2128,9 +2141,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}
 			switch group.ChannelType {
 			case "openai":
-				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/responses", "/v1/chat/completions", 1)
+				c.Request.URL.Path = rewriteCodexResponsesPathToUpstream(c.Request.URL.Path, "/v1/chat/completions")
 			case "anthropic":
-				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/responses", "/v1/messages", 1)
+				c.Request.URL.Path = rewriteCodexResponsesPathToUpstream(c.Request.URL.Path, "/v1/messages")
 			}
 			logrus.WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,

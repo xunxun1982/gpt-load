@@ -30,6 +30,7 @@ func TestCodexPathHelpersAndSupport(t *testing.T) {
 			expected  bool
 		}{
 			{"codex_path", "/proxy/mygroup/codex/v1/responses", "mygroup", true},
+			{"codex_compact_path", "/proxy/mygroup/codex/v1/responses/compact", "mygroup", true},
 			{"group_named_codex", "/proxy/codex/v1/responses", "codex", false},
 			{"group_named_codex_with_force", "/proxy/codex/codex/v1/responses", "codex", true},
 			{"claude_path_not_codex", "/proxy/mygroup/claude/v1/messages", "mygroup", false},
@@ -53,6 +54,7 @@ func TestCodexPathHelpersAndSupport(t *testing.T) {
 			expected string
 		}{
 			{"basic", "/proxy/group/codex/v1/responses", "/proxy/group/v1/responses"},
+			{"compact", "/proxy/group/codex/v1/responses/compact", "/proxy/group/v1/responses/compact"},
 			{"group_named_codex", "/proxy/codex/codex/v1/responses", "/proxy/codex/v1/responses"},
 			{"no_codex", "/proxy/group/v1/responses", "/proxy/group/v1/responses"},
 		}
@@ -121,6 +123,12 @@ func TestCodexPathHelpersAndSupport(t *testing.T) {
 		assert.False(t, isCodexPath("/proxy/both/claude/v1/messages", groupName))
 		assert.True(t, isCodexPath("/proxy/both/codex/v1/responses", groupName))
 		assert.False(t, isClaudePath("/proxy/both/codex/v1/responses", groupName))
+	})
+
+	t.Run("openai_responses_compact_is_codex_endpoint_only", func(t *testing.T) {
+		t.Parallel()
+		assert.True(t, isOpenAIResponsesCodexEndpoint("/proxy/group/v1/responses/compact"))
+		assert.False(t, isOpenAIResponsesEndpoint("/proxy/group/v1/responses/compact"))
 	})
 }
 
@@ -472,6 +480,44 @@ data: [DONE]
 	assert.NotContains(t, out, "event: response.output_text.done")
 }
 
+func TestHandleForceCodexStreamingResponseEmitsFunctionCallArgumentsDone(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	stream := []byte(`data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_list","type":"function","function":{"name":"list_mcp_resources","arguments":"{"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamOpenAIChat)
+	c.Set(ctxKeyCodexToolContext, newCodexToolContext([]CodexTool{{
+		Type:       "function",
+		Name:       "list_mcp_resources",
+		Parameters: json.RawMessage(`{"type":"object","properties":{"cursor":{"type":"string"},"server":{"type":"string"}}}`),
+	}}))
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(stream)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleForceCodexStreamingResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	out := w.Body.String()
+	assert.Contains(t, out, "event: response.function_call_arguments.delta")
+	assert.Contains(t, out, "event: response.function_call_arguments.done")
+	assert.Contains(t, out, `"arguments":"{}"`)
+	assert.Contains(t, out, "event: response.output_item.done")
+	assert.Contains(t, out, `"name":"list_mcp_resources"`)
+}
+
 func TestCollectOpenAIChatStreamToResponsePreservesReasoningAndUsageOnlyChunk(t *testing.T) {
 	t.Parallel()
 
@@ -720,6 +766,56 @@ func TestHandleProxyForceCodexOpenAIChatNonStreaming(t *testing.T) {
 	assert.Equal(t, "lookup_time", got.Output[0].Name)
 }
 
+func TestHandleProxyForceCodexOpenAIChatCompactConvertsToChatEndpoint(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	receivedPath := make(chan string, 1)
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedPath <- r.URL.Path
+		receivedBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_force_codex_compact","object":"chat.completion","created":123,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"summary"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	group := createTestGroup(t, db, "force-codex-chat-compact", "openai")
+	group.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	group.Config = map[string]any{"codex_support": true, "blacklist_threshold": 100}
+	require.NoError(t, db.Save(group).Error)
+	createTestKey(t, db, group.ID, "sk-force-codex-chat-compact", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	body := []byte(`{"model":"gpt-test","instructions":"Summarize the conversation.","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"history"}]}]}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+group.Name+"/codex/v1/responses/compact", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: group.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "/v1/chat/completions", <-receivedPath)
+	var upstreamPayload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &upstreamPayload))
+	assert.Contains(t, upstreamPayload, "messages")
+	assert.NotContains(t, upstreamPayload, "input")
+
+	var got CodexResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got.Output, 1)
+	require.Len(t, got.Output[0].Content, 1)
+	assert.Equal(t, "summary", got.Output[0].Content[0].Text)
+}
+
 func TestHandleProxyForceCodexAnthropicNonStreaming(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -770,6 +866,57 @@ func TestHandleProxyForceCodexAnthropicNonStreaming(t *testing.T) {
 	assert.Equal(t, "function_call", got.Output[0].Type)
 	assert.Equal(t, "call_read", got.Output[0].CallID)
 	assert.Equal(t, "read_file", got.Output[0].Name)
+}
+
+func TestHandleProxyForceCodexAnthropicCompactConvertsToMessagesEndpoint(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	receivedPath := make(chan string, 1)
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedPath <- r.URL.Path
+		receivedBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_force_codex_compact","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"summary"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":7}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	group := createTestGroup(t, db, "force-codex-claude-compact", "anthropic")
+	group.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	group.Config = map[string]any{"codex_support": true, "blacklist_threshold": 100}
+	require.NoError(t, db.Save(group).Error)
+	createTestKey(t, db, group.ID, "sk-force-codex-claude-compact", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	body := []byte(`{"model":"claude-test","instructions":"Summarize the conversation.","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"history"}]}]}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+group.Name+"/codex/v1/responses/compact", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: group.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "/v1/messages", <-receivedPath)
+	var upstreamPayload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &upstreamPayload))
+	assert.Contains(t, upstreamPayload, "messages")
+	assert.Contains(t, upstreamPayload, "system")
+	assert.NotContains(t, upstreamPayload, "input")
+
+	var got CodexResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got.Output, 1)
+	require.Len(t, got.Output[0].Content, 1)
+	assert.Equal(t, "summary", got.Output[0].Content[0].Text)
 }
 
 func TestAggregateForceCodexUsesSelectedSubGroupConfig(t *testing.T) {
