@@ -1,3 +1,8 @@
+import {
+  DEFAULT_CLAUDE_CODE_VERSION,
+  DEFAULT_CODEX_VERSION,
+} from "@/utils/simulated-client-defaults";
+
 export default {
   auth: {
     noAuthKeyFound: "未找到认证信息，无法导出",
@@ -479,6 +484,8 @@ export default {
     modelRedirectLooseInfo: "宽松模式下，未配置重定向的模型将直接透传给上游服务",
     modelRedirectRules: "模型重定向规则",
     modelRedirectTooltip: "配置模型重定向规则，键为用户请求的模型名，值为实际请求上游的模型名",
+    modelRedirectBehaviorNotice:
+      "模型名大小写敏感，重定向只按客户端请求的源模型名精确匹配；GPT-Load 不会自动转换大小写，也不会按目标模型名反查。若上游会做大小写归一、存在大小写归一后重名或同时暴露大小写变体，请注意：配置 GLM-5.2 → glm-5.2 只会接管请求 GLM-5.2；请求 glm-5.2 若未单独配置为源模型，不会因为它是目标模型名而被这条规则接管。宽松模式会保持原名交给上游处理，最终命中哪个上游模型由上游决定；严格模式会由代理拒绝。需要代理层也明确允许该名称时，请添加自映射（如 glm-5.2 → glm-5.2）。",
     modelRedirectMode: "重定向模式",
     modelRedirectSimpleMode: "简单模式",
     modelRedirectAdvancedMode: "高级模式",
@@ -530,10 +537,10 @@ export default {
     simulatedClientClaudeCode: "模拟 Claude Code",
     simulatedClientTip: "关闭时保持透传；开启后会应用对应客户端的请求头指纹。",
     simulatedCodexVersion: "Codex 版本",
-    simulatedCodexVersionPlaceholder: "默认 0.141.0",
+    simulatedCodexVersionPlaceholder: `默认 ${DEFAULT_CODEX_VERSION}`,
     simulatedCodexVersionTip: "用于生成 codex-tui/<version> User-Agent，留空使用默认版本。",
     simulatedClaudeCodeVersion: "Claude Code 版本",
-    simulatedClaudeCodeVersionPlaceholder: "默认 2.1.183",
+    simulatedClaudeCodeVersionPlaceholder: `默认 ${DEFAULT_CLAUDE_CODE_VERSION}`,
     simulatedClaudeCodeVersionTip: "用于生成 claude-cli User-Agent，留空使用默认版本。",
     invalidSimulatedClientVersion: "{client} 必须使用 1.2、1.2.3 或 1.2.3.4 这样的纯数字版本格式。",
     responsesIncludeEncryptedReasoning: "加密推理内容",
@@ -1103,7 +1110,9 @@ export default {
     nextScheduled: "下次执行",
     lastRun: "上次执行",
     checkinSummary: "成功 {success} / 失败 {failed} / 跳过 {skipped}",
-    beijingTimeNote: "所有时间均为北京时间 (UTC+8)",
+    serverTimezoneNote:
+      "所有时间按服务端 TZ 时区执行；TZ 未设置时使用服务端本地时区，TZ 无效时回退北京时间 (UTC+8)",
+    clientLocalTime: "客户端本地时间",
     checkin: "签到",
     logs: "日志",
     logTime: "时间",

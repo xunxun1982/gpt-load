@@ -199,17 +199,17 @@ func (s *AutoCheckinService) Stop(ctx context.Context) {
 
 func (s *AutoCheckinService) GetStatus() AutoCheckinStatus {
 	if s.store == nil {
-		return AutoCheckinStatus{IsRunning: false}
+		return withCheckinMetadata(AutoCheckinStatus{IsRunning: false})
 	}
 	data, err := s.store.Get(autoCheckinStatusKey)
 	if err != nil {
-		return AutoCheckinStatus{IsRunning: false}
+		return withCheckinMetadata(AutoCheckinStatus{IsRunning: false})
 	}
 	var st AutoCheckinStatus
 	if json.Unmarshal(data, &st) != nil {
-		return AutoCheckinStatus{IsRunning: false}
+		return withCheckinMetadata(AutoCheckinStatus{IsRunning: false})
 	}
-	return st
+	return withCheckinMetadata(st)
 }
 
 func (s *AutoCheckinService) TriggerRunNow() {
@@ -331,11 +331,24 @@ func (s *AutoCheckinService) setStatus(status AutoCheckinStatus) {
 	if s.store == nil {
 		return
 	}
+	status = withCheckinMetadata(status)
 	b, err := json.Marshal(status)
 	if err != nil {
 		return
 	}
 	_ = s.store.Set(autoCheckinStatusKey, b, 24*time.Hour)
+}
+
+func withCheckinMetadata(status AutoCheckinStatus) AutoCheckinStatus {
+	return withCheckinMetadataAt(status, time.Now())
+}
+
+func withCheckinMetadataAt(status AutoCheckinStatus, now time.Time) AutoCheckinStatus {
+	_, timezone := checkinLocationWithName()
+	status.CurrentCheckinDay = GetBeijingCheckinDayAt(now)
+	status.Timezone = timezone
+	status.NextCheckinResetAt = nextCheckinResetAt(now).UTC().Format(time.RFC3339)
+	return status
 }
 
 func (s *AutoCheckinService) setNextScheduledAt(next time.Time) {
@@ -427,13 +440,14 @@ func (s *AutoCheckinService) loadConfig(ctx context.Context) (*AutoCheckinConfig
 }
 
 // computeMultipleTrigger calculates the next trigger time from multiple scheduled times.
-// All times are in Beijing time (UTC+8).
+// All times are in the configured site-management timezone.
 func computeMultipleTrigger(scheduleTimes []string, now time.Time) time.Time {
 	if len(scheduleTimes) == 0 {
 		return time.Time{}
 	}
 
-	beijingNow := now.In(beijingLocation)
+	loc := checkinLocation()
+	localNow := now.In(loc)
 	var nextTrigger time.Time
 
 	for _, timeStr := range scheduleTimes {
@@ -442,13 +456,11 @@ func computeMultipleTrigger(scheduleTimes []string, now time.Time) time.Time {
 			continue
 		}
 
-		// Create target time for today in Beijing timezone
-		target := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(),
-			minutes/60, minutes%60, 0, 0, beijingLocation)
+		target := localDateTime(localNow, minutes, loc)
 
 		// If target is in the past, schedule for tomorrow
-		if !target.After(beijingNow) {
-			target = target.Add(24 * time.Hour)
+		if !target.After(localNow) {
+			target = target.AddDate(0, 0, 1)
 		}
 
 		// Find the earliest next trigger
@@ -512,9 +524,13 @@ func lastRunSucceededForCurrentScheduleDay(cfg *AutoCheckinConfig, st AutoChecki
 func computeNextRegularTrigger(cfg *AutoCheckinConfig, now time.Time, skipToday bool) (time.Time, error) {
 	base := now
 	if skipToday {
-		beijingNow := now.In(beijingLocation)
-		nextDay := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(), 23, 59, 59, 0, beijingLocation)
+		loc := checkinLocation()
+		localNow := now.In(loc)
+		nextDay := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 23, 59, 59, 0, loc)
 		base = nextDay
+	}
+	if skipToday && cfg.ScheduleMode == AutoCheckinScheduleModeRandom {
+		return computeNextScheduleDayRandomTrigger(cfg.WindowStart, cfg.WindowEnd, base)
 	}
 
 	switch cfg.ScheduleMode {
@@ -528,7 +544,7 @@ func computeNextRegularTrigger(cfg *AutoCheckinConfig, now time.Time, skipToday 
 		}
 	}
 	if skipToday {
-		return computeNextScheduleDayRandomTrigger(cfg.WindowStart, cfg.WindowEnd, now)
+		return computeNextScheduleDayRandomTrigger(cfg.WindowStart, cfg.WindowEnd, base)
 	}
 	return computeRandomTrigger(cfg.WindowStart, cfg.WindowEnd, base)
 }
@@ -550,13 +566,18 @@ func computeDeterministicTrigger(cfg *AutoCheckinConfig, now time.Time) time.Tim
 		return time.Time{}
 	}
 
-	// Use Beijing time (UTC+8) for scheduling
-	beijingNow := now.In(beijingLocation)
-	target := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(), deterministicMin/60, deterministicMin%60, 0, 0, beijingLocation)
-	if !target.After(beijingNow) {
-		target = target.Add(24 * time.Hour)
+	loc := checkinLocation()
+	localNow := now.In(loc)
+	target := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), deterministicMin/60, deterministicMin%60, 0, 0, loc)
+	if !target.After(localNow) {
+		target = target.AddDate(0, 0, 1)
 	}
 	return target
+}
+
+func localDateTime(base time.Time, minutes int, loc *time.Location) time.Time {
+	localBase := base.In(loc)
+	return time.Date(localBase.Year(), localBase.Month(), localBase.Day(), minutes/60, minutes%60, 0, 0, loc)
 }
 
 func computeRandomTrigger(windowStart, windowEnd string, now time.Time) (time.Time, error) {
@@ -569,32 +590,32 @@ func computeRandomTrigger(windowStart, windowEnd string, now time.Time) (time.Ti
 		return time.Time{}, err
 	}
 
-	// Use Beijing time (UTC+8) for scheduling
-	beijingNow := now.In(beijingLocation)
-	today := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(), 0, 0, 0, 0, beijingLocation)
-	start := today.Add(time.Duration(startMin) * time.Minute)
-	end := today.Add(time.Duration(endMin) * time.Minute)
+	loc := checkinLocation()
+	localNow := now.In(loc)
+	start := localDateTime(localNow, startMin, loc)
+	end := localDateTime(localNow, endMin, loc)
 
-	nowMin := beijingNow.Hour()*60 + beijingNow.Minute()
+	nowMin := localNow.Hour()*60 + localNow.Minute()
 	if end.Before(start) || end.Equal(start) {
-		end = end.Add(24 * time.Hour)
+		end = end.AddDate(0, 0, 1)
 		// Window crosses midnight and we're after midnight but before the end.
-		if beijingNow.Before(start) && nowMin <= endMin {
-			start = start.Add(-24 * time.Hour)
-			end = end.Add(-24 * time.Hour)
+		if localNow.Before(start) && nowMin < endMin {
+			start = start.AddDate(0, 0, -1)
+			end = end.AddDate(0, 0, -1)
 		}
 	}
 
-	if beijingNow.After(end) {
-		start = start.Add(24 * time.Hour)
-		end = end.Add(24 * time.Hour)
-	} else if beijingNow.After(start) {
-		start = beijingNow
+	// Treat window end as an exclusive cutoff so the next run stays randomized.
+	if !localNow.Before(end) {
+		start = start.AddDate(0, 0, 1)
+		end = end.AddDate(0, 0, 1)
+	} else if localNow.After(start) {
+		start = localNow
 	}
 
 	duration := end.Sub(start)
 	if duration <= 0 {
-		return beijingNow.Add(24 * time.Hour), nil
+		return computeNextScheduleDayRandomTrigger(windowStart, windowEnd, localNow)
 	}
 	offset := time.Duration(rand.Int63n(int64(duration)))
 	return start.Add(offset), nil
@@ -611,15 +632,15 @@ func computeNextScheduleDayRandomTrigger(windowStart, windowEnd string, now time
 	}
 
 	nextScheduleDay := randomScheduleDayStart(now, startMin, endMin).AddDate(0, 0, 1)
-	start := nextScheduleDay.Add(time.Duration(startMin) * time.Minute)
-	end := nextScheduleDay.Add(time.Duration(endMin) * time.Minute)
+	start := localDateTime(nextScheduleDay, startMin, nextScheduleDay.Location())
+	end := localDateTime(nextScheduleDay, endMin, nextScheduleDay.Location())
 	if !end.After(start) {
-		end = end.Add(24 * time.Hour)
+		end = end.AddDate(0, 0, 1)
 	}
 
 	duration := end.Sub(start)
 	if duration <= 0 {
-		return nextScheduleDay.Add(24 * time.Hour), nil
+		return nextScheduleDay.AddDate(0, 0, 1), nil
 	}
 	offset := time.Duration(rand.Int63n(int64(duration)))
 	return start.Add(offset), nil
@@ -630,18 +651,18 @@ func randomScheduleDay(t time.Time, startMin, endMin int) string {
 }
 
 func randomScheduleDayStart(t time.Time, startMin, endMin int) time.Time {
-	beijingTime := t.In(beijingLocation)
-	dayStart := time.Date(beijingTime.Year(), beijingTime.Month(), beijingTime.Day(), 0, 0, 0, 0, beijingLocation)
-	nowMin := beijingTime.Hour()*60 + beijingTime.Minute()
-	if startMin >= endMin && nowMin <= endMin {
+	loc := checkinLocation()
+	localTime := t.In(loc)
+	dayStart := time.Date(localTime.Year(), localTime.Month(), localTime.Day(), 0, 0, 0, 0, loc)
+	nowMin := localTime.Hour()*60 + localTime.Minute()
+	if startMin >= endMin && nowMin < endMin {
 		return dayStart.AddDate(0, 0, -1)
 	}
 	return dayStart
 }
 
 func todayString(now time.Time) string {
-	// Use Beijing time (UTC+8) for date string
-	return now.In(beijingLocation).Format("2006-01-02")
+	return now.In(checkinLocation()).Format("2006-01-02")
 }
 
 func (s *AutoCheckinService) runAllCheckins(ctx context.Context) {
@@ -1109,20 +1130,14 @@ type checkinProvider interface {
 }
 
 func resolveProvider(siteType string) checkinProvider {
-	switch siteType {
-	case SiteTypeNewAPI, SiteTypeVeloera, SiteTypeOneHub, SiteTypeDoneHub:
-		// NewAPI-compatible sites share the same checkin endpoint: POST /api/user/checkin
-		return newAPIProvider{}
-	case SiteTypeSub2API:
-		return sub2APIProvider{}
-	case SiteTypeWongGongyi:
-		return wongProvider{}
-	case SiteTypeAnyrouter:
-		return anyrouterProvider{}
-	// Note: SiteTypeBrand, SiteTypeUnknown do not have dedicated checkin providers
-	default:
+	adapter := resolveManagedSiteAdapter(siteType)
+	if adapter == nil {
 		return nil
 	}
+	if registered, ok := adapter.(registeredSiteAdapter); ok {
+		return registered.provider
+	}
+	return adapter
 }
 
 // extractBaseURL extracts the base URL (scheme + host) from a full URL.
@@ -1601,6 +1616,7 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 			refreshed, refreshErr := p.refreshTokens(ctx, client, site, authValue, refreshToken, useStealth)
 			if refreshErr != nil {
 				logrus.WithError(refreshErr).WithField("endpoint", pathForLog(apiURL)).Warn("Sub2API token refresh failed")
+				result.Message = sub2APIRefreshFailureMessage(result.Message, refreshErr)
 				return withAuthUpdates(result), nil
 			}
 			authValue = refreshed.AccessToken
@@ -1620,6 +1636,17 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 	}
 
 	return withAuthUpdates(providerResult{Status: CheckinResultFailed, Message: "check-in endpoint not configured"}), nil
+}
+
+func sub2APIRefreshFailureMessage(checkinMessage string, refreshErr error) string {
+	message := strings.TrimSpace(checkinMessage)
+	if message == "" {
+		message = "check-in failed"
+	}
+	if refreshErr == nil {
+		return message
+	}
+	return fmt.Sprintf("%s; token refresh failed: upstream rejected token refresh", message)
 }
 
 func (p sub2APIProvider) requestCheckIn(
@@ -1710,6 +1737,10 @@ func (p sub2APIProvider) refreshTokens(
 		data, statusCode, err = doJSONRequest(ctx, client, http.MethodPost, endpoint, headers, body)
 	}
 	if err != nil {
+		resp := parseGenericCheckInResponse(data)
+		if strings.TrimSpace(resp.Message) != "" {
+			return sub2APIRefreshResult{}, fmt.Errorf("refresh http %d: upstream rejected token refresh", statusCode)
+		}
 		return sub2APIRefreshResult{}, fmt.Errorf("refresh http %d: %w", statusCode, err)
 	}
 
@@ -1726,7 +1757,7 @@ func (p sub2APIProvider) refreshTokens(
 	}
 	if resp.Code != 0 || strings.TrimSpace(resp.Data.AccessToken) == "" || strings.TrimSpace(resp.Data.RefreshToken) == "" {
 		if resp.Msg != "" {
-			return sub2APIRefreshResult{}, errors.New(resp.Msg)
+			return sub2APIRefreshResult{}, errors.New("upstream rejected token refresh")
 		}
 		return sub2APIRefreshResult{}, errors.New("invalid refresh response")
 	}

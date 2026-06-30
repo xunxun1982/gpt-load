@@ -297,7 +297,7 @@ func (s *Server) CheckInManagedSite(c *gin.Context) {
 }
 
 // RecordSiteOpened records when user clicked "Open Site" button.
-// This helps track which sites have been visited today (resets at 05:00 Beijing time).
+// This helps track which sites have been visited today.
 func (s *Server) RecordSiteOpened(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -312,7 +312,7 @@ func (s *Server) RecordSiteOpened(c *gin.Context) {
 }
 
 // RecordCheckinPageOpened records when user clicked "Open Check-in Page" button.
-// This helps track which check-in pages have been visited today (resets at 05:00 Beijing time).
+// This helps track which check-in pages have been visited today.
 func (s *Server) RecordCheckinPageOpened(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {

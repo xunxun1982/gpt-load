@@ -5,15 +5,20 @@ import (
 	"errors"
 	"testing"
 
+	appdb "gpt-load/internal/db"
+	"gpt-load/internal/models"
 	"gpt-load/internal/store"
 	"gpt-load/internal/syncer"
 	"gpt-load/internal/types"
 	"gpt-load/internal/utils"
 
+	"github.com/glebarez/sqlite"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type staticProxyURLResolver struct {
@@ -21,8 +26,46 @@ type staticProxyURLResolver struct {
 	err      error
 }
 
+type noopSystemSettingsGroupManager struct{}
+
+func (noopSystemSettingsGroupManager) Invalidate() error {
+	return nil
+}
+
 func (r staticProxyURLResolver) ResolveProxyURL(_ context.Context, _ string) (string, error) {
 	return r.resolved, r.err
+}
+
+func setupSystemSettingsTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	previousDB := appdb.DB
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+
+	sqlDB, err := testDB.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+
+	require.NoError(t, testDB.AutoMigrate(&models.SystemSetting{}))
+	appdb.DB = testDB
+	t.Cleanup(func() {
+		appdb.DB = previousDB
+		require.NoError(t, sqlDB.Close())
+	})
+
+	return testDB
+}
+
+func assertSystemSettingValue(t *testing.T, db *gorm.DB, key, want string) {
+	t.Helper()
+
+	var setting models.SystemSetting
+	require.NoError(t, db.Where("setting_key = ?", key).First(&setting).Error)
+	assert.Equal(t, want, setting.SettingValue)
 }
 
 func setupSystemSettingsManagerWithSettings(t *testing.T, settings types.SystemSettings) *SystemSettingsManager {
@@ -73,8 +116,10 @@ func TestGetSettings(t *testing.T) {
 	// Should return default settings when not initialized
 	settings := manager.GetSettings()
 	assert.NotNil(t, settings)
-	assert.Greater(t, settings.NonStreamRequestTimeout, 0)
-	assert.Zero(t, settings.StreamRequestTimeout)
+	assert.Equal(t, 1200, settings.RequestTimeout)
+	assert.Equal(t, 1200, settings.NonStreamRequestTimeout)
+	assert.Equal(t, 600, settings.StreamRequestTimeout)
+	assert.Equal(t, 30, settings.ConnectTimeout)
 }
 
 // TestGetAppUrl tests getting app URL
@@ -130,6 +175,34 @@ func TestValidateSettings(t *testing.T) {
 			name: "valid integer setting",
 			settings: map[string]any{
 				"non_stream_request_timeout": float64(60),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid retry delay disabled",
+			settings: map[string]any{
+				"retry_delay_ms": float64(0),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid retry delay",
+			settings: map[string]any{
+				"retry_delay_ms": float64(1000),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid retry backoff enabled",
+			settings: map[string]any{
+				"retry_backoff_enabled": true,
+			},
+			expectError: false,
+		},
+		{
+			name: "valid retry backoff max percent",
+			settings: map[string]any{
+				"retry_backoff_max_percent": float64(500),
 			},
 			expectError: false,
 		},
@@ -227,6 +300,14 @@ func TestValidateSettings(t *testing.T) {
 			name: "non-stream timeout below minimum",
 			settings: map[string]any{
 				"non_stream_request_timeout": float64(-1),
+			},
+			expectError: true,
+			errorMsg:    "below minimum value",
+		},
+		{
+			name: "retry delay below minimum",
+			settings: map[string]any{
+				"retry_delay_ms": float64(-1),
 			},
 			expectError: true,
 			errorMsg:    "below minimum value",
@@ -340,6 +421,35 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 				"sub_max_retries": float64(3),
 			},
 			expectError: false,
+		},
+		{
+			name: "valid retry_delay_ms",
+			config: map[string]any{
+				"retry_delay_ms": float64(1000),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid retry_backoff_enabled",
+			config: map[string]any{
+				"retry_backoff_enabled": true,
+			},
+			expectError: false,
+		},
+		{
+			name: "valid retry_backoff_max_percent",
+			config: map[string]any{
+				"retry_backoff_max_percent": float64(500),
+			},
+			expectError: false,
+		},
+		{
+			name: "negative retry_delay_ms",
+			config: map[string]any{
+				"retry_delay_ms": float64(-1),
+			},
+			expectError: true,
+			errorMsg:    "below minimum value",
 		},
 		{
 			name: "invalid sub_max_retries type",
@@ -752,8 +862,58 @@ func TestGetEffectiveConfigLegacyRequestTimeout(t *testing.T) {
 	})
 
 	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 0, cfg.StreamRequestTimeout)
+	assert.Equal(t, 75, cfg.StreamRequestTimeout)
 	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+}
+
+func TestGetEffectiveConfigLegacyRequestTimeoutKeepsExplicitStreamOverride(t *testing.T) {
+	manager := NewSystemSettingsManager()
+
+	cfg := manager.GetEffectiveConfig(map[string]any{
+		"request_timeout":        float64(75),
+		"stream_request_timeout": float64(30),
+	})
+
+	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
+	assert.Equal(t, 30, cfg.StreamRequestTimeout)
+	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+}
+
+func TestLegacyRequestTimeoutPersistsSplitTimeoutBackfill(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "request_timeout",
+		SettingValue: "75",
+	}).Error)
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.Initialize(memStore, noopSystemSettingsGroupManager{}, false))
+	t.Cleanup(func() {
+		manager.Stop(context.Background())
+	})
+
+	settings := manager.GetSettings()
+	assert.Equal(t, 75, settings.RequestTimeout)
+	assert.Equal(t, 75, settings.NonStreamRequestTimeout)
+	assert.Equal(t, 75, settings.StreamRequestTimeout)
+
+	require.NoError(t, manager.UpdateSettings(map[string]any{
+		"request_timeout": float64(90),
+	}))
+	require.NoError(t, manager.ReloadSettings())
+
+	settings = manager.GetSettings()
+	assert.Equal(t, 90, settings.RequestTimeout)
+	assert.Equal(t, 90, settings.NonStreamRequestTimeout)
+	assert.Equal(t, 90, settings.StreamRequestTimeout)
+	assertSystemSettingValue(t, testDB, "request_timeout", "90")
+	assertSystemSettingValue(t, testDB, "non_stream_request_timeout", "90")
+	assertSystemSettingValue(t, testDB, "stream_request_timeout", "90")
 }
 
 func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t *testing.T) {
@@ -765,7 +925,22 @@ func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t 
 	})
 
 	assert.Equal(t, 0, cfg.NonStreamRequestTimeout)
+	assert.Equal(t, 600, cfg.StreamRequestTimeout)
 	assert.Equal(t, 0, cfg.RequestTimeout)
+}
+
+func TestGetEffectiveConfigRetryDelayOverride(t *testing.T) {
+	manager := NewSystemSettingsManager()
+
+	cfg := manager.GetEffectiveConfig(map[string]any{
+		"retry_delay_ms":            float64(1500),
+		"retry_backoff_enabled":     true,
+		"retry_backoff_max_percent": float64(300),
+	})
+
+	assert.Equal(t, 1500, cfg.RetryDelayMs)
+	assert.True(t, cfg.RetryBackoffEnabled)
+	assert.Equal(t, 300, cfg.RetryBackoffMaxPercent)
 }
 
 func TestGetEffectiveConfigResolvesSystemProxyWhenGroupConfigMarshalFails(t *testing.T) {

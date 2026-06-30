@@ -1,3 +1,8 @@
+import {
+  DEFAULT_CLAUDE_CODE_VERSION,
+  DEFAULT_CODEX_VERSION,
+} from "@/utils/simulated-client-defaults";
+
 export default {
   auth: {
     noAuthKeyFound: "認証情報が見つかりません、エクスポートできません",
@@ -500,6 +505,8 @@ export default {
     modelRedirectRules: "モデルリダイレクトルール",
     modelRedirectTooltip:
       "モデルリダイレクトルールを設定。キーはユーザーがリクエストするモデル名、値はアップストリームに送信する実際のモデル名",
+    modelRedirectBehaviorNotice:
+      "モデル名は大文字と小文字を区別します。リダイレクトはクライアントがリクエストしたソースモデル名だけを完全一致で照合し、GPT-Load は大小文字を自動変換せず、ターゲットモデル名からも逆引きしません。アップストリームが大小文字を正規化する場合、正規化すると衝突するモデルがある場合、または大小文字の変種が共存する場合は注意してください。GLM-5.2 → glm-5.2 は GLM-5.2 のリクエストだけを引き受けます。ソースモデルとして別途設定されていない glm-5.2 のリクエストは、ターゲット名であるだけではこのルールに引き受けられません。寛容モードでは元の名前のままアップストリームへ送信され、最終的にどのモデルへ解決されるかはアップストリーム次第です。厳格モードではプロキシで拒否されます。プロキシ層でもその名前を明示的に許可するには、glm-5.2 → glm-5.2 のような自己リダイレクトを追加してください。",
     modelRedirectMode: "リダイレクトモード",
     modelRedirectSimpleMode: "シンプルモード",
     modelRedirectAdvancedMode: "アドバンスモード",
@@ -555,11 +562,11 @@ export default {
     simulatedClientTip:
       "オフでは透過します。有効にすると選択したクライアントの指紋ヘッダーを適用します。",
     simulatedCodexVersion: "Codex バージョン",
-    simulatedCodexVersionPlaceholder: "デフォルト 0.141.0",
+    simulatedCodexVersionPlaceholder: `デフォルト ${DEFAULT_CODEX_VERSION}`,
     simulatedCodexVersionTip:
       "codex-tui/<version> User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
     simulatedClaudeCodeVersion: "Claude Code バージョン",
-    simulatedClaudeCodeVersionPlaceholder: "デフォルト 2.1.183",
+    simulatedClaudeCodeVersionPlaceholder: `デフォルト ${DEFAULT_CLAUDE_CODE_VERSION}`,
     simulatedClaudeCodeVersionTip:
       "claude-cli User-Agent の生成に使います。空の場合はデフォルトバージョンを使用します。",
     invalidSimulatedClientVersion:
@@ -1139,7 +1146,9 @@ export default {
     nextScheduled: "次回予定",
     lastRun: "前回実行",
     checkinSummary: "成功 {success} / 失敗 {failed} / スキップ {skipped}",
-    beijingTimeNote: "すべての時間は北京時間 (UTC+8) です",
+    serverTimezoneNote:
+      "時刻はサーバーの TZ タイムゾーンを使用し、TZ 未設定時はサーバーのローカルタイムゾーン、無効時は北京時間 (UTC+8) を使用します",
+    clientLocalTime: "クライアントのローカル時刻",
     checkin: "チェックイン",
     logs: "ログ",
     logTime: "時間",

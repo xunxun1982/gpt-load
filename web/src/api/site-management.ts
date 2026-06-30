@@ -76,11 +76,11 @@ export interface ManagedSiteDTO {
   last_checkin_message: string;
 
   // Track when user clicked "Open Site" or "Open Check-in Page" buttons.
-  // Date format: YYYY-MM-DD in Beijing time (UTC+8), resets at 05:00 Beijing time.
+  // Date format: YYYY-MM-DD in the site-management timezone, resets at midnight.
   last_site_opened_date: string;
   last_checkin_page_opened_date: string;
 
-  // Cached balance information, refreshed daily at 05:00 Beijing time.
+  // Cached balance information, refreshed daily at midnight in the site-management timezone.
   last_balance: string;
   last_balance_date: string;
 
@@ -327,11 +327,11 @@ export interface AutoCheckinRetryStrategy {
 
 export interface AutoCheckinConfig {
   global_enabled: boolean;
-  schedule_times: string[]; // Multiple times in HH:MM format (Beijing time)
-  window_start: string; // HH:MM format (Beijing time)
-  window_end: string; // HH:MM format (Beijing time)
+  schedule_times: string[]; // Multiple times in HH:MM format (site-management timezone)
+  window_start: string; // HH:MM format (site-management timezone)
+  window_end: string; // HH:MM format (site-management timezone)
   schedule_mode: AutoCheckinScheduleMode;
-  deterministic_time?: string; // HH:MM format (Beijing time)
+  deterministic_time?: string; // HH:MM format (site-management timezone)
   retry_strategy: AutoCheckinRetryStrategy;
 }
 
@@ -344,12 +344,22 @@ export interface AutoCheckinRunSummary {
   needs_retry: boolean;
 }
 
+export interface AutoCheckinAttemptsTracker {
+  day: string;
+  attempts: number;
+}
+
 export interface AutoCheckinStatus {
   is_running: boolean;
   last_run_at?: string;
   last_run_result?: string;
   next_scheduled_at?: string;
+  // Kept optional for initial loading and older backends; current GetStatus fills them.
+  current_checkin_day?: string;
+  timezone?: string;
+  next_checkin_reset_at?: string;
   summary?: AutoCheckinRunSummary;
+  attempts?: AutoCheckinAttemptsTracker;
   pending_retry: boolean;
 }
 

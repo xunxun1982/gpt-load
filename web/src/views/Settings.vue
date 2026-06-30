@@ -7,6 +7,7 @@ import {
 } from "@/api/settings";
 import { proxyPoolApi } from "@/api/proxy-pool";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
+import { buildSettingsUpdatePayload, type SettingFormValue } from "@/views/settings-payload";
 import http from "@/utils/http";
 import { HelpCircle, Save, CloudDownloadOutline, CloudUploadOutline } from "@vicons/ionicons5";
 import {
@@ -34,7 +35,7 @@ const { t } = useI18n();
 
 const settingList = ref<SettingCategory[]>([]);
 const formRef = ref();
-const form = ref<Record<string, string | number | boolean>>({});
+const form = ref<Record<string, SettingFormValue>>({});
 const isSaving = ref(false);
 const proxyPoolOptions = ref<{ label: string; value: string }[]>([]);
 const message = useMessage();
@@ -45,6 +46,7 @@ const proxyPoolSelectOptions = computed(() => [
   { label: t("settings.noProxy"), value: "" },
   ...proxyPoolOptions.value,
 ]);
+const hiddenSettingKeys = new Set(["retry_backoff_enabled", "retry_backoff_max_percent"]);
 
 fetchSettings();
 fetchProxyPoolOptions();
@@ -60,16 +62,40 @@ async function fetchSettings() {
 }
 
 function initForm() {
-  form.value = settingList.value.reduce(
-    (acc: Record<string, string | number | boolean>, category) => {
-      category.settings?.forEach(setting => {
-        acc[setting.key] =
-          setting.key === "proxy_url" ? String(setting.value || "") : setting.value;
-      });
-      return acc;
-    },
-    {}
-  );
+  form.value = settingList.value.reduce((acc: Record<string, SettingFormValue>, category) => {
+    category.settings?.forEach(setting => {
+      acc[setting.key] = setting.key === "proxy_url" ? String(setting.value || "") : setting.value;
+    });
+    return acc;
+  }, {});
+}
+
+function setSettingValue(key: string, value: SettingFormValue) {
+  form.value[key] = value;
+}
+
+function settingNumberValue(key: string): number | null {
+  const value = form.value[key];
+  return typeof value === "number" ? value : null;
+}
+
+function settingStringValue(key: string): string | null {
+  const value = form.value[key];
+  return typeof value === "string" ? value : null;
+}
+
+function visibleSettings(category: SettingCategory) {
+  return (category.settings || []).filter(setting => !hiddenSettingKeys.has(setting.key));
+}
+
+function getSetting(key: string): Setting | undefined {
+  for (const category of settingList.value) {
+    const found = category.settings?.find(setting => setting.key === key);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
 }
 
 async function fetchProxyPoolOptions() {
@@ -103,16 +129,7 @@ async function handleSubmit() {
 }
 
 function normalizedSettingsPayload(): SettingsUpdatePayload {
-  const payload: SettingsUpdatePayload = { ...form.value };
-  const proxyValue = (payload as Record<string, unknown>).proxy_url;
-  // Naive UI clearable select emits null, while the backend expects "" for no proxy.
-  if (
-    Object.prototype.hasOwnProperty.call(payload, "proxy_url") &&
-    (proxyValue === null || proxyValue === undefined)
-  ) {
-    payload.proxy_url = "";
-  }
-  return payload;
+  return buildSettingsUpdatePayload(settingList.value, form.value);
 }
 
 function generateValidationRules(item: Setting): FormItemRule[] {
@@ -143,6 +160,11 @@ function generateValidationRules(item: Setting): FormItemRule[] {
     });
   }
   return rules;
+}
+
+function settingRules(key: string): FormItemRule[] {
+  const setting = getSetting(key);
+  return setting ? generateValidationRules(setting) : [];
 }
 
 // Export full system configuration
@@ -611,7 +633,7 @@ checkDebugMode();
         >
           <n-grid :x-gap="36" :y-gap="0" responsive="screen" cols="1 s:2 m:2 l:4 xl:4">
             <n-grid-item
-              v-for="item in category.settings"
+              v-for="item in visibleSettings(category)"
               :key="item.key"
               :span="item.key === 'proxy_keys' ? 3 : 1"
             >
@@ -632,9 +654,71 @@ checkDebugMode();
                   </n-space>
                 </template>
 
+                <div v-if="item.key === 'retry_delay_ms'" class="retry-delay-control">
+                  <n-input-number
+                    :value="settingNumberValue(item.key)"
+                    @update:value="value => setSettingValue(item.key, value)"
+                    :min="item.min_value !== undefined && item.min_value >= 0 ? item.min_value : 0"
+                    :placeholder="t('settings.inputNumber')"
+                    clearable
+                    style="width: 100%"
+                    size="small"
+                  />
+                  <n-space align="center" :size="8" :wrap="true" class="retry-backoff-row">
+                    <n-tooltip trigger="hover" placement="top">
+                      <template #trigger>
+                        <n-form-item
+                          path="retry_backoff_enabled"
+                          :rule="settingRules('retry_backoff_enabled')"
+                          :show-label="false"
+                          :show-feedback="false"
+                          class="retry-backoff-form-item"
+                        >
+                          <n-switch
+                            :value="Boolean(form.retry_backoff_enabled)"
+                            @update:value="value => setSettingValue('retry_backoff_enabled', value)"
+                            size="small"
+                          />
+                        </n-form-item>
+                      </template>
+                      {{ getSetting("retry_backoff_enabled")?.description }}
+                    </n-tooltip>
+                    <span class="retry-backoff-label">
+                      {{ getSetting("retry_backoff_enabled")?.name }}
+                    </span>
+                    <n-tooltip trigger="hover" placement="top">
+                      <template #trigger>
+                        <n-form-item
+                          path="retry_backoff_max_percent"
+                          :rule="settingRules('retry_backoff_max_percent')"
+                          :show-label="false"
+                          :show-feedback="false"
+                          class="retry-backoff-form-item"
+                        >
+                          <n-input-number
+                            :value="settingNumberValue('retry_backoff_max_percent')"
+                            @update:value="
+                              value => setSettingValue('retry_backoff_max_percent', value)
+                            "
+                            :min="0"
+                            :disabled="!form.retry_backoff_enabled"
+                            :placeholder="t('settings.inputNumber')"
+                            :precision="0"
+                            size="small"
+                            class="retry-backoff-percent"
+                          >
+                            <template #suffix>%</template>
+                          </n-input-number>
+                        </n-form-item>
+                      </template>
+                      {{ getSetting("retry_backoff_max_percent")?.description }}
+                    </n-tooltip>
+                  </n-space>
+                </div>
                 <n-input-number
-                  v-if="item.type === 'int'"
-                  v-model:value="form[item.key] as number"
+                  v-else-if="item.type === 'int'"
+                  :value="settingNumberValue(item.key)"
+                  @update:value="value => setSettingValue(item.key, value)"
                   :min="
                     item.min_value !== undefined && item.min_value >= 0 ? item.min_value : undefined
                   "
@@ -645,18 +729,21 @@ checkDebugMode();
                 />
                 <n-switch
                   v-else-if="item.type === 'bool'"
-                  v-model:value="form[item.key] as boolean"
+                  :value="Boolean(form[item.key])"
+                  @update:value="value => setSettingValue(item.key, value)"
                   size="small"
                 />
                 <proxy-keys-input
                   v-else-if="item.key === 'proxy_keys'"
-                  v-model="form[item.key] as string"
+                  :model-value="String(form[item.key] ?? '')"
+                  @update:model-value="value => setSettingValue(item.key, value)"
                   :placeholder="t('settings.inputContent')"
                   size="small"
                 />
                 <n-select
                   v-else-if="item.key === 'proxy_url'"
-                  v-model:value="form[item.key] as string"
+                  :value="settingStringValue(item.key)"
+                  @update:value="value => setSettingValue(item.key, value)"
                   :options="proxyPoolSelectOptions"
                   :placeholder="t('settings.noProxy')"
                   size="small"
@@ -666,7 +753,8 @@ checkDebugMode();
                 />
                 <n-input
                   v-else
-                  v-model:value="form[item.key] as string"
+                  :value="String(form[item.key] ?? '')"
+                  @update:value="value => setSettingValue(item.key, value)"
                   :placeholder="t('settings.inputContent')"
                   clearable
                   size="small"
@@ -778,3 +866,31 @@ checkDebugMode();
     />
   </n-space>
 </template>
+
+<style scoped>
+.retry-delay-control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.retry-backoff-row {
+  min-height: 28px;
+}
+
+.retry-backoff-form-item {
+  margin-bottom: 0;
+}
+
+.retry-backoff-label {
+  white-space: nowrap;
+  color: var(--text-color-2);
+  font-size: 13px;
+}
+
+.retry-backoff-percent {
+  width: 128px;
+  flex: 0 0 128px;
+}
+</style>

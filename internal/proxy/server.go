@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -37,6 +38,9 @@ const (
 	maxEstimatedTokenBodyBytes  = 256 * 1024
 	quotaExhaustedRatePressure  = int64(4)
 	requestLogUserAgentMaxRunes = 512
+	retryBackoffRampRetries     = 100
+	retryDelayJitterRatio       = 0.30
+	statusClientClosedRequest   = 499
 )
 
 var quotaExhaustedRateMarkers = []string{
@@ -95,6 +99,97 @@ func setRateLimitPressureContextForAttempt(c *gin.Context, resp *http.Response, 
 		return
 	}
 	c.Set(ctxKeyRateLimitPressure, retryAfterRateLimitPressureFromHeader(resp.Header.Get("Retry-After"), now))
+}
+
+func retryDelayForAttempt(cfg types.SystemSettings, retryCount int) time.Duration {
+	if cfg.RetryDelayMs <= 0 {
+		return 0
+	}
+
+	// Retry-After is intentionally not folded into this user setting: retry_delay_ms
+	// must preserve the old zero-delay default, while rate-limit pressure is handled separately.
+	delayMs := int64(cfg.RetryDelayMs)
+	maxDelayMs := int64((time.Duration(1<<63-1) / time.Millisecond))
+	if delayMs > maxDelayMs {
+		delayMs = maxDelayMs
+	}
+	baseDelay := time.Duration(delayMs) * time.Millisecond
+	if !cfg.RetryBackoffEnabled {
+		return baseDelay
+	}
+
+	maxExtraDelay := retryBackoffMaxExtra(baseDelay, cfg.RetryBackoffMaxPercent)
+	if maxExtraDelay <= 0 {
+		return baseDelay
+	}
+
+	extraDelay := retryBackoffExtraForAttempt(retryCount, maxExtraDelay)
+	delay := baseDelay + extraDelay
+	maxDelay := baseDelay + maxExtraDelay
+	jitterLimit := time.Duration(float64(baseDelay) * retryDelayJitterRatio)
+	if jitterLimit > maxExtraDelay {
+		jitterLimit = maxExtraDelay
+	}
+	if jitterLimit <= 0 {
+		return delay
+	}
+
+	jitter := time.Duration(rand.Float64()*float64(2*jitterLimit)) - jitterLimit
+	if jitter > 0 {
+		if delay > maxDelay-jitter {
+			return maxDelay
+		}
+		return delay + jitter
+	}
+	if delay < -jitter {
+		return 0
+	}
+	return delay + jitter
+}
+
+func retryBackoffMaxExtra(baseDelay time.Duration, percent int) time.Duration {
+	if baseDelay <= 0 || percent <= 0 {
+		return 0
+	}
+	if percent > 100000 {
+		percent = 100000
+	}
+	maxExtra := float64(baseDelay) * float64(percent) / 100
+	if maxExtra > float64(time.Duration(1<<63-1)-baseDelay) {
+		return time.Duration(1<<63-1) - baseDelay
+	}
+	return time.Duration(maxExtra)
+}
+
+func retryBackoffExtraForAttempt(retryCount int, maxExtraDelay time.Duration) time.Duration {
+	if maxExtraDelay <= 0 {
+		return 0
+	}
+	retryAttempt := retryCount + 1
+	if retryAttempt >= retryBackoffRampRetries {
+		return maxExtraDelay
+	}
+	if retryAttempt <= 0 {
+		return 0
+	}
+	ratio := float64(retryAttempt) / retryBackoffRampRetries
+	return time.Duration(float64(maxExtraDelay) * (math.Pow(2, ratio) - 1))
+}
+
+func waitBeforeRetry(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func quotaExhaustedRateLimitPressureFromContext(c *gin.Context) int64 {
@@ -176,6 +271,12 @@ type retryContext struct {
 	originalPath        string        // Original request path (for CC support restoration)
 	subGroupKeyRetryMap map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
 	forcedSubGroupID    uint          // Keeps key-level retries on the selected sub-group until its retry budget is exhausted
+	lifecycleCtx        context.Context
+	lifecycleCancel     context.CancelFunc
+	lifecycleConfig     types.SystemSettings
+	lifecycleConfigSet  bool
+	lifecycleStartTime  time.Time
+	lifecycleStreamMode bool
 }
 
 // safeProxyURL returns the proxy URL value with credentials redacted for safe logging.
@@ -1168,6 +1269,114 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	retryCount int,
 ) {
 	cfg := group.EffectiveConfig
+	lifecycleCtx, lifecycleCancel := requestLifecycleContext(c.Request.Context(), cfg, isStream)
+	defer lifecycleCancel()
+	ps.executeRequestWithRetryLifecycle(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount, lifecycleCtx)
+}
+
+func requestLifecycleContext(parent context.Context, cfg types.SystemSettings, isStream bool) (context.Context, context.CancelFunc) {
+	return requestLifecycleContextAt(parent, cfg, isStream, time.Now())
+}
+
+func requestLifecycleContextAt(parent context.Context, cfg types.SystemSettings, isStream bool, start time.Time) (context.Context, context.CancelFunc) {
+	timeout := lifecycleTimeoutSeconds(cfg, isStream)
+	if timeout <= 0 {
+		return context.WithCancel(parent)
+	}
+	return context.WithDeadline(parent, start.Add(time.Duration(timeout)*time.Second))
+}
+
+func (rc *retryContext) ensureLifecycleContext(parent context.Context, isStream bool) context.CancelFunc {
+	if rc.lifecycleCtx != nil && rc.lifecycleStreamMode == isStream {
+		return nil
+	}
+	if rc.lifecycleCancel != nil {
+		rc.lifecycleCancel()
+		rc.lifecycleCancel = nil
+	}
+	if rc.lifecycleStartTime.IsZero() {
+		rc.lifecycleStartTime = time.Now()
+	}
+	rc.lifecycleCtx, rc.lifecycleCancel = requestLifecycleContextAt(parent, rc.lifecycleConfig, isStream, rc.lifecycleStartTime)
+	rc.lifecycleStreamMode = isStream
+	return rc.lifecycleCancel
+}
+
+func lifecycleTimeoutSeconds(cfg types.SystemSettings, isStream bool) int {
+	if isStream {
+		return cfg.StreamRequestTimeout
+	}
+	if cfg.NonStreamRequestTimeout > 0 {
+		return cfg.NonStreamRequestTimeout
+	}
+	return cfg.RequestTimeout
+}
+
+func (ps *ProxyServer) aggregateRetryLifecycleConfig(originalGroup *models.Group) types.SystemSettings {
+	cfg := originalGroup.EffectiveConfig
+	nonStreamTimeout := lifecycleTimeoutSeconds(cfg, false)
+	streamTimeout := lifecycleTimeoutSeconds(cfg, true)
+	for _, relation := range originalGroup.SubGroups {
+		if !relation.SubGroupEnabled {
+			continue
+		}
+		subGroup, err := ps.groupManager.GetGroupByID(relation.SubGroupID)
+		if err != nil {
+			continue
+		}
+		subNonStreamTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, false)
+		if subNonStreamTimeout > 0 && (nonStreamTimeout <= 0 || subNonStreamTimeout < nonStreamTimeout) {
+			nonStreamTimeout = subNonStreamTimeout
+		}
+		subStreamTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, true)
+		if subStreamTimeout > 0 && (streamTimeout <= 0 || subStreamTimeout < streamTimeout) {
+			streamTimeout = subStreamTimeout
+		}
+	}
+	if nonStreamTimeout > 0 {
+		cfg.NonStreamRequestTimeout = nonStreamTimeout
+		cfg.RequestTimeout = nonStreamTimeout
+	}
+	if streamTimeout > 0 {
+		cfg.StreamRequestTimeout = streamTimeout
+	}
+	return cfg
+}
+
+func writeRetryLifecycleError(c *gin.Context, statusCode int, err error) {
+	internalError := sanitizeInternalErrorMessage(err.Error())
+	if isCCEnabled(c) {
+		returnClaudeError(c, statusCode, internalError)
+		return
+	}
+	response.Error(c, app_errors.NewAPIErrorWithUpstream(statusCode, "UPSTREAM_ERROR", internalError))
+}
+
+func retryLifecycleErrorStatus(ctx context.Context) (int, error) {
+	ctxErr := ctx.Err()
+	if ctxErr == nil {
+		ctxErr = context.Canceled
+	}
+	// Retry sleeps share the client.Do lifecycle budget. Deadline expiry is a
+	// server-side timeout; only parent request cancellation should be logged as 499.
+	if errors.Is(ctxErr, context.DeadlineExceeded) {
+		return http.StatusInternalServerError, ctxErr
+	}
+	return statusClientClosedRequest, ctxErr
+}
+
+func (ps *ProxyServer) executeRequestWithRetryLifecycle(
+	c *gin.Context,
+	channelHandler channel.ChannelProxy,
+	originalGroup *models.Group,
+	group *models.Group,
+	bodyBytes []byte,
+	isStream bool,
+	startTime time.Time,
+	retryCount int,
+	lifecycleCtx context.Context,
+) {
+	cfg := group.EffectiveConfig
 
 	// Store group in context for response handlers to access
 	c.Set("group", group)
@@ -1196,20 +1405,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		return
 	}
 
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if isStream {
-		if cfg.StreamRequestTimeout > 0 {
-			ctx, cancel = context.WithTimeout(c.Request.Context(), time.Duration(cfg.StreamRequestTimeout)*time.Second)
-		} else {
-			ctx, cancel = context.WithCancel(c.Request.Context())
-		}
-	} else {
-		ctx, cancel = effectiveNonStreamRequestContext(c.Request.Context(), cfg)
-	}
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, c.Request.Method, upstreamSelection.URL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(lifecycleCtx, c.Request.Method, upstreamSelection.URL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		logrus.Errorf("Failed to create upstream request: %v", err)
 		response.Error(c, app_errors.ErrInternalServer)
@@ -1344,6 +1540,8 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			}
 
 			errorBody = decompressUpstreamErrorBody(resp, errorBody)
+			_ = resp.Body.Close()
+			resp.Body = http.NoBody
 
 			// Store error response body in context for logging.
 			// Per AI review: sanitize sensitive data before storing to prevent
@@ -1383,7 +1581,14 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			return
 		}
 
-		ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount+1)
+		if !waitBeforeRetry(lifecycleCtx, retryDelayForAttempt(cfg, retryCount)) {
+			statusCode, ctxErr := retryLifecycleErrorStatus(lifecycleCtx)
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+			writeRetryLifecycleError(c, statusCode, ctxErr)
+			return
+		}
+
+		ps.executeRequestWithRetryLifecycle(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount+1, lifecycleCtx)
 		return
 	}
 
@@ -1489,6 +1694,14 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Get max retries from aggregate group config
 	maxRetries := parseMaxRetries(originalGroup.Config)
+
+	if !retryCtx.lifecycleConfigSet {
+		// Merge parent and enabled sub-group timeouts once; context creation waits
+		// until the selected sub-group finalizes the effective stream mode.
+		retryCtx.lifecycleConfig = ps.aggregateRetryLifecycleConfig(originalGroup)
+		retryCtx.lifecycleConfigSet = true
+		retryCtx.lifecycleStartTime = time.Now()
+	}
 
 	// When aggregate group has no explicit max_retries configured (key not present),
 	// provide an intelligent default based on sub-group count to prevent immediate
@@ -1929,7 +2142,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
-	cfg := group.EffectiveConfig
+	if lifecycleCancel := retryCtx.ensureLifecycleContext(c.Request.Context(), isStream); lifecycleCancel != nil {
+		defer lifecycleCancel()
+	}
 
 	// Store group in context for response handlers to access
 	c.Set("group", group)
@@ -1972,20 +2187,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		return
 	}
 
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if isStream {
-		if cfg.StreamRequestTimeout > 0 {
-			ctx, cancel = context.WithTimeout(c.Request.Context(), time.Duration(cfg.StreamRequestTimeout)*time.Second)
-		} else {
-			ctx, cancel = context.WithCancel(c.Request.Context())
-		}
-	} else {
-		ctx, cancel = effectiveNonStreamRequestContext(c.Request.Context(), cfg)
-	}
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, c.Request.Method, upstreamSelection.URL, bytes.NewReader(finalBodyBytes))
+	req, err := http.NewRequestWithContext(retryCtx.lifecycleCtx, c.Request.Method, upstreamSelection.URL, bytes.NewReader(finalBodyBytes))
 	if err != nil {
 		logrus.Errorf("Failed to create upstream request: %v", err)
 		response.Error(c, app_errors.ErrInternalServer)
@@ -2117,6 +2319,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}
 
 			errorBody = decompressUpstreamErrorBody(resp, errorBody)
+			_ = resp.Body.Close()
+			resp.Body = http.NoBody
 
 			// Store sanitized error response body in context for logging.
 			// Per AI review: sanitize to prevent leaking secrets/PII in logs.
@@ -2187,6 +2391,14 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 			// Restore original path for retry (CC support may have modified it)
 			restoreOriginalPath(c, retryCtx)
+
+			if !waitBeforeRetry(retryCtx.lifecycleCtx, retryDelayForAttempt(subGroupCfg, subGroupKeyRetryCount)) {
+				statusCode, ctxErr := retryLifecycleErrorStatus(retryCtx.lifecycleCtx)
+				ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(ctxErr), isStream,
+					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+				writeRetryLifecycleError(c, statusCode, ctxErr)
+				return
+			}
 
 			// Retry with same sub-group but different key (SelectKey will choose a different one)
 			retryCtx.forcedSubGroupID = subGroupID

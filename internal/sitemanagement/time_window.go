@@ -2,39 +2,161 @@ package sitemanagement
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-// beijingLocation is the timezone for Beijing (UTC+8).
-// Used for calculating check-in day with 05:00 reset.
-//
-// Design Decision: Using time.FixedZone instead of time.LoadLocation because:
-// 1. China does not observe Daylight Saving Time (DST), so UTC+8 is always correct
-// 2. time.LoadLocation requires tzdata which may not be available in minimal Docker images
-// 3. time.FixedZone is faster and more reliable for fixed-offset timezones
-// 4. AI review suggested LoadLocation, but FixedZone is the better choice for non-DST regions
-var beijingLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+const fallbackTimezoneName = "Asia/Shanghai"
 
-// GetBeijingCheckinDay returns the current "check-in day" in Beijing time (UTC+8).
-// The day resets at 05:00 Beijing time, not midnight.
+// beijingLocation is the fallback timezone for site-management dates.
+var beijingLocation = time.FixedZone(fallbackTimezoneName, 8*60*60)
+
+var (
+	systemLocalTimezoneNameOnce  sync.Once
+	systemLocalTimezoneNameValue string
+)
+
+func checkinLocation() *time.Location {
+	loc, _ := checkinLocationWithName()
+	return loc
+}
+
+func checkinLocationWithName() (*time.Location, string) {
+	tz := strings.TrimSpace(os.Getenv("TZ"))
+	if tz == "" {
+		return localCheckinLocationWithName()
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		if loc, name, ok := loadLocationFromTZPath(tz); ok {
+			return loc, name
+		}
+		return beijingLocation, fallbackTimezoneName
+	}
+	return loc, tz
+}
+
+func loadLocationFromTZPath(tz string) (*time.Location, string, bool) {
+	path := strings.TrimPrefix(tz, ":")
+	if !filepath.IsAbs(path) {
+		return nil, "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", false
+	}
+	name := locationNameFromZoneinfoPath(path)
+	if name == "" && filepath.Clean(path) == filepath.Clean("/etc/localtime") {
+		name = systemLocalTimezoneName()
+	}
+	if name == "" {
+		name = path
+	}
+	loc, err := time.LoadLocationFromTZData(name, data)
+	if err != nil {
+		return nil, "", false
+	}
+	return loc, name, true
+}
+
+func localCheckinLocationWithName() (*time.Location, string) {
+	loc := time.Local
+	if loc == nil {
+		return beijingLocation, fallbackTimezoneName
+	}
+	name := strings.TrimSpace(loc.String())
+	if name == "" || name == "Local" {
+		if systemName := systemLocalTimezoneName(); systemName != "" {
+			if systemLoc, err := time.LoadLocation(systemName); err == nil {
+				return systemLoc, systemName
+			}
+		}
+	}
+	if name == "" {
+		return beijingLocation, fallbackTimezoneName
+	}
+	// time.Local is initialized by Go from the host-local timezone when TZ is
+	// unset, so site-management follows the server's resolved local clock here.
+	return loc, name
+}
+
+func systemLocalTimezoneName() string {
+	systemLocalTimezoneNameOnce.Do(func() {
+		systemLocalTimezoneNameValue = detectSystemLocalTimezoneName()
+	})
+	return systemLocalTimezoneNameValue
+}
+
+func detectSystemLocalTimezoneName() string {
+	for _, path := range []string{"/etc/timezone"} {
+		if data, err := os.ReadFile(path); err == nil {
+			if name := verifiedLocationName(string(data)); name != "" {
+				return name
+			}
+		}
+	}
+	if target, err := os.Readlink("/etc/localtime"); err == nil {
+		target = strings.ReplaceAll(target, "\\", "/")
+		if index := strings.Index(target, "/zoneinfo/"); index >= 0 {
+			if name := verifiedLocationName(target[index+len("/zoneinfo/"):]); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func locationNameFromZoneinfoPath(path string) string {
+	normalized := filepath.ToSlash(path)
+	if index := strings.Index(normalized, "/zoneinfo/"); index >= 0 {
+		return verifiedLocationName(normalized[index+len("/zoneinfo/"):])
+	}
+	return ""
+}
+
+func verifiedLocationName(candidate string) string {
+	name := strings.TrimSpace(candidate)
+	if name == "" {
+		return ""
+	}
+	if _, err := time.LoadLocation(name); err != nil {
+		return ""
+	}
+	return name
+}
+
+// GetBeijingCheckinDay returns the current "check-in day" in TZ or server-local time.
+// The day resets at local midnight.
 // Returns date in "YYYY-MM-DD" format.
 func GetBeijingCheckinDay() string {
 	return GetBeijingCheckinDayAt(time.Now())
 }
 
-// GetBeijingCheckinDayAt returns the "check-in day" for a given time in Beijing time (UTC+8).
-// The day resets at 05:00 Beijing time, not midnight.
+// GetBeijingCheckinDayAt returns the "check-in day" for a given time in TZ or server-local time.
+// The day resets at local midnight.
 // Returns date in "YYYY-MM-DD" format.
 func GetBeijingCheckinDayAt(t time.Time) string {
-	const checkinResetHour = 5 // Check-in day resets at 05:00 Beijing time
-	beijingTime := t.In(beijingLocation)
-	// If before 05:00 Beijing time, consider it as previous day
-	if beijingTime.Hour() < checkinResetHour {
-		beijingTime = beijingTime.AddDate(0, 0, -1)
+	return t.In(checkinLocation()).Format("2006-01-02")
+}
+
+func nextCheckinResetAt(base time.Time) time.Time {
+	return nextCheckinResetAtLocation(base, checkinLocation())
+}
+
+func nextCheckinResetAtLocation(base time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = beijingLocation
 	}
-	return beijingTime.Format("2006-01-02")
+	now := base.In(loc)
+	reset := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	if !reset.After(now) {
+		reset = reset.AddDate(0, 0, 1)
+	}
+	return reset
 }
 
 func parseTimeToMinutes(value string) (int, error) {

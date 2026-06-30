@@ -1,6 +1,11 @@
 package sitemanagement
 
 import (
+	"archive/zip"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -8,31 +13,31 @@ import (
 )
 
 func TestGetBeijingCheckinDayAt(t *testing.T) {
-	t.Parallel()
+	originalLocal := time.Local
+	time.Local = beijingLocation
+	t.Cleanup(func() {
+		time.Local = originalLocal
+	})
 
 	tests := []struct {
 		name         string
+		tz           string
 		inputTime    time.Time
 		expectedDate string
 	}{
 		{
-			name:         "Before 05:00 Beijing time - should use previous day",
+			name:         "Before old 05:00 reset uses current Beijing day by default",
 			inputTime:    time.Date(2024, 1, 15, 4, 59, 0, 0, beijingLocation),
-			expectedDate: "2024-01-14",
-		},
-		{
-			name:         "Exactly 05:00 Beijing time - should use current day",
-			inputTime:    time.Date(2024, 1, 15, 5, 0, 0, 0, beijingLocation),
 			expectedDate: "2024-01-15",
 		},
 		{
-			name:         "After 05:00 Beijing time - should use current day",
-			inputTime:    time.Date(2024, 1, 15, 5, 1, 0, 0, beijingLocation),
-			expectedDate: "2024-01-15",
-		},
-		{
-			name:         "Midnight Beijing time - should use previous day",
+			name:         "Midnight Beijing time uses current day by default",
 			inputTime:    time.Date(2024, 1, 15, 0, 0, 0, 0, beijingLocation),
+			expectedDate: "2024-01-15",
+		},
+		{
+			name:         "Before Beijing midnight uses previous day by default",
+			inputTime:    time.Date(2024, 1, 14, 15, 59, 0, 0, time.UTC),
 			expectedDate: "2024-01-14",
 		},
 		{
@@ -46,25 +51,83 @@ func TestGetBeijingCheckinDayAt(t *testing.T) {
 			expectedDate: "2024-01-15",
 		},
 		{
-			name:         "UTC time exactly 05:00 Beijing (21:00 UTC previous day)",
-			inputTime:    time.Date(2024, 1, 14, 21, 0, 0, 0, time.UTC), // 05:00 Beijing next day
+			name:         "UTC time at Beijing midnight uses next Beijing day by default",
+			inputTime:    time.Date(2024, 1, 14, 16, 0, 0, 0, time.UTC),
 			expectedDate: "2024-01-15",
 		},
 		{
-			name:         "UTC time after 05:00 Beijing (22:00 UTC previous day)",
-			inputTime:    time.Date(2024, 1, 14, 22, 0, 0, 0, time.UTC), // 06:00 Beijing next day
+			name:         "TZ environment overrides default timezone",
+			tz:           "America/New_York",
+			inputTime:    time.Date(2024, 1, 15, 4, 59, 0, 0, time.UTC),
+			expectedDate: "2024-01-14",
+		},
+		{
+			name:         "Invalid TZ falls back to Beijing timezone",
+			tz:           "Invalid/Timezone",
+			inputTime:    time.Date(2024, 1, 14, 16, 0, 0, 0, time.UTC),
+			expectedDate: "2024-01-15",
+		},
+		{
+			name:         "POSIX-style TZ falls back to Beijing timezone",
+			tz:           "PST8PDT,M3.2.0,M11.1.0",
+			inputTime:    time.Date(2024, 1, 14, 16, 0, 0, 0, time.UTC),
 			expectedDate: "2024-01-15",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			t.Setenv("TZ", tt.tz)
 
 			result := GetBeijingCheckinDayAt(tt.inputTime)
 			assert.Equal(t, tt.expectedDate, result)
 		})
 	}
+}
+
+func TestCheckinLocationWithNameUsesServerLocalTimezoneWhenTZUnset(t *testing.T) {
+	originalLocal := time.Local
+	local, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Local = local
+	t.Cleanup(func() {
+		time.Local = originalLocal
+	})
+	t.Setenv("TZ", "")
+
+	loc, name := checkinLocationWithName()
+
+	assert.Equal(t, "America/New_York", name)
+	assert.Equal(t, "2024-01-14", time.Date(2024, 1, 15, 4, 59, 0, 0, time.UTC).In(loc).Format("2006-01-02"))
+}
+
+func TestCheckinLocationWithNameAcceptsZoneinfoFilePath(t *testing.T) {
+	tzPath := writeZoneinfoTestFile(t, "America/New_York")
+	t.Setenv("TZ", tzPath)
+
+	loc, name := checkinLocationWithName()
+
+	assert.Equal(t, tzPath, name)
+	assert.Equal(t, "2024-01-14", time.Date(2024, 1, 15, 4, 59, 0, 0, time.UTC).In(loc).Format("2006-01-02"))
+}
+
+func TestCheckinLocationWithNameAcceptsColonPrefixedZoneinfoFilePath(t *testing.T) {
+	tzPath := writeZoneinfoTestFile(t, "America/New_York")
+	t.Setenv("TZ", ":"+tzPath)
+
+	loc, name := checkinLocationWithName()
+
+	assert.Equal(t, tzPath, name)
+	assert.Equal(t, "2024-01-14", time.Date(2024, 1, 15, 4, 59, 0, 0, time.UTC).In(loc).Format("2006-01-02"))
+}
+
+func TestLocationNameFromZoneinfoPath(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "America/New_York", locationNameFromZoneinfoPath("/usr/share/zoneinfo/America/New_York"))
+	assert.Empty(t, locationNameFromZoneinfoPath("/tmp/custom-localtime"))
 }
 
 func TestGetBeijingCheckinDay_CurrentTime(t *testing.T) {
@@ -289,6 +352,41 @@ func TestIsMinutesWithinWindow(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func writeZoneinfoTestFile(t *testing.T, zoneName string) string {
+	t.Helper()
+
+	zoneinfoZip := filepath.Join(runtime.GOROOT(), "lib", "time", "zoneinfo.zip")
+	reader, err := zip.OpenReader(zoneinfoZip)
+	if err != nil {
+		t.Fatalf("open zoneinfo.zip: %v", err)
+	}
+	defer reader.Close()
+
+	for _, file := range reader.File {
+		if file.Name != zoneName {
+			continue
+		}
+		source, err := file.Open()
+		if err != nil {
+			t.Fatalf("open zoneinfo entry: %v", err)
+		}
+		defer source.Close()
+
+		data, err := io.ReadAll(source)
+		if err != nil {
+			t.Fatalf("read zoneinfo entry: %v", err)
+		}
+		target := filepath.Join(t.TempDir(), "localtime")
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			t.Fatalf("write zoneinfo file: %v", err)
+		}
+		return target
+	}
+
+	t.Fatalf("zoneinfo entry %q not found in %s", zoneName, zoneinfoZip)
+	return ""
 }
 
 // Benchmark tests

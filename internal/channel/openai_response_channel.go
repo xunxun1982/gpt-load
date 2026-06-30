@@ -37,7 +37,7 @@ func newOpenAIResponseChannel(f *Factory, group *models.Group) (ChannelProxy, er
 }
 
 // DefaultCodexVersion is the default Codex TUI version used for simulated client fingerprints.
-const DefaultCodexVersion = "0.141.0"
+const DefaultCodexVersion = "0.142.3"
 
 // BuildCodexUserAgent builds the Codex TUI User-Agent string for the given version.
 func BuildCodexUserAgent(version string) string {

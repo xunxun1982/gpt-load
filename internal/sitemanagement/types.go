@@ -51,11 +51,11 @@ type ManagedSiteDTO struct {
 	LastCheckInMessage string     `json:"last_checkin_message"`
 
 	// Track when user clicked "Open Site" or "Open Check-in Page" buttons.
-	// Date format: YYYY-MM-DD in Beijing time (UTC+8), resets at 05:00 Beijing time.
+	// Date format: YYYY-MM-DD in the site-management timezone, resets at midnight.
 	LastSiteOpenedDate        string `json:"last_site_opened_date"`
 	LastCheckinPageOpenedDate string `json:"last_checkin_page_opened_date"`
 
-	// Cached balance information, refreshed daily at 05:00 Beijing time.
+	// Cached balance information, refreshed daily at midnight in the site-management timezone.
 	LastBalance     string `json:"last_balance"`
 	LastBalanceDate string `json:"last_balance_date"`
 
@@ -92,17 +92,17 @@ const (
 )
 
 // AutoCheckinConfig holds the auto check-in scheduling configuration.
-// All times are in Beijing time (UTC+8).
+// All times are in the site-management timezone.
 type AutoCheckinConfig struct {
 	GlobalEnabled bool `json:"global_enabled"`
-	// ScheduleTimes contains multiple check-in times in "HH:MM" format, comma-separated.
-	// Example: "09:00,12:00,18:00" for three daily check-ins.
+	// ScheduleTimes contains multiple check-in times in "HH:MM" format.
+	// Example: ["09:00", "12:00", "18:00"] for three daily check-ins.
 	// Used when ScheduleMode is "multiple".
 	ScheduleTimes []string `json:"schedule_times"`
-	// WindowStart is the start time in "HH:MM" format (24-hour, Beijing time).
+	// WindowStart is the start time in "HH:MM" format (24-hour, site-management timezone).
 	// Used when ScheduleMode is "random".
 	WindowStart string `json:"window_start"`
-	// WindowEnd is the end time in "HH:MM" format (24-hour, Beijing time).
+	// WindowEnd is the end time in "HH:MM" format (24-hour, site-management timezone).
 	// Used when ScheduleMode is "random".
 	WindowEnd    string `json:"window_end"`
 	ScheduleMode string `json:"schedule_mode"`
@@ -135,11 +135,14 @@ const (
 )
 
 type AutoCheckinStatus struct {
-	IsRunning       bool                        `json:"is_running"`
-	LastRunAt       string                      `json:"last_run_at,omitempty"`
-	LastRunResult   string                      `json:"last_run_result,omitempty"`
-	NextScheduledAt string                      `json:"next_scheduled_at,omitempty"`
-	Summary         *AutoCheckinRunSummary      `json:"summary,omitempty"`
-	Attempts        *AutoCheckinAttemptsTracker `json:"attempts,omitempty"`
-	PendingRetry    bool                        `json:"pending_retry"`
+	IsRunning          bool                        `json:"is_running"`
+	LastRunAt          string                      `json:"last_run_at,omitempty"`
+	LastRunResult      string                      `json:"last_run_result,omitempty"`
+	NextScheduledAt    string                      `json:"next_scheduled_at,omitempty"`
+	CurrentCheckinDay  string                      `json:"current_checkin_day"`
+	Timezone           string                      `json:"timezone"`
+	NextCheckinResetAt string                      `json:"next_checkin_reset_at"`
+	Summary            *AutoCheckinRunSummary      `json:"summary,omitempty"`
+	Attempts           *AutoCheckinAttemptsTracker `json:"attempts,omitempty"`
+	PendingRetry       bool                        `json:"pending_retry"`
 }

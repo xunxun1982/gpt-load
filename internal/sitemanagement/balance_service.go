@@ -19,8 +19,6 @@ import (
 const (
 	// balanceRequestTimeout is the timeout for balance fetch requests
 	balanceRequestTimeout = 10 * time.Second
-	// balanceRefreshHour is the hour (Beijing time) when balances are auto-refreshed
-	balanceRefreshHour = 5
 )
 
 // BalanceInfo represents the balance information for a site
@@ -127,12 +125,12 @@ func (s *BalanceService) Stop(_ context.Context) {
 	logrus.Info("Balance refresh scheduler stopped")
 }
 
-// runScheduler runs the daily balance refresh at 05:00 Beijing time
+// runScheduler runs the daily balance refresh at local midnight.
 func (s *BalanceService) runScheduler() {
 	defer s.wg.Done()
 
 	for {
-		// Calculate next 05:00 Beijing time
+		// Calculate next local midnight.
 		nextRefresh := s.nextRefreshTime()
 		waitDuration := time.Until(nextRefresh)
 
@@ -148,17 +146,17 @@ func (s *BalanceService) runScheduler() {
 	}
 }
 
-// nextRefreshTime calculates the next 05:00 Beijing time
+// nextRefreshTime calculates the next local midnight.
 func (s *BalanceService) nextRefreshTime() time.Time {
-	now := time.Now().In(beijingLocation)
-	target := time.Date(now.Year(), now.Month(), now.Day(),
-		balanceRefreshHour, 0, 0, 0, beijingLocation)
+	return nextRefreshTimeAt(time.Now())
+}
 
-	// If already past 05:00 today, schedule for tomorrow
-	if !target.After(now) {
-		target = target.Add(24 * time.Hour)
-	}
-	return target
+func nextRefreshTimeAt(base time.Time) time.Time {
+	return nextRefreshTimeAtLocation(base, checkinLocation())
+}
+
+func nextRefreshTimeAtLocation(base time.Time, loc *time.Location) time.Time {
+	return nextCheckinResetAtLocation(base, loc)
 }
 
 // refreshAllBalancesBackground refreshes balances for all enabled sites in background
@@ -275,20 +273,21 @@ func (s *BalanceService) updateSiteBalance(ctx context.Context, siteID uint, bal
 
 // supportsBalance checks if a site type supports balance fetching
 func (s *BalanceService) supportsBalance(siteType string) bool {
-	switch siteType {
-	case SiteTypeNewAPI, SiteTypeSub2API, SiteTypeVeloera, SiteTypeOneHub, SiteTypeDoneHub, SiteTypeWongGongyi:
-		return true
-	default:
-		return false
-	}
+	return resolveSiteCapabilities(siteType).SupportsBalance
 }
 
 // fetchBalanceFromAPI fetches balance from the site's provider-specific profile endpoint.
 func (s *BalanceService) fetchBalanceFromAPI(ctx context.Context, site *ManagedSite, authConfig AuthConfig, userID string) *string {
-	if site.SiteType == SiteTypeSub2API {
-		return s.fetchBalanceWithParser(ctx, site, authConfig, userID, "/api/v1/user/profile", s.parseSub2APIBalanceResponse)
+	capabilities := resolveSiteCapabilities(site.SiteType)
+	if !capabilities.SupportsBalance || capabilities.BalanceEndpoint == "" {
+		return nil
 	}
-	return s.fetchBalanceWithParser(ctx, site, authConfig, userID, "/api/user/self", s.parseBalanceResponse)
+	switch capabilities.balanceParser {
+	case balanceParserSub2API:
+		return s.fetchBalanceWithParser(ctx, site, authConfig, userID, capabilities.BalanceEndpoint, s.parseSub2APIBalanceResponse)
+	default:
+		return s.fetchBalanceWithParser(ctx, site, authConfig, userID, capabilities.BalanceEndpoint, s.parseBalanceResponse)
+	}
 }
 
 func (s *BalanceService) fetchBalanceWithParser(

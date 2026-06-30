@@ -78,6 +78,9 @@ type GroupConfig struct {
 	ResponseHeaderTimeout        *int    `json:"response_header_timeout,omitempty"`
 	ProxyURL                     *string `json:"proxy_url,omitempty"`
 	MaxRetries                   *int    `json:"max_retries,omitempty"`
+	RetryDelayMs                 *int    `json:"retry_delay_ms,omitempty"`
+	RetryBackoffEnabled          *bool   `json:"retry_backoff_enabled,omitempty"`
+	RetryBackoffMaxPercent       *int    `json:"retry_backoff_max_percent,omitempty"`
 	SubMaxRetries                *int    `json:"sub_max_retries,omitempty"`
 	BlacklistThreshold           *int    `json:"blacklist_threshold,omitempty"`
 	HealthResetIntervalSeconds   *int64  `json:"health_reset_interval_seconds,omitempty"`

@@ -224,6 +224,12 @@ var MessagesZhCN = map[string]string{
 	// Key config related
 	"config.max_retries":                     "最大重试次数",
 	"config.max_retries_desc":                "单个请求使用不同 Key 的最大重试次数，0为不重试。",
+	"config.retry_delay_ms":                  "重试间隔（毫秒）",
+	"config.retry_delay_ms_desc":             "标准分组重试的基础间隔，0为不等待；退避开关和最大退避比例与此项一起生效。",
+	"config.retry_backoff_enabled":           "启用重试退避",
+	"config.retry_backoff_enabled_desc":      "与重试间隔一起生效；开启后按“最大退避比例”增加额外等待，连续第100次重试达到最大额外退避，并加入少量随机抖动。",
+	"config.retry_backoff_max_percent":       "最大退避比例",
+	"config.retry_backoff_max_percent_desc":  "额外退避等待相对重试间隔的最大百分比，例如500表示最多额外等待5倍间隔，并在连续100次重试时达到。",
 	"config.blacklist_threshold":             "黑名单阈值",
 	"config.blacklist_threshold_desc":        "一个 Key 累计失败多少次后进入黑名单，0为不拉黑。",
 	"config.failover_status_codes":           "故障转移状态码",

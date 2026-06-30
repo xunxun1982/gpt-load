@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -762,6 +763,41 @@ func TestSub2APIProviderKeepsExpiredTokenMessageOnUnauthorized(t *testing.T) {
 	assert.Equal(t, "HTTP 401: Token has expired", result.Message)
 }
 
+func TestSub2APIProviderReportsRefreshFailureOnUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/user/check-in":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"message":"Token has expired"}`))
+		case "/api/v1/auth/refresh":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"message":"refresh token expired"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := sub2APIProvider{}
+	result, err := provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:          []string{AuthTypeAccessToken},
+		AuthValues:         map[string]string{AuthTypeAccessToken: "expired-token"},
+		SupplementalValues: map[string]string{authFieldRefreshToken: "expired-refresh-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Equal(t, "HTTP 401: Token has expired; token refresh failed: upstream rejected token refresh", result.Message)
+	assert.NotContains(t, result.Message, "refresh token expired")
+	assert.NotContains(t, result.Message, "expired-refresh-token")
+}
+
 func TestAutoCheckinRefreshesSub2APITokenOnExpiredAccessToken(t *testing.T) {
 	t.Parallel()
 
@@ -1188,9 +1224,88 @@ func TestAutoCheckinRandomScheduleSkipsCrossMidnightWindowAfterSuccess(t *testin
 	next, err := computeNextRegularTrigger(cfg, now, true)
 
 	require.NoError(t, err)
-	assert.True(t, !next.In(beijingLocation).Before(time.Date(2026, 6, 13, 23, 0, 0, 0, beijingLocation)) &&
-		next.In(beijingLocation).Before(time.Date(2026, 6, 14, 2, 0, 0, 0, beijingLocation)),
-		"successful auto check-in during a cross-midnight random window should skip to the next calendar day's window")
+	assert.True(t, !next.In(beijingLocation).Before(time.Date(2026, 6, 14, 23, 0, 0, 0, beijingLocation)) &&
+		next.In(beijingLocation).Before(time.Date(2026, 6, 15, 2, 0, 0, 0, beijingLocation)),
+		"random skip should advance to the next local day for a cross-midnight window")
+}
+
+func TestSub2APIRefreshFailureMessageDoesNotExposeRefreshError(t *testing.T) {
+	t.Parallel()
+
+	message := sub2APIRefreshFailureMessage(
+		"HTTP 401: access token expired",
+		errors.New("refresh http 401: echoed refresh_token secret"),
+	)
+
+	assert.Equal(t, "HTTP 401: access token expired; token refresh failed: upstream rejected token refresh", message)
+	assert.NotContains(t, message, "secret")
+	assert.NotContains(t, message, "refresh_token")
+}
+
+func TestSub2APIRefreshTokensDoesNotExposeApplicationMessage(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/auth/refresh", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":1,"message":"echoed refresh_token secret"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := sub2APIProvider{}.refreshTokens(
+		context.Background(),
+		server.Client(),
+		ManagedSite{BaseURL: server.URL},
+		"old-access",
+		"old-refresh",
+		false,
+	)
+
+	require.Error(t, err)
+	assert.Equal(t, "upstream rejected token refresh", err.Error())
+	assert.NotContains(t, err.Error(), "secret")
+	assert.NotContains(t, err.Error(), "refresh_token")
+}
+
+func TestComputeRandomTriggerTreatsWindowEndAsCutoff(t *testing.T) {
+	t.Setenv("TZ", "Asia/Shanghai")
+
+	now := time.Date(2026, 6, 13, 18, 0, 0, 0, beijingLocation)
+
+	next, err := computeRandomTrigger("09:00", "18:00", now)
+
+	require.NoError(t, err)
+	localNext := next.In(beijingLocation)
+	assert.True(t, !localNext.Before(time.Date(2026, 6, 14, 9, 0, 0, 0, beijingLocation)) &&
+		localNext.Before(time.Date(2026, 6, 14, 18, 0, 0, 0, beijingLocation)),
+		"window end should advance to the next day's random window")
+}
+
+func TestComputeRandomTriggerTreatsCrossMidnightWindowEndAsCutoff(t *testing.T) {
+	t.Setenv("TZ", "Asia/Shanghai")
+
+	now := time.Date(2026, 6, 13, 2, 0, 0, 0, beijingLocation)
+
+	next, err := computeRandomTrigger("23:00", "02:00", now)
+
+	require.NoError(t, err)
+	localNext := next.In(beijingLocation)
+	assert.True(t, !localNext.Before(time.Date(2026, 6, 13, 23, 0, 0, 0, beijingLocation)) &&
+		localNext.Before(time.Date(2026, 6, 14, 2, 0, 0, 0, beijingLocation)),
+		"cross-midnight window end should advance to the next random window")
+}
+
+func TestRandomScheduleDayStartTreatsCrossMidnightWindowEndAsExclusive(t *testing.T) {
+	t.Setenv("TZ", "Asia/Shanghai")
+
+	startMin := 23 * 60
+	endMin := 2 * 60
+
+	beforeEnd := time.Date(2026, 6, 13, 1, 59, 0, 0, beijingLocation)
+	atEnd := time.Date(2026, 6, 13, 2, 0, 0, 0, beijingLocation)
+
+	assert.Equal(t, "2026-06-12", randomScheduleDayStart(beforeEnd, startMin, endMin).Format("2006-01-02"))
+	assert.Equal(t, "2026-06-13", randomScheduleDayStart(atEnd, startMin, endMin).Format("2006-01-02"))
 }
 
 func TestAutoCheckinMultipleScheduleSkipsRemainingTimesAfterSuccess(t *testing.T) {
@@ -1223,6 +1338,93 @@ func TestAutoCheckinMultipleScheduleSkipsRemainingTimesAfterSuccess(t *testing.T
 	require.True(t, enabled)
 	assert.True(t, next.In(beijingLocation).After(futureToday),
 		"successful auto check-in should not be scheduled again at a later fixed time on the same day")
+}
+
+func TestComputeMultipleTriggerKeepsWallClockTimeAcrossDST(t *testing.T) {
+	t.Setenv("TZ", "America/New_York")
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	now := time.Date(2026, 3, 8, 1, 0, 0, 0, loc)
+
+	next := computeMultipleTrigger([]string{"00:30"}, now)
+
+	localNext := next.In(loc)
+	assert.Equal(t, 2026, localNext.Year())
+	assert.Equal(t, time.March, localNext.Month())
+	assert.Equal(t, 9, localNext.Day())
+	assert.Equal(t, 0, localNext.Hour())
+	assert.Equal(t, 30, localNext.Minute())
+	assert.Equal(t, "-04:00", localNext.Format("-07:00"))
+}
+
+func TestAutoCheckinStatusIncludesServerTimezoneMetadata(t *testing.T) {
+	t.Setenv("TZ", "America/New_York")
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	service := NewAutoCheckinService(db, store.NewMemoryStore(), encSvc)
+
+	before := time.Now()
+	status := service.GetStatus()
+
+	assert.Equal(t, "America/New_York", status.Timezone)
+	resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
+	require.NoError(t, err)
+	// Derive the day from resetAt to avoid another live clock read near midnight.
+	assert.Equal(t, resetAt.In(loc).Add(-time.Second).Format("2006-01-02"), status.CurrentCheckinDay)
+	assert.True(t, resetAt.After(before))
+}
+
+func TestAutoCheckinStatusMetadataUsesServerLocalTimezoneWhenTZUnset(t *testing.T) {
+	originalLocal := time.Local
+	local, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	time.Local = local
+	t.Cleanup(func() {
+		time.Local = originalLocal
+	})
+	t.Setenv("TZ", "")
+
+	status := withCheckinMetadataAt(AutoCheckinStatus{}, time.Date(2026, 6, 29, 3, 30, 0, 0, time.UTC))
+
+	assert.Equal(t, "2026-06-28", status.CurrentCheckinDay)
+	assert.Equal(t, "America/New_York", status.Timezone)
+	resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 6, 29, 4, 0, 0, 0, time.UTC), resetAt)
+}
+
+func TestAutoCheckinStatusMetadataFallsBackToBeijingTimezone(t *testing.T) {
+	now := time.Date(2026, 6, 28, 16, 30, 0, 0, time.UTC)
+
+	t.Setenv("TZ", "Invalid/Timezone")
+
+	status := withCheckinMetadataAt(AutoCheckinStatus{}, now)
+
+	assert.Equal(t, "2026-06-29", status.CurrentCheckinDay)
+	assert.Equal(t, fallbackTimezoneName, status.Timezone)
+	resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 6, 29, 16, 0, 0, 0, time.UTC), resetAt)
+}
+
+func TestWithCheckinMetadataUsesSingleBaseTime(t *testing.T) {
+	t.Setenv("TZ", "America/New_York")
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	now := time.Date(2026, 6, 1, 23, 59, 59, 0, loc)
+
+	status := withCheckinMetadataAt(AutoCheckinStatus{}, now)
+
+	assert.Equal(t, "2026-06-01", status.CurrentCheckinDay)
+	assert.Equal(t, "America/New_York", status.Timezone)
+	resetAt, err := time.Parse(time.RFC3339, status.NextCheckinResetAt)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 6, 2, 0, 0, 0, 0, loc).UTC(), resetAt)
 }
 
 func TestAutoCheckinDeterministicScheduleSkipsTodayAfterSuccess(t *testing.T) {

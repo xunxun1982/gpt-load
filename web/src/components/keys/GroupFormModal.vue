@@ -4,6 +4,19 @@ import { proxyPoolApi } from "@/api/proxy-pool";
 import { settingsApi } from "@/api/settings";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
 import ModelSelectorModal from "@/components/keys/ModelSelectorModal.vue";
+import {
+  booleanConfigValue,
+  buildRetryConfigState,
+  hasNumberConfigValue,
+  hasOwnConfigValue,
+  numberConfigValue,
+  retryBackoffEnabledConfigKey,
+  retryBackoffMaxPercentConfigKey,
+  retryDelayConfigKey,
+  shouldWriteRetryDelay,
+  type RetryConfigFormState,
+  writeRetryBackoffConfig,
+} from "@/components/keys/retry-config";
 import type {
   Group,
   GroupConfigOption,
@@ -14,6 +27,20 @@ import type {
 } from "@/types/models";
 import { formatEffectiveWeight, formatHealthScore, formatPercentage } from "@/utils/display";
 import {
+  hasEffectiveModelRedirectItems,
+  hasEffectiveModelRedirectJson,
+  mergeModelRedirectItems,
+  modelRedirectItemsV2ToFormattedJson,
+  modelRedirectItemsV2ToJson,
+  parseJsonToModelRedirectItemsV2,
+  type ModelRedirectItemV2,
+  type ModelRedirectTargetItem,
+} from "@/utils/model-redirect";
+import {
+  DEFAULT_CLAUDE_CODE_VERSION,
+  DEFAULT_CODEX_VERSION,
+} from "@/utils/simulated-client-defaults";
+import {
   Add,
   Close,
   CloudDownloadOutline,
@@ -22,6 +49,7 @@ import {
   Remove,
 } from "@vicons/ionicons5";
 import {
+  NAlert,
   NButton,
   NButtonGroup,
   NCard,
@@ -54,11 +82,7 @@ interface Emits {
   (e: "switchToGroup", groupId: number): void;
 }
 
-// Configuration item type
-interface ConfigItem {
-  key: string;
-  value: number | string | boolean;
-}
+type ConfigItem = RetryConfigFormState;
 
 // Header rule type
 interface HeaderRuleItem {
@@ -81,8 +105,6 @@ const formRef = ref();
 const fetchingModels = ref(false);
 const showModelSelector = ref(false);
 const availableModels = ref<string[]>([]);
-const DEFAULT_CODEX_VERSION = "0.141.0";
-const DEFAULT_CLAUDE_CODE_VERSION = "2.1.183";
 const simpleClientVersionPattern = /^[0-9]+(?:\.[0-9]+)+$/;
 
 // Model redirect edit mode: "gui" or "json"
@@ -91,19 +113,6 @@ const modelRedirectEditMode = ref<"gui" | "json">("gui");
 const modelRedirectJsonStr = ref("");
 // JSON validation error message
 const modelRedirectJsonError = ref("");
-
-// Model redirect target type (V2: one-to-many with weight)
-interface ModelRedirectTargetItem {
-  model: string;
-  weight: number;
-  enabled: boolean;
-}
-
-// Model redirect V2 item type
-interface ModelRedirectItemV2 {
-  from: string;
-  targets: ModelRedirectTargetItem[];
-}
 
 // Form data interface
 interface GroupFormData {
@@ -203,6 +212,7 @@ const formData = reactive<GroupFormData>({
 });
 
 const channelTypeOptions = ref<{ label: string; value: string }[]>([]);
+const allConfigOptions = ref<GroupConfigOption[]>([]);
 const configOptions = ref<GroupConfigOption[]>([]);
 const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
@@ -224,6 +234,16 @@ const upstreamProxySelectionOptions = computed(() => [
   })),
 ]);
 const modelRedirectDynamicWeights = ref<ModelRedirectDynamicWeight[]>([]);
+const hasModelRedirectRulesConfigured = computed(() => {
+  if (modelRedirectEditMode.value === "json") {
+    return hasEffectiveModelRedirectJson(modelRedirectJsonStr.value);
+  }
+
+  return hasEffectiveModelRedirectItems(formData.model_redirect_items_v2);
+});
+const retryBackoffDefaultEnabled = false;
+const retryBackoffDefaultMaxPercent = 500;
+
 const controlledConfigKeys = new Set([
   "force_function_call",
   "parallel_tool_calls",
@@ -242,7 +262,11 @@ const controlledConfigKeys = new Set([
   "codex_instructions",
   "codex_instructions_mode",
 ]);
-const hiddenConfigOptionKeys = new Set(controlledConfigKeys);
+const hiddenConfigOptionKeys = new Set([
+  ...controlledConfigKeys,
+  retryBackoffEnabledConfigKey,
+  retryBackoffMaxPercentConfigKey,
+]);
 
 // Check if current group is a child group (has parent_group_id)
 const isChildGroup = computed(() => {
@@ -344,15 +368,19 @@ const rules: FormRules = {
 // Watch dialog visibility
 watch(
   () => props.show,
-  show => {
+  async show => {
     if (show) {
       if (!channelTypesFetched.value) {
-        fetchChannelTypes();
+        void fetchChannelTypes();
       }
       if (!configOptionsFetched.value) {
-        fetchGroupConfigOptions();
+        try {
+          await fetchGroupConfigOptions();
+        } catch (error) {
+          console.error("Failed to fetch group config options:", error);
+        }
       }
-      fetchProxyPoolOptions();
+      void fetchProxyPoolOptions();
       resetForm();
       if (props.group) {
         loadGroupData();
@@ -647,13 +675,18 @@ function loadGroupData() {
       : "auto";
 
   const configItems = Object.entries(rawConfig)
-    .filter(([key]) => !controlledConfigKeys.has(key))
+    .filter(([key]) => !hiddenConfigOptionKeys.has(key))
     .map(([key, value]) => {
-      return {
-        key,
-        value,
-      };
+      return buildConfigItem(key, value, rawConfig);
     });
+  if (
+    !configItems.some(item => item.key === retryDelayConfigKey) &&
+    (hasOwnConfigValue(rawConfig, retryBackoffEnabledConfigKey) ||
+      hasOwnConfigValue(rawConfig, retryBackoffMaxPercentConfigKey))
+  ) {
+    // Backend does not currently expose the effective inherited delay here, so keep it blank.
+    configItems.push(buildConfigItem(retryDelayConfigKey, null, rawConfig, true));
+  }
   Object.assign(formData, {
     name: props.group.name || "",
     display_name: props.group.display_name || "",
@@ -802,8 +835,9 @@ function removeUpstream(index: number) {
 
 async function fetchGroupConfigOptions() {
   const options = await keysApi.getGroupConfigOptions();
+  allConfigOptions.value = options || [];
   // Hide keys that have first-class controls; keep backend-provided system overrides visible.
-  const normalized = (options || []).filter(opt => !hiddenConfigOptionKeys.has(opt.key));
+  const normalized = allConfigOptions.value.filter(opt => !hiddenConfigOptionKeys.has(opt.key));
   configOptions.value = normalized;
   configOptionsFetched.value = true;
 }
@@ -848,11 +882,65 @@ async function fetchProxyPoolOptions() {
   }
 }
 
+function normalizeConfigItemValue(value: unknown): number | string | boolean | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  return String(value ?? "");
+}
+
+function getConfigOption(key: string) {
+  return allConfigOptions.value.find(opt => opt.key === key);
+}
+
+function retryBackoffEnabledDefault(): boolean {
+  return booleanConfigValue(
+    getConfigOption(retryBackoffEnabledConfigKey)?.default_value,
+    retryBackoffDefaultEnabled
+  );
+}
+
+function retryBackoffMaxPercentDefault(): number {
+  return numberConfigValue(
+    getConfigOption(retryBackoffMaxPercentConfigKey)?.default_value,
+    retryBackoffDefaultMaxPercent
+  );
+}
+
+function buildConfigItem(
+  key: string,
+  value: unknown,
+  rawConfig: Record<string, unknown> = {},
+  retryDelayInherited = false
+): ConfigItem {
+  const normalizedValue = normalizeConfigItemValue(value);
+  return buildRetryConfigState(
+    key,
+    normalizedValue,
+    rawConfig,
+    {
+      backoffEnabled: retryBackoffEnabledDefault(),
+      backoffMaxPercent: retryBackoffMaxPercentDefault(),
+    },
+    retryDelayInherited
+  );
+}
+
 // Add config item
 function addConfigItem() {
   formData.configItems.push({
     key: "",
     value: "",
+    retryBackoffEnabled: retryBackoffDefaultEnabled,
+    retryBackoffMaxPercent: retryBackoffDefaultMaxPercent,
+    retryBackoffEnabledExplicit: false,
+    retryBackoffMaxPercentExplicit: false,
+    retryDelayInherited: false,
+    retryDelayInitialValue: 0,
+    retryDelayInitialValueValid: false,
   });
 }
 
@@ -988,148 +1076,6 @@ function getHealthScoreClass(score: number): string {
   return "health-critical";
 }
 
-// V2: Convert V2 items to JSON for submission
-function modelRedirectItemsV2ToJson(items: ModelRedirectItemV2[]): string {
-  if (!items || items.length === 0) {
-    return "";
-  }
-  const obj: Record<
-    string,
-    { targets: Array<{ model: string; weight?: number; enabled?: boolean }> }
-  > = {};
-  items.forEach(item => {
-    if (item.from.trim()) {
-      const validTargets = item.targets
-        .filter(t => t.model.trim())
-        .map(t => ({
-          model: t.model.trim(),
-          weight: t.weight !== 100 ? t.weight : undefined,
-          enabled: t.enabled === false ? false : undefined,
-        }));
-      if (validTargets.length > 0) {
-        obj[item.from.trim()] = { targets: validTargets };
-      }
-    }
-  });
-  return Object.keys(obj).length > 0 ? JSON.stringify(obj) : "";
-}
-
-// Convert V2 items to formatted JSON string for display
-function modelRedirectItemsV2ToFormattedJson(items: ModelRedirectItemV2[]): string {
-  if (!items || items.length === 0) {
-    return "{}";
-  }
-  const obj: Record<
-    string,
-    { targets: Array<{ model: string; weight?: number; enabled?: boolean }> }
-  > = {};
-  items.forEach(item => {
-    if (item.from.trim()) {
-      const validTargets = item.targets
-        .filter(t => t.model.trim())
-        .map(t => ({
-          model: t.model.trim(),
-          weight: t.weight !== 100 ? t.weight : undefined,
-          enabled: t.enabled === false ? false : undefined,
-        }));
-      if (validTargets.length > 0) {
-        obj[item.from.trim()] = { targets: validTargets };
-      }
-    }
-  });
-  return JSON.stringify(obj, null, 2);
-}
-
-// Parse JSON string to V2 items
-function parseJsonToModelRedirectItemsV2(jsonStr: string): ModelRedirectItemV2[] {
-  if (!jsonStr || jsonStr.trim() === "" || jsonStr.trim() === "{}") {
-    return [];
-  }
-  try {
-    const obj = JSON.parse(jsonStr);
-    const items: ModelRedirectItemV2[] = [];
-    for (const [from, rule] of Object.entries(obj)) {
-      const ruleObj = rule as {
-        targets?: Array<{ model: string; weight?: number; enabled?: boolean }>;
-      };
-      if (ruleObj.targets && Array.isArray(ruleObj.targets)) {
-        items.push({
-          from,
-          targets: ruleObj.targets.map(t => ({
-            model: t.model || "",
-            weight: t.weight ?? 100,
-            enabled: t.enabled !== false,
-          })),
-        });
-      }
-    }
-    // Automatically merge duplicate rules after parsing
-    return mergeModelRedirectItems(items);
-  } catch {
-    return [];
-  }
-}
-
-// Merge duplicate model redirect rules by combining targets
-// When multiple rules have the same "from" model, their targets are merged into a single rule
-// Duplicate targets (same model name) are deduplicated, keeping the first occurrence
-function mergeModelRedirectItems(items: ModelRedirectItemV2[]): ModelRedirectItemV2[] {
-  if (!items || items.length === 0) {
-    return items;
-  }
-
-  // Use map to merge rules with same "from" model
-  const mergedMap = new Map<string, ModelRedirectItemV2>();
-
-  for (const item of items) {
-    const from = item.from.trim();
-    if (!from) {
-      continue; // Skip empty "from" values
-    }
-
-    if (mergedMap.has(from)) {
-      // Merge targets into existing rule
-      const existing = mergedMap.get(from);
-      if (!existing) {
-        continue;
-      }
-      // Normalize existing target models before dedupe to avoid whitespace duplicates
-      const seenModels = new Set(existing.targets.map(t => t.model.trim()));
-
-      for (const target of item.targets) {
-        const model = target.model.trim();
-        if (model && !seenModels.has(model)) {
-          // Normalize target model before pushing to avoid storing whitespace
-          existing.targets.push({ ...target, model });
-          seenModels.add(model);
-        }
-      }
-    } else {
-      // Add new rule, deduplicating targets within the rule
-      const seenModels = new Set<string>();
-      const uniqueTargets: ModelRedirectTargetItem[] = [];
-
-      for (const target of item.targets) {
-        const model = target.model.trim();
-        if (model && !seenModels.has(model)) {
-          // Normalize target model before adding to avoid storing whitespace
-          uniqueTargets.push({ ...target, model });
-          seenModels.add(model);
-        }
-      }
-
-      if (uniqueTargets.length > 0) {
-        mergedMap.set(from, {
-          from,
-          targets: uniqueTargets,
-        });
-      }
-    }
-  }
-
-  return Array.from(mergedMap.values());
-}
-
 // Switch between GUI and JSON edit modes
 function switchModelRedirectEditMode(mode: "gui" | "json") {
   if (mode === "json" && modelRedirectEditMode.value === "gui") {
@@ -1231,16 +1177,47 @@ function validateHeaderKeyUniqueness(
 
 // Set default value when config key changes
 function handleConfigKeyChange(index: number, key: string) {
-  const option = configOptions.value.find(opt => opt.key === key);
+  const option = getConfigOption(key);
   const target = formData.configItems[index];
   if (option && target) {
     target.value = option.default_value;
+    target.retryBackoffEnabled =
+      key === retryDelayConfigKey ? retryBackoffEnabledDefault() : retryBackoffDefaultEnabled;
+    target.retryBackoffMaxPercent =
+      key === retryDelayConfigKey ? retryBackoffMaxPercentDefault() : retryBackoffDefaultMaxPercent;
+    target.retryBackoffEnabledExplicit = false;
+    target.retryBackoffMaxPercentExplicit = false;
+    target.retryDelayInherited = false;
+    target.retryDelayInitialValue =
+      key === retryDelayConfigKey ? numberConfigValue(option.default_value, 0) : 0;
+    target.retryDelayInitialValueValid =
+      key === retryDelayConfigKey ? hasNumberConfigValue(option.default_value) : false;
   }
 }
 
-const getConfigOption = (key: string) => {
-  return configOptions.value.find(opt => opt.key === key);
-};
+function updateConfigItemValue(item: ConfigItem, value: number | null) {
+  item.value = value;
+  if (item.key === retryDelayConfigKey) {
+    item.retryDelayInherited = value === null;
+  }
+}
+
+function updateRetryBackoffEnabled(item: ConfigItem, value: boolean) {
+  item.retryBackoffEnabled = value;
+  item.retryBackoffEnabledExplicit = true;
+}
+
+function updateRetryBackoffMaxPercent(item: ConfigItem, value: number | null) {
+  item.retryBackoffMaxPercent = value ?? retryBackoffMaxPercentDefault();
+  item.retryBackoffMaxPercentExplicit = true;
+}
+
+function configItemNumberValue(item: ConfigItem): number | null {
+  if (item.value === null) {
+    return null;
+  }
+  return numberConfigValue(item.value, 0);
+}
 
 // Close modal
 function handleClose() {
@@ -1402,25 +1379,49 @@ async function handleSubmit() {
         continue;
       }
 
-      const option = configOptions.value.find(opt => opt.key === item.key);
+      const option = getConfigOption(item.key);
       if (option && typeof option.default_value === "number") {
         const rawValue = item.value;
-        const strValue = typeof rawValue === "string" ? rawValue : String(rawValue);
-
-        if (typeof rawValue === "string" && rawValue.trim() === "") {
+        if (item.key === retryDelayConfigKey && rawValue === null && item.retryDelayInherited) {
+          // Keep inherited retry delay absent from group config when no effective value is available.
+        } else if (rawValue === null) {
           message.error(t("keys.invalidNumericConfig", { key: item.key }));
           return;
-        }
-        const numValue = Number(strValue);
+        } else {
+          const strValue = typeof rawValue === "string" ? rawValue : String(rawValue);
 
-        if (Number.isNaN(numValue)) {
-          message.error(t("keys.invalidNumericConfig", { key: item.key }));
-          return;
-        }
+          if (typeof rawValue === "string" && rawValue.trim() === "") {
+            message.error(t("keys.invalidNumericConfig", { key: item.key }));
+            return;
+          }
+          const numValue = Number(strValue);
 
-        config[item.key] = numValue;
+          if (!Number.isFinite(numValue)) {
+            message.error(t("keys.invalidNumericConfig", { key: item.key }));
+            return;
+          }
+
+          if (item.key === retryDelayConfigKey) {
+            if (shouldWriteRetryDelay(item, numValue)) {
+              config[item.key] = numValue;
+            }
+          } else {
+            config[item.key] = numValue;
+          }
+        }
       } else {
-        config[item.key] = item.value;
+        if (item.value !== null) {
+          config[item.key] = item.value;
+        }
+      }
+
+      if (item.key === retryDelayConfigKey) {
+        const maxPercent = Number(item.retryBackoffMaxPercent);
+        if (!Number.isFinite(maxPercent) || maxPercent < 0) {
+          message.error(t("keys.invalidNumericConfig", { key: retryBackoffMaxPercentConfigKey }));
+          return;
+        }
+        writeRetryBackoffConfig(config, item, maxPercent);
       }
     }
 
@@ -2053,7 +2054,63 @@ async function handleSubmit() {
                         />
                       </div>
                       <div class="config-value">
-                        <n-tooltip trigger="hover" placement="top">
+                        <div
+                          v-if="configItem.key === retryDelayConfigKey"
+                          class="retry-delay-config"
+                        >
+                          <n-tooltip trigger="hover" placement="top">
+                            <template #trigger>
+                              <n-input-number
+                                :value="configItemNumberValue(configItem)"
+                                @update:value="value => updateConfigItemValue(configItem, value)"
+                                :min="0"
+                                :precision="0"
+                                :placeholder="t('keys.paramValue')"
+                                style="width: 100%"
+                              />
+                            </template>
+                            {{
+                              getConfigOption(configItem.key)?.description ||
+                              t("keys.setConfigValue")
+                            }}
+                          </n-tooltip>
+                          <div class="retry-backoff-controls">
+                            <n-tooltip trigger="hover" placement="top">
+                              <template #trigger>
+                                <n-switch
+                                  :value="configItem.retryBackoffEnabled"
+                                  @update:value="
+                                    value => updateRetryBackoffEnabled(configItem, value)
+                                  "
+                                  size="small"
+                                />
+                              </template>
+                              {{ getConfigOption(retryBackoffEnabledConfigKey)?.description }}
+                            </n-tooltip>
+                            <span class="retry-backoff-label">
+                              {{ getConfigOption(retryBackoffEnabledConfigKey)?.name }}
+                            </span>
+                            <n-tooltip trigger="hover" placement="top">
+                              <template #trigger>
+                                <n-input-number
+                                  :value="configItem.retryBackoffMaxPercent"
+                                  @update:value="
+                                    value => updateRetryBackoffMaxPercent(configItem, value)
+                                  "
+                                  :min="0"
+                                  :precision="0"
+                                  :disabled="!configItem.retryBackoffEnabled"
+                                  size="small"
+                                  class="retry-backoff-percent"
+                                >
+                                  <template #suffix>%</template>
+                                </n-input-number>
+                              </template>
+                              {{ getConfigOption(retryBackoffMaxPercentConfigKey)?.description }}
+                            </n-tooltip>
+                          </div>
+                        </div>
+                        <n-tooltip v-else trigger="hover" placement="top">
                           <template #trigger>
                             <n-input-number
                               v-if="typeof configItem.value === 'number'"
@@ -2454,6 +2511,15 @@ async function handleSubmit() {
                         {{ t("keys.fetchModels") }}
                       </n-button>
                     </div>
+
+                    <n-alert
+                      v-if="hasModelRedirectRulesConfigured"
+                      type="info"
+                      :bordered="false"
+                      class="model-redirect-notice"
+                    >
+                      {{ t("keys.modelRedirectBehaviorNotice") }}
+                    </n-alert>
 
                     <!-- GUI Mode: V2 Rules List (one-to-many mapping with weights) -->
                     <template v-if="modelRedirectEditMode === 'gui'">
@@ -3412,6 +3478,31 @@ async function handleSubmit() {
   flex: 1;
 }
 
+.retry-delay-config {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.retry-backoff-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.retry-backoff-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.retry-backoff-percent {
+  width: 128px;
+  flex: 0 0 128px;
+}
+
 .config-actions {
   flex: 0 0 32px;
   display: flex;
@@ -3480,6 +3571,10 @@ async function handleSubmit() {
 .model-redirect-wrapper {
   width: 100%;
   --redirect-item-height: 36px;
+}
+
+.model-redirect-notice {
+  margin-bottom: 12px;
 }
 
 .model-redirect-row {
@@ -3711,6 +3806,10 @@ async function handleSubmit() {
 
   .config-value {
     flex: 1;
+  }
+
+  .retry-backoff-controls {
+    flex-wrap: wrap;
   }
 
   .simulated-client-select,

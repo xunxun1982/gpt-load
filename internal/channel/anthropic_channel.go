@@ -23,7 +23,7 @@ func init() {
 // ClaudeCodeUserAgent is the User-Agent header value for Claude Code CLI requests.
 // Format: claude-cli/VERSION (external, cli) - matches the official Claude Code CLI client.
 // Check: https://github.com/anthropics/claude-code/releases
-const DefaultClaudeCodeVersion = "2.1.183"
+const DefaultClaudeCodeVersion = "2.1.195"
 
 // BuildClaudeCodeUserAgent builds the Claude Code CLI User-Agent string for the given version.
 func BuildClaudeCodeUserAgent(version string) string {

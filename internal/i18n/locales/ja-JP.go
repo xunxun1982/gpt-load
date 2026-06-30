@@ -202,6 +202,12 @@ var MessagesJaJP = map[string]string{
 	// Key config related
 	"config.max_retries":                     "最大リトライ数",
 	"config.max_retries_desc":                "異なるキーを使用した単一リクエストの最大リトライ数、0でリトライなし。",
+	"config.retry_delay_ms":                  "リトライ間隔（ミリ秒）",
+	"config.retry_delay_ms_desc":             "標準グループのリトライ基準間隔。0は待機なし。バックオフのスイッチと最大バックオフ率はこの設定と一緒に有効になります。",
+	"config.retry_backoff_enabled":           "リトライバックオフを有効化",
+	"config.retry_backoff_enabled_desc":      "リトライ間隔と一緒に動作します。有効時は最大バックオフ率に応じて追加待機を増やし、連続100回目のリトライで最大値に達し、少量のランダムジッターを加えます。",
+	"config.retry_backoff_max_percent":       "最大バックオフ率",
+	"config.retry_backoff_max_percent_desc":  "追加バックオフ待機の最大値をリトライ間隔に対する百分率で指定します。例：500は最大で間隔の5倍を追加し、連続100回のリトライで到達します。",
 	"config.blacklist_threshold":             "ブラックリストしきい値",
 	"config.blacklist_threshold_desc":        "キーがブラックリストに入るまでの累積失敗回数、0でブラックリスト無効。",
 	"config.failover_status_codes":           "フェイルオーバーステータスコード",

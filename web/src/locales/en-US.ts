@@ -1,3 +1,8 @@
+import {
+  DEFAULT_CLAUDE_CODE_VERSION,
+  DEFAULT_CODEX_VERSION,
+} from "@/utils/simulated-client-defaults";
+
 export default {
   auth: {
     noAuthKeyFound: "No authentication found, cannot export",
@@ -500,6 +505,8 @@ export default {
     modelRedirectRules: "Model Redirect Rules",
     modelRedirectTooltip:
       "Configure model redirect rules, key is the model name requested by user, value is the actual model name sent to upstream",
+    modelRedirectBehaviorNotice:
+      "Model names are case-sensitive. Redirects match only the source model name requested by the client; GPT-Load does not normalize case or reverse-match target names. If an upstream normalizes case, has models that collide after case normalization, or exposes uppercase/lowercase variants, note: GLM-5.2 → glm-5.2 only takes over requests for GLM-5.2. A request for glm-5.2 that is not also configured as a source model is not taken over just because it is a target name. In loose mode it is sent upstream unchanged, and the upstream decides which model it resolves to; in strict mode the proxy rejects it. Add a self-redirect such as glm-5.2 → glm-5.2 to explicitly allow that name at the proxy layer too.",
     modelRedirectMode: "Redirect Mode",
     modelRedirectSimpleMode: "Simple Mode",
     modelRedirectAdvancedMode: "Advanced Mode",
@@ -555,11 +562,11 @@ export default {
     simulatedClientTip:
       "Off keeps passthrough. Enabled modes apply the selected client fingerprint.",
     simulatedCodexVersion: "Codex Version",
-    simulatedCodexVersionPlaceholder: "Default 0.141.0",
+    simulatedCodexVersionPlaceholder: `Default ${DEFAULT_CODEX_VERSION}`,
     simulatedCodexVersionTip:
       "Builds the codex-tui/<version> User-Agent. Leave empty to use the default version.",
     simulatedClaudeCodeVersion: "Claude Code Version",
-    simulatedClaudeCodeVersionPlaceholder: "Default 2.1.183",
+    simulatedClaudeCodeVersionPlaceholder: `Default ${DEFAULT_CLAUDE_CODE_VERSION}`,
     simulatedClaudeCodeVersionTip:
       "Builds the claude-cli User-Agent. Leave empty to use the default version.",
     invalidSimulatedClientVersion:
@@ -1150,7 +1157,9 @@ export default {
     nextScheduled: "Next Scheduled",
     lastRun: "Last Run",
     checkinSummary: "Success {success} / Failed {failed} / Skipped {skipped}",
-    beijingTimeNote: "All times are in Beijing time (UTC+8)",
+    serverTimezoneNote:
+      "Times use the server TZ timezone; if TZ is unset, they use the server local timezone; if invalid, they fall back to Beijing time (UTC+8)",
+    clientLocalTime: "Client Local Time",
     minutes: "min",
     statusIdle: "Idle",
     checkin: "Check-in",

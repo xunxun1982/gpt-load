@@ -10,8 +10,6 @@
 import {
   autoCheckinApi,
   siteManagementApi,
-  type AutoCheckinConfig,
-  type AutoCheckinStatus,
   type CheckinLogDTO,
   type CreateManagedSiteRequest,
   type ManagedSiteAuthType,
@@ -21,6 +19,7 @@ import {
   type SiteImportData,
   type SiteListParams,
 } from "@/api/site-management";
+import { useAutoCheckinStatus } from "@/features/site-management/composables/useAutoCheckinStatus";
 import { proxyPoolApi } from "@/api/proxy-pool";
 import { appState } from "@/utils/app-state";
 import { askExportMode, askImportMode } from "@/utils/export-import";
@@ -75,11 +74,12 @@ import {
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const message = useMessage();
 const dialog = useDialog();
 const route = useRoute();
 const router = useRouter();
+const statusTimeLocale = computed(() => locale.value || undefined);
 
 // Emit for navigation to group
 interface Emits {
@@ -107,9 +107,6 @@ const balances = ref<Record<number, string | null>>({});
 const balanceLoading = ref(false);
 
 // Auto check-in configuration state
-const autoCheckinConfig = ref<AutoCheckinConfig | null>(null);
-const autoCheckinStatus = ref<AutoCheckinStatus | null>(null);
-const autoCheckinLoading = ref(false);
 const autoCheckinRunning = ref(false);
 const showAutoCheckinConfig = ref(false);
 
@@ -240,20 +237,6 @@ const checkinFilterOptions = computed<SelectOption[]>(() => [
   { label: t("siteManagement.filterCheckinNo"), value: "false" },
 ]);
 
-// Current check-in day based on Beijing time (UTC+8) with 05:00 reset
-// Computed once and shared across all table rows for performance
-const currentCheckinDay = computed(() => {
-  const now = new Date();
-  const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000; // UTC+8 in milliseconds
-  const CHECKIN_RESET_HOUR = 5; // Check-in day resets at 05:00 Beijing time
-  const beijingTime = new Date(now.getTime() + BEIJING_OFFSET_MS);
-  // If before 05:00 Beijing time, consider it as previous day
-  if (beijingTime.getUTCHours() < CHECKIN_RESET_HOUR) {
-    beijingTime.setUTCDate(beijingTime.getUTCDate() - 1);
-  }
-  return beijingTime.toISOString().slice(0, 10); // YYYY-MM-DD format
-});
-
 interface LoadSitesOptions {
   focusSiteId?: number | null;
 }
@@ -351,6 +334,20 @@ async function loadSites(options: LoadSitesOptions = {}) {
     loading.value = false;
   }
 }
+
+const {
+  autoCheckinConfig,
+  autoCheckinStatus,
+  autoCheckinLoading,
+  currentCheckinDay,
+  nextScheduledDisplay,
+  lastRunDisplay,
+  loadAutoCheckinConfig,
+} = useAutoCheckinStatus({
+  statusTimeLocale,
+  t,
+  refreshSites: loadSites,
+});
 
 async function fetchSiteProxyPoolOptions() {
   siteProxyPoolLoading.value = true;
@@ -879,12 +876,12 @@ async function checkinSite(site: ManagedSiteDTO) {
   }
 }
 
-// Check if site was opened today (based on Beijing time with 05:00 reset)
+// Check if site was opened today.
 function isSiteOpenedToday(site: ManagedSiteDTO): boolean {
   return site.last_site_opened_date === currentCheckinDay.value;
 }
 
-// Check if check-in page was opened today (based on Beijing time with 05:00 reset)
+// Check if check-in page was opened today.
 function isCheckinPageOpenedToday(site: ManagedSiteDTO): boolean {
   return site.last_checkin_page_opened_date === currentCheckinDay.value;
 }
@@ -1233,8 +1230,8 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
         return h("span", { style: "color: #999" }, "-");
       }
       // Only show status if it's from the current check-in day, otherwise show "-"
-      // Check-in day resets at 05:00 Beijing time (UTC+8), not midnight
-      // This prevents stale "success" status from showing after the reset time
+      // Check-in day resets at midnight.
+      // This prevents stale "success" status from showing on the next day.
       if (!row.last_checkin_date || row.last_checkin_date !== currentCheckinDay.value) {
         return h("span", { style: "color: #999" }, "-");
       }
@@ -1572,23 +1569,6 @@ watch(
   }
 );
 
-// Auto check-in configuration functions
-async function loadAutoCheckinConfig() {
-  autoCheckinLoading.value = true;
-  try {
-    const [config, status] = await Promise.all([
-      autoCheckinApi.getConfig(),
-      autoCheckinApi.getStatus(),
-    ]);
-    autoCheckinConfig.value = config;
-    autoCheckinStatus.value = status;
-  } catch (_) {
-    /* handled by centralized error handler */
-  } finally {
-    autoCheckinLoading.value = false;
-  }
-}
-
 async function saveAutoCheckinConfig() {
   if (!autoCheckinConfig.value) {
     return;
@@ -1665,33 +1645,6 @@ function removeScheduleTime(index: number) {
   }
   autoCheckinConfig.value.schedule_times.splice(index, 1);
 }
-
-// Format next scheduled time for display (convert UTC to Beijing time)
-const nextScheduledDisplay = computed(() => {
-  if (!autoCheckinStatus.value?.next_scheduled_at) {
-    return "";
-  }
-  try {
-    const utcDate = new Date(autoCheckinStatus.value.next_scheduled_at);
-    // Convert to Beijing time (UTC+8)
-    return utcDate.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
-  } catch {
-    return autoCheckinStatus.value.next_scheduled_at;
-  }
-});
-
-// Format last run time for display
-const lastRunDisplay = computed(() => {
-  if (!autoCheckinStatus.value?.last_run_at) {
-    return "";
-  }
-  try {
-    const utcDate = new Date(autoCheckinStatus.value.last_run_at);
-    return utcDate.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
-  } catch {
-    return autoCheckinStatus.value.last_run_at;
-  }
-});
 
 onMounted(() => {
   const routeSiteId = parseRouteSiteId(route.query.siteId);
@@ -1946,7 +1899,7 @@ watch(
           <!-- Save button and note -->
           <span class="config-inline-item config-save">
             <n-text depth="3" style="font-size: 10px">
-              {{ t("siteManagement.beijingTimeNote") }}
+              {{ t("siteManagement.serverTimezoneNote") }}
             </n-text>
             <n-button
               size="tiny"
