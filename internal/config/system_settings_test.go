@@ -5,15 +5,20 @@ import (
 	"errors"
 	"testing"
 
+	appdb "gpt-load/internal/db"
+	"gpt-load/internal/models"
 	"gpt-load/internal/store"
 	"gpt-load/internal/syncer"
 	"gpt-load/internal/types"
 	"gpt-load/internal/utils"
 
+	"github.com/glebarez/sqlite"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type staticProxyURLResolver struct {
@@ -21,8 +26,46 @@ type staticProxyURLResolver struct {
 	err      error
 }
 
+type noopSystemSettingsGroupManager struct{}
+
+func (noopSystemSettingsGroupManager) Invalidate() error {
+	return nil
+}
+
 func (r staticProxyURLResolver) ResolveProxyURL(_ context.Context, _ string) (string, error) {
 	return r.resolved, r.err
+}
+
+func setupSystemSettingsTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	previousDB := appdb.DB
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+
+	sqlDB, err := testDB.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+
+	require.NoError(t, testDB.AutoMigrate(&models.SystemSetting{}))
+	appdb.DB = testDB
+	t.Cleanup(func() {
+		appdb.DB = previousDB
+		require.NoError(t, sqlDB.Close())
+	})
+
+	return testDB
+}
+
+func assertSystemSettingValue(t *testing.T, db *gorm.DB, key, want string) {
+	t.Helper()
+
+	var setting models.SystemSetting
+	require.NoError(t, db.Where("setting_key = ?", key).First(&setting).Error)
+	assert.Equal(t, want, setting.SettingValue)
 }
 
 func setupSystemSettingsManagerWithSettings(t *testing.T, settings types.SystemSettings) *SystemSettingsManager {
@@ -834,6 +877,43 @@ func TestGetEffectiveConfigLegacyRequestTimeoutKeepsExplicitStreamOverride(t *te
 	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
 	assert.Equal(t, 30, cfg.StreamRequestTimeout)
 	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+}
+
+func TestLegacyRequestTimeoutPersistsSplitTimeoutBackfill(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "request_timeout",
+		SettingValue: "75",
+	}).Error)
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.Initialize(memStore, noopSystemSettingsGroupManager{}, false))
+	t.Cleanup(func() {
+		manager.Stop(context.Background())
+	})
+
+	settings := manager.GetSettings()
+	assert.Equal(t, 75, settings.RequestTimeout)
+	assert.Equal(t, 75, settings.NonStreamRequestTimeout)
+	assert.Equal(t, 75, settings.StreamRequestTimeout)
+
+	require.NoError(t, manager.UpdateSettings(map[string]any{
+		"request_timeout": float64(90),
+	}))
+	require.NoError(t, manager.ReloadSettings())
+
+	settings = manager.GetSettings()
+	assert.Equal(t, 90, settings.RequestTimeout)
+	assert.Equal(t, 90, settings.NonStreamRequestTimeout)
+	assert.Equal(t, 90, settings.StreamRequestTimeout)
+	assertSystemSettingValue(t, testDB, "request_timeout", "90")
+	assertSystemSettingValue(t, testDB, "non_stream_request_timeout", "90")
+	assertSystemSettingValue(t, testDB, "stream_request_timeout", "90")
 }
 
 func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t *testing.T) {

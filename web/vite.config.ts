@@ -51,6 +51,10 @@ export default defineConfig(({ mode }) => {
         fileName: ".vite/license.json",
       },
       rolldownOptions: {
+        checks: {
+          // Keep CI builds warning-clean; plugin timing diagnostics are informational only.
+          pluginTimings: false,
+        },
         output: {
           /**
            * Manual chunk configuration - Optimize caching and loading performance.
