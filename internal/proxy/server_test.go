@@ -1626,6 +1626,80 @@ func TestExecuteRequestWithAggregateRetryStopsWhenNonStreamLifecycleTimeoutExpir
 	require.Equal(t, int32(0), atomic.LoadInt32(&fastAttempts))
 }
 
+func TestExecuteRequestWithAggregateRetryUsesEffectiveStreamModeForLifecycle(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	var attempts int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		time.Sleep(1200 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "agg-effective-mode-sub", "openai")
+	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	subGroup.Config = map[string]any{
+		"max_retries":                0,
+		"force_non_stream":           true,
+		"stream_request_timeout":     1,
+		"non_stream_request_timeout": 2,
+		"blacklist_threshold":        100,
+	}
+	require.NoError(t, db.Save(subGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-effective-mode",
+		ChannelType: "openai",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config: map[string]any{
+			"max_retries":                0,
+			"stream_request_timeout":     1,
+			"non_stream_request_timeout": 2,
+		},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      subGroup.ID,
+		SubGroupName:    subGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, subGroup.ID, "sk-agg-effective-mode", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-test","stream":true}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/chat/completions", bytes.NewReader(body))
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, true, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&attempts))
+}
+
 func TestExecuteRequestWithAggregateRetryAppliesOnlySelectedSubGroupSimulatedClient(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

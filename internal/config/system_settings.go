@@ -49,7 +49,7 @@ func (sm *SystemSettingsManager) SetProxyURLResolver(resolver ProxyURLResolver) 
 // which is the source of truth for split timeout configuration.
 // It handles legacy-only backfill, explicit non-stream values including zero,
 // and the already-synced defaults when neither setting was supplied.
-func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, hasNonStream bool) {
+func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, hasNonStream, hasStream bool) {
 	if settings == nil {
 		return
 	}
@@ -60,6 +60,10 @@ func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, ha
 	}
 	if hasLegacy {
 		settings.NonStreamRequestTimeout = settings.RequestTimeout
+		if !hasStream {
+			// Legacy request_timeout used to cover all requests before split timeout fields existed.
+			settings.StreamRequestTimeout = settings.RequestTimeout
+		}
 		return
 	}
 	// Defaults already keep both fields in sync when neither key was supplied.
@@ -130,7 +134,8 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 		}
 		_, hasLegacyTimeout := settingsMap["request_timeout"]
 		_, hasNonStreamTimeout := settingsMap["non_stream_request_timeout"]
-		normalizeSplitRequestTimeouts(&settings, hasLegacyTimeout, hasNonStreamTimeout)
+		_, hasStreamTimeout := settingsMap["stream_request_timeout"]
+		normalizeSplitRequestTimeouts(&settings, hasLegacyTimeout, hasNonStreamTimeout, hasStreamTimeout)
 
 		settings.ProxyKeysMap = utils.StringToSet(settings.ProxyKeys, ",")
 
@@ -258,10 +263,14 @@ func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) erro
 
 	// Update database
 	var settingsToUpdate []models.SystemSetting
+	_, hasStreamTimeout := settingsMap["stream_request_timeout"]
 	if nonStreamTimeout, hasNonStream := settingsMap["non_stream_request_timeout"]; hasNonStream {
 		settingsMap["request_timeout"] = nonStreamTimeout
 	} else if legacyTimeout, hasLegacy := settingsMap["request_timeout"]; hasLegacy {
 		settingsMap["non_stream_request_timeout"] = legacyTimeout
+		if !hasStreamTimeout {
+			settingsMap["stream_request_timeout"] = legacyTimeout
+		}
 	}
 	for key, value := range settingsMap {
 		settingsToUpdate = append(settingsToUpdate, models.SystemSetting{
@@ -347,6 +356,7 @@ func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JS
 		&effectiveConfig,
 		groupConfig.RequestTimeout != nil,
 		groupConfig.NonStreamRequestTimeout != nil,
+		groupConfig.StreamRequestTimeout != nil,
 	)
 	effectiveConfig.ProxyURL = sm.ResolveRuntimeProxyURL(context.Background(), effectiveConfig.ProxyURL)
 

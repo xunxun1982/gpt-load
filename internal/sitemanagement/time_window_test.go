@@ -1,6 +1,11 @@
 package sitemanagement
 
 import (
+	"archive/zip"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -96,6 +101,33 @@ func TestCheckinLocationWithNameUsesServerLocalTimezoneWhenTZUnset(t *testing.T)
 
 	assert.Equal(t, "America/New_York", name)
 	assert.Equal(t, "2024-01-14", time.Date(2024, 1, 15, 4, 59, 0, 0, time.UTC).In(loc).Format("2006-01-02"))
+}
+
+func TestCheckinLocationWithNameAcceptsZoneinfoFilePath(t *testing.T) {
+	tzPath := writeZoneinfoTestFile(t, "America/New_York")
+	t.Setenv("TZ", tzPath)
+
+	loc, name := checkinLocationWithName()
+
+	assert.Equal(t, tzPath, name)
+	assert.Equal(t, "2024-01-14", time.Date(2024, 1, 15, 4, 59, 0, 0, time.UTC).In(loc).Format("2006-01-02"))
+}
+
+func TestCheckinLocationWithNameAcceptsColonPrefixedZoneinfoFilePath(t *testing.T) {
+	tzPath := writeZoneinfoTestFile(t, "America/New_York")
+	t.Setenv("TZ", ":"+tzPath)
+
+	loc, name := checkinLocationWithName()
+
+	assert.Equal(t, tzPath, name)
+	assert.Equal(t, "2024-01-14", time.Date(2024, 1, 15, 4, 59, 0, 0, time.UTC).In(loc).Format("2006-01-02"))
+}
+
+func TestLocationNameFromZoneinfoPath(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "America/New_York", locationNameFromZoneinfoPath("/usr/share/zoneinfo/America/New_York"))
+	assert.Empty(t, locationNameFromZoneinfoPath("/tmp/custom-localtime"))
 }
 
 func TestGetBeijingCheckinDay_CurrentTime(t *testing.T) {
@@ -320,6 +352,41 @@ func TestIsMinutesWithinWindow(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func writeZoneinfoTestFile(t *testing.T, zoneName string) string {
+	t.Helper()
+
+	zoneinfoZip := filepath.Join(runtime.GOROOT(), "lib", "time", "zoneinfo.zip")
+	reader, err := zip.OpenReader(zoneinfoZip)
+	if err != nil {
+		t.Fatalf("open zoneinfo.zip: %v", err)
+	}
+	defer reader.Close()
+
+	for _, file := range reader.File {
+		if file.Name != zoneName {
+			continue
+		}
+		source, err := file.Open()
+		if err != nil {
+			t.Fatalf("open zoneinfo entry: %v", err)
+		}
+		defer source.Close()
+
+		data, err := io.ReadAll(source)
+		if err != nil {
+			t.Fatalf("read zoneinfo entry: %v", err)
+		}
+		target := filepath.Join(t.TempDir(), "localtime")
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			t.Fatalf("write zoneinfo file: %v", err)
+		}
+		return target
+	}
+
+	t.Fatalf("zoneinfo entry %q not found in %s", zoneName, zoneinfoZip)
+	return ""
 }
 
 // Benchmark tests

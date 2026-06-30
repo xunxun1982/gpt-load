@@ -819,7 +819,20 @@ func TestGetEffectiveConfigLegacyRequestTimeout(t *testing.T) {
 	})
 
 	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 600, cfg.StreamRequestTimeout)
+	assert.Equal(t, 75, cfg.StreamRequestTimeout)
+	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+}
+
+func TestGetEffectiveConfigLegacyRequestTimeoutKeepsExplicitStreamOverride(t *testing.T) {
+	manager := NewSystemSettingsManager()
+
+	cfg := manager.GetEffectiveConfig(map[string]any{
+		"request_timeout":        float64(75),
+		"stream_request_timeout": float64(30),
+	})
+
+	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
+	assert.Equal(t, 30, cfg.StreamRequestTimeout)
 	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
 }
 
@@ -832,6 +845,7 @@ func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t 
 	})
 
 	assert.Equal(t, 0, cfg.NonStreamRequestTimeout)
+	assert.Equal(t, 600, cfg.StreamRequestTimeout)
 	assert.Equal(t, 0, cfg.RequestTimeout)
 }
 

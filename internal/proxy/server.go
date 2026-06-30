@@ -273,6 +273,10 @@ type retryContext struct {
 	forcedSubGroupID    uint          // Keeps key-level retries on the selected sub-group until its retry budget is exhausted
 	lifecycleCtx        context.Context
 	lifecycleCancel     context.CancelFunc
+	lifecycleConfig     types.SystemSettings
+	lifecycleConfigSet  bool
+	lifecycleStartTime  time.Time
+	lifecycleStreamMode bool
 }
 
 // safeProxyURL returns the proxy URL value with credentials redacted for safe logging.
@@ -1271,13 +1275,31 @@ func (ps *ProxyServer) executeRequestWithRetry(
 }
 
 func requestLifecycleContext(parent context.Context, cfg types.SystemSettings, isStream bool) (context.Context, context.CancelFunc) {
-	if isStream {
-		if cfg.StreamRequestTimeout > 0 {
-			return context.WithTimeout(parent, time.Duration(cfg.StreamRequestTimeout)*time.Second)
-		}
+	return requestLifecycleContextAt(parent, cfg, isStream, time.Now())
+}
+
+func requestLifecycleContextAt(parent context.Context, cfg types.SystemSettings, isStream bool, start time.Time) (context.Context, context.CancelFunc) {
+	timeout := lifecycleTimeoutSeconds(cfg, isStream)
+	if timeout <= 0 {
 		return context.WithCancel(parent)
 	}
-	return effectiveNonStreamRequestContext(parent, cfg)
+	return context.WithDeadline(parent, start.Add(time.Duration(timeout)*time.Second))
+}
+
+func (rc *retryContext) ensureLifecycleContext(parent context.Context, isStream bool) context.CancelFunc {
+	if rc.lifecycleCtx != nil && rc.lifecycleStreamMode == isStream {
+		return nil
+	}
+	if rc.lifecycleCancel != nil {
+		rc.lifecycleCancel()
+		rc.lifecycleCancel = nil
+	}
+	if rc.lifecycleStartTime.IsZero() {
+		rc.lifecycleStartTime = time.Now()
+	}
+	rc.lifecycleCtx, rc.lifecycleCancel = requestLifecycleContextAt(parent, rc.lifecycleConfig, isStream, rc.lifecycleStartTime)
+	rc.lifecycleStreamMode = isStream
+	return rc.lifecycleCancel
 }
 
 func lifecycleTimeoutSeconds(cfg types.SystemSettings, isStream bool) int {
@@ -1290,9 +1312,10 @@ func lifecycleTimeoutSeconds(cfg types.SystemSettings, isStream bool) int {
 	return cfg.RequestTimeout
 }
 
-func (ps *ProxyServer) aggregateRetryLifecycleConfig(originalGroup *models.Group, isStream bool) types.SystemSettings {
+func (ps *ProxyServer) aggregateRetryLifecycleConfig(originalGroup *models.Group) types.SystemSettings {
 	cfg := originalGroup.EffectiveConfig
-	timeout := lifecycleTimeoutSeconds(cfg, isStream)
+	nonStreamTimeout := lifecycleTimeoutSeconds(cfg, false)
+	streamTimeout := lifecycleTimeoutSeconds(cfg, true)
 	for _, relation := range originalGroup.SubGroups {
 		if !relation.SubGroupEnabled {
 			continue
@@ -1301,18 +1324,21 @@ func (ps *ProxyServer) aggregateRetryLifecycleConfig(originalGroup *models.Group
 		if err != nil {
 			continue
 		}
-		subTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, isStream)
-		if subTimeout > 0 && (timeout <= 0 || subTimeout < timeout) {
-			timeout = subTimeout
+		subNonStreamTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, false)
+		if subNonStreamTimeout > 0 && (nonStreamTimeout <= 0 || subNonStreamTimeout < nonStreamTimeout) {
+			nonStreamTimeout = subNonStreamTimeout
+		}
+		subStreamTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, true)
+		if subStreamTimeout > 0 && (streamTimeout <= 0 || subStreamTimeout < streamTimeout) {
+			streamTimeout = subStreamTimeout
 		}
 	}
-	if timeout > 0 {
-		if isStream {
-			cfg.StreamRequestTimeout = timeout
-		} else {
-			cfg.NonStreamRequestTimeout = timeout
-			cfg.RequestTimeout = timeout
-		}
+	if nonStreamTimeout > 0 {
+		cfg.NonStreamRequestTimeout = nonStreamTimeout
+		cfg.RequestTimeout = nonStreamTimeout
+	}
+	if streamTimeout > 0 {
+		cfg.StreamRequestTimeout = streamTimeout
 	}
 	return cfg
 }
@@ -1669,12 +1695,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Get max retries from aggregate group config
 	maxRetries := parseMaxRetries(originalGroup.Config)
 
-	if retryCtx.lifecycleCtx == nil {
-		// Merge the parent and enabled sub-group timeouts once so the total retry
-		// budget is deterministic and does not depend on selection order.
-		retryLifecycleCfg := ps.aggregateRetryLifecycleConfig(originalGroup, isStream)
-		retryCtx.lifecycleCtx, retryCtx.lifecycleCancel = requestLifecycleContext(c.Request.Context(), retryLifecycleCfg, isStream)
-		defer retryCtx.lifecycleCancel()
+	if !retryCtx.lifecycleConfigSet {
+		// Merge parent and enabled sub-group timeouts once; context creation waits
+		// until the selected sub-group finalizes the effective stream mode.
+		retryCtx.lifecycleConfig = ps.aggregateRetryLifecycleConfig(originalGroup)
+		retryCtx.lifecycleConfigSet = true
+		retryCtx.lifecycleStartTime = time.Now()
 	}
 
 	// When aggregate group has no explicit max_retries configured (key not present),
@@ -2114,6 +2140,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}).Debug("Codex forced streaming: converted non-stream request to stream for sub-group")
 			// Keep isStream as false so response handler knows to collect and convert
 		}
+	}
+
+	if lifecycleCancel := retryCtx.ensureLifecycleContext(c.Request.Context(), isStream); lifecycleCancel != nil {
+		defer lifecycleCancel()
 	}
 
 	// Store group in context for response handlers to access

@@ -477,12 +477,11 @@ func TestBalanceService_RefreshScheduler(t *testing.T) {
 }
 
 func TestBalanceService_NextRefreshTimeKeepsMidnightAcrossDST(t *testing.T) {
-	t.Setenv("TZ", "America/New_York")
 	loc, err := time.LoadLocation("America/New_York")
 	require.NoError(t, err)
 
 	now := time.Date(2026, 3, 8, 23, 0, 0, 0, loc)
-	nextRefresh := nextRefreshTimeAt(now)
+	nextRefresh := nextRefreshTimeAtLocation(now, loc)
 
 	localTime := nextRefresh.In(loc)
 	assert.Equal(t, 2026, localTime.Year())

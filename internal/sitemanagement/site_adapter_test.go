@@ -3,6 +3,8 @@ package sitemanagement
 import (
 	"testing"
 
+	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -115,4 +117,29 @@ func TestResolveManagedSiteAdapterCapabilities(t *testing.T) {
 			assert.Equal(t, capabilities, adapter.Capabilities())
 		})
 	}
+}
+
+func TestResolveSiteCapabilitiesLogsUnregisteredSiteType(t *testing.T) {
+	logger := logrus.StandardLogger()
+	originalHooks := make(logrus.LevelHooks, len(logger.Hooks))
+	for level, hooks := range logger.Hooks {
+		originalHooks[level] = append([]logrus.Hook(nil), hooks...)
+	}
+	t.Cleanup(func() {
+		logger.ReplaceHooks(originalHooks)
+	})
+	hook := logrustest.NewGlobal()
+	defer hook.Reset()
+
+	capabilities := resolveSiteCapabilities("missing-provider")
+
+	assert.False(t, capabilities.SupportsCheckin)
+	assert.False(t, capabilities.SupportsBalance)
+	require.NotNil(t, hook.LastEntry())
+	assert.Equal(t, logrus.ErrorLevel, hook.LastEntry().Level)
+	assert.Equal(t, "missing-provider", hook.LastEntry().Data["site_type"])
+
+	hook.Reset()
+	_ = resolveSiteCapabilities(SiteTypeUnknown)
+	assert.Nil(t, hook.LastEntry())
 }

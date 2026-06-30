@@ -3,6 +3,7 @@ package sitemanagement
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,14 +30,37 @@ func checkinLocationWithName() (*time.Location, string) {
 	if tz == "" {
 		return localCheckinLocationWithName()
 	}
-	// Only IANA location names are accepted here. Go's time.LoadLocation does
-	// not parse POSIX TZ strings or absolute TZ paths; unsupported values keep
-	// the existing site-management fallback to Beijing time.
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
+		if loc, name, ok := loadLocationFromTZPath(tz); ok {
+			return loc, name
+		}
 		return beijingLocation, fallbackTimezoneName
 	}
 	return loc, tz
+}
+
+func loadLocationFromTZPath(tz string) (*time.Location, string, bool) {
+	path := strings.TrimPrefix(tz, ":")
+	if !filepath.IsAbs(path) {
+		return nil, "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", false
+	}
+	name := locationNameFromZoneinfoPath(path)
+	if name == "" && filepath.Clean(path) == filepath.Clean("/etc/localtime") {
+		name = systemLocalTimezoneName()
+	}
+	if name == "" {
+		name = path
+	}
+	loc, err := time.LoadLocationFromTZData(name, data)
+	if err != nil {
+		return nil, "", false
+	}
+	return loc, name, true
 }
 
 func localCheckinLocationWithName() (*time.Location, string) {
@@ -86,6 +110,14 @@ func detectSystemLocalTimezoneName() string {
 	return ""
 }
 
+func locationNameFromZoneinfoPath(path string) string {
+	normalized := filepath.ToSlash(path)
+	if index := strings.Index(normalized, "/zoneinfo/"); index >= 0 {
+		return verifiedLocationName(normalized[index+len("/zoneinfo/"):])
+	}
+	return ""
+}
+
 func verifiedLocationName(candidate string) string {
 	name := strings.TrimSpace(candidate)
 	if name == "" {
@@ -112,7 +144,13 @@ func GetBeijingCheckinDayAt(t time.Time) string {
 }
 
 func nextCheckinResetAt(base time.Time) time.Time {
-	loc := checkinLocation()
+	return nextCheckinResetAtLocation(base, checkinLocation())
+}
+
+func nextCheckinResetAtLocation(base time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = beijingLocation
+	}
 	now := base.In(loc)
 	reset := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	if !reset.After(now) {

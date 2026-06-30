@@ -3,6 +3,8 @@ package sitemanagement
 import (
 	"context"
 	"net/http"
+
+	"github.com/sirupsen/logrus"
 )
 
 type balanceParserKind string
@@ -96,7 +98,19 @@ func resolveManagedSiteAdapter(siteType string) managedSiteAdapter {
 func resolveSiteCapabilities(siteType string) SiteCapabilities {
 	adapter := resolveManagedSiteAdapter(siteType)
 	if adapter == nil {
+		if !isKnownCapabilitylessSiteType(siteType) {
+			logrus.WithField("site_type", siteType).Error("Unknown managed site type has no capability registration")
+		}
 		return SiteCapabilities{}
 	}
 	return adapter.Capabilities()
+}
+
+func isKnownCapabilitylessSiteType(siteType string) bool {
+	switch siteType {
+	case "", SiteTypeUnknown, SiteTypeBrand:
+		return true
+	default:
+		return false
+	}
 }

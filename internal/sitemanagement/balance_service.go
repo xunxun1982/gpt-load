@@ -152,7 +152,11 @@ func (s *BalanceService) nextRefreshTime() time.Time {
 }
 
 func nextRefreshTimeAt(base time.Time) time.Time {
-	return nextCheckinResetAt(base)
+	return nextRefreshTimeAtLocation(base, checkinLocation())
+}
+
+func nextRefreshTimeAtLocation(base time.Time, loc *time.Location) time.Time {
+	return nextCheckinResetAtLocation(base, loc)
 }
 
 // refreshAllBalancesBackground refreshes balances for all enabled sites in background
