@@ -502,6 +502,24 @@ func TestConvertCodexRequestToClaudePreservesCodexToolKinds(t *testing.T) {
 	assert.JSONEq(t, `[{"type":"tool_use","id":"ns","name":"mcp__gmail__send_email","input":{"to":"a@example.com"}}]`, string(got.Messages[2].Content))
 }
 
+func TestConvertCodexRequestToClaudeDefaultsInvalidToolArguments(t *testing.T) {
+	t.Parallel()
+
+	req := &CodexRequest{
+		Model: "claude-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_empty","name":"empty_args","arguments":""},
+			{"type":"function_call","call_id":"call_invalid","name":"invalid_args","arguments":"not-json"}
+		]`),
+	}
+
+	got, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 2)
+	assert.JSONEq(t, `[{"type":"tool_use","id":"empty","name":"empty_args","input":{}}]`, string(got.Messages[0].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"invalid","name":"invalid_args","input":{}}]`, string(got.Messages[1].Content))
+}
+
 func TestConvertClaudeResponseToCodex(t *testing.T) {
 	t.Parallel()
 

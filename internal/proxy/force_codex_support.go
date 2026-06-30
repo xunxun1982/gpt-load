@@ -514,6 +514,14 @@ func codexCustomToolInputFromArguments(arguments string) any {
 	return arguments
 }
 
+func codexToolArgumentsRawMessage(arguments string) json.RawMessage {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" || !json.Valid([]byte(arguments)) {
+		return json.RawMessage(`{}`)
+	}
+	return json.RawMessage(arguments)
+}
+
 func codexInputTokenDetailsFromOpenAI(details *TokenUsageDetails) *TokenUsageDetails {
 	if details == nil || details.CachedTokens <= 0 {
 		return nil
@@ -656,7 +664,7 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 				Type:  "tool_use",
 				ID:    callID,
 				Name:  name,
-				Input: json.RawMessage(arguments),
+				Input: codexToolArgumentsRawMessage(arguments),
 			}})
 			messages = append(messages, ClaudeMessage{Role: "assistant", Content: content})
 		case "function_call_output", "custom_tool_call_output", "tool_search_output", "mcp_tool_call_output":

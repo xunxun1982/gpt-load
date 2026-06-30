@@ -218,7 +218,7 @@ async function handleSubmit() {
 
 // Quickly adjust weight by delta
 function adjustWeight(delta: number) {
-  const newWeight = Math.max(0, Math.min(1000, formData.weight + delta));
+  const newWeight = Math.max(0, Math.min(5000, formData.weight + delta));
   formData.weight = newWeight;
   formData.min_effective_weight =
     newWeight > 0 ? Math.min(Math.max(formData.min_effective_weight, 1), newWeight) : 0;

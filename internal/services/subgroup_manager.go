@@ -459,31 +459,52 @@ func (s *selector) selectByAffinityWithExclusion(excludeIDs map[uint]bool, affin
 		return "", 0
 	}
 
+	primary := s.selectPrimaryAffinityCandidate(affinityKey)
+	if primary != nil && !isExcludedSubGroup(primary.subGroupID, excludeIDs, nil) && s.hasActiveKeys(primary) {
+		return primary.name, primary.subGroupID
+	}
+
+	fallbackExcludeIDs := excludeIDs
+	if primary != nil {
+		fallbackExcludeIDs = copySubGroupExclusions(excludeIDs)
+		fallbackExcludeIDs[primary.subGroupID] = true
+	}
+
+	attempted := s.resetAttempted()
+	defer func() {
+		s.attempted = attempted
+	}()
+	for len(attempted) < len(s.subGroups) {
+		item := s.selectByWeightSkipping(fallbackExcludeIDs, attempted)
+		if item == nil {
+			break
+		}
+		attempted = append(attempted, item.subGroupID)
+		if item.enabled && !isExcludedSubGroup(item.subGroupID, fallbackExcludeIDs, nil) && s.hasActiveKeys(item) {
+			return item.name, item.subGroupID
+		}
+	}
+
+	return "", 0
+}
+
+func (s *selector) selectPrimaryAffinityCandidate(affinityKey string) *subGroupItem {
 	weights := s.resetWeights()
 	total := 0
 	for i := range s.subGroups {
 		item := &s.subGroups[i]
-		if !item.enabled || isExcludedSubGroup(item.subGroupID, excludeIDs, nil) || !s.hasActiveKeys(item) {
+		if !item.enabled || item.weight <= 0 {
 			weights[i] = 0
 			continue
 		}
 
 		weight := item.weight
-		if s.dynamicWeight != nil {
-			metrics, _ := s.dynamicWeight.GetSubGroupMetrics(s.groupID, item.subGroupID)
-			effectiveWeight := s.dynamicWeight.GetEffectiveWeightWithMinimum(item.weight, item.minEffectiveWeight, metrics)
-			weight = GetEffectiveWeightForSelection(effectiveWeight)
-		}
-		if weight <= 0 {
-			weights[i] = 0
-			continue
-		}
 		weights[i] = weight
 		total += weight
 	}
 
 	if total <= 0 {
-		return "", 0
+		return nil
 	}
 
 	target := int(hashAffinityKey(affinityKey) % uint64(total))
@@ -494,12 +515,19 @@ func (s *selector) selectByAffinityWithExclusion(excludeIDs map[uint]bool, affin
 		}
 		cumulative += weight
 		if target < cumulative {
-			item := &s.subGroups[i]
-			return item.name, item.subGroupID
+			return &s.subGroups[i]
 		}
 	}
 
-	return "", 0
+	return nil
+}
+
+func copySubGroupExclusions(excludeIDs map[uint]bool) map[uint]bool {
+	copied := make(map[uint]bool, len(excludeIDs)+1)
+	for id, excluded := range excludeIDs {
+		copied[id] = excluded
+	}
+	return copied
 }
 
 func hashAffinityKey(key string) uint64 {
