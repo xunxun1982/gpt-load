@@ -69,12 +69,13 @@ try {
 Write-Host "🔥 Running benchmarks for hot paths..." -ForegroundColor Cyan
 
 # Run benchmarks for each package separately (cpuprofile requires single package)
-# Focus on proxy/forwarding hot paths: keypool selection, encryption, buffer pool, JSON processing
+# Focus on proxy/forwarding hot paths: keypool selection, encryption, buffer pool, JSON and token usage processing
 $benchPackages = @(
     @{Path="./internal/keypool"; Pattern="^Benchmark(SelectKey|RealisticWorkload|ConcurrentOperations)"},
     @{Path="./internal/encryption"; Pattern="^Benchmark(Encrypt|Decrypt|Hash)"},
     @{Path="./internal/utils"; Pattern="^Benchmark(BufferPool|TieredBufferPooling|JSONEncoder|WeightedRandomSelect|ApplyModelMapping|RealisticWorkload)"},
-    @{Path="./internal/proxy"; Pattern="^Benchmark(ApplyModelMapping|ApplyParamOverrides|RealisticProxyWorkload|ConcurrentProxyOperations)"},
+    @{Path="./internal/proxy"; Pattern="^Benchmark(ApplyModelMapping|ApplyParamOverrides|RealisticProxyWorkload|ConcurrentProxyOperations|LimitedResponseCaptureWriter|TailUsageCaptureWrite|EstimatedTokenCaptureWrite)"},
+    @{Path="./internal/tokenusage"; Pattern="^Benchmark(FromResponseBodyOpenAIUsage|SSEParserUsageAtTail)"},
     @{Path="./internal/types"; Pattern="^Benchmark(SupportsStreaming|RealisticFormatChecks|FormatStringConversion)"},
     @{Path="./internal/middleware"; Pattern="^Benchmark(CORSMiddleware|RealisticMiddlewareChain|SecurityHeaders|MultipleMiddlewares)"}
 )

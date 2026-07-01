@@ -3070,7 +3070,7 @@ func TestLogRequestUsesEstimatedTokenFallbackWhenUsageMissing(t *testing.T) {
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(ctx))
 }
 
-func TestLogRequestSkipsEstimatedTokenFallbackForLargeBody(t *testing.T) {
+func TestLogRequestKeepsEstimatedOutputTokensForLargeBody(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
@@ -3087,10 +3087,10 @@ func TestLogRequestSkipsEstimatedTokenFallbackForLargeBody(t *testing.T) {
 	ps.logRequest(ctx, nil, group, nil, time.Now().Add(-time.Millisecond), http.StatusOK, nil, false, "", nil, "", nil, body, models.RequestTypeFinal)
 
 	logEntry := popRecordedRequestLog(t, memStore)
-	assert.Empty(t, logEntry.TokenUsageSource)
+	assert.Equal(t, models.TokenUsageSourceEstimated, logEntry.TokenUsageSource)
 	assert.Equal(t, int64(0), logEntry.InputTokens)
-	assert.Equal(t, int64(0), logEntry.OutputTokens)
-	assert.Equal(t, int64(0), logEntry.TotalTokens)
+	assert.Equal(t, int64(3), logEntry.OutputTokens)
+	assert.Equal(t, int64(3), logEntry.TotalTokens)
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(ctx))
 }
 

@@ -2839,6 +2839,9 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any, channelT
 	if channelType != "openai" && channelType != "anthropic" {
 		delete(configMap, "codex_support")
 	}
+	if channelType != "openai-response" {
+		delete(configMap, "codex_affinity_enabled")
+	}
 	if isConfigBoolEnabled(datatypes.JSONMap(configMap), "cc_support") &&
 		isConfigBoolEnabled(datatypes.JSONMap(configMap), "codex_support") {
 		return nil, NewI18nError(app_errors.ErrValidation, "validation.force_cc_codex_mutually_exclusive", nil)

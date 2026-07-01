@@ -71,12 +71,13 @@ fi
 echo "🔥 Running benchmarks for hot paths..."
 
 # Run benchmarks for each package separately (cpuprofile requires single package)
-# Focus on proxy/forwarding hot paths: keypool selection, encryption, buffer pool, JSON processing
+# Focus on proxy/forwarding hot paths: keypool selection, encryption, buffer pool, JSON and token usage processing
 declare -a BENCH_PACKAGES=(
     "./internal/keypool:^Benchmark(SelectKey|RealisticWorkload|ConcurrentOperations)"
     "./internal/encryption:^Benchmark(Encrypt|Decrypt|Hash)"
     "./internal/utils:^Benchmark(BufferPool|TieredBufferPooling|JSONEncoder|WeightedRandomSelect|ApplyModelMapping|RealisticWorkload)"
-    "./internal/proxy:^Benchmark(ApplyModelMapping|ApplyParamOverrides|RealisticProxyWorkload|ConcurrentProxyOperations)"
+    "./internal/proxy:^Benchmark(ApplyModelMapping|ApplyParamOverrides|RealisticProxyWorkload|ConcurrentProxyOperations|LimitedResponseCaptureWriter|TailUsageCaptureWrite|EstimatedTokenCaptureWrite)"
+    "./internal/tokenusage:^Benchmark(FromResponseBodyOpenAIUsage|SSEParserUsageAtTail)"
     "./internal/types:^Benchmark(SupportsStreaming|RealisticFormatChecks|FormatStringConversion)"
     "./internal/middleware:^Benchmark(CORSMiddleware|RealisticMiddlewareChain|SecurityHeaders|MultipleMiddlewares)"
 )

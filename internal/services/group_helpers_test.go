@@ -286,6 +286,7 @@ func BenchmarkFindGroupByID(b *testing.B) {
 		Name:        "bench-group",
 		DisplayName: "Benchmark Group",
 		ChannelType: "openai",
+		Upstreams:   []byte(`[]`),
 	}
 	if err := db.Create(testGroup).Error; err != nil {
 		b.Fatal(err)
@@ -308,6 +309,7 @@ func BenchmarkFindGroupByIDWithType(b *testing.B) {
 		DisplayName: "Benchmark Group",
 		ChannelType: "openai",
 		GroupType:   "standard",
+		Upstreams:   []byte(`[]`),
 	}
 	if err := db.Create(testGroup).Error; err != nil {
 		b.Fatal(err)
