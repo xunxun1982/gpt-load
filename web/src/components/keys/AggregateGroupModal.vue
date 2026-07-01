@@ -436,7 +436,10 @@ async function handleSubmit() {
             </template>
           </n-form-item>
 
-          <n-form-item v-if="formData.channel_type === 'openai-response'" :label="t('keys.codexAffinity')">
+          <n-form-item
+            v-if="formData.channel_type === 'openai-response'"
+            :label="t('keys.codexAffinity')"
+          >
             <n-switch v-model:value="formData.codex_affinity_enabled" />
             <template #feedback>
               <span style="color: var(--text-secondary); font-size: 12px">

@@ -18,6 +18,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type failAfterWriteResponseWriter struct {
+	gin.ResponseWriter
+	failAfter int
+	writes    int
+}
+
+func (w *failAfterWriteResponseWriter) Write(data []byte) (int, error) {
+	w.writes++
+	if w.writes > w.failAfter {
+		return 0, io.ErrClosedPipe
+	}
+	return w.ResponseWriter.Write(data)
+}
+
 func TestCodexPathHelpersAndSupport(t *testing.T) {
 	t.Parallel()
 
@@ -225,6 +239,45 @@ func TestConvertCodexRequestToOpenAIChatPreservesCodexToolKinds(t *testing.T) {
 	assert.Equal(t, "call_search", got.Messages[4].ToolCallID)
 }
 
+func TestConvertCodexRequestToOpenAIChatPreservesNestedNamespaces(t *testing.T) {
+	t.Parallel()
+
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_nested","namespace":"root__child","name":"run","arguments":"{\"value\":1}"}
+		]`),
+		Tools: []CodexTool{{
+			Type: "namespace",
+			Name: "root",
+			Tools: []CodexTool{{
+				Type: "namespace",
+				Name: "child",
+				Tools: []CodexTool{{
+					Type:       "function",
+					Name:       "run",
+					Parameters: json.RawMessage(`{"type":"object","properties":{"value":{"type":"integer"}}}`),
+				}},
+			}},
+		}},
+		ToolChoice: map[string]any{"type": "function", "namespace": "root__child", "name": "run"},
+	}
+
+	got, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 1)
+	assert.Equal(t, "root__child__run", got.Tools[0].Function.Name)
+	assert.Equal(t, map[string]any{
+		"type": "function",
+		"function": map[string]string{
+			"name": "root__child__run",
+		},
+	}, got.ToolChoice)
+	require.Len(t, got.Messages, 1)
+	assert.Equal(t, "root__child__run", got.Messages[0].ToolCalls[0].Function.Name)
+}
+
 func TestConvertOpenAIChatResponseToCodex(t *testing.T) {
 	t.Parallel()
 
@@ -325,6 +378,48 @@ func TestConvertOpenAIChatResponseToCodexRestoresCodexToolKinds(t *testing.T) {
 	assert.Equal(t, "function_call", got.Output[2].Type)
 	assert.Equal(t, "mcp__gmail", got.Output[2].Namespace)
 	assert.Equal(t, "send_email", got.Output[2].Name)
+}
+
+func TestConvertOpenAIChatResponseToCodexRestoresNestedNamespaces(t *testing.T) {
+	t.Parallel()
+
+	toolCtx := newCodexToolContext([]CodexTool{{
+		Type: "namespace",
+		Name: "root",
+		Tools: []CodexTool{{
+			Type: "namespace",
+			Name: "child",
+			Tools: []CodexTool{{
+				Type:       "function",
+				Name:       "run",
+				Parameters: json.RawMessage(`{"type":"object","properties":{"value":{"type":"integer"}}}`),
+			}},
+		}},
+	}})
+	openaiResp := &OpenAIResponse{
+		ID:      "chatcmpl_1",
+		Created: 123,
+		Model:   "gpt-test",
+		Choices: []OpenAIChoice{{
+			Message: &OpenAIRespMessage{
+				ToolCalls: []OpenAIToolCall{{
+					ID:   "call_nested",
+					Type: "function",
+					Function: OpenAIFunctionCall{
+						Name:      "root__child__run",
+						Arguments: `{"value":1}`,
+					},
+				}},
+			},
+		}},
+	}
+
+	got := convertOpenAIChatToCodexResponse(openaiResp, "", toolCtx)
+
+	require.Len(t, got.Output, 1)
+	assert.Equal(t, "function_call", got.Output[0].Type)
+	assert.Equal(t, "run", got.Output[0].Name)
+	assert.Equal(t, "root__child", got.Output[0].Namespace)
 }
 
 func TestCollectOpenAIChatStreamToResponseUsesToolCallIndex(t *testing.T) {
@@ -440,6 +535,153 @@ data: [DONE]
 	assert.Equal(t, "deepseek-test", responsePayload["model"])
 }
 
+func TestHandleForceCodexNormalResponseConvertsAnthropicError(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"busy Bearer sk-proj-12345678901234567890"}}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamClaude)
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleForceCodexNormalResponse(c, resp)
+
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+	var got CodexResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, "failed", got.Status)
+	require.NotNil(t, got.Error)
+	assert.Equal(t, "rate_limit_error", got.Error.Type)
+	assert.Equal(t, "busy Bearer [REDACTED_API_KEY]", got.Error.Message)
+	assert.NotContains(t, w.Body.String(), "sk-proj")
+}
+
+func TestHandleForceCodexNormalResponseConvertsOpenAIChatError(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"error":{"type":"rate_limit_error","message":"quota Bearer sk-proj-12345678901234567890"}}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamOpenAIChat)
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleForceCodexNormalResponse(c, resp)
+
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+	var got CodexResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, "failed", got.Status)
+	require.NotNil(t, got.Error)
+	assert.Equal(t, "rate_limit_error", got.Error.Type)
+	assert.Equal(t, "quota Bearer [REDACTED_API_KEY]", got.Error.Message)
+	assert.NotContains(t, w.Body.String(), "sk-proj")
+}
+
+func TestHandleForceCodexStreamingResponseEmitsFailedForAnthropicError(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	stream := []byte(`event: error
+data: {"type":"error","error":{"type":"overloaded_error","message":"try later"}}
+
+data: [DONE]
+
+`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamClaude)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(stream)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleForceCodexStreamingResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	out := w.Body.String()
+	assert.Contains(t, out, "event: response.failed")
+	assert.NotContains(t, out, "event: response.completed")
+	assert.Contains(t, out, `"type":"overloaded_error"`)
+	assert.Contains(t, out, `"message":"try later"`)
+}
+
+func TestHandleForceCodexStreamingResponseEmitsFailedForOpenAIChatError(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	stream := []byte(`event: error
+data: {"error":{"type":"invalid_request_error","message":"bad request Bearer sk-proj-12345678901234567890"}}
+
+data: [DONE]
+
+`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamOpenAIChat)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(stream)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleForceCodexStreamingResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	out := w.Body.String()
+	assert.Contains(t, out, "event: response.failed")
+	assert.NotContains(t, out, "event: response.completed")
+	assert.Contains(t, out, `"type":"invalid_request_error"`)
+	assert.Contains(t, out, `"message":"bad request Bearer [REDACTED_API_KEY]"`)
+	assert.NotContains(t, out, "sk-proj")
+}
+
+func TestHandleForceCodexStreamingResponseStopsAfterSSEWriteError(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	stream := []byte(`data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	failingWriter := &failAfterWriteResponseWriter{ResponseWriter: c.Writer}
+	c.Writer = failingWriter
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamOpenAIChat)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(stream)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleForceCodexStreamingResponse(c, resp)
+
+	assert.Equal(t, 1, failingWriter.writes)
+	assert.Empty(t, w.Body.String())
+}
+
 func TestHandleForceCodexStreamingResponseEmitsResponsesDeltas(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -516,6 +758,45 @@ data: [DONE]
 	assert.Contains(t, out, `"arguments":"{}"`)
 	assert.Contains(t, out, "event: response.output_item.done")
 	assert.Contains(t, out, `"name":"list_mcp_resources"`)
+}
+
+func TestHandleForceCodexStreamingResponseEmitsCustomToolInputEvents(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	stream := []byte(`data: {"id":"chatcmpl_custom","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_custom","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_custom","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"*** Begin Patch\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamOpenAIChat)
+	c.Set(ctxKeyCodexToolContext, newCodexToolContext([]CodexTool{{
+		Type: "custom",
+		Name: "apply_patch",
+	}}))
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(stream)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleForceCodexStreamingResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	out := w.Body.String()
+	assert.Contains(t, out, "event: response.custom_tool_call_input.delta")
+	assert.Contains(t, out, "event: response.custom_tool_call_input.done")
+	assert.NotContains(t, out, "event: response.function_call_arguments.delta")
+	assert.NotContains(t, out, "event: response.function_call_arguments.done")
+	assert.Contains(t, out, `"type":"custom_tool_call"`)
+	assert.Contains(t, out, `"name":"apply_patch"`)
+	assert.Contains(t, out, `"input":"*** Begin Patch"`)
 }
 
 func TestCollectOpenAIChatStreamToResponsePreservesReasoningAndUsageOnlyChunk(t *testing.T) {
@@ -617,6 +898,38 @@ func TestConvertCodexRequestToClaudePreservesCodexToolKinds(t *testing.T) {
 	assert.JSONEq(t, `[{"type":"tool_use","id":"ns","name":"mcp__gmail__send_email","input":{"to":"a@example.com"}}]`, string(got.Messages[2].Content))
 }
 
+func TestConvertCodexRequestToClaudePreservesNestedNamespaces(t *testing.T) {
+	t.Parallel()
+
+	req := &CodexRequest{
+		Model: "claude-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_nested","namespace":"root__child","name":"run","arguments":"{\"value\":1}"}
+		]`),
+		Tools: []CodexTool{{
+			Type: "namespace",
+			Name: "root",
+			Tools: []CodexTool{{
+				Type: "namespace",
+				Name: "child",
+				Tools: []CodexTool{{
+					Type:       "function",
+					Name:       "run",
+					Parameters: json.RawMessage(`{"type":"object","properties":{"value":{"type":"integer"}}}`),
+				}},
+			}},
+		}},
+	}
+
+	got, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 1)
+	assert.Equal(t, "root__child__run", got.Tools[0].Name)
+	require.Len(t, got.Messages, 1)
+	assert.JSONEq(t, `[{"type":"tool_use","id":"nested","name":"root__child__run","input":{"value":1}}]`, string(got.Messages[0].Content))
+}
+
 func TestConvertCodexRequestToClaudeDefaultsInvalidToolArguments(t *testing.T) {
 	t.Parallel()
 
@@ -624,15 +937,19 @@ func TestConvertCodexRequestToClaudeDefaultsInvalidToolArguments(t *testing.T) {
 		Model: "claude-test",
 		Input: json.RawMessage(`[
 			{"type":"function_call","call_id":"call_empty","name":"empty_args","arguments":""},
-			{"type":"function_call","call_id":"call_invalid","name":"invalid_args","arguments":"not-json"}
+			{"type":"function_call","call_id":"call_invalid","name":"invalid_args","arguments":"not-json"},
+			{"type":"function_call","call_id":"call_array","name":"array_args","arguments":"[]"},
+			{"type":"function_call","call_id":"call_string","name":"string_args","arguments":"\"foo\""}
 		]`),
 	}
 
 	got, err := convertCodexRequestToClaude(req)
 	require.NoError(t, err)
-	require.Len(t, got.Messages, 2)
+	require.Len(t, got.Messages, 4)
 	assert.JSONEq(t, `[{"type":"tool_use","id":"empty","name":"empty_args","input":{}}]`, string(got.Messages[0].Content))
 	assert.JSONEq(t, `[{"type":"tool_use","id":"invalid","name":"invalid_args","input":{}}]`, string(got.Messages[1].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"array","name":"array_args","input":{}}]`, string(got.Messages[2].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"string","name":"string_args","input":{}}]`, string(got.Messages[3].Content))
 }
 
 func TestConvertClaudeResponseToCodex(t *testing.T) {

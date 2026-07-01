@@ -1198,6 +1198,36 @@ data: [DONE]
 	}
 }
 
+func TestCCStreamingResponse_OpenAIErrorEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	sseData := `event: error
+data: {"error":{"type":"rate_limit_error","message":"quota exceeded"}}
+
+data: [DONE]
+`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sseData)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set("original_model", "gpt-4")
+
+	ps := &ProxyServer{}
+	ps.handleCCStreamingResponse(c, resp)
+
+	output := w.Body.String()
+	require.Contains(t, output, "event: error")
+	require.Contains(t, output, `"type":"rate_limit_error"`)
+	require.Contains(t, output, `"message":"quota exceeded"`)
+	require.Contains(t, output, "event: message_stop")
+}
+
 // TestCCStreamingResponse_ReasoningContentWithToolCall tests that reasoning_content
 // is properly handled when followed by tool calls.
 func TestCCStreamingResponse_ReasoningContentWithToolCall(t *testing.T) {
@@ -6346,7 +6376,7 @@ func TestHandleCCNormalResponse(t *testing.T) {
 		},
 		{
 			name:         "error response from upstream",
-			responseBody: `{"error":{"message":"Rate limit exceeded","type":"rate_limit_error","code":"rate_limit_exceeded"}}`,
+			responseBody: `{"error":{"message":"Rate limit exceeded for Bearer sk-proj-12345678901234567890","type":"rate_limit_error","code":"rate_limit_exceeded"}}`,
 			statusCode:   http.StatusTooManyRequests,
 			contentType:  "application/json",
 			expectStatus: http.StatusTooManyRequests,
@@ -6359,7 +6389,13 @@ func TestHandleCCNormalResponse(t *testing.T) {
 				if claudeErr.Type != "error" {
 					t.Errorf("expected type error, got %s", claudeErr.Type)
 				}
-				if claudeErr.Error.Message != "Rate limit exceeded" {
+				if claudeErr.Error.Type != "rate_limit_error" {
+					t.Errorf("expected rate_limit_error, got %s", claudeErr.Error.Type)
+				}
+				if strings.Contains(body, "sk-proj") {
+					t.Errorf("expected sanitized error body, got %s", body)
+				}
+				if claudeErr.Error.Message != "Rate limit exceeded for Bearer [REDACTED_API_KEY]" {
 					t.Errorf("expected rate limit message, got %s", claudeErr.Error.Message)
 				}
 			},

@@ -148,8 +148,9 @@ func (ctx *codexToolContext) addTool(tool CodexTool, namespace string) {
 	case "tool_search":
 		ctx.byChatName[codexToolSearchProxyName] = codexToolSpec{Kind: codexToolKindToolSearch, Name: codexToolSearchProxyName}
 	case "namespace":
+		nextNamespace := codexChatToolName(tool.Name, namespace)
 		for _, child := range codexNamespaceChildren(tool) {
-			ctx.addTool(child, tool.Name)
+			ctx.addTool(child, nextNamespace)
 		}
 	}
 }
@@ -308,7 +309,10 @@ func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal 
 		resp.Status = "failed"
 		resp.Error = &CodexError{
 			Type:    openaiResp.Error.Type,
-			Message: openaiResp.Error.Message,
+			Message: strings.TrimSpace(utils.SanitizeErrorBody(openaiResp.Error.Message)),
+		}
+		if resp.Error.Message == "" {
+			resp.Error.Message = "Upstream returned an error"
 		}
 		return resp
 	}
@@ -410,6 +414,24 @@ func convertClaudeToCodexResponse(claudeResp *ClaudeResponse, toolCtxOpt ...*cod
 			CreatedAt: time.Now().Unix(),
 			Status:    "failed",
 			Error:     &CodexError{Type: "server_error", Message: "empty upstream response"},
+		}
+	}
+	if claudeResp.Error != nil {
+		message := strings.TrimSpace(utils.SanitizeErrorBody(claudeResp.Error.Message))
+		if message == "" {
+			message = "Upstream returned an error"
+		}
+		return &CodexResponse{
+			ID:        "resp_" + time.Now().Format("20060102150405"),
+			Object:    "response",
+			CreatedAt: time.Now().Unix(),
+			Status:    "failed",
+			Model:     claudeResp.Model,
+			Output:    []CodexOutputItem{},
+			Error: &CodexError{
+				Type:    claudeResp.Error.Type,
+				Message: message,
+			},
 		}
 	}
 	resp := &CodexResponse{
@@ -543,11 +565,36 @@ func codexCustomToolInputFromArguments(arguments string) any {
 	return arguments
 }
 
+func codexCustomToolInputString(input any) string {
+	switch v := input.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case json.RawMessage:
+		return string(v)
+	case []byte:
+		return string(v)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprint(v)
+		}
+		return string(b)
+	}
+}
+
 func codexToolArgumentsRawMessage(arguments string) json.RawMessage {
 	arguments = strings.TrimSpace(arguments)
-	if arguments == "" || !json.Valid([]byte(arguments)) {
+	if arguments == "" {
 		return json.RawMessage(`{}`)
 	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil || parsed == nil {
+		return json.RawMessage(`{}`)
+	}
+
 	return json.RawMessage(arguments)
 }
 
@@ -794,8 +841,9 @@ func appendCodexToolToOpenAIChat(tools *[]OpenAITool, tool CodexTool, namespace 
 			},
 		})
 	case "namespace":
+		nextNamespace := codexChatToolName(tool.Name, namespace)
 		for _, child := range codexNamespaceChildren(tool) {
-			appendCodexToolToOpenAIChat(tools, child, tool.Name)
+			appendCodexToolToOpenAIChat(tools, child, nextNamespace)
 		}
 	}
 }
@@ -828,8 +876,9 @@ func appendCodexToolToClaude(tools *[]ClaudeTool, tool CodexTool, namespace stri
 			InputSchema: codexToolSearchParameters(),
 		})
 	case "namespace":
+		nextNamespace := codexChatToolName(tool.Name, namespace)
 		for _, child := range codexNamespaceChildren(tool) {
-			appendCodexToolToClaude(tools, child, tool.Name)
+			appendCodexToolToClaude(tools, child, nextNamespace)
 		}
 	}
 }
@@ -1096,7 +1145,7 @@ func (ps *ProxyServer) handleForceCodexStreamingResponse(c *gin.Context, resp *h
 	c.Header("Content-Type", "text/event-stream")
 	c.Status(statusCode)
 	if err := writeForceCodexCollectedStreamEvents(c, streamResp); err != nil {
-		writeForceCodexGatewayError(c, "Failed to marshal collected Codex stream event")
+		logrus.WithError(err).Warn("Force Codex: failed to write collected SSE stream")
 		return
 	}
 	if flusher, ok := c.Writer.(http.Flusher); ok {
@@ -1148,8 +1197,17 @@ func writeForceCodexCollectedStreamEvents(c *gin.Context, streamResp *CodexRespo
 		}
 	}
 
-	if err := writeEvent("response.completed", map[string]any{
-		"type":     "response.completed",
+	terminalEvent := "response.completed"
+	switch streamResp.Status {
+	case "failed":
+		terminalEvent = "response.failed"
+	case "incomplete":
+		terminalEvent = "response.incomplete"
+	case "cancelled", "canceled":
+		terminalEvent = "response.cancelled"
+	}
+	if err := writeEvent(terminalEvent, map[string]any{
+		"type":     terminalEvent,
 		"response": streamResp,
 	}); err != nil {
 		return err
@@ -1202,6 +1260,8 @@ func writeForceCodexOutputItemEvents(writeEvent func(string, any) error, item Co
 		addedItem.Content = []CodexContentBlock{}
 	case "function_call":
 		addedItem.Arguments = ""
+	case "custom_tool_call":
+		addedItem.Input = ""
 	}
 	if err := writeEvent("response.output_item.added", map[string]any{
 		"type":         "response.output_item.added",
@@ -1263,6 +1323,26 @@ func writeForceCodexOutputItemEvents(writeEvent func(string, any) error, item Co
 			}); err != nil {
 				return err
 			}
+		}
+	case "custom_tool_call":
+		input := codexCustomToolInputString(item.Input)
+		if input != "" {
+			if err := writeEvent("response.custom_tool_call_input.delta", map[string]any{
+				"type":         "response.custom_tool_call_input.delta",
+				"item_id":      item.ID,
+				"output_index": outputIndex,
+				"delta":        input,
+			}); err != nil {
+				return err
+			}
+		}
+		if err := writeEvent("response.custom_tool_call_input.done", map[string]any{
+			"type":         "response.custom_tool_call_input.done",
+			"item_id":      item.ID,
+			"output_index": outputIndex,
+			"input":        input,
+		}); err != nil {
+			return err
 		}
 	case "function_call":
 		if item.Arguments != "" {
@@ -1356,6 +1436,10 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 		}
 		if chunk.Usage != nil {
 			resp.Usage = chunk.Usage
+		}
+		if chunk.Error != nil {
+			resp.Error = chunk.Error
+			continue
 		}
 		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta == nil {
 			continue
@@ -1470,6 +1554,13 @@ func collectClaudeStreamToResponse(bodyBytes []byte) *ClaudeResponse {
 			}
 			if event.Usage != nil {
 				resp.Usage.OutputTokens = event.Usage.OutputTokens
+			}
+		case "error":
+			resp.Type = "error"
+			if event.Error != nil {
+				resp.Error = event.Error
+			} else {
+				resp.Error = &ClaudeError{Type: "api_error", Message: "upstream stream error"}
 			}
 		}
 	}

@@ -683,6 +683,38 @@ func TestRestoreOriginalPath(t *testing.T) {
 	}
 }
 
+func TestClearForceProtocolContextClearsToolState(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCCEnabled, true)
+	c.Set(ctxKeyOpenAIResponseCC, true)
+	c.Set(ctxKeyGeminiCC, true)
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamOpenAIChat)
+	c.Set(ctxKeyOpenAIToolNameReverseMap, map[string]string{"short": "original"})
+	c.Set(ctxKeyCodexToolNameReverseMap, map[string]string{"short": "original"})
+	c.Set(ctxKeyCodexToolContext, newCodexToolContext([]CodexTool{{Type: "custom", Name: "exec"}}))
+
+	clearForceProtocolContext(c)
+
+	for _, key := range []string{
+		ctxKeyCCEnabled,
+		ctxKeyOpenAIResponseCC,
+		ctxKeyGeminiCC,
+		ctxKeyCodexEnabled,
+		ctxKeyCodexUpstreamFormat,
+		ctxKeyOpenAIToolNameReverseMap,
+		ctxKeyCodexToolNameReverseMap,
+		ctxKeyCodexToolContext,
+	} {
+		_, exists := c.Get(key)
+		assert.False(t, exists, "expected %s to be cleared", key)
+	}
+}
+
 func TestCountAvailableSubGroups(t *testing.T) {
 	t.Parallel()
 
