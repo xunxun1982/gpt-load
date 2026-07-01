@@ -16,8 +16,41 @@ import (
 	"gpt-load/internal/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/require"
 )
+
+func captureGlobalLogrusEntries(t *testing.T) *logrustest.Hook {
+	t.Helper()
+
+	logger := logrus.StandardLogger()
+	originalHooks := make(logrus.LevelHooks, len(logger.Hooks))
+	for level, hooks := range logger.Hooks {
+		originalHooks[level] = append([]logrus.Hook(nil), hooks...)
+	}
+	t.Cleanup(func() {
+		logger.ReplaceHooks(originalHooks)
+	})
+
+	// Package-level logrus calls require a global hook; NewNullLogger would not observe them.
+	return logrustest.NewGlobal()
+}
+
+func logrusHookText(hook *logrustest.Hook) string {
+	var b strings.Builder
+	for _, entry := range hook.AllEntries() {
+		b.WriteString(entry.Message)
+		b.WriteByte(' ')
+		for key, value := range entry.Data {
+			b.WriteString(key)
+			b.WriteByte('=')
+			b.WriteString(fmt.Sprint(value))
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
 
 func TestApplyCCRequestConversionDirectStoresModelRedirectTargetIndex(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -1151,6 +1184,81 @@ data: [DONE]
 	if !strings.Contains(output, "message_stop") {
 		t.Errorf("expected message_stop in output, got: %s", output)
 	}
+}
+
+func TestCCStreamingResponse_ReasoningContentPreservesChunkSpacing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	sseData := `data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Need"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":" "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"context."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":"stop"}]}
+
+data: [DONE]
+`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sseData)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("original_model", "deepseek-reasoner")
+	c.Set("thinking_model_applied", true)
+
+	ps := &ProxyServer{}
+	ps.handleCCStreamingResponse(c, resp)
+
+	output := w.Body.String()
+	wants := []string{`"thinking":"Need"`, `"thinking":" "`, `"thinking":"context."`}
+	last := -1
+	for _, want := range wants {
+		idx := strings.Index(output, want)
+		if idx == -1 {
+			t.Errorf("expected reasoning chunks to preserve %s, got: %s", want, output)
+			return
+		}
+		if idx < last {
+			t.Errorf("expected reasoning chunks in order %v, got: %s", wants, output)
+			return
+		}
+		last = idx
+	}
+}
+
+func TestCCStreamingResponse_OpenAIErrorEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	sseData := `event: error
+data: {"error":{"type":"rate_limit_error","message":"quota exceeded"}}
+
+data: [DONE]
+`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sseData)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set("original_model", "gpt-4")
+
+	ps := &ProxyServer{}
+	ps.handleCCStreamingResponse(c, resp)
+
+	output := w.Body.String()
+	require.Contains(t, output, "event: error")
+	require.Contains(t, output, `"type":"rate_limit_error"`)
+	require.Contains(t, output, `"message":"quota exceeded"`)
+	require.Contains(t, output, "event: message_stop")
 }
 
 // TestCCStreamingResponse_ReasoningContentWithToolCall tests that reasoning_content
@@ -6301,7 +6409,7 @@ func TestHandleCCNormalResponse(t *testing.T) {
 		},
 		{
 			name:         "error response from upstream",
-			responseBody: `{"error":{"message":"Rate limit exceeded","type":"rate_limit_error","code":"rate_limit_exceeded"}}`,
+			responseBody: `{"error":{"message":"Rate limit exceeded for Bearer sk-proj-12345678901234567890","type":"rate_limit_error","code":"rate_limit_exceeded"}}`,
 			statusCode:   http.StatusTooManyRequests,
 			contentType:  "application/json",
 			expectStatus: http.StatusTooManyRequests,
@@ -6314,7 +6422,13 @@ func TestHandleCCNormalResponse(t *testing.T) {
 				if claudeErr.Type != "error" {
 					t.Errorf("expected type error, got %s", claudeErr.Type)
 				}
-				if claudeErr.Error.Message != "Rate limit exceeded" {
+				if claudeErr.Error.Type != "rate_limit_error" {
+					t.Errorf("expected rate_limit_error, got %s", claudeErr.Error.Type)
+				}
+				if strings.Contains(body, "sk-proj") {
+					t.Errorf("expected sanitized error body, got %s", body)
+				}
+				if claudeErr.Error.Message != "Rate limit exceeded for Bearer [REDACTED_API_KEY]" {
 					t.Errorf("expected rate limit message, got %s", claudeErr.Error.Message)
 				}
 			},
@@ -6369,6 +6483,36 @@ func TestHandleCCNormalResponse(t *testing.T) {
 				tt.checkResponse(t, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandleCCNormalResponseSanitizesOpenAIErrorLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	logHook := captureGlobalLogrusEntries(t)
+
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"Rate limit exceeded for Bearer sk-proj-12345678901234567890","type":"rate_limit_error","code":"rate_limit_exceeded"}}`)),
+	}
+	resp.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCCEnabled, true)
+	c.Set(ctxKeyOriginalFormat, "claude")
+	c.Set("original_model", "gpt-4")
+
+	ps := &ProxyServer{}
+	ps.handleCCNormalResponse(c, resp)
+
+	logOutput := logrusHookText(logHook)
+	if strings.Contains(logOutput, "sk-proj") {
+		t.Fatalf("expected sanitized log output, got %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "[REDACTED_API_KEY]") {
+		t.Fatalf("expected redacted API key marker in log output, got %s", logOutput)
 	}
 }
 

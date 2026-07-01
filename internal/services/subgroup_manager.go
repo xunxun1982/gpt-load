@@ -5,6 +5,7 @@ import (
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
 	"gpt-load/internal/utils"
+	"hash/fnv"
 	"strconv"
 	"sync"
 
@@ -104,6 +105,37 @@ func (m *SubGroupManager) SelectSubGroupWithRetry(group *models.Group, excludeSu
 			"selected_id":     selectedID,
 			"excluded_count":  len(excludeSubGroupIDs),
 		}).Debug("Selected sub-group from aggregate with exclusion list")
+	}
+
+	return selectedName, selectedID, nil
+}
+
+// SelectSubGroupWithRetryAffinity selects a sub-group deterministically for a stable affinity key.
+func (m *SubGroupManager) SelectSubGroupWithRetryAffinity(group *models.Group, excludeSubGroupIDs map[uint]bool, affinityKey string) (string, uint, error) {
+	if group.GroupType != "aggregate" {
+		return "", 0, nil
+	}
+	if affinityKey == "" {
+		return m.SelectSubGroupWithRetry(group, excludeSubGroupIDs)
+	}
+
+	selector := m.getSelector(group)
+	if selector == nil {
+		return "", 0, fmt.Errorf("no valid sub-groups available for aggregate group '%s'", group.Name)
+	}
+
+	selectedName, selectedID := selector.selectByAffinityWithExclusion(excludeSubGroupIDs, affinityKey)
+	if selectedName == "" {
+		return "", 0, fmt.Errorf("no sub-groups with active keys for aggregate group '%s'", group.Name)
+	}
+
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"aggregate_group": group.Name,
+			"selected_group":  selectedName,
+			"selected_id":     selectedID,
+			"excluded_count":  len(excludeSubGroupIDs),
+		}).Debug("Selected sub-group from aggregate with affinity")
 	}
 
 	return selectedName, selectedID, nil
@@ -417,6 +449,91 @@ func (s *selector) selectNextWithExclusion(excludeIDs map[uint]bool) (string, ui
 	}).Warn("No sub-groups with active keys available after exclusion")
 
 	return "", 0
+}
+
+func (s *selector) selectByAffinityWithExclusion(excludeIDs map[uint]bool, affinityKey string) (string, uint) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.subGroups) == 0 {
+		return "", 0
+	}
+
+	primary := s.selectPrimaryAffinityCandidate(affinityKey)
+	if primary != nil && !isExcludedSubGroup(primary.subGroupID, excludeIDs, nil) && s.hasActiveKeys(primary) {
+		return primary.name, primary.subGroupID
+	}
+
+	fallbackExcludeIDs := excludeIDs
+	if primary != nil {
+		fallbackExcludeIDs = copySubGroupExclusions(excludeIDs)
+		fallbackExcludeIDs[primary.subGroupID] = true
+	}
+
+	attempted := s.resetAttempted()
+	defer func() {
+		s.attempted = attempted
+	}()
+	for len(attempted) < len(s.subGroups) {
+		item := s.selectByWeightSkipping(fallbackExcludeIDs, attempted)
+		if item == nil {
+			break
+		}
+		attempted = append(attempted, item.subGroupID)
+		if item.enabled && !isExcludedSubGroup(item.subGroupID, fallbackExcludeIDs, nil) && s.hasActiveKeys(item) {
+			return item.name, item.subGroupID
+		}
+	}
+
+	return "", 0
+}
+
+func (s *selector) selectPrimaryAffinityCandidate(affinityKey string) *subGroupItem {
+	weights := s.resetWeights()
+	total := 0
+	for i := range s.subGroups {
+		item := &s.subGroups[i]
+		if !item.enabled || item.weight <= 0 {
+			weights[i] = 0
+			continue
+		}
+
+		weight := item.weight
+		weights[i] = weight
+		total += weight
+	}
+
+	if total <= 0 {
+		return nil
+	}
+
+	target := int(hashAffinityKey(affinityKey) % uint64(total))
+	cumulative := 0
+	for i, weight := range weights {
+		if weight <= 0 {
+			continue
+		}
+		cumulative += weight
+		if target < cumulative {
+			return &s.subGroups[i]
+		}
+	}
+
+	return nil
+}
+
+func copySubGroupExclusions(excludeIDs map[uint]bool) map[uint]bool {
+	copied := make(map[uint]bool, len(excludeIDs)+1)
+	for id, excluded := range excludeIDs {
+		copied[id] = excluded
+	}
+	return copied
+}
+
+func hashAffinityKey(key string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	return h.Sum64()
 }
 
 // selectByWeight implements weighted random selection algorithm.

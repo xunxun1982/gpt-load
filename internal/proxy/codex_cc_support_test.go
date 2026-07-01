@@ -540,6 +540,41 @@ func TestConvertClaudeToCodex(t *testing.T) {
 			},
 		},
 		{
+			name: "preserves call-prefixed tool ids",
+			claudeReq: &ClaudeRequest{
+				Model: "claude-3-5-sonnet-20241022",
+				Messages: []ClaudeMessage{
+					{
+						Role:    "assistant",
+						Content: json.RawMessage(`[{"type":"tool_use","id":"call_existing","name":"read_file","input":{"path":"README.md"}}]`),
+					},
+					{
+						Role:    "user",
+						Content: json.RawMessage(`[{"type":"tool_result","tool_use_id":"call_existing","content":"ok"}]`),
+					},
+				},
+				MaxTokens: 1024,
+			},
+			customInstr: "",
+			group:       nil,
+			expectError: false,
+			checkFunc: func(t *testing.T, req *CodexRequest) {
+				var input []map[string]interface{}
+				if err := json.Unmarshal(req.Input, &input); err != nil {
+					t.Fatalf("failed to parse codex input: %v", err)
+				}
+				if len(input) != 2 {
+					t.Fatalf("expected 2 input items, got %d", len(input))
+				}
+				if got := input[0]["call_id"]; got != "call_existing" {
+					t.Fatalf("expected function call_id call_existing, got %v", got)
+				}
+				if got := input[1]["call_id"]; got != "call_existing" {
+					t.Fatalf("expected function output call_id call_existing, got %v", got)
+				}
+			},
+		},
+		{
 			name: "with tool choice auto",
 			claudeReq: &ClaudeRequest{
 				Model: "claude-3-5-sonnet-20241022",
@@ -970,6 +1005,71 @@ func TestHandleCodexCCNormalResponse(t *testing.T) {
 			},
 		},
 		{
+			name: "response with custom tool call",
+			responseBody: `{
+				"id": "resp_custom",
+				"object": "response",
+				"status": "completed",
+				"model": "gpt-4o",
+				"output": [
+					{
+						"type": "custom_tool_call",
+						"call_id": "call_patch",
+						"name": "apply_patch",
+						"input": "*** Begin Patch\n*** End Patch"
+					}
+				]
+			}`,
+			responseStatus: http.StatusOK,
+			expectError:    false,
+			checkFunc: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var claudeResp ClaudeResponse
+				if err := json.Unmarshal(w.Body.Bytes(), &claudeResp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if len(claudeResp.Content) != 1 {
+					t.Fatalf("expected 1 content block, got %d", len(claudeResp.Content))
+				}
+				block := claudeResp.Content[0]
+				if block.Type != "tool_use" || block.Name != "apply_patch" {
+					t.Fatalf("expected apply_patch tool_use, got %#v", block)
+				}
+				require.JSONEq(t, `{"input":"*** Begin Patch\n*** End Patch"}`, string(block.Input))
+			},
+		},
+		{
+			name: "response with tool search call",
+			responseBody: `{
+				"id": "resp_search",
+				"object": "response",
+				"status": "completed",
+				"model": "gpt-4o",
+				"output": [
+					{
+						"type": "tool_search_call",
+						"call_id": "call_search",
+						"arguments": {"query": "gmail"}
+					}
+				]
+			}`,
+			responseStatus: http.StatusOK,
+			expectError:    false,
+			checkFunc: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var claudeResp ClaudeResponse
+				if err := json.Unmarshal(w.Body.Bytes(), &claudeResp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if len(claudeResp.Content) != 1 {
+					t.Fatalf("expected 1 content block, got %d", len(claudeResp.Content))
+				}
+				block := claudeResp.Content[0]
+				if block.Type != "tool_use" || block.Name != "tool_search" {
+					t.Fatalf("expected tool_search tool_use, got %#v", block)
+				}
+				require.JSONEq(t, `{"query":"gmail"}`, string(block.Input))
+			},
+		},
+		{
 			name: "response with reasoning/thinking",
 			responseBody: `{
 				"id": "resp_789",
@@ -1012,7 +1112,7 @@ func TestHandleCodexCCNormalResponse(t *testing.T) {
 		},
 		{
 			name:           "error response from upstream",
-			responseBody:   `{"error":{"type":"invalid_request_error","message":"Invalid model"}}`,
+			responseBody:   `{"error":{"type":"rate_limit_error","message":"Invalid model for Bearer sk-proj-12345678901234567890"}}`,
 			responseStatus: http.StatusBadRequest,
 			expectError:    false,
 			checkFunc: func(t *testing.T, w *httptest.ResponseRecorder) {
@@ -1025,6 +1125,15 @@ func TestHandleCodexCCNormalResponse(t *testing.T) {
 				}
 				if claudeErr.Type != "error" {
 					t.Errorf("expected type error, got %s", claudeErr.Type)
+				}
+				if claudeErr.Error.Type != "rate_limit_error" {
+					t.Errorf("expected rate_limit_error, got %s", claudeErr.Error.Type)
+				}
+				if strings.Contains(w.Body.String(), "sk-proj") {
+					t.Errorf("expected sanitized error body, got %s", w.Body.String())
+				}
+				if claudeErr.Error.Message != "Invalid model for Bearer [REDACTED_API_KEY]" {
+					t.Errorf("expected sanitized message, got %s", claudeErr.Error.Message)
 				}
 			},
 		},
@@ -1057,14 +1166,43 @@ func TestHandleCodexCCNormalResponse(t *testing.T) {
 	}
 }
 
+func TestHandleCodexCCNormalResponseSanitizesCodexErrorLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	logHook := captureGlobalLogrusEntries(t)
+
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"rate_limit_error","message":"Invalid model for Bearer sk-proj-12345678901234567890"}}`)),
+		Header:     make(http.Header),
+	}
+	upstreamResp.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+
+	ps := &ProxyServer{}
+	ps.handleCodexCCNormalResponse(c, upstreamResp)
+
+	logOutput := logrusHookText(logHook)
+	if strings.Contains(logOutput, "sk-proj") {
+		t.Fatalf("expected sanitized log output, got %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "[REDACTED_API_KEY]") {
+		t.Fatalf("expected redacted API key marker in log output, got %s", logOutput)
+	}
+}
+
 // TestHandleCodexCCStreamingResponse tests streaming Codex response conversion
 func TestHandleCodexCCStreamingResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name      string
-		events    []string
-		checkFunc func(*testing.T, string)
+		name       string
+		events     []string
+		eventNames []string
+		checkFunc  func(*testing.T, string)
 	}{
 		{
 			name: "basic text streaming",
@@ -1121,6 +1259,28 @@ func TestHandleCodexCCStreamingResponse(t *testing.T) {
 			},
 		},
 		{
+			name: "streaming with custom tool call",
+			events: []string{
+				`{"type":"response.created","response":{"id":"resp_custom","model":"gpt-4o"}}`,
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","call_id":"call_patch","name":"apply_patch"}}`,
+				`{"type":"response.custom_tool_call_input.delta","output_index":0,"delta":"*** Begin Patch"}`,
+				`{"type":"response.custom_tool_call_input.done","output_index":0,"input":"*** Begin Patch"}`,
+				`{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","call_id":"call_patch","name":"apply_patch","input":"*** Begin Patch"}}`,
+				`{"type":"response.completed"}`,
+			},
+			checkFunc: func(t *testing.T, output string) {
+				if !strings.Contains(output, `"type":"tool_use"`) {
+					t.Error("expected tool_use block")
+				}
+				if !strings.Contains(output, `"name":"apply_patch"`) {
+					t.Error("expected apply_patch tool name")
+				}
+				if !strings.Contains(output, `"partial_json":"{\"input\":\"*** Begin Patch\"}"`) {
+					t.Errorf("expected wrapped custom input delta, got %s", output)
+				}
+			},
+		},
+		{
 			name: "streaming with reasoning",
 			events: []string{
 				`{"type":"response.created","response":{"id":"resp_789","model":"gpt-4o"}}`,
@@ -1143,13 +1303,104 @@ func TestHandleCodexCCStreamingResponse(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "response failed",
+			events: []string{
+				`{"type":"response.created","response":{"id":"resp_failed","model":"gpt-4o"}}`,
+				`{"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"type":"rate_limit_error","message":"quota exceeded Bearer sk-proj-12345678901234567890"}}}`,
+			},
+			checkFunc: func(t *testing.T, output string) {
+				if !strings.Contains(output, "event: error") {
+					t.Error("expected error event")
+				}
+				if !strings.Contains(output, `"type":"rate_limit_error"`) {
+					t.Error("expected rate limit error type")
+				}
+				if !strings.Contains(output, `"message":"quota exceeded Bearer [REDACTED_API_KEY]"`) {
+					t.Error("expected upstream error message")
+				}
+				if strings.Contains(output, "sk-proj") {
+					t.Errorf("expected sanitized output, got %s", output)
+				}
+				if !strings.Contains(output, "event: message_stop") {
+					t.Error("expected message_stop event")
+				}
+			},
+		},
+		{
+			name: "error event",
+			events: []string{
+				`{"error":{"type":"overloaded_error","message":"busy Bearer sk-proj-12345678901234567890"}}`,
+			},
+			eventNames: []string{"error"},
+			checkFunc: func(t *testing.T, output string) {
+				if !strings.Contains(output, "event: error") {
+					t.Error("expected error event")
+				}
+				if !strings.Contains(output, `"type":"overloaded_error"`) {
+					t.Error("expected overloaded error type")
+				}
+				if !strings.Contains(output, `"message":"busy Bearer [REDACTED_API_KEY]"`) {
+					t.Errorf("expected sanitized upstream message, got %s", output)
+				}
+				if strings.Contains(output, "sk-proj") {
+					t.Errorf("expected sanitized output, got %s", output)
+				}
+				if !strings.Contains(output, "event: message_stop") {
+					t.Error("expected message_stop event")
+				}
+			},
+		},
+		{
+			name: "error event terminates stream",
+			events: []string{
+				`{"error":{"type":"overloaded_error","message":"busy Bearer sk-proj-12345678901234567890"}}`,
+				`{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"late text"}`,
+			},
+			eventNames: []string{"error"},
+			checkFunc: func(t *testing.T, output string) {
+				if !strings.Contains(output, "event: error") {
+					t.Error("expected error event")
+				}
+				if strings.Contains(output, "late text") {
+					t.Errorf("expected stream to stop after error event, got %s", output)
+				}
+				if strings.Contains(output, "sk-proj") {
+					t.Errorf("expected sanitized output, got %s", output)
+				}
+			},
+		},
+		{
+			name: "response incomplete",
+			events: []string{
+				`{"type":"response.created","response":{"id":"resp_incomplete","model":"gpt-4o"}}`,
+				`{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"partial"}`,
+				`{"type":"response.incomplete","response":{"id":"resp_incomplete","status":"incomplete"}}`,
+			},
+			checkFunc: func(t *testing.T, output string) {
+				if !strings.Contains(output, "event: content_block_delta") {
+					t.Error("expected partial text delta")
+				}
+				if !strings.Contains(output, `"stop_reason":"max_tokens"`) {
+					t.Error("expected max_tokens stop reason")
+				}
+				if !strings.Contains(output, "event: message_stop") {
+					t.Error("expected message_stop event")
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create SSE stream
 			var sseData strings.Builder
-			for _, event := range tt.events {
+			for i, event := range tt.events {
+				if i < len(tt.eventNames) && tt.eventNames[i] != "" {
+					sseData.WriteString("event: ")
+					sseData.WriteString(tt.eventNames[i])
+					sseData.WriteString("\n")
+				}
 				sseData.WriteString("data: ")
 				sseData.WriteString(event)
 				sseData.WriteString("\n\n")

@@ -19,6 +19,7 @@ import {
   NInputNumber,
   NModal,
   NSelect,
+  NSwitch,
   NTag,
   useMessage,
   type FormInst,
@@ -37,6 +38,7 @@ interface GroupConfig {
   max_retries?: number;
   sub_max_retries?: number;
   health_reset_interval_seconds?: number;
+  codex_affinity_enabled?: boolean;
 }
 
 interface ApiError {
@@ -117,6 +119,7 @@ const defaultFormData = {
   max_retries: 0,
   sub_max_retries: 0,
   health_reset_interval_seconds: 0,
+  codex_affinity_enabled: false,
   preconditionItems: [] as PreconditionItem[], // Dynamic precondition list
 };
 
@@ -180,6 +183,7 @@ function loadGroupData() {
   const maxRetries = config.max_retries ?? 0;
   const subMaxRetries = config.sub_max_retries ?? 0;
   const healthResetIntervalSeconds = config.health_reset_interval_seconds ?? 0;
+  const codexAffinityEnabled = config.codex_affinity_enabled === true;
 
   // Load preconditions as dynamic items
   const preconditionItems: PreconditionItem[] = [];
@@ -201,6 +205,7 @@ function loadGroupData() {
     max_retries: maxRetries,
     sub_max_retries: subMaxRetries,
     health_reset_interval_seconds: healthResetIntervalSeconds,
+    codex_affinity_enabled: codexAffinityEnabled,
     preconditionItems,
   });
 }
@@ -296,6 +301,8 @@ async function handleSubmit() {
         max_retries: formData.max_retries ?? 0,
         sub_max_retries: formData.sub_max_retries ?? 0,
         health_reset_interval_seconds: formData.health_reset_interval_seconds ?? 0,
+        codex_affinity_enabled:
+          formData.channel_type === "openai-response" && formData.codex_affinity_enabled === true,
       },
       preconditions,
     };
@@ -425,6 +432,18 @@ async function handleSubmit() {
             <template #feedback>
               <span style="color: var(--text-secondary); font-size: 12px">
                 {{ t("keys.healthResetHint") }}
+              </span>
+            </template>
+          </n-form-item>
+
+          <n-form-item
+            v-if="formData.channel_type === 'openai-response'"
+            :label="t('keys.codexAffinity')"
+          >
+            <n-switch v-model:value="formData.codex_affinity_enabled" />
+            <template #feedback>
+              <span style="color: var(--text-secondary); font-size: 12px">
+                {{ t("keys.codexAffinityHint") }}
               </span>
             </template>
           </n-form-item>

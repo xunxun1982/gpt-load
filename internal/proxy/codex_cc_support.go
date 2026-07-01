@@ -46,6 +46,8 @@ type CodexTool struct {
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 	Strict      bool            `json:"strict,omitempty"`
+	Tools       []CodexTool     `json:"tools,omitempty"`
+	Children    []CodexTool     `json:"children,omitempty"`
 }
 
 // CodexRequest represents a Codex/Responses API request.
@@ -85,8 +87,83 @@ type CodexOutputItem struct {
 	// Each summary item has type "summary_text" and text field.
 	Summary   []CodexSummaryItem `json:"summary,omitempty"`
 	CallID    string             `json:"call_id,omitempty"`
+	Namespace string             `json:"namespace,omitempty"`
 	Name      string             `json:"name,omitempty"`
 	Arguments string             `json:"arguments,omitempty"`
+	Input     any                `json:"input,omitempty"`
+	Execution string             `json:"execution,omitempty"`
+}
+
+func (item CodexOutputItem) MarshalJSON() ([]byte, error) {
+	type alias CodexOutputItem
+	out, err := json.Marshal(alias(item))
+	if err != nil {
+		return nil, err
+	}
+	if item.Type != "tool_search_call" || strings.TrimSpace(item.Arguments) == "" {
+		return out, nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return out, nil
+	}
+	var args any
+	if err := json.Unmarshal([]byte(item.Arguments), &args); err == nil {
+		payload["arguments"] = args
+	}
+	return json.Marshal(payload)
+}
+
+func (item *CodexOutputItem) UnmarshalJSON(data []byte) error {
+	type alias CodexOutputItem
+	var raw struct {
+		alias
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*item = CodexOutputItem(raw.alias)
+	if len(raw.Arguments) == 0 || string(raw.Arguments) == "null" {
+		return nil
+	}
+	var arguments string
+	if err := json.Unmarshal(raw.Arguments, &arguments); err == nil {
+		item.Arguments = arguments
+		return nil
+	}
+	item.Arguments = string(raw.Arguments)
+	return nil
+}
+
+func codexCustomToolClaudeInput(input any) json.RawMessage {
+	inputString := codexCustomToolInputString(input)
+	out, err := json.Marshal(map[string]string{"input": inputString})
+	if err != nil {
+		return json.RawMessage(`{"input":""}`)
+	}
+	return out
+}
+
+func codexClaudeToolName(item CodexOutputItem, reverseToolNameMap map[string]string) string {
+	if item.Type == "tool_search_call" {
+		return codexToolSearchProxyName
+	}
+	toolName := item.Name
+	if reverseToolNameMap != nil {
+		if orig, ok := reverseToolNameMap[item.Name]; ok {
+			toolName = orig
+		}
+	}
+	return toolName
+}
+
+func codexClaudeToolInput(item CodexOutputItem, toolName string) json.RawMessage {
+	if item.Type == "custom_tool_call" {
+		return codexCustomToolClaudeInput(item.Input)
+	}
+	argsStr := cleanToolCallArguments(toolName, item.Arguments)
+	return codexToolArgumentsRawMessage(argsStr)
 }
 
 // CodexSummaryItem represents a summary item in reasoning output.
@@ -480,6 +557,13 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	return codexReq, nil
 }
 
+func codexCallIDFromClaudeToolID(id string) string {
+	if strings.HasPrefix(id, "call_") {
+		return id
+	}
+	return "call_" + id
+}
+
 // normalizeToolParameters ensures tool parameters have valid JSON schema structure.
 // Returns a valid JSON schema with at least type and properties fields.
 func normalizeToolParameters(raw json.RawMessage) json.RawMessage {
@@ -573,7 +657,7 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 			toolCalls = append(toolCalls, map[string]interface{}{
 				"type":      "function_call",
 				"id":        "fc_" + block.ID,
-				"call_id":   "call_" + block.ID,
+				"call_id":   codexCallIDFromClaudeToolID(block.ID),
 				"name":      toolName,
 				"arguments": argsStr,
 			})
@@ -581,7 +665,7 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 			resultContent := extractToolResultContent(block)
 			toolResults = append(toolResults, map[string]interface{}{
 				"type":    "function_call_output",
-				"call_id": "call_" + block.ToolUseID,
+				"call_id": codexCallIDFromClaudeToolID(block.ToolUseID),
 				"output":  resultContent,
 			})
 		}
@@ -782,34 +866,16 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 					}
 				}
 			}
-		case "function_call":
-			if item.CallID != "" && item.Name != "" {
-				// Restore original tool name first for validation and cleanup.
-				// This ensures tool-specific logic uses the correct name.
-				toolName := item.Name
-				if reverseToolNameMap != nil {
-					if orig, ok := reverseToolNameMap[item.Name]; ok {
-						toolName = orig
-					}
-				}
-				// Validate arguments before conversion using restored tool name
-				if !isValidToolCallArguments(toolName, item.Arguments) {
+		case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
+			if item.CallID != "" {
+				toolName := codexClaudeToolName(item, reverseToolNameMap)
+				if toolName == "" {
 					continue
 				}
-				inputJSON := json.RawMessage("{}")
-				if item.Arguments != "" {
-					argsStr := item.Arguments
-
-					// Clean up WebSearch tool arguments for upstream compatibility
-					argsStr = cleanToolCallArguments(toolName, argsStr)
-
-					// NOTE: Do NOT call doubleEscapeWindowsPathsForBash here!
-					// This is response conversion (upstream→Claude), not request conversion (Claude→upstream).
-					// The upstream response already has correct path format, we should not modify it.
-					// Calling doubleEscapeWindowsPathsForBash here causes path corruption.
-
-					inputJSON = json.RawMessage(argsStr)
+				if item.Type != "custom_tool_call" && !isValidToolCallArguments(toolName, item.Arguments) {
+					continue
 				}
+				inputJSON := codexClaudeToolInput(item, toolName)
 				// Extract tool use ID from call_id (remove "call_" prefix if present)
 				toolUseID := strings.TrimPrefix(item.CallID, "call_")
 				claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
@@ -1075,7 +1141,9 @@ type CodexStreamEvent struct {
 	Delta       string             `json:"delta,omitempty"`
 	Text        string             `json:"text,omitempty"`
 	Arguments   string             `json:"arguments,omitempty"`
+	Input       any                `json:"input,omitempty"`
 	Response    *CodexResponse     `json:"response,omitempty"`
+	Error       *CodexError        `json:"error,omitempty"`
 	SequenceNum int                `json:"sequence_number,omitempty"`
 }
 
@@ -1087,6 +1155,7 @@ type codexStreamState struct {
 	currentToolID   string
 	currentToolName string
 	currentToolArgs strings.Builder
+	toolInputSent   bool
 	toolUseBlocks   []ClaudeContentBlock
 	model           string
 	// nextClaudeIndex tracks the next content_block index for Claude events.
@@ -1137,6 +1206,38 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		s.nextClaudeIndex++
 		s.openBlockType = ""
 		s.inThinkingBlock = false
+	}
+	appendFinalMessageEvents := func(stopReason string) {
+		events = append(events, ClaudeStreamEvent{
+			Type:  "message_delta",
+			Delta: &ClaudeStreamDelta{StopReason: stopReason},
+			Usage: &ClaudeUsage{OutputTokens: 0},
+		})
+		events = append(events, ClaudeStreamEvent{Type: "message_stop"})
+	}
+	appendToolInputDelta := func(inputJSON json.RawMessage) {
+		if len(inputJSON) == 0 {
+			return
+		}
+		events = append(events, ClaudeStreamEvent{
+			Type:  "content_block_delta",
+			Index: s.nextClaudeIndex,
+			Delta: &ClaudeStreamDelta{
+				Type:        "input_json_delta",
+				PartialJSON: string(inputJSON),
+			},
+		})
+		s.toolInputSent = true
+	}
+	toolInputForCurrentItem := func(item CodexOutputItem) json.RawMessage {
+		toolName := codexClaudeToolName(item, s.reverseToolNameMap)
+		if item.Type == "custom_tool_call" && item.Input == nil {
+			item.Input = s.currentToolArgs.String()
+		}
+		if item.Arguments == "" {
+			item.Arguments = s.currentToolArgs.String()
+		}
+		return codexClaudeToolInput(item, toolName)
 	}
 
 	switch event.Type {
@@ -1279,18 +1380,17 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			case "message":
 				// Message item added, wait for content_part.added for actual content
 				logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Message item added")
-			case "function_call":
+			case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
 				// Close any open block before starting tool block
 				closeOpenBlock()
 				s.currentToolID = event.Item.CallID
-				s.currentToolName = event.Item.Name
-				// Restore original tool name if it was shortened
-				if s.reverseToolNameMap != nil {
-					if orig, ok := s.reverseToolNameMap[event.Item.Name]; ok {
-						s.currentToolName = orig
-					}
+				s.currentToolName = codexClaudeToolName(*event.Item, s.reverseToolNameMap)
+				if s.currentToolID == "" || s.currentToolName == "" {
+					logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Skipping tool item with missing ID or name")
+					return events
 				}
 				s.currentToolArgs.Reset()
+				s.toolInputSent = false
 				// Content block start for tool_use
 				toolUseID := strings.TrimPrefix(s.currentToolID, "call_")
 				logrus.WithFields(logrus.Fields{
@@ -1373,6 +1473,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		if event.Delta != "" && s.openBlockType != "tool" {
 			closeOpenBlock()
 			s.openBlockType = "tool"
+			s.toolInputSent = false
 			// Use current tool info if available, with fallback for out-of-order events.
 			// Per AI review: add fallback for empty tool ID/name to handle edge cases
 			// where arguments.delta arrives before output_item.added (unlikely but possible).
@@ -1398,6 +1499,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		}
 		if event.Delta != "" {
 			s.currentToolArgs.WriteString(event.Delta)
+			s.toolInputSent = true
 			logrus.WithField("delta_len", len(event.Delta)).Debug("Codex CC: Function call arguments delta")
 			events = append(events, ClaudeStreamEvent{
 				Type:  "content_block_delta",
@@ -1411,7 +1513,28 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 	case "response.function_call_arguments.done":
 		// Function call arguments complete
+		if event.Arguments != "" && s.openBlockType == "tool" && !s.toolInputSent {
+			toolName := s.currentToolName
+			if toolName == "" {
+				toolName = "unknown_tool"
+			}
+			appendToolInputDelta(codexToolArgumentsRawMessage(cleanToolCallArguments(toolName, event.Arguments)))
+		}
 		logrus.WithField("args_len", s.currentToolArgs.Len()).Debug("Codex CC: Function call arguments done")
+
+	case "response.custom_tool_call_input.delta":
+		if event.Delta != "" {
+			s.currentToolArgs.WriteString(event.Delta)
+		}
+
+	case "response.custom_tool_call_input.done":
+		if s.openBlockType == "tool" && !s.toolInputSent {
+			input := event.Input
+			if input == nil {
+				input = s.currentToolArgs.String()
+			}
+			appendToolInputDelta(codexCustomToolClaudeInput(input))
+		}
 
 	case "response.output_item.done":
 		if event.Item != nil {
@@ -1419,42 +1542,81 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			case "message":
 				// Message complete - no action needed, content_part.done handles it
 				logrus.Debug("Codex CC: Message item done")
-			case "function_call":
+			case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
 				// Store completed tool use block
 				toolUseID := event.Item.CallID
 				toolUseID = strings.TrimPrefix(toolUseID, "call_")
-				argsStr := event.Item.Arguments
-				if argsStr == "" {
-					argsStr = s.currentToolArgs.String()
+				toolName := codexClaudeToolName(*event.Item, s.reverseToolNameMap)
+				if toolUseID == "" || toolName == "" {
+					logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Skipping completed tool item with missing ID or name")
+					return events
 				}
-				// Restore original tool name if it was shortened
-				toolName := event.Item.Name
-				if s.reverseToolNameMap != nil {
-					if orig, ok := s.reverseToolNameMap[event.Item.Name]; ok {
-						toolName = orig
-					}
+				inputJSON := toolInputForCurrentItem(*event.Item)
+				if s.openBlockType == "tool" && !s.toolInputSent {
+					appendToolInputDelta(inputJSON)
 				}
-
-				// Clean up WebSearch tool arguments for upstream compatibility
-				argsStr = cleanToolCallArguments(toolName, argsStr)
-
-				// NOTE: Do NOT call doubleEscapeWindowsPathsForBash here!
-				// This is response conversion (upstream→Claude), not request conversion (Claude→upstream).
-				// The upstream response already has correct path format, we should not modify it.
-				// Calling doubleEscapeWindowsPathsForBash here causes path corruption.
 
 				s.toolUseBlocks = append(s.toolUseBlocks, ClaudeContentBlock{
 					Type:  "tool_use",
 					ID:    toolUseID,
 					Name:  toolName,
-					Input: json.RawMessage(argsStr),
+					Input: inputJSON,
 				})
 				// Only close if a tool block is open
 				if s.openBlockType == "tool" {
 					closeOpenBlock()
 				}
+				s.toolInputSent = false
 			}
 		}
+
+	case "response.failed", "error":
+		if s.finalSent {
+			return events
+		}
+		s.finalSent = true
+		closeOpenBlock()
+
+		errorType := "api_error"
+		errorMessage := "Upstream response failed"
+		if event.Response != nil && event.Response.Error != nil {
+			errorType = apiErrorTypeToClaudeErrorType(event.Response.Error.Type)
+			if event.Response.Error.Message != "" {
+				errorMessage = strings.TrimSpace(utils.SanitizeErrorBody(event.Response.Error.Message))
+			}
+		} else if event.Error != nil {
+			errorType = apiErrorTypeToClaudeErrorType(event.Error.Type)
+			if event.Error.Message != "" {
+				errorMessage = strings.TrimSpace(utils.SanitizeErrorBody(event.Error.Message))
+			}
+		}
+		if errorMessage == "" {
+			errorMessage = "Upstream response failed"
+		}
+		events = append(events, ClaudeStreamEvent{
+			Type: "error",
+			Error: &ClaudeError{
+				Type:    errorType,
+				Message: errorMessage,
+			},
+		})
+		appendFinalMessageEvents("end_turn")
+
+	case "response.incomplete":
+		if s.finalSent {
+			return events
+		}
+		s.finalSent = true
+		closeOpenBlock()
+		appendFinalMessageEvents("max_tokens")
+
+	case "response.cancelled", "response.canceled":
+		if s.finalSent {
+			return events
+		}
+		s.finalSent = true
+		closeOpenBlock()
+		appendFinalMessageEvents("end_turn")
 
 	case "response.completed", "response.done":
 		// Prevent duplicate final events when response.completed is received multiple times
@@ -1474,21 +1636,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			stopReason = "tool_use"
 		}
 
-		// Send message_delta with stop_reason
-		events = append(events, ClaudeStreamEvent{
-			Type: "message_delta",
-			Delta: &ClaudeStreamDelta{
-				StopReason: stopReason,
-			},
-			Usage: &ClaudeUsage{
-				OutputTokens: 0,
-			},
-		})
-
-		// Send message_stop
-		events = append(events, ClaudeStreamEvent{
-			Type: "message_stop",
-		})
+		appendFinalMessageEvents(stopReason)
 
 	default:
 		// Log unknown event types at debug level for forward compatibility.
@@ -1613,33 +1761,21 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 	// Check for Codex error
 	if codexResp.Error != nil {
 		setTokenUsageFromBody(c, bodyBytes)
+		safeErrorMessage := strings.TrimSpace(utils.SanitizeErrorBody(codexResp.Error.Message))
 		logrus.WithFields(logrus.Fields{
 			"error_type":    codexResp.Error.Type,
-			"error_message": codexResp.Error.Message,
+			"error_message": safeErrorMessage,
 		}).Warn("Codex CC: Codex returned error in CC conversion")
-
-		// Map Codex error types to Claude error types for better client compatibility.
-		// Per AI review: use more accurate error types instead of generic invalid_request_error.
-		claudeErrorType := "api_error" // Default for unknown error types
-		switch codexResp.Error.Type {
-		case "invalid_request_error":
-			claudeErrorType = "invalid_request_error"
-		case "authentication_error":
-			claudeErrorType = "authentication_error"
-		case "rate_limit_error":
-			claudeErrorType = "rate_limit_error"
-		case "overloaded_error":
-			claudeErrorType = "overloaded_error"
-		case "server_error", "internal_error":
-			claudeErrorType = "api_error"
-		}
 
 		claudeErr := ClaudeErrorResponse{
 			Type: "error",
 			Error: ClaudeError{
-				Type:    claudeErrorType,
-				Message: codexResp.Error.Message,
+				Type:    apiErrorTypeToClaudeErrorType(codexResp.Error.Type),
+				Message: safeErrorMessage,
 			},
+		}
+		if claudeErr.Error.Message == "" {
+			claudeErr.Error.Message = "Upstream returned an error"
 		}
 		clearUpstreamEncodingHeaders(c)
 		c.JSON(resp.StatusCode, claudeErr)
@@ -1971,8 +2107,11 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 					return
 				}
 			}
-			if codexEvent.Type == "response.completed" || codexEvent.Type == "response.done" {
-				streamCompleted = true
+			if codexEvent.Type == "response.completed" || codexEvent.Type == "response.done" ||
+				codexEvent.Type == "response.failed" || codexEvent.Type == "response.incomplete" ||
+				codexEvent.Type == "response.cancelled" || codexEvent.Type == "response.canceled" ||
+				codexEvent.Type == "error" {
+				streamCompleted = codexEvent.Type != "response.failed" && codexEvent.Type != "error"
 				break
 			}
 		}

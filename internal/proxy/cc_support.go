@@ -1135,6 +1135,27 @@ func mapStatusToClaudeErrorType(statusCode int) string {
 	}
 }
 
+func apiErrorTypeToClaudeErrorType(errorType string) string {
+	switch errorType {
+	case "invalid_request_error":
+		return "invalid_request_error"
+	case "authentication_error":
+		return "authentication_error"
+	case "permission_error":
+		return "permission_error"
+	case "not_found_error":
+		return "not_found_error"
+	case "rate_limit_error":
+		return "rate_limit_error"
+	case "overloaded_error":
+		return "overloaded_error"
+	case "server_error", "internal_error":
+		return "api_error"
+	default:
+		return "api_error"
+	}
+}
+
 // returnClaudeError sends a Claude-formatted error response.
 // This is used when CC mode is enabled to ensure Claude Code clients
 // can properly parse and display error messages from upstream.
@@ -1194,6 +1215,7 @@ type ClaudeResponse struct {
 	StopReason   *string              `json:"stop_reason,omitempty"`
 	StopSequence *string              `json:"stop_sequence,omitempty"`
 	Usage        *ClaudeUsage         `json:"usage,omitempty"`
+	Error        *ClaudeError         `json:"error,omitempty"`
 }
 
 // ClaudeUsage represents usage info in Claude response.
@@ -2603,18 +2625,22 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	// Check for OpenAI error
 	if openaiResp.Error != nil {
 		setTokenUsageFromBody(c, bodyBytes)
+		safeErrorMessage := strings.TrimSpace(utils.SanitizeErrorBody(openaiResp.Error.Message))
 		logrus.WithFields(logrus.Fields{
 			"error_type":    openaiResp.Error.Type,
-			"error_message": openaiResp.Error.Message,
+			"error_message": safeErrorMessage,
 			"error_code":    openaiResp.Error.Code,
 		}).Warn("CC: OpenAI returned error in CC conversion")
 
 		claudeErr := ClaudeErrorResponse{
 			Type: "error",
 			Error: ClaudeError{
-				Type:    "invalid_request_error",
-				Message: openaiResp.Error.Message,
+				Type:    apiErrorTypeToClaudeErrorType(openaiResp.Error.Type),
+				Message: safeErrorMessage,
 			},
+		}
+		if claudeErr.Error.Message == "" {
+			claudeErr.Error.Message = "Upstream returned an error"
 		}
 		clearUpstreamEncodingHeaders(c)
 		c.JSON(resp.StatusCode, claudeErr)
@@ -3660,9 +3686,24 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		// CRITICAL: Sanitize thinking content to remove malformed XML/JSON that can cause
 		// CC auto-pause issues. This handles cases where model outputs malformed content
 		// like <>[": "task",Form":...] or </antml\b:format> inside thinking blocks.
-		thinking := sanitizeText(strings.TrimSpace(content))
-		if thinking == "" {
+		leadingWhitespace := content[:len(content)-len(strings.TrimLeft(content, " \t\r\n"))]
+		trailingWhitespace := content[len(strings.TrimRight(content, " \t\r\n")):]
+		thinking := sanitizeText(content)
+		if thinking == "" && thinkingBlockOpen && strings.TrimSpace(content) == "" {
+			// Once a thinking block exists, whitespace-only chunks are meaningful token separators.
+			thinking = content
+		}
+		if thinking == "" || (!thinkingBlockOpen && strings.TrimSpace(thinking) == "") {
 			return
+		}
+		if thinkingBlockOpen && leadingWhitespace != "" && !strings.HasPrefix(thinking, leadingWhitespace) {
+			thinking = leadingWhitespace + thinking
+		}
+		if trailingWhitespace != "" && !strings.HasSuffix(thinking, trailingWhitespace) {
+			thinking += trailingWhitespace
+		}
+		if !thinkingBlockOpen {
+			thinking = strings.TrimLeft(thinking, " \t\r\n")
 		}
 		if err := ensureThinkingBlock(); err != nil {
 			logrus.WithError(err).Debug("CC: Failed to start thinking block")
@@ -3903,6 +3944,27 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 
 		if openaiChunk.Usage != nil {
 			streamUsage = openaiChunk.Usage
+		}
+
+		if openaiChunk.Error != nil {
+			isErrorRecovery = true
+			errorMessage := strings.TrimSpace(utils.SanitizeErrorBody(openaiChunk.Error.Message))
+			if errorMessage == "" {
+				errorMessage = "Upstream returned an error"
+			}
+			errEvent := ClaudeStreamEvent{
+				Type: "error",
+				Error: &ClaudeError{
+					Type:    apiErrorTypeToClaudeErrorType(openaiChunk.Error.Type),
+					Message: errorMessage,
+				},
+			}
+			if err := writer.Send(errEvent, true); err != nil {
+				logrus.WithError(err).Debug("CC: Failed to send upstream error event")
+				return
+			}
+			finalize(streamStopReason, streamUsage, false)
+			break
 		}
 
 		if len(openaiChunk.Choices) == 0 {

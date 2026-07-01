@@ -117,7 +117,7 @@ const rules: FormRules = {
         if (value < 0) {
           return new Error(t("keys.weightCannotBeNegative"));
         }
-        if (value > 1000) {
+        if (value > 5000) {
           return new Error(t("keys.weightMaxExceeded"));
         }
         return true;
@@ -218,7 +218,7 @@ async function handleSubmit() {
 
 // Quickly adjust weight by delta
 function adjustWeight(delta: number) {
-  const newWeight = Math.max(0, Math.min(1000, formData.weight + delta));
+  const newWeight = Math.max(0, Math.min(5000, formData.weight + delta));
   formData.weight = newWeight;
   formData.min_effective_weight =
     newWeight > 0 ? Math.min(Math.max(formData.min_effective_weight, 1), newWeight) : 0;
@@ -277,7 +277,7 @@ function adjustWeight(delta: number) {
               <n-input-number
                 v-model:value="formData.weight"
                 :min="0"
-                :max="1000"
+                :max="5000"
                 :precision="0"
                 :placeholder="t('keys.enterWeight')"
                 size="small"
@@ -290,13 +290,13 @@ function adjustWeight(delta: number) {
                 <n-button size="small" @click="adjustWeight(-1)" :disabled="formData.weight <= 0">
                   -1
                 </n-button>
-                <n-button size="small" @click="adjustWeight(1)" :disabled="formData.weight >= 1000">
+                <n-button size="small" @click="adjustWeight(1)" :disabled="formData.weight >= 5000">
                   +1
                 </n-button>
                 <n-button
                   size="small"
                   @click="adjustWeight(10)"
-                  :disabled="formData.weight >= 1000"
+                  :disabled="formData.weight >= 5000"
                 >
                   +10
                 </n-button>

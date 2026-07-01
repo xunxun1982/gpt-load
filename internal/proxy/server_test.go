@@ -683,6 +683,38 @@ func TestRestoreOriginalPath(t *testing.T) {
 	}
 }
 
+func TestClearForceProtocolContextClearsToolState(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCCEnabled, true)
+	c.Set(ctxKeyOpenAIResponseCC, true)
+	c.Set(ctxKeyGeminiCC, true)
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamOpenAIChat)
+	c.Set(ctxKeyOpenAIToolNameReverseMap, map[string]string{"short": "original"})
+	c.Set(ctxKeyCodexToolNameReverseMap, map[string]string{"short": "original"})
+	c.Set(ctxKeyCodexToolContext, newCodexToolContext([]CodexTool{{Type: "custom", Name: "exec"}}))
+
+	clearForceProtocolContext(c)
+
+	for _, key := range []string{
+		ctxKeyCCEnabled,
+		ctxKeyOpenAIResponseCC,
+		ctxKeyGeminiCC,
+		ctxKeyCodexEnabled,
+		ctxKeyCodexUpstreamFormat,
+		ctxKeyOpenAIToolNameReverseMap,
+		ctxKeyCodexToolNameReverseMap,
+		ctxKeyCodexToolContext,
+	} {
+		_, exists := c.Get(key)
+		assert.False(t, exists, "expected %s to be cleared", key)
+	}
+}
+
 func TestCountAvailableSubGroups(t *testing.T) {
 	t.Parallel()
 
@@ -909,6 +941,76 @@ func TestRetryDelayForAttemptUsesExponentialBackoffWithJitter(t *testing.T) {
 	for range 20 {
 		assert.LessOrEqual(t, retryDelayForAttempt(cappedCfg, 150), 6*time.Second)
 	}
+}
+
+func TestCodexAggregateAffinityKeyReadsExistingCodexContext(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	group := &models.Group{
+		Name:        "codex-aggregate",
+		GroupType:   "aggregate",
+		ChannelType: "openai-response",
+		Config: map[string]any{
+			"codex_affinity_enabled": true,
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := []byte(`{"model":"gpt-5.4","prompt_cache_key":"body-cache-key"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Originator", "codex_cli_rs")
+	c.Request.Header.Set("Session_ID", "header-session")
+	c.Request.Header.Set("Conversation_ID", "header-conversation")
+
+	assert.Equal(t, "header-session", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "header-session", c.Request.Header.Get("Session_ID"))
+	assert.JSONEq(t, `{"model":"gpt-5.4","prompt_cache_key":"body-cache-key"}`, string(body))
+}
+
+func TestCodexAggregateAffinityKeyFallsBackToPromptCacheKey(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	group := &models.Group{
+		Name:        "codex-aggregate",
+		GroupType:   "aggregate",
+		ChannelType: "openai-response",
+		Config: map[string]any{
+			"codex_affinity_enabled": true,
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := []byte(`{"model":"gpt-5.4","prompt_cache_key":"body-cache-key"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+
+	assert.Equal(t, "body-cache-key", codexAggregateAffinityKey(c, group, body))
+}
+
+func TestCodexAggregateAffinityKeyDisabledForNonCodexAggregate(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	group := &models.Group{
+		Name:        "plain-aggregate",
+		GroupType:   "aggregate",
+		ChannelType: "openai",
+		Config: map[string]any{
+			"codex_affinity_enabled": true,
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := []byte(`{"prompt_cache_key":"body-cache-key"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/plain-aggregate/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Session_ID", "header-session")
+
+	assert.Empty(t, codexAggregateAffinityKey(c, group, body))
 }
 
 func TestExecuteRequestWithRetryWaitsConfiguredDelayBeforeRetry(t *testing.T) {
@@ -1190,12 +1292,124 @@ func TestExecuteRequestWithRetryForceStreamSendsStreamTrueToResponsesUpstream(t 
 	assert.Equal(t, true, payload["stream"])
 }
 
+func TestHandleProxyForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	receivedPath := make(chan string, 1)
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedPath <- r.URL.Path
+		receivedBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	group := createTestGroup(t, db, "codex-compact-openai-response", "openai-response")
+	group.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	require.NoError(t, db.Save(group).Error)
+	createTestKey(t, db, group.ID, "sk-codex-compact-openai-response", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	body := []byte(`{"model":"gpt-5","input":[],"prompt_cache_key":"compact-key"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+group.Name+"/codex/v1/responses/compact", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: group.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, isCodexEnabled(c))
+	assert.Equal(t, codexUpstreamResponses, getCodexUpstreamFormat(c))
+	assert.Equal(t, "/v1/responses/compact", <-receivedPath)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &payload))
+	assert.NotContains(t, payload, "stream")
+}
+
+func TestHandleProxyAggregateForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	receivedPath := make(chan string, 1)
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedPath <- r.URL.Path
+		receivedBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "codex-compact-aggregate-sub", "openai-response")
+	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	require.NoError(t, db.Save(subGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "codex-compact-aggregate",
+		ChannelType: "openai-response",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config:      map[string]any{"max_retries": 0},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      subGroup.ID,
+		SubGroupName:    subGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, subGroup.ID, "sk-codex-compact-aggregate", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	body := []byte(`{"model":"gpt-5","input":[],"prompt_cache_key":"compact-key"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/codex/v1/responses/compact", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: aggregateGroup.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, isCodexEnabled(c))
+	assert.Equal(t, codexUpstreamResponses, getCodexUpstreamFormat(c))
+	assert.Equal(t, "/v1/responses/compact", <-receivedPath)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &payload))
+	assert.NotContains(t, payload, "stream")
+}
+
 func TestExecuteRequestWithRetrySanitizesUpstreamHTTPError(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps.SetDynamicWeightManager(dwm)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -2262,6 +2476,8 @@ func TestExecuteRequestWithAggregateRetryPinsSubGroupDuringKeyRetries(t *testing
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
+	dwm := services.NewDynamicWeightManager(memStore)
+	ps.SetDynamicWeightManager(dwm)
 
 	var targetAttempts int32
 	var backupAttempts int32
@@ -2368,6 +2584,35 @@ func TestExecuteRequestWithAggregateRetryPinsSubGroupDuringKeyRetries(t *testing
 		assert.Equal(t, targetGroup.ID, logEntry.GroupID)
 		assert.Equal(t, targetGroup.Name, logEntry.GroupName)
 	}
+
+	subGroupMetrics, err := dwm.GetSubGroupMetrics(aggregateGroup.ID, targetGroup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), subGroupMetrics.Requests180d)
+	assert.Equal(t, int64(1), subGroupMetrics.Successes180d)
+	assert.Equal(t, int64(0), subGroupMetrics.ConsecutiveFailures)
+
+	groupMetrics, err := dwm.GetGroupMetrics(targetGroup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), groupMetrics.Requests180d)
+	assert.Equal(t, int64(1), groupMetrics.Successes180d)
+}
+
+func TestMarkAggregateSubGroupFinalRestoresFalseValue(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	restore := markAggregateSubGroupFinal(c)
+	require.True(t, isAggregateSubGroupFinal(c))
+
+	restore()
+
+	value, exists := c.Get(ctxKeyAggregateSubGroupFinal)
+	require.True(t, exists)
+	assert.Equal(t, false, value)
+	assert.False(t, isAggregateSubGroupFinal(c))
 }
 
 func TestAggregateRetryAttemptsUpdateDynamicHealthAcrossChannels(t *testing.T) {
@@ -2403,8 +2648,10 @@ func TestAggregateRetryAttemptsUpdateDynamicHealthAcrossChannels(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/agg-health/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-test"}`)))
 	body := []byte(`{"model":"gpt-test"}`)
 
+	clearAggregateSubGroupFinal := markAggregateSubGroupFinal(c)
 	ps.logRequest(c, aggregateGroup, failedGroup, nil, time.Now().Add(-time.Millisecond), http.StatusBadGateway,
 		errors.New("upstream failed"), false, "https://openai.example", nil, "", &testChannelProxy{}, body, models.RequestTypeRetry)
+	clearAggregateSubGroupFinal()
 	ps.logRequest(c, aggregateGroup, successGroup, nil, time.Now().Add(-time.Millisecond), http.StatusOK,
 		nil, false, "https://gemini.example", nil, "", &testChannelProxy{}, body, models.RequestTypeFinal)
 
@@ -2544,15 +2791,15 @@ func TestRecordDynamicWeightMetricsUsesRetryAfterPressureAfterConsecutive429Thre
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Set(ctxKeyRateLimitPressure, int64(3))
 
-	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests, models.RequestTypeFinal)
 
 	metrics, err := dwm.GetGroupMetrics(group.ID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), metrics.ConsecutiveRateLimits)
 	assert.InDelta(t, 1.0, dwm.CalculateHealthScore(metrics), 0.001)
 
-	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
-	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests, models.RequestTypeFinal)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests, models.RequestTypeFinal)
 
 	metrics, err = dwm.GetGroupMetrics(group.ID)
 	require.NoError(t, err)
@@ -2574,9 +2821,9 @@ func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFor429(t *testing.T
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Set("response_body", `{"error":{"message":"api key 5小时限额已用完","type":"rate_limit_exceeded"}}`)
 
-	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
-	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
-	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests, models.RequestTypeFinal)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests, models.RequestTypeFinal)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests, models.RequestTypeFinal)
 
 	metrics, err := dwm.GetGroupMetrics(group.ID)
 	require.NoError(t, err)
@@ -2610,9 +2857,9 @@ func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFromCompressed429Bo
 	ctx.Set("response_body", utils.TruncateString(utils.SanitizeErrorBody(string(decodedBody)), maxResponseCaptureBytes))
 	require.Equal(t, quotaExhaustedRatePressure, quotaExhaustedRateLimitPressureFromContext(ctx))
 
-	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
-	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
-	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests, models.RequestTypeFinal)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests, models.RequestTypeFinal)
+	ps.recordDynamicWeightMetrics(ctx, group, group, false, http.StatusTooManyRequests, models.RequestTypeFinal)
 
 	metrics, err := dwm.GetGroupMetrics(group.ID)
 	require.NoError(t, err)
@@ -2701,7 +2948,7 @@ func TestRecordDynamicWeightMetricsForV2ModelRedirect(t *testing.T) {
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	setModelRedirectContext(ctx, "virtual-model", 1, false)
 
-	ps.recordDynamicWeightMetrics(ctx, group, group, true, http.StatusOK)
+	ps.recordDynamicWeightMetrics(ctx, group, group, true, http.StatusOK, models.RequestTypeFinal)
 
 	targetA, err := dwm.GetModelRedirectMetrics(group.ID, "virtual-model", "target-a")
 	require.NoError(t, err)
@@ -2740,7 +2987,7 @@ func TestRecordDynamicWeightMetricsUsesRedirectSourceWhenModelMappingExists(t *t
 	ctx.Set("original_model", "user-facing-alias")
 	setModelRedirectContext(ctx, "mapped-model", 1, true)
 
-	ps.recordDynamicWeightMetrics(ctx, group, group, true, http.StatusOK)
+	ps.recordDynamicWeightMetrics(ctx, group, group, true, http.StatusOK, models.RequestTypeFinal)
 
 	mappedTarget, err := dwm.GetModelRedirectMetrics(group.ID, "mapped-model", "target-b")
 	require.NoError(t, err)

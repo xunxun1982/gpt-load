@@ -14,7 +14,6 @@ import (
 	"gpt-load/internal/types"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -156,18 +155,7 @@ func TestHandleNormalResponseSkipsEstimatedOutputForError(t *testing.T) {
 func TestHandleCodexForcedStreamResponseSanitizesErrorLog(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	var logBuf bytes.Buffer
-	originalOutput := logrus.StandardLogger().Out
-	originalFormatter := logrus.StandardLogger().Formatter
-	originalLevel := logrus.GetLevel()
-	logrus.SetOutput(&logBuf)
-	logrus.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
-	logrus.SetLevel(logrus.WarnLevel)
-	t.Cleanup(func() {
-		logrus.SetOutput(originalOutput)
-		logrus.SetFormatter(originalFormatter)
-		logrus.SetLevel(originalLevel)
-	})
+	logHook := captureGlobalLogrusEntries(t)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -185,7 +173,7 @@ func TestHandleCodexForcedStreamResponseSanitizesErrorLog(t *testing.T) {
 	ps.handleCodexForcedStreamResponse(c, resp)
 
 	assert.Equal(t, http.StatusBadGateway, w.Code)
-	logOutput := logBuf.String()
+	logOutput := logrusHookText(logHook)
 	assert.NotContains(t, logOutput, bearerToken)
 	assert.NotContains(t, logOutput, "operator@example.invalid")
 	assert.Contains(t, logOutput, "Bearer [REDACTED]")

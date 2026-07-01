@@ -536,7 +536,8 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			key == "intercept_event_log" || key == "parallel_tool_calls" ||
 			key == "shorten_tool_names" || key == "validation_stream" ||
 			key == "force_stream" || key == "force_non_stream" ||
-			key == "responses_include_encrypted_reasoning" {
+			key == "responses_include_encrypted_reasoning" ||
+			key == "codex_affinity_enabled" {
 			// Accept only boolean values; nil is already skipped above.
 			if _, ok := value.(bool); !ok {
 				return fmt.Errorf("invalid type for %s: expected a boolean, got %T", key, value)

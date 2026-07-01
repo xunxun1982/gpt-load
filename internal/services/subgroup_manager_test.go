@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"strconv"
 	"testing"
 
@@ -8,6 +9,7 @@ import (
 	"gpt-load/internal/store"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newTestManager creates a new SubGroupManager with a memory store for testing
@@ -106,6 +108,93 @@ func TestSelectSubGroupWithRetry_WithExclusion(t *testing.T) {
 	assert.NotEqual(t, uint(10), id, "should not select excluded group 10")
 	// Improved assertion with clearer failure message
 	assert.True(t, id == 20 || id == 30, "expected id 20 or 30 but got %d", id)
+}
+
+func TestSelectSubGroupWithRetryAffinityStableAndRespectsExclusion(t *testing.T) {
+	t.Parallel()
+
+	manager, mockStore := newTestManager(t)
+
+	group := &models.Group{
+		ID:        1,
+		Name:      "aggregate-group",
+		GroupType: "aggregate",
+		SubGroups: []models.GroupSubGroup{
+			{SubGroupID: 10, SubGroupName: "sub1", Weight: 10, SubGroupEnabled: true},
+			{SubGroupID: 20, SubGroupName: "sub2", Weight: 10, SubGroupEnabled: true},
+			{SubGroupID: 30, SubGroupName: "sub3", Weight: 10, SubGroupEnabled: true},
+		},
+	}
+
+	mockStore.LPush("group:10:active_keys", "key1")
+	mockStore.LPush("group:20:active_keys", "key2")
+	mockStore.LPush("group:30:active_keys", "key3")
+
+	firstName, firstID, err := manager.SelectSubGroupWithRetryAffinity(group, nil, "codex-session-a")
+	assert.NoError(t, err)
+	assert.NotEmpty(t, firstName)
+	assert.NotZero(t, firstID)
+
+	for i := 0; i < 10; i++ {
+		name, id, err := manager.SelectSubGroupWithRetryAffinity(group, nil, "codex-session-a")
+		assert.NoError(t, err)
+		assert.Equal(t, firstName, name)
+		assert.Equal(t, firstID, id)
+	}
+
+	excluded := map[uint]bool{firstID: true}
+	nextName, nextID, err := manager.SelectSubGroupWithRetryAffinity(group, excluded, "codex-session-a")
+	assert.NoError(t, err)
+	assert.NotEmpty(t, nextName)
+	assert.NotEqual(t, firstID, nextID)
+}
+
+func TestSelectSubGroupWithRetryAffinityDoesNotDriftWithDynamicWeights(t *testing.T) {
+	t.Parallel()
+
+	manager, mockStore := newTestManager(t)
+	dwm := NewDynamicWeightManager(mockStore)
+	manager.SetDynamicWeightManager(dwm)
+
+	group := &models.Group{
+		ID:        1,
+		Name:      "aggregate-group",
+		GroupType: "aggregate",
+		SubGroups: []models.GroupSubGroup{
+			{SubGroupID: 10, SubGroupName: "sub1", Weight: 100, MinEffectiveWeight: 1, SubGroupEnabled: true},
+			{SubGroupID: 20, SubGroupName: "sub2", Weight: 100, MinEffectiveWeight: 1, SubGroupEnabled: true},
+		},
+	}
+
+	mockStore.LPush("group:10:active_keys", "key1")
+	mockStore.LPush("group:20:active_keys", "key2")
+
+	for i := 0; i < 100; i++ {
+		dwm.RecordSubGroupFailure(group.ID, 10, false)
+	}
+	metrics, err := dwm.GetSubGroupMetrics(group.ID, 10)
+	require.NoError(t, err)
+	firstDynamicWeight := GetEffectiveWeightForSelection(dwm.GetEffectiveWeightWithMinimum(100, 1, metrics))
+	secondDynamicWeight := GetEffectiveWeightForSelection(100)
+	require.Greater(t, secondDynamicWeight, firstDynamicWeight)
+
+	affinityKey := ""
+	for i := 0; i < 10000; i++ {
+		key := fmt.Sprintf("codex-session-%d", i)
+		hash := hashAffinityKey(key)
+		staticPicksFirst := int(hash%200) < 100
+		dynamicPicksSecond := int(hash%uint64(firstDynamicWeight+secondDynamicWeight)) >= firstDynamicWeight
+		if staticPicksFirst && dynamicPicksSecond {
+			affinityKey = key
+			break
+		}
+	}
+	require.NotEmpty(t, affinityKey)
+
+	name, id, err := manager.SelectSubGroupWithRetryAffinity(group, nil, affinityKey)
+	require.NoError(t, err)
+	assert.Equal(t, "sub1", name)
+	assert.Equal(t, uint(10), id)
 }
 
 func TestRebuildSelectors(t *testing.T) {

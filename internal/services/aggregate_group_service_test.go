@@ -486,6 +486,67 @@ func TestAddSubGroupsRejectsInvalidHealthResetInterval(t *testing.T) {
 	assert.Equal(t, int64(0), count)
 }
 
+func TestValidateSubGroupsAllowsWeightUpTo5000(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	subGroup := models.Group{
+		Name:        "sub-weight-5000",
+		DisplayName: "Sub Weight 5000",
+		GroupType:   "standard",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&subGroup).Error)
+
+	result, err := service.ValidateSubGroups(context.Background(), "openai", []SubGroupInput{
+		{GroupID: subGroup.ID, Weight: 5000},
+	}, "")
+	require.NoError(t, err)
+	require.Len(t, result.SubGroups, 1)
+	assert.Equal(t, 5000, result.SubGroups[0].Weight)
+	assert.Equal(t, 1, result.SubGroups[0].MinEffectiveWeight)
+
+	minEffectiveWeight := 5000
+	result, err = service.ValidateSubGroups(context.Background(), "openai", []SubGroupInput{
+		{GroupID: subGroup.ID, Weight: 5000, MinEffectiveWeight: &minEffectiveWeight},
+	}, "")
+	require.NoError(t, err)
+	require.Len(t, result.SubGroups, 1)
+	assert.Equal(t, 5000, result.SubGroups[0].MinEffectiveWeight)
+}
+
+func TestValidateSubGroupsRejectsWeightAbove5000(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	subGroup := models.Group{
+		Name:        "sub-weight-5001",
+		DisplayName: "Sub Weight 5001",
+		GroupType:   "standard",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&subGroup).Error)
+
+	_, err := service.ValidateSubGroups(context.Background(), "openai", []SubGroupInput{
+		{GroupID: subGroup.ID, Weight: 5001},
+	}, "")
+	require.Error(t, err)
+
+	minEffectiveWeight := 5001
+	_, err = service.ValidateSubGroups(context.Background(), "openai", []SubGroupInput{
+		{GroupID: subGroup.ID, Weight: 5000, MinEffectiveWeight: &minEffectiveWeight},
+	}, "")
+	require.Error(t, err)
+}
+
 func TestUpdateSubGroupWeightPreservesOmittedHealthResetInterval(t *testing.T) {
 	db := setupTestDB(t)
 	service := NewAggregateGroupService(db, &GroupManager{}, nil)

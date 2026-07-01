@@ -20,10 +20,13 @@ import (
 const (
 	ctxKeyCodexEnabled        = "codex_enabled"
 	ctxKeyCodexUpstreamFormat = "codex_upstream_format"
+	ctxKeyCodexToolContext    = "codex_tool_context"
 
 	codexUpstreamOpenAIChat = "openai_chat"
 	codexUpstreamClaude     = "claude"
 	codexUpstreamResponses  = "openai_response"
+
+	codexToolSearchProxyName = "tool_search"
 )
 
 // isCodexPath detects the explicit /codex force endpoint without confusing it
@@ -84,10 +87,134 @@ func getCodexUpstreamFormat(c *gin.Context) string {
 	return ""
 }
 
+type codexToolKind string
+
+const (
+	codexToolKindFunction   codexToolKind = "function"
+	codexToolKindCustom     codexToolKind = "custom"
+	codexToolKindToolSearch codexToolKind = "tool_search"
+)
+
+type codexToolSpec struct {
+	Kind                 codexToolKind
+	Name                 string
+	Namespace            string
+	AllowsEmptyArguments bool
+}
+
+type codexToolContext struct {
+	byChatName map[string]codexToolSpec
+}
+
+func newCodexToolContext(tools []CodexTool) *codexToolContext {
+	ctx := &codexToolContext{byChatName: make(map[string]codexToolSpec)}
+	for _, tool := range tools {
+		ctx.addTool(tool, "")
+	}
+	return ctx
+}
+
+func codexToolContextFromGin(c *gin.Context) *codexToolContext {
+	if c == nil {
+		return nil
+	}
+	if v, ok := c.Get(ctxKeyCodexToolContext); ok {
+		if toolCtx, ok := v.(*codexToolContext); ok {
+			return toolCtx
+		}
+	}
+	return nil
+}
+
+func (ctx *codexToolContext) addTool(tool CodexTool, namespace string) {
+	if ctx == nil {
+		return
+	}
+	switch tool.Type {
+	case "", "function":
+		chatName := codexChatToolName(tool.Name, namespace)
+		if chatName != "" {
+			ctx.byChatName[chatName] = codexToolSpec{
+				Kind:                 codexToolKindFunction,
+				Name:                 tool.Name,
+				Namespace:            namespace,
+				AllowsEmptyArguments: codexToolAllowsEmptyArguments(tool),
+			}
+		}
+	case "custom":
+		if tool.Name != "" {
+			ctx.byChatName[tool.Name] = codexToolSpec{Kind: codexToolKindCustom, Name: tool.Name}
+		}
+	case "tool_search":
+		ctx.byChatName[codexToolSearchProxyName] = codexToolSpec{Kind: codexToolKindToolSearch, Name: codexToolSearchProxyName}
+	case "namespace":
+		nextNamespace := codexChatToolName(tool.Name, namespace)
+		for _, child := range codexNamespaceChildren(tool) {
+			ctx.addTool(child, nextNamespace)
+		}
+	}
+}
+
+func codexToolAllowsEmptyArguments(tool CodexTool) bool {
+	if len(tool.Parameters) == 0 || string(tool.Parameters) == "null" {
+		return true
+	}
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(tool.Parameters, &schema); err != nil {
+		return false
+	}
+	return len(schema.Required) == 0
+}
+
+func isValidCodexToolCallArguments(toolName, arguments string, toolCtx *codexToolContext) bool {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "{}" {
+		if spec, ok := toolCtx.lookup(toolName); ok && spec.AllowsEmptyArguments {
+			return true
+		}
+	}
+	return isValidToolCallArguments(toolName, arguments)
+}
+
+func (ctx *codexToolContext) chatNameFor(name, namespace string) string {
+	if namespace != "" {
+		return codexChatToolName(name, namespace)
+	}
+	return name
+}
+
+func (ctx *codexToolContext) lookup(chatName string) (codexToolSpec, bool) {
+	if ctx == nil || chatName == "" {
+		return codexToolSpec{}, false
+	}
+	spec, ok := ctx.byChatName[chatName]
+	return spec, ok
+}
+
+func codexChatToolName(name, namespace string) string {
+	if name == "" {
+		return ""
+	}
+	if namespace == "" {
+		return name
+	}
+	return namespace + "__" + name
+}
+
+func codexNamespaceChildren(tool CodexTool) []CodexTool {
+	if len(tool.Tools) > 0 {
+		return tool.Tools
+	}
+	return tool.Children
+}
+
 func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, error) {
 	if codexReq == nil {
 		return nil, fmt.Errorf("codex request is nil")
 	}
+	toolCtx := newCodexToolContext(codexReq.Tools)
 	req := &OpenAIRequest{
 		Model:             codexReq.Model,
 		Stream:            codexReq.Stream,
@@ -104,7 +231,7 @@ func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, er
 		})
 	}
 
-	messages, err := convertCodexInputToOpenAIMessages(codexReq.Input)
+	messages, err := convertCodexInputToOpenAIMessages(codexReq.Input, toolCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -113,20 +240,10 @@ func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, er
 	if len(codexReq.Tools) > 0 {
 		req.Tools = make([]OpenAITool, 0, len(codexReq.Tools))
 		for _, tool := range codexReq.Tools {
-			if tool.Type != "" && tool.Type != "function" {
-				continue
-			}
-			req.Tools = append(req.Tools, OpenAITool{
-				Type: "function",
-				Function: OpenAIFunction{
-					Name:        tool.Name,
-					Description: tool.Description,
-					Parameters:  normalizeToolParameters(tool.Parameters),
-				},
-			})
+			appendCodexToolToOpenAIChat(&req.Tools, tool, "")
 		}
 	}
-	req.ToolChoice = convertResponsesToolChoiceToOpenAIChat(codexReq.ToolChoice)
+	req.ToolChoice = convertResponsesToolChoiceToOpenAIChat(codexReq.ToolChoice, toolCtx)
 	return req, nil
 }
 
@@ -134,6 +251,7 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 	if codexReq == nil {
 		return nil, fmt.Errorf("codex request is nil")
 	}
+	toolCtx := newCodexToolContext(codexReq.Tools)
 	req := &ClaudeRequest{
 		Model:       codexReq.Model,
 		Stream:      codexReq.Stream,
@@ -147,7 +265,7 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 		req.System = marshalStringAsJSONRaw("codex_instructions", codexReq.Instructions)
 	}
 
-	messages, err := convertCodexInputToClaudeMessages(codexReq.Input)
+	messages, err := convertCodexInputToClaudeMessages(codexReq.Input, toolCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -156,21 +274,14 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 	if len(codexReq.Tools) > 0 {
 		req.Tools = make([]ClaudeTool, 0, len(codexReq.Tools))
 		for _, tool := range codexReq.Tools {
-			if tool.Type != "" && tool.Type != "function" {
-				continue
-			}
-			req.Tools = append(req.Tools, ClaudeTool{
-				Name:        tool.Name,
-				Description: tool.Description,
-				InputSchema: normalizeToolParameters(tool.Parameters),
-			})
+			appendCodexToolToClaude(&req.Tools, tool, "")
 		}
 	}
-	req.ToolChoice = convertResponsesToolChoiceToClaude(codexReq.ToolChoice)
+	req.ToolChoice = convertResponsesToolChoiceToClaude(codexReq.ToolChoice, toolCtx)
 	return req, nil
 }
 
-func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal string) *CodexResponse {
+func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal string, toolCtxOpt ...*codexToolContext) *CodexResponse {
 	if openaiResp == nil {
 		return &CodexResponse{
 			ID:        "resp_" + time.Now().Format("20060102150405"),
@@ -198,7 +309,10 @@ func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal 
 		resp.Status = "failed"
 		resp.Error = &CodexError{
 			Type:    openaiResp.Error.Type,
-			Message: openaiResp.Error.Message,
+			Message: strings.TrimSpace(utils.SanitizeErrorBody(openaiResp.Error.Message)),
+		}
+		if resp.Error.Message == "" {
+			resp.Error.Message = "Upstream returned an error"
 		}
 		return resp
 	}
@@ -256,18 +370,15 @@ func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal 
 					})
 				}
 			}
+			var toolCtx *codexToolContext
+			if len(toolCtxOpt) > 0 {
+				toolCtx = toolCtxOpt[0]
+			}
 			for _, tc := range msg.ToolCalls {
-				if tc.ID == "" || tc.Function.Name == "" || !isValidToolCallArguments(tc.Function.Name, tc.Function.Arguments) {
+				if tc.ID == "" || tc.Function.Name == "" || !isValidCodexToolCallArguments(tc.Function.Name, tc.Function.Arguments, toolCtx) {
 					continue
 				}
-				resp.Output = append(resp.Output, CodexOutputItem{
-					Type:      "function_call",
-					ID:        "fc_" + strings.TrimPrefix(tc.ID, "call_"),
-					Status:    "completed",
-					CallID:    tc.ID,
-					Name:      tc.Function.Name,
-					Arguments: tc.Function.Arguments,
-				})
+				resp.Output = append(resp.Output, codexOutputItemFromChatToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments, toolCtx))
 			}
 			if len(msg.ToolCalls) == 0 {
 				appendParsedFunctionCallsToCodex(resp, parsedCalls)
@@ -295,7 +406,7 @@ func convertOpenAIChatToCodexResponse(openaiResp *OpenAIResponse, triggerSignal 
 	return resp
 }
 
-func convertClaudeToCodexResponse(claudeResp *ClaudeResponse) *CodexResponse {
+func convertClaudeToCodexResponse(claudeResp *ClaudeResponse, toolCtxOpt ...*codexToolContext) *CodexResponse {
 	if claudeResp == nil {
 		return &CodexResponse{
 			ID:        "resp_" + time.Now().Format("20060102150405"),
@@ -303,6 +414,24 @@ func convertClaudeToCodexResponse(claudeResp *ClaudeResponse) *CodexResponse {
 			CreatedAt: time.Now().Unix(),
 			Status:    "failed",
 			Error:     &CodexError{Type: "server_error", Message: "empty upstream response"},
+		}
+	}
+	if claudeResp.Error != nil {
+		message := strings.TrimSpace(utils.SanitizeErrorBody(claudeResp.Error.Message))
+		if message == "" {
+			message = "Upstream returned an error"
+		}
+		return &CodexResponse{
+			ID:        "resp_" + time.Now().Format("20060102150405"),
+			Object:    "response",
+			CreatedAt: time.Now().Unix(),
+			Status:    "failed",
+			Model:     claudeResp.Model,
+			Output:    []CodexOutputItem{},
+			Error: &CodexError{
+				Type:    claudeResp.Error.Type,
+				Message: message,
+			},
 		}
 	}
 	resp := &CodexResponse{
@@ -315,6 +444,10 @@ func convertClaudeToCodexResponse(claudeResp *ClaudeResponse) *CodexResponse {
 	}
 	if resp.ID == "" {
 		resp.ID = "resp_" + time.Now().Format("20060102150405")
+	}
+	var toolCtx *codexToolContext
+	if len(toolCtxOpt) > 0 {
+		toolCtx = toolCtxOpt[0]
 	}
 	for _, block := range claudeResp.Content {
 		switch block.Type {
@@ -343,14 +476,7 @@ func convertClaudeToCodexResponse(claudeResp *ClaudeResponse) *CodexResponse {
 			}
 		case "tool_use":
 			if block.ID != "" && block.Name != "" {
-				resp.Output = append(resp.Output, CodexOutputItem{
-					Type:      "function_call",
-					ID:        "fc_" + block.ID,
-					Status:    "completed",
-					CallID:    "call_" + block.ID,
-					Name:      block.Name,
-					Arguments: string(block.Input),
-				})
+				resp.Output = append(resp.Output, codexOutputItemFromChatToolCall("call_"+block.ID, block.Name, string(block.Input), toolCtx))
 			}
 		}
 	}
@@ -384,6 +510,94 @@ func codexTotalTokensFromClaudeUsage(usage *ClaudeUsage) int {
 	return total
 }
 
+func codexOutputItemFromChatToolCall(callID, chatName, arguments string, toolCtx *codexToolContext) CodexOutputItem {
+	spec, ok := toolCtx.lookup(chatName)
+	if ok {
+		switch spec.Kind {
+		case codexToolKindCustom:
+			return CodexOutputItem{
+				Type:   "custom_tool_call",
+				ID:     "ctc_" + strings.TrimPrefix(callID, "call_"),
+				Status: "completed",
+				CallID: callID,
+				Name:   spec.Name,
+				Input:  codexCustomToolInputFromArguments(arguments),
+			}
+		case codexToolKindToolSearch:
+			return CodexOutputItem{
+				Type:      "tool_search_call",
+				ID:        "tsc_" + strings.TrimPrefix(callID, "call_"),
+				Status:    "completed",
+				CallID:    callID,
+				Execution: "client",
+				Arguments: arguments,
+			}
+		case codexToolKindFunction:
+			return CodexOutputItem{
+				Type:      "function_call",
+				ID:        "fc_" + strings.TrimPrefix(callID, "call_"),
+				Status:    "completed",
+				CallID:    callID,
+				Namespace: spec.Namespace,
+				Name:      spec.Name,
+				Arguments: arguments,
+			}
+		}
+	}
+	return CodexOutputItem{
+		Type:      "function_call",
+		ID:        "fc_" + strings.TrimPrefix(callID, "call_"),
+		Status:    "completed",
+		CallID:    callID,
+		Name:      chatName,
+		Arguments: arguments,
+	}
+}
+
+func codexCustomToolInputFromArguments(arguments string) any {
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil {
+		return arguments
+	}
+	if input, ok := parsed["input"]; ok {
+		return input
+	}
+	return arguments
+}
+
+func codexCustomToolInputString(input any) string {
+	switch v := input.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case json.RawMessage:
+		return string(v)
+	case []byte:
+		return string(v)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprint(v)
+		}
+		return string(b)
+	}
+}
+
+func codexToolArgumentsRawMessage(arguments string) json.RawMessage {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return json.RawMessage(`{}`)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil || parsed == nil {
+		return json.RawMessage(`{}`)
+	}
+
+	return json.RawMessage(arguments)
+}
+
 func codexInputTokenDetailsFromOpenAI(details *TokenUsageDetails) *TokenUsageDetails {
 	if details == nil || details.CachedTokens <= 0 {
 		return nil
@@ -398,7 +612,7 @@ func codexOutputTokenDetailsFromOpenAI(details *TokenUsageDetails) *TokenUsageDe
 	return &TokenUsageDetails{ReasoningTokens: details.ReasoningTokens}
 }
 
-func convertCodexInputToOpenAIMessages(input json.RawMessage) ([]OpenAIMessage, error) {
+func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexToolContext) ([]OpenAIMessage, error) {
 	var raw any
 	if err := json.Unmarshal(input, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse Codex input: %w", err)
@@ -431,12 +645,22 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage) ([]OpenAIMessage, 
 				role = "system"
 			}
 			messages = append(messages, OpenAIMessage{Role: role, Content: marshalStringAsJSONRaw("codex_message", text)})
-		case "function_call":
+		case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
 			callID := stringFromMap(m, "call_id")
 			if callID == "" {
 				callID = stringFromMap(m, "id")
 			}
 			name := stringFromMap(m, "name")
+			arguments := stringFromMap(m, "arguments")
+			if itemType == "custom_tool_call" {
+				inputValue := m["input"]
+				inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
+				arguments = string(inputBytes)
+			} else if itemType == "tool_search_call" {
+				name = codexToolSearchProxyName
+			} else if len(toolCtx) > 0 && toolCtx[0] != nil {
+				name = toolCtx[0].chatNameFor(name, stringFromMap(m, "namespace"))
+			}
 			if callID == "" || name == "" {
 				continue
 			}
@@ -447,11 +671,11 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage) ([]OpenAIMessage, 
 					Type: "function",
 					Function: OpenAIFunctionCall{
 						Name:      name,
-						Arguments: stringFromMap(m, "arguments"),
+						Arguments: arguments,
 					},
 				}},
 			})
-		case "function_call_output":
+		case "function_call_output", "custom_tool_call_output", "tool_search_output", "mcp_tool_call_output":
 			callID := stringFromMap(m, "call_id")
 			output := stringFromMap(m, "output")
 			messages = append(messages, OpenAIMessage{
@@ -464,7 +688,7 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage) ([]OpenAIMessage, 
 	return messages, nil
 }
 
-func convertCodexInputToClaudeMessages(input json.RawMessage) ([]ClaudeMessage, error) {
+func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexToolContext) ([]ClaudeMessage, error) {
 	var raw any
 	if err := json.Unmarshal(input, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse Codex input: %w", err)
@@ -496,9 +720,19 @@ func convertCodexInputToClaudeMessages(input json.RawMessage) ([]ClaudeMessage, 
 			}
 			content, _ := json.Marshal([]ClaudeContentBlock{{Type: "text", Text: text}})
 			messages = append(messages, ClaudeMessage{Role: role, Content: content})
-		case "function_call":
+		case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
 			callID := strings.TrimPrefix(stringFromMap(m, "call_id"), "call_")
 			name := stringFromMap(m, "name")
+			arguments := stringFromMap(m, "arguments")
+			if itemType == "custom_tool_call" {
+				inputValue := m["input"]
+				inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
+				arguments = string(inputBytes)
+			} else if itemType == "tool_search_call" {
+				name = codexToolSearchProxyName
+			} else if len(toolCtx) > 0 && toolCtx[0] != nil {
+				name = toolCtx[0].chatNameFor(name, stringFromMap(m, "namespace"))
+			}
 			if callID == "" || name == "" {
 				continue
 			}
@@ -506,10 +740,10 @@ func convertCodexInputToClaudeMessages(input json.RawMessage) ([]ClaudeMessage, 
 				Type:  "tool_use",
 				ID:    callID,
 				Name:  name,
-				Input: json.RawMessage(stringFromMap(m, "arguments")),
+				Input: codexToolArgumentsRawMessage(arguments),
 			}})
 			messages = append(messages, ClaudeMessage{Role: "assistant", Content: content})
-		case "function_call_output":
+		case "function_call_output", "custom_tool_call_output", "tool_search_output", "mcp_tool_call_output":
 			callID := strings.TrimPrefix(stringFromMap(m, "call_id"), "call_")
 			output := stringFromMap(m, "output")
 			content, _ := json.Marshal([]ClaudeContentBlock{{
@@ -570,19 +804,127 @@ func stringFromMap(m map[string]any, key string) string {
 	}
 }
 
-func convertResponsesToolChoiceToOpenAIChat(toolChoice any) any {
+func appendCodexToolToOpenAIChat(tools *[]OpenAITool, tool CodexTool, namespace string) {
+	switch tool.Type {
+	case "", "function":
+		name := codexChatToolName(tool.Name, namespace)
+		if name == "" {
+			return
+		}
+		*tools = append(*tools, OpenAITool{
+			Type: "function",
+			Function: OpenAIFunction{
+				Name:        name,
+				Description: tool.Description,
+				Parameters:  normalizeToolParameters(tool.Parameters),
+			},
+		})
+	case "custom":
+		if tool.Name == "" {
+			return
+		}
+		*tools = append(*tools, OpenAITool{
+			Type: "function",
+			Function: OpenAIFunction{
+				Name:        tool.Name,
+				Description: codexCustomToolDescription(tool),
+				Parameters:  codexCustomToolParameters(),
+			},
+		})
+	case "tool_search":
+		*tools = append(*tools, OpenAITool{
+			Type: "function",
+			Function: OpenAIFunction{
+				Name:        codexToolSearchProxyName,
+				Description: "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task.",
+				Parameters:  codexToolSearchParameters(),
+			},
+		})
+	case "namespace":
+		nextNamespace := codexChatToolName(tool.Name, namespace)
+		for _, child := range codexNamespaceChildren(tool) {
+			appendCodexToolToOpenAIChat(tools, child, nextNamespace)
+		}
+	}
+}
+
+func appendCodexToolToClaude(tools *[]ClaudeTool, tool CodexTool, namespace string) {
+	switch tool.Type {
+	case "", "function":
+		name := codexChatToolName(tool.Name, namespace)
+		if name == "" {
+			return
+		}
+		*tools = append(*tools, ClaudeTool{
+			Name:        name,
+			Description: tool.Description,
+			InputSchema: normalizeToolParameters(tool.Parameters),
+		})
+	case "custom":
+		if tool.Name == "" {
+			return
+		}
+		*tools = append(*tools, ClaudeTool{
+			Name:        tool.Name,
+			Description: codexCustomToolDescription(tool),
+			InputSchema: codexCustomToolParameters(),
+		})
+	case "tool_search":
+		*tools = append(*tools, ClaudeTool{
+			Name:        codexToolSearchProxyName,
+			Description: "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task.",
+			InputSchema: codexToolSearchParameters(),
+		})
+	case "namespace":
+		nextNamespace := codexChatToolName(tool.Name, namespace)
+		for _, child := range codexNamespaceChildren(tool) {
+			appendCodexToolToClaude(tools, child, nextNamespace)
+		}
+	}
+}
+
+func codexCustomToolDescription(tool CodexTool) string {
+	if tool.Description == "" {
+		return "Original Codex custom tool. Pass raw input in the input field."
+	}
+	return tool.Description
+}
+
+func codexCustomToolParameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"input":{"type":"string","description":"Raw string input for the original custom tool."}},"required":["input"]}`)
+}
+
+func codexToolSearchParameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}`)
+}
+
+func convertResponsesToolChoiceToOpenAIChat(toolChoice any, toolCtx ...*codexToolContext) any {
 	switch v := toolChoice.(type) {
 	case nil:
 		return nil
 	case string:
 		return v
 	case map[string]any:
-		if t, _ := v["type"].(string); t == "function" {
+		if t, _ := v["type"].(string); t == "function" || t == "custom" || t == "tool_search" {
 			if name, _ := v["name"].(string); name != "" {
+				if t == "tool_search" {
+					name = codexToolSearchProxyName
+				} else if len(toolCtx) > 0 && toolCtx[0] != nil {
+					namespace, _ := v["namespace"].(string)
+					name = toolCtx[0].chatNameFor(name, namespace)
+				}
 				return map[string]any{
 					"type": "function",
 					"function": map[string]string{
 						"name": name,
+					},
+				}
+			}
+			if t == "tool_search" {
+				return map[string]any{
+					"type": "function",
+					"function": map[string]string{
+						"name": codexToolSearchProxyName,
 					},
 				}
 			}
@@ -593,7 +935,7 @@ func convertResponsesToolChoiceToOpenAIChat(toolChoice any) any {
 	}
 }
 
-func convertResponsesToolChoiceToClaude(toolChoice any) json.RawMessage {
+func convertResponsesToolChoiceToClaude(toolChoice any, toolCtx ...*codexToolContext) json.RawMessage {
 	switch v := toolChoice.(type) {
 	case nil:
 		return nil
@@ -610,9 +952,19 @@ func convertResponsesToolChoiceToClaude(toolChoice any) json.RawMessage {
 		out, _ := json.Marshal(mapped)
 		return out
 	case map[string]any:
-		if t, _ := v["type"].(string); t == "function" {
+		if t, _ := v["type"].(string); t == "function" || t == "custom" || t == "tool_search" {
 			if name, _ := v["name"].(string); name != "" {
+				if t == "tool_search" {
+					name = codexToolSearchProxyName
+				} else if len(toolCtx) > 0 && toolCtx[0] != nil {
+					namespace, _ := v["namespace"].(string)
+					name = toolCtx[0].chatNameFor(name, namespace)
+				}
 				out, _ := json.Marshal(map[string]any{"type": "tool", "name": name})
+				return out
+			}
+			if t == "tool_search" {
+				out, _ := json.Marshal(map[string]any{"type": "tool", "name": codexToolSearchProxyName})
 				return out
 			}
 		}
@@ -647,6 +999,8 @@ func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *m
 	if err := json.Unmarshal(bodyBytes, &codexReq); err != nil {
 		return bodyBytes, false, fmt.Errorf("failed to parse Codex request: %w", err)
 	}
+	toolCtx := newCodexToolContext(codexReq.Tools)
+	c.Set(ctxKeyCodexToolContext, toolCtx)
 
 	switch group.ChannelType {
 	case "openai":
@@ -721,7 +1075,7 @@ func (ps *ProxyServer) handleForceCodexNormalResponse(c *gin.Context, resp *http
 				return
 			}
 		} else {
-			codexResp = convertOpenAIChatToCodexResponse(&openaiResp, functionCallTriggerSignal(c))
+			codexResp = convertOpenAIChatToCodexResponse(&openaiResp, functionCallTriggerSignal(c), codexToolContextFromGin(c))
 		}
 	case codexUpstreamClaude:
 		var claudeResp ClaudeResponse
@@ -733,7 +1087,7 @@ func (ps *ProxyServer) handleForceCodexNormalResponse(c *gin.Context, resp *http
 				return
 			}
 		} else {
-			codexResp = convertClaudeToCodexResponse(&claudeResp)
+			codexResp = convertClaudeToCodexResponse(&claudeResp, codexToolContextFromGin(c))
 		}
 	default:
 		writeForceCodexPassthrough(c, resp, bodyBytes)
@@ -790,12 +1144,244 @@ func (ps *ProxyServer) handleForceCodexStreamingResponse(c *gin.Context, resp *h
 	clearUpstreamEncodingHeaders(c)
 	c.Header("Content-Type", "text/event-stream")
 	c.Status(statusCode)
-	_, _ = c.Writer.Write([]byte("event: response.completed\n"))
-	_, _ = c.Writer.Write([]byte("data: " + string(out) + "\n\n"))
-	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	if err := writeForceCodexCollectedStreamEvents(c, streamResp); err != nil {
+		logrus.WithError(err).Warn("Force Codex: failed to write collected SSE stream")
+		return
+	}
 	if flusher, ok := c.Writer.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+func writeForceCodexCollectedStreamEvents(c *gin.Context, streamResp *CodexResponse) error {
+	responseForStatus := func(status string) *CodexResponse {
+		cp := *streamResp
+		cp.Status = status
+		if status != "completed" {
+			cp.Output = []CodexOutputItem{}
+		}
+		return &cp
+	}
+
+	var captured strings.Builder
+	writeEvent := func(event string, payload any) error {
+		eventBytes, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		chunk := "event: " + event + "\n" + "data: " + string(eventBytes) + "\n\n"
+		if captured.Len() < maxResponseCaptureBytes {
+			remaining := maxResponseCaptureBytes - captured.Len()
+			if len(chunk) > remaining {
+				captured.WriteString(chunk[:remaining])
+			} else {
+				captured.WriteString(chunk)
+			}
+		}
+		_, err = c.Writer.Write([]byte(chunk))
+		return err
+	}
+
+	if err := writeEvent("response.created", map[string]any{
+		"type":     "response.created",
+		"response": responseForStatus("in_progress"),
+	}); err != nil {
+		return err
+	}
+
+	for outputIndex := range streamResp.Output {
+		item := &streamResp.Output[outputIndex]
+		ensureCodexStreamOutputItemID(streamResp, item, outputIndex)
+		if err := writeForceCodexOutputItemEvents(writeEvent, *item, outputIndex); err != nil {
+			return err
+		}
+	}
+
+	terminalEvent := "response.completed"
+	switch streamResp.Status {
+	case "failed":
+		terminalEvent = "response.failed"
+	case "incomplete":
+		terminalEvent = "response.incomplete"
+	case "cancelled", "canceled":
+		terminalEvent = "response.cancelled"
+	}
+	if err := writeEvent(terminalEvent, map[string]any{
+		"type":     terminalEvent,
+		"response": streamResp,
+	}); err != nil {
+		return err
+	}
+	doneChunk := "data: [DONE]\n\n"
+	if captured.Len() < maxResponseCaptureBytes {
+		remaining := maxResponseCaptureBytes - captured.Len()
+		if len(doneChunk) > remaining {
+			captured.WriteString(doneChunk[:remaining])
+		} else {
+			captured.WriteString(doneChunk)
+		}
+	}
+	if _, err := c.Writer.Write([]byte(doneChunk)); err != nil {
+		return err
+	}
+	if shouldCaptureResponse(c) && captured.Len() > 0 {
+		c.Set("response_body", sanitizeAndTruncateStringForLog(captured.String(), maxResponseCaptureBytes))
+	}
+	return nil
+}
+
+func ensureCodexStreamOutputItemID(resp *CodexResponse, item *CodexOutputItem, outputIndex int) {
+	if item.ID != "" {
+		return
+	}
+	prefix := "item"
+	switch item.Type {
+	case "reasoning":
+		prefix = "rs"
+	case "message":
+		prefix = "msg"
+	case "function_call":
+		prefix = "fc"
+	}
+	base := strings.TrimPrefix(resp.ID, "resp_")
+	if base == "" {
+		base = "stream"
+	}
+	item.ID = fmt.Sprintf("%s_%s_%d", prefix, base, outputIndex)
+}
+
+func writeForceCodexOutputItemEvents(writeEvent func(string, any) error, item CodexOutputItem, outputIndex int) error {
+	addedItem := item
+	addedItem.Status = "in_progress"
+	switch item.Type {
+	case "reasoning":
+		addedItem.Summary = []CodexSummaryItem{}
+	case "message":
+		addedItem.Content = []CodexContentBlock{}
+	case "function_call":
+		addedItem.Arguments = ""
+	case "custom_tool_call":
+		addedItem.Input = ""
+	}
+	if err := writeEvent("response.output_item.added", map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": outputIndex,
+		"item":         addedItem,
+	}); err != nil {
+		return err
+	}
+
+	switch item.Type {
+	case "reasoning":
+		text := codexReasoningSummaryText(item)
+		if text != "" {
+			if err := writeEvent("response.reasoning_summary_part.added", map[string]any{
+				"type":          "response.reasoning_summary_part.added",
+				"item_id":       item.ID,
+				"output_index":  outputIndex,
+				"summary_index": 0,
+				"part": map[string]any{
+					"type": "summary_text",
+					"text": "",
+				},
+			}); err != nil {
+				return err
+			}
+			if err := writeEvent("response.reasoning_summary_text.delta", map[string]any{
+				"type":          "response.reasoning_summary_text.delta",
+				"item_id":       item.ID,
+				"output_index":  outputIndex,
+				"summary_index": 0,
+				"delta":         text,
+			}); err != nil {
+				return err
+			}
+			if err := writeEvent("response.reasoning_summary_part.done", map[string]any{
+				"type":          "response.reasoning_summary_part.done",
+				"item_id":       item.ID,
+				"output_index":  outputIndex,
+				"summary_index": 0,
+				"part": map[string]any{
+					"type": "summary_text",
+					"text": text,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+	case "message":
+		for contentIndex, content := range item.Content {
+			if content.Type != "output_text" || content.Text == "" {
+				continue
+			}
+			if err := writeEvent("response.output_text.delta", map[string]any{
+				"type":          "response.output_text.delta",
+				"item_id":       item.ID,
+				"output_index":  outputIndex,
+				"content_index": contentIndex,
+				"delta":         content.Text,
+			}); err != nil {
+				return err
+			}
+		}
+	case "custom_tool_call":
+		input := codexCustomToolInputString(item.Input)
+		if input != "" {
+			if err := writeEvent("response.custom_tool_call_input.delta", map[string]any{
+				"type":         "response.custom_tool_call_input.delta",
+				"item_id":      item.ID,
+				"output_index": outputIndex,
+				"delta":        input,
+			}); err != nil {
+				return err
+			}
+		}
+		if err := writeEvent("response.custom_tool_call_input.done", map[string]any{
+			"type":         "response.custom_tool_call_input.done",
+			"item_id":      item.ID,
+			"output_index": outputIndex,
+			"input":        input,
+		}); err != nil {
+			return err
+		}
+	case "function_call":
+		if item.Arguments != "" {
+			if err := writeEvent("response.function_call_arguments.delta", map[string]any{
+				"type":         "response.function_call_arguments.delta",
+				"item_id":      item.ID,
+				"output_index": outputIndex,
+				"delta":        item.Arguments,
+			}); err != nil {
+				return err
+			}
+			if err := writeEvent("response.function_call_arguments.done", map[string]any{
+				"type":         "response.function_call_arguments.done",
+				"item_id":      item.ID,
+				"output_index": outputIndex,
+				"arguments":    item.Arguments,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	doneItem := item
+	doneItem.Status = "completed"
+	return writeEvent("response.output_item.done", map[string]any{
+		"type":         "response.output_item.done",
+		"output_index": outputIndex,
+		"item":         doneItem,
+	})
+}
+
+func codexReasoningSummaryText(item CodexOutputItem) string {
+	var b strings.Builder
+	for _, summary := range item.Summary {
+		if summary.Text != "" {
+			b.WriteString(summary.Text)
+		}
+	}
+	return b.String()
 }
 
 func (ps *ProxyServer) convertForceCodexCollectedStream(c *gin.Context, statusCode int, format string, bodyBytes []byte) (*CodexResponse, int) {
@@ -806,10 +1392,10 @@ func (ps *ProxyServer) convertForceCodexCollectedStream(c *gin.Context, statusCo
 	switch format {
 	case codexUpstreamOpenAIChat:
 		openaiResp := collectOpenAIChatStreamToResponse(bodyBytes)
-		return convertOpenAIChatToCodexResponse(openaiResp, functionCallTriggerSignal(c)), statusCode
+		return convertOpenAIChatToCodexResponse(openaiResp, functionCallTriggerSignal(c), codexToolContextFromGin(c)), statusCode
 	case codexUpstreamClaude:
 		claudeResp := collectClaudeStreamToResponse(bodyBytes)
-		return convertClaudeToCodexResponse(claudeResp), statusCode
+		return convertClaudeToCodexResponse(claudeResp, codexToolContextFromGin(c)), statusCode
 	default:
 		return rawCodexErrorResponse(http.StatusBadGateway, []byte("unsupported Codex stream conversion")), http.StatusBadGateway
 	}
@@ -828,6 +1414,7 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 		}},
 	}
 	var content strings.Builder
+	var reasoningContent strings.Builder
 	toolCallsByIndex := make(map[int]*OpenAIToolCall)
 	finishReason := ""
 	for _, data := range extractSSEDataPayloads(bodyBytes) {
@@ -847,6 +1434,13 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 		if chunk.Model != "" {
 			resp.Model = chunk.Model
 		}
+		if chunk.Usage != nil {
+			resp.Usage = chunk.Usage
+		}
+		if chunk.Error != nil {
+			resp.Error = chunk.Error
+			continue
+		}
 		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta == nil {
 			continue
 		}
@@ -856,6 +1450,9 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 		delta := chunk.Choices[0].Delta
 		if delta.Content != nil {
 			content.WriteString(*delta.Content)
+		}
+		if delta.ReasoningContent != nil {
+			reasoningContent.WriteString(*delta.ReasoningContent)
 		}
 		for idx, tc := range delta.ToolCalls {
 			key := idx
@@ -885,6 +1482,10 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 	if content.Len() > 0 {
 		text := content.String()
 		resp.Choices[0].Message.Content = &text
+	}
+	if reasoningContent.Len() > 0 {
+		reasoning := reasoningContent.String()
+		resp.Choices[0].Message.ReasoningContent = &reasoning
 	}
 	if finishReason != "" {
 		resp.Choices[0].FinishReason = &finishReason
@@ -953,6 +1554,13 @@ func collectClaudeStreamToResponse(bodyBytes []byte) *ClaudeResponse {
 			}
 			if event.Usage != nil {
 				resp.Usage.OutputTokens = event.Usage.OutputTokens
+			}
+		case "error":
+			resp.Type = "error"
+			if event.Error != nil {
+				resp.Error = event.Error
+			} else {
+				resp.Error = &ClaudeError{Type: "api_error", Message: "upstream stream error"}
 			}
 		}
 	}

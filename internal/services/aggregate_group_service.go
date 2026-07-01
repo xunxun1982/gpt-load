@@ -20,6 +20,7 @@ import (
 const (
 	minHealthResetIntervalSeconds = int64((30 * time.Minute) / time.Second)
 	maxHealthResetIntervalSeconds = int64((365 * 24 * time.Hour) / time.Second)
+	maxSubGroupWeight             = 5000
 )
 
 // SubGroupInput defines the input payload for aggregate group member configuration.
@@ -490,7 +491,7 @@ func validateSubGroupWeight(weight int) error {
 	if weight < 0 {
 		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_negative", nil)
 	}
-	if weight > 1000 {
+	if weight > maxSubGroupWeight {
 		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_weight_max_exceeded", nil)
 	}
 	return nil
@@ -500,7 +501,7 @@ func validateMinEffectiveWeight(weight, minEffectiveWeight int) error {
 	if minEffectiveWeight < 0 {
 		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_min_effective_weight_negative", nil)
 	}
-	if minEffectiveWeight > 1000 {
+	if minEffectiveWeight > maxSubGroupWeight {
 		return NewI18nError(app_errors.ErrValidation, "validation.sub_group_min_effective_weight_max_exceeded", nil)
 	}
 	if weight > 0 && minEffectiveWeight > weight {

@@ -333,8 +333,8 @@ export default {
     enterWeight: "ウェイトを入力してください",
     weightCannotBeNegative: "ウェイトは負の値にできません",
     weightMustBeInteger: "ウェイトは整数で入力してください",
-    weightMaxExceeded: "ウェイトは1000を超えることはできません",
-    weightRangeHint: "範囲: 0〜1000（0=無効）",
+    weightMaxExceeded: "ウェイトは5000を超えることはできません",
+    weightRangeHint: "範囲: 0〜5000（0=無効）",
     newWeight: "新しいウェイト",
     currentWeight: "現在のウェイト",
     minEffectiveWeight: "最低有効重み",
@@ -414,6 +414,9 @@ export default {
     healthResetEveryDays: "{count}日ごと",
     healthResetHint:
       "毎日 00:00 を基準に、この集約グループ内のすべてのサブグループの健康度をリセットします",
+    codexAffinity: "Codex アフィニティ",
+    codexAffinityHint:
+      "デフォルトはオフです。有効にすると、同じ Codex セッションは安定したサブグループを優先します。そのサブグループが利用不可または失敗した場合は、残りの利用可能なサブグループから有効重みに基づいて選択します。ルーティングのみで、リクエストヘッダーや本文は変更しません。",
     precondition: "前提条件",
     preconditions: "前提条件",
     preconditionMaxRequestSize: "リクエストサイズ制限",
