@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +12,6 @@ import (
 	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1171,18 +1169,7 @@ func TestHandleCodexCCNormalResponse(t *testing.T) {
 func TestHandleCodexCCNormalResponseSanitizesCodexErrorLog(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	var logBuf bytes.Buffer
-	originalOutput := logrus.StandardLogger().Out
-	originalFormatter := logrus.StandardLogger().Formatter
-	originalLevel := logrus.GetLevel()
-	logrus.SetOutput(&logBuf)
-	logrus.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
-	logrus.SetLevel(logrus.WarnLevel)
-	defer func() {
-		logrus.SetOutput(originalOutput)
-		logrus.SetFormatter(originalFormatter)
-		logrus.SetLevel(originalLevel)
-	}()
+	logHook := captureGlobalLogrusEntries(t)
 
 	upstreamResp := &http.Response{
 		StatusCode: http.StatusBadRequest,
@@ -1198,7 +1185,7 @@ func TestHandleCodexCCNormalResponseSanitizesCodexErrorLog(t *testing.T) {
 	ps := &ProxyServer{}
 	ps.handleCodexCCNormalResponse(c, upstreamResp)
 
-	logOutput := logBuf.String()
+	logOutput := logrusHookText(logHook)
 	if strings.Contains(logOutput, "sk-proj") {
 		t.Fatalf("expected sanitized log output, got %s", logOutput)
 	}

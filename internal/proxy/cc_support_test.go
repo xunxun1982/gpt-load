@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,8 +17,40 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/require"
 )
+
+func captureGlobalLogrusEntries(t *testing.T) *logrustest.Hook {
+	t.Helper()
+
+	logger := logrus.StandardLogger()
+	originalHooks := make(logrus.LevelHooks, len(logger.Hooks))
+	for level, hooks := range logger.Hooks {
+		originalHooks[level] = append([]logrus.Hook(nil), hooks...)
+	}
+	t.Cleanup(func() {
+		logger.ReplaceHooks(originalHooks)
+	})
+
+	// Package-level logrus calls require a global hook; NewNullLogger would not observe them.
+	return logrustest.NewGlobal()
+}
+
+func logrusHookText(hook *logrustest.Hook) string {
+	var b strings.Builder
+	for _, entry := range hook.AllEntries() {
+		b.WriteString(entry.Message)
+		b.WriteByte(' ')
+		for key, value := range entry.Data {
+			b.WriteString(key)
+			b.WriteByte('=')
+			b.WriteString(fmt.Sprint(value))
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
 
 func TestApplyCCRequestConversionDirectStoresModelRedirectTargetIndex(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -6458,18 +6489,7 @@ func TestHandleCCNormalResponse(t *testing.T) {
 func TestHandleCCNormalResponseSanitizesOpenAIErrorLog(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	var logBuf bytes.Buffer
-	originalOutput := logrus.StandardLogger().Out
-	originalFormatter := logrus.StandardLogger().Formatter
-	originalLevel := logrus.GetLevel()
-	logrus.SetOutput(&logBuf)
-	logrus.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
-	logrus.SetLevel(logrus.WarnLevel)
-	defer func() {
-		logrus.SetOutput(originalOutput)
-		logrus.SetFormatter(originalFormatter)
-		logrus.SetLevel(originalLevel)
-	}()
+	logHook := captureGlobalLogrusEntries(t)
 
 	resp := &http.Response{
 		StatusCode: http.StatusTooManyRequests,
@@ -6487,7 +6507,7 @@ func TestHandleCCNormalResponseSanitizesOpenAIErrorLog(t *testing.T) {
 	ps := &ProxyServer{}
 	ps.handleCCNormalResponse(c, resp)
 
-	logOutput := logBuf.String()
+	logOutput := logrusHookText(logHook)
 	if strings.Contains(logOutput, "sk-proj") {
 		t.Fatalf("expected sanitized log output, got %s", logOutput)
 	}
