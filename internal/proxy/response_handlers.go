@@ -61,7 +61,7 @@ func (w *limitedResponseCaptureWriter) String() string {
 	if w == nil {
 		return ""
 	}
-	return w.capture.String()
+	return strings.ToValidUTF8(w.capture.String(), "")
 }
 
 type sseLogicalFailureCapture struct {

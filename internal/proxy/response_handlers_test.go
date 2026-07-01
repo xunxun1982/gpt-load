@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/types"
@@ -493,6 +494,14 @@ func TestLimitedResponseCaptureWriter(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, 3, n)
 	assert.Equal(t, "abc", capture.String())
+
+	capture = newLimitedResponseCaptureWriter(io.Discard, len("hello 世")-1)
+	n, err = capture.Write([]byte("hello 世界"))
+
+	require.NoError(t, err)
+	assert.Equal(t, len("hello 世界"), n)
+	assert.True(t, utf8.ValidString(capture.String()))
+	assert.Equal(t, "hello ", capture.String())
 }
 
 func BenchmarkTailUsageCaptureWrite(b *testing.B) {
