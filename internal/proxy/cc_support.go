@@ -2625,9 +2625,10 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	// Check for OpenAI error
 	if openaiResp.Error != nil {
 		setTokenUsageFromBody(c, bodyBytes)
+		safeErrorMessage := strings.TrimSpace(utils.SanitizeErrorBody(openaiResp.Error.Message))
 		logrus.WithFields(logrus.Fields{
 			"error_type":    openaiResp.Error.Type,
-			"error_message": openaiResp.Error.Message,
+			"error_message": safeErrorMessage,
 			"error_code":    openaiResp.Error.Code,
 		}).Warn("CC: OpenAI returned error in CC conversion")
 
@@ -2635,7 +2636,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			Type: "error",
 			Error: ClaudeError{
 				Type:    apiErrorTypeToClaudeErrorType(openaiResp.Error.Type),
-				Message: strings.TrimSpace(utils.SanitizeErrorBody(openaiResp.Error.Message)),
+				Message: safeErrorMessage,
 			},
 		}
 		if claudeErr.Error.Message == "" {

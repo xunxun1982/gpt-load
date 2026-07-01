@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1166,6 +1168,45 @@ func TestHandleCodexCCNormalResponse(t *testing.T) {
 	}
 }
 
+func TestHandleCodexCCNormalResponseSanitizesCodexErrorLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var logBuf bytes.Buffer
+	originalOutput := logrus.StandardLogger().Out
+	originalFormatter := logrus.StandardLogger().Formatter
+	originalLevel := logrus.GetLevel()
+	logrus.SetOutput(&logBuf)
+	logrus.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
+	logrus.SetLevel(logrus.WarnLevel)
+	defer func() {
+		logrus.SetOutput(originalOutput)
+		logrus.SetFormatter(originalFormatter)
+		logrus.SetLevel(originalLevel)
+	}()
+
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"rate_limit_error","message":"Invalid model for Bearer sk-proj-12345678901234567890"}}`)),
+		Header:     make(http.Header),
+	}
+	upstreamResp.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+
+	ps := &ProxyServer{}
+	ps.handleCodexCCNormalResponse(c, upstreamResp)
+
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, "sk-proj") {
+		t.Fatalf("expected sanitized log output, got %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "[REDACTED_API_KEY]") {
+		t.Fatalf("expected redacted API key marker in log output, got %s", logOutput)
+	}
+}
+
 // TestHandleCodexCCStreamingResponse tests streaming Codex response conversion
 func TestHandleCodexCCStreamingResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -1320,6 +1361,25 @@ func TestHandleCodexCCStreamingResponse(t *testing.T) {
 				}
 				if !strings.Contains(output, "event: message_stop") {
 					t.Error("expected message_stop event")
+				}
+			},
+		},
+		{
+			name: "error event terminates stream",
+			events: []string{
+				`{"error":{"type":"overloaded_error","message":"busy Bearer sk-proj-12345678901234567890"}}`,
+				`{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"late text"}`,
+			},
+			eventNames: []string{"error"},
+			checkFunc: func(t *testing.T, output string) {
+				if !strings.Contains(output, "event: error") {
+					t.Error("expected error event")
+				}
+				if strings.Contains(output, "late text") {
+					t.Errorf("expected stream to stop after error event, got %s", output)
+				}
+				if strings.Contains(output, "sk-proj") {
+					t.Errorf("expected sanitized output, got %s", output)
 				}
 			},
 		},

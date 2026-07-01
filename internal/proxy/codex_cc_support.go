@@ -1761,16 +1761,17 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 	// Check for Codex error
 	if codexResp.Error != nil {
 		setTokenUsageFromBody(c, bodyBytes)
+		safeErrorMessage := strings.TrimSpace(utils.SanitizeErrorBody(codexResp.Error.Message))
 		logrus.WithFields(logrus.Fields{
 			"error_type":    codexResp.Error.Type,
-			"error_message": codexResp.Error.Message,
+			"error_message": safeErrorMessage,
 		}).Warn("Codex CC: Codex returned error in CC conversion")
 
 		claudeErr := ClaudeErrorResponse{
 			Type: "error",
 			Error: ClaudeError{
 				Type:    apiErrorTypeToClaudeErrorType(codexResp.Error.Type),
-				Message: strings.TrimSpace(utils.SanitizeErrorBody(codexResp.Error.Message)),
+				Message: safeErrorMessage,
 			},
 		}
 		if claudeErr.Error.Message == "" {
@@ -2108,8 +2109,9 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 			}
 			if codexEvent.Type == "response.completed" || codexEvent.Type == "response.done" ||
 				codexEvent.Type == "response.failed" || codexEvent.Type == "response.incomplete" ||
-				codexEvent.Type == "response.cancelled" || codexEvent.Type == "response.canceled" {
-				streamCompleted = codexEvent.Type != "response.failed"
+				codexEvent.Type == "response.cancelled" || codexEvent.Type == "response.canceled" ||
+				codexEvent.Type == "error" {
+				streamCompleted = codexEvent.Type != "response.failed" && codexEvent.Type != "error"
 				break
 			}
 		}

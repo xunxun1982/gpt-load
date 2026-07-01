@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"gpt-load/internal/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
 
@@ -6450,6 +6452,47 @@ func TestHandleCCNormalResponse(t *testing.T) {
 				tt.checkResponse(t, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandleCCNormalResponseSanitizesOpenAIErrorLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var logBuf bytes.Buffer
+	originalOutput := logrus.StandardLogger().Out
+	originalFormatter := logrus.StandardLogger().Formatter
+	originalLevel := logrus.GetLevel()
+	logrus.SetOutput(&logBuf)
+	logrus.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
+	logrus.SetLevel(logrus.WarnLevel)
+	defer func() {
+		logrus.SetOutput(originalOutput)
+		logrus.SetFormatter(originalFormatter)
+		logrus.SetLevel(originalLevel)
+	}()
+
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"Rate limit exceeded for Bearer sk-proj-12345678901234567890","type":"rate_limit_error","code":"rate_limit_exceeded"}}`)),
+	}
+	resp.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCCEnabled, true)
+	c.Set(ctxKeyOriginalFormat, "claude")
+	c.Set("original_model", "gpt-4")
+
+	ps := &ProxyServer{}
+	ps.handleCCNormalResponse(c, resp)
+
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, "sk-proj") {
+		t.Fatalf("expected sanitized log output, got %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "[REDACTED_API_KEY]") {
+		t.Fatalf("expected redacted API key marker in log output, got %s", logOutput)
 	}
 }
 
