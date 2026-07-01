@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/types"
@@ -23,6 +24,17 @@ var benchmarkTokenCountSink int64
 type errorAfterReadCloser struct {
 	data []byte
 	done bool
+}
+
+type shortWriteErrorWriter struct {
+	n int
+}
+
+func (w shortWriteErrorWriter) Write(p []byte) (int, error) {
+	if w.n > len(p) {
+		w.n = len(p)
+	}
+	return w.n, errors.New("short write")
 }
 
 func compressGzipForResponseHandlerTest(t *testing.T, body []byte) []byte {
@@ -465,10 +477,37 @@ func TestHandleNormalResponseSkipsTokenAccountingOnCopyError(t *testing.T) {
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
 }
 
+func TestLimitedResponseCaptureWriter(t *testing.T) {
+	var downstream bytes.Buffer
+	capture := newLimitedResponseCaptureWriter(&downstream, 5)
+
+	n, err := capture.Write([]byte("hello world"))
+
+	require.NoError(t, err)
+	assert.Equal(t, len("hello world"), n)
+	assert.Equal(t, "hello world", downstream.String())
+	assert.Equal(t, "hello", capture.String())
+
+	capture = newLimitedResponseCaptureWriter(shortWriteErrorWriter{n: 3}, 5)
+	n, err = capture.Write([]byte("abcdef"))
+
+	require.Error(t, err)
+	assert.Equal(t, 3, n)
+	assert.Equal(t, "abc", capture.String())
+
+	capture = newLimitedResponseCaptureWriter(io.Discard, len("hello 世")-1)
+	n, err = capture.Write([]byte("hello 世界"))
+
+	require.NoError(t, err)
+	assert.Equal(t, len("hello 世界"), n)
+	assert.True(t, utf8.ValidString(capture.String()))
+	assert.Equal(t, "hello ", capture.String())
+}
+
 func BenchmarkTailUsageCaptureWrite(b *testing.B) {
 	payload := bytes.Repeat([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello world\"}}]}\n\n"), 2048)
 	b.SetBytes(int64(len(payload)))
-	// Go 1.26 supports B.Loop and lets testing manage benchmark timing.
+	// Go 1.24+ supports B.Loop and lets testing manage benchmark timing.
 	for b.Loop() {
 		capture := &tailUsageCapture{
 			limit: maxUsageTailCaptureBytes,
@@ -480,10 +519,23 @@ func BenchmarkTailUsageCaptureWrite(b *testing.B) {
 	}
 }
 
+func BenchmarkLimitedResponseCaptureWriter(b *testing.B) {
+	payload := bytes.Repeat([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hello world\"}}\n\n"), 2048)
+	b.SetBytes(int64(len(payload)))
+	// Go 1.24+ supports B.Loop and lets testing manage benchmark timing.
+	for b.Loop() {
+		capture := newLimitedResponseCaptureWriter(io.Discard, maxResponseCaptureBytes)
+		if _, err := capture.Write(payload); err != nil {
+			b.Fatal(err)
+		}
+		benchmarkTokenCountSink = int64(len(capture.String()))
+	}
+}
+
 func BenchmarkEstimatedTokenCaptureWrite(b *testing.B) {
 	payload := bytes.Repeat([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello 世界\"}}]}\n\n"), 2048)
 	b.SetBytes(int64(len(payload)))
-	// Go 1.26 supports B.Loop and lets testing manage benchmark timing.
+	// Go 1.24+ supports B.Loop and lets testing manage benchmark timing.
 	for b.Loop() {
 		var capture estimatedTokenCapture
 		if _, err := capture.Write(payload); err != nil {

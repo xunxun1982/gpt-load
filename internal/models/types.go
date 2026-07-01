@@ -105,6 +105,8 @@ type GroupConfig struct {
 	// ResponsesIncludeEncryptedReasoning adds include=["reasoning.encrypted_content"]
 	// to OpenAI Responses API requests when enabled.
 	ResponsesIncludeEncryptedReasoning *bool `json:"responses_include_encrypted_reasoning,omitempty"`
+	// CodexAffinityEnabled keeps Codex sessions on a stable sub-group for OpenAI Responses aggregate groups.
+	CodexAffinityEnabled *bool `json:"codex_affinity_enabled,omitempty"`
 	// SimulatedClient applies a narrow client fingerprint preset to upstream requests.
 	// Values: "off", "codex", "claude_code".
 	SimulatedClient *string `json:"simulated_client,omitempty"`

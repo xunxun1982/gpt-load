@@ -2917,14 +2917,20 @@ func (ps *ProxyServer) logRequest(
 			logEntry.CacheWriteTokens = usage.CacheWriteTokens
 			logEntry.ThinkingTokens = usage.ThinkingTokens
 			logEntry.TokenUsageSource = source
-		} else if len(bodyBytes) <= maxEstimatedTokenBodyBytes {
-			inputTokens := int64(utils.EstimateTokensFromBytes(bodyBytes))
+		} else {
 			outputTokens := getEstimatedOutputTokens(c)
-			totalTokens := inputTokens + outputTokens
-			if totalTokens > 0 {
-				logEntry.InputTokens = inputTokens
+			if len(bodyBytes) <= maxEstimatedTokenBodyBytes {
+				inputTokens := int64(utils.EstimateTokensFromBytes(bodyBytes))
+				totalTokens := inputTokens + outputTokens
+				if totalTokens > 0 {
+					logEntry.InputTokens = inputTokens
+					logEntry.OutputTokens = outputTokens
+					logEntry.TotalTokens = totalTokens
+					logEntry.TokenUsageSource = models.TokenUsageSourceEstimated
+				}
+			} else if outputTokens > 0 {
 				logEntry.OutputTokens = outputTokens
-				logEntry.TotalTokens = totalTokens
+				logEntry.TotalTokens = outputTokens
 				logEntry.TokenUsageSource = models.TokenUsageSourceEstimated
 			}
 		}

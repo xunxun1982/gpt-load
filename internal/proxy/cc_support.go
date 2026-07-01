@@ -3329,7 +3329,19 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		return
 	}
 
-	writer := NewSSEWriter(c.Writer, flusher)
+	streamWriter := io.Writer(c.Writer)
+	var responseCapture *limitedResponseCaptureWriter
+	if shouldCaptureResponse(c) {
+		responseCapture = newLimitedResponseCaptureWriter(c.Writer, maxResponseCaptureBytes)
+		streamWriter = responseCapture
+		defer func() {
+			if captured := responseCapture.String(); captured != "" {
+				c.Set("response_body", sanitizeAndTruncateStringForLog(captured, maxResponseCaptureBytes))
+			}
+		}()
+	}
+
+	writer := NewSSEWriter(streamWriter, flusher)
 	defer writer.Close()
 
 	reqID := ""

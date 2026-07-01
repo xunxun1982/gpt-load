@@ -32,6 +32,38 @@ type tailUsageCapture struct {
 	limit int
 }
 
+type limitedResponseCaptureWriter struct {
+	writer  io.Writer
+	limit   int
+	capture strings.Builder
+}
+
+func newLimitedResponseCaptureWriter(writer io.Writer, limit int) *limitedResponseCaptureWriter {
+	return &limitedResponseCaptureWriter{
+		writer: writer,
+		limit:  limit,
+	}
+}
+
+func (w *limitedResponseCaptureWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	if n > 0 && w.limit > 0 && w.capture.Len() < w.limit {
+		toCapture := p[:n]
+		if remaining := w.limit - w.capture.Len(); len(toCapture) > remaining {
+			toCapture = toCapture[:remaining]
+		}
+		_, _ = w.capture.Write(toCapture)
+	}
+	return n, err
+}
+
+func (w *limitedResponseCaptureWriter) String() string {
+	if w == nil {
+		return ""
+	}
+	return strings.ToValidUTF8(w.capture.String(), "")
+}
+
 type sseLogicalFailureCapture struct {
 	pending      []byte
 	statusCode   int
