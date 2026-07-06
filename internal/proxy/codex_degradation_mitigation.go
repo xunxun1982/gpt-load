@@ -500,6 +500,9 @@ func (s *codexMitigationState) processEvent(
 			_ = s.writeEvent(event)
 			return
 		}
+		// Non-reasoning output is tentative until terminal usage proves the round
+		// was not truncated; streaming it early would make truncated rounds
+		// impossible to discard before the hidden continuation.
 		itemKind[upstreamIndex] = "buffered"
 		item := codexMitigationMapField(event, "item")
 		result.bufferedItems = append(result.bufferedItems, codexMitigationBufferedItem{

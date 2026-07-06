@@ -108,6 +108,7 @@ type GroupConfig struct {
 	// CodexAffinityEnabled keeps Codex sessions on a stable sub-group for OpenAI Responses aggregate groups.
 	CodexAffinityEnabled *bool `json:"codex_affinity_enabled,omitempty"`
 	// CodexDegradationMitigationEnabled folds truncated Codex Responses reasoning rounds into one SSE response.
+	// Only applies to OpenAI Responses (openai-response) channel groups.
 	CodexDegradationMitigationEnabled *bool `json:"codex_degradation_mitigation_enabled,omitempty"`
 	// SimulatedClient applies a narrow client fingerprint preset to upstream requests.
 	// Values: "off", "codex", "claude_code".
