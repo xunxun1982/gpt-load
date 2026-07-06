@@ -504,9 +504,24 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid codex_degradation_mitigation_enabled",
+			config: map[string]any{
+				"codex_degradation_mitigation_enabled": true,
+			},
+			expectError: false,
+		},
+		{
 			name: "invalid codex_affinity_enabled type",
 			config: map[string]any{
 				"codex_affinity_enabled": "true",
+			},
+			expectError: true,
+			errorMsg:    "expected a boolean",
+		},
+		{
+			name: "invalid codex_degradation_mitigation_enabled type",
+			config: map[string]any{
+				"codex_degradation_mitigation_enabled": "true",
 			},
 			expectError: true,
 			errorMsg:    "expected a boolean",

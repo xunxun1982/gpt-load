@@ -991,6 +991,30 @@ func TestCodexAggregateAffinityKeyFallsBackToPromptCacheKey(t *testing.T) {
 	assert.Equal(t, "body-cache-key", codexAggregateAffinityKey(c, group, body))
 }
 
+func TestCodexAggregateAffinityKeyWithDegradationMitigationEnabled(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	group := &models.Group{
+		Name:        "codex-aggregate",
+		GroupType:   "aggregate",
+		ChannelType: "openai-response",
+		Config: map[string]any{
+			"codex_affinity_enabled":               true,
+			"codex_degradation_mitigation_enabled": true,
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := []byte(`{"model":"gpt-5.4","stream":true,"prompt_cache_key":"body-cache-key"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Originator", "codex_cli_rs")
+	c.Request.Header.Set("Session_ID", "header-session")
+
+	assert.Equal(t, "header-session", codexAggregateAffinityKey(c, group, body))
+}
+
 func TestCodexAggregateAffinityKeyDisabledForNonCodexAggregate(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

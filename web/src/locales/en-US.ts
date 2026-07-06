@@ -417,6 +417,8 @@ export default {
     codexAffinity: "Codex Affinity",
     codexAffinityHint:
       "Off by default. When enabled, the same Codex session prefers a stable sub-group. If that sub-group is unavailable or fails, remaining available sub-groups are selected by effective weight. Routing only; request headers and body are not modified.",
+    codexAffinityRetryHint:
+      "When Codex Affinity is enabled, consider increasing the sub-group max retries so transient key failures stay on the same sub-group before failover.",
     precondition: "Precondition",
     preconditions: "Preconditions",
     preconditionMaxRequestSize: "Request Size Limit",
@@ -577,6 +579,11 @@ export default {
     responsesIncludeEncryptedReasoning: "Encrypted Reasoning",
     responsesIncludeEncryptedReasoningTip:
       'OpenAI Responses only. Merges "reasoning.encrypted_content" into the request include array.',
+    codexDegradationMitigation: "Codex Degradation Mitigation",
+    codexDegradationMitigationTip:
+      "OpenAI Responses streaming only. Detects the Codex reasoning truncation fingerprint, buffers tentative final output, continues reasoning rounds, and folds them into one downstream SSE response.",
+    codexDegradationMitigationAffinityHint:
+      "For aggregate groups, enabling Codex Affinity is recommended so the same Codex session keeps hitting the same sub-group.",
     ccSupport: "Force CC Support",
     ccSupportTooltip1:
       "Enable Claude Code compatibility mode, allowing Claude clients to connect via /claude endpoint.",

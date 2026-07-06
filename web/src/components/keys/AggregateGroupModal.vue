@@ -39,6 +39,7 @@ interface GroupConfig {
   sub_max_retries?: number;
   health_reset_interval_seconds?: number;
   codex_affinity_enabled?: boolean;
+  codex_degradation_mitigation_enabled?: boolean;
 }
 
 interface ApiError {
@@ -120,6 +121,7 @@ const defaultFormData = {
   sub_max_retries: 0,
   health_reset_interval_seconds: 0,
   codex_affinity_enabled: false,
+  codex_degradation_mitigation_enabled: false,
   preconditionItems: [] as PreconditionItem[], // Dynamic precondition list
 };
 
@@ -184,6 +186,9 @@ function loadGroupData() {
   const subMaxRetries = config.sub_max_retries ?? 0;
   const healthResetIntervalSeconds = config.health_reset_interval_seconds ?? 0;
   const codexAffinityEnabled = config.codex_affinity_enabled === true;
+  const codexDegradationMitigationEnabled =
+    props.group.channel_type === "openai-response" &&
+    config.codex_degradation_mitigation_enabled === true;
 
   // Load preconditions as dynamic items
   const preconditionItems: PreconditionItem[] = [];
@@ -206,6 +211,7 @@ function loadGroupData() {
     sub_max_retries: subMaxRetries,
     health_reset_interval_seconds: healthResetIntervalSeconds,
     codex_affinity_enabled: codexAffinityEnabled,
+    codex_degradation_mitigation_enabled: codexDegradationMitigationEnabled,
     preconditionItems,
   });
 }
@@ -303,6 +309,9 @@ async function handleSubmit() {
         health_reset_interval_seconds: formData.health_reset_interval_seconds ?? 0,
         codex_affinity_enabled:
           formData.channel_type === "openai-response" && formData.codex_affinity_enabled === true,
+        codex_degradation_mitigation_enabled:
+          formData.channel_type === "openai-response" &&
+          formData.codex_degradation_mitigation_enabled === true,
       },
       preconditions,
     };
@@ -442,9 +451,32 @@ async function handleSubmit() {
           >
             <n-switch v-model:value="formData.codex_affinity_enabled" />
             <template #feedback>
-              <span style="color: var(--text-secondary); font-size: 12px">
-                {{ t("keys.codexAffinityHint") }}
-              </span>
+              <div style="color: var(--text-secondary); font-size: 12px">
+                <div>{{ t("keys.codexAffinityHint") }}</div>
+                <div v-if="formData.codex_affinity_enabled">
+                  {{ t("keys.codexAffinityRetryHint") }}
+                </div>
+              </div>
+            </template>
+          </n-form-item>
+
+          <n-form-item
+            v-if="formData.channel_type === 'openai-response'"
+            :label="t('keys.codexDegradationMitigation')"
+          >
+            <n-switch v-model:value="formData.codex_degradation_mitigation_enabled" />
+            <template #feedback>
+              <div style="color: var(--text-secondary); font-size: 12px">
+                <div>{{ t("keys.codexDegradationMitigationTip") }}</div>
+                <div
+                  v-if="
+                    formData.codex_degradation_mitigation_enabled &&
+                    !formData.codex_affinity_enabled
+                  "
+                >
+                  {{ t("keys.codexDegradationMitigationAffinityHint") }}
+                </div>
+              </div>
             </template>
           </n-form-item>
 

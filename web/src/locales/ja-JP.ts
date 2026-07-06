@@ -417,6 +417,8 @@ export default {
     codexAffinity: "Codex アフィニティ",
     codexAffinityHint:
       "デフォルトはオフです。有効にすると、同じ Codex セッションは安定したサブグループを優先します。そのサブグループが利用不可または失敗した場合は、残りの利用可能なサブグループから有効重みに基づいて選択します。ルーティングのみで、リクエストヘッダーや本文は変更しません。",
+    codexAffinityRetryHint:
+      "Codex アフィニティを有効にする場合は、一時的なキー失敗ですぐフェイルオーバーしないよう、サブグループ最大リトライを増やすことを検討してください。",
     precondition: "前提条件",
     preconditions: "前提条件",
     preconditionMaxRequestSize: "リクエストサイズ制限",
@@ -577,6 +579,11 @@ export default {
     responsesIncludeEncryptedReasoning: "暗号化推理",
     responsesIncludeEncryptedReasoningTip:
       'OpenAI Responses のみ。リクエストの include 配列に "reasoning.encrypted_content" を追加します。',
+    codexDegradationMitigation: "Codex 劣化緩和",
+    codexDegradationMitigationTip:
+      "OpenAI Responses のストリーミングのみ。Codex の推理切り詰め指紋を検出し、暫定的な最終出力をバッファしながら reasoning ラウンドを継続し、1 つの下流 SSE 応答に折り畳みます。",
+    codexDegradationMitigationAffinityHint:
+      "集約グループでは、同じ Codex セッションが同じサブグループに安定して当たるように Codex アフィニティも有効にすることを推奨します。",
     ccSupport: "強制 CC サポート",
     ccSupportTooltip1:
       "Claude Code 互換モードを有効にし、Claude クライアントが /claude エンドポイント経由で接続できるようにします。",

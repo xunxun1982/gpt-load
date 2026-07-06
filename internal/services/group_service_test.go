@@ -909,6 +909,83 @@ func TestValidateAndCleanConfigCodexAffinityScope(t *testing.T) {
 	}
 }
 
+func TestValidateAndCleanConfigResponsesIncludeEncryptedReasoningScope(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	tests := []struct {
+		name        string
+		channelType string
+		want        bool
+	}{
+		{name: "openai responses supports encrypted reasoning include", channelType: "openai-response", want: true},
+		{name: "openai unsupported", channelType: "openai", want: false},
+		{name: "anthropic unsupported", channelType: "anthropic", want: false},
+		{name: "gemini unsupported", channelType: "gemini", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleaned, err := svc.validateAndCleanConfig(map[string]any{
+				"responses_include_encrypted_reasoning": true,
+			}, tt.channelType)
+
+			require.NoError(t, err)
+			if tt.want {
+				assert.Equal(t, true, cleaned["responses_include_encrypted_reasoning"])
+			} else {
+				assert.NotContains(t, cleaned, "responses_include_encrypted_reasoning")
+			}
+		})
+	}
+}
+
+func TestCleanConfigForGroupTypeRemovesAggregateEncryptedReasoning(t *testing.T) {
+	t.Parallel()
+
+	config := map[string]any{
+		"responses_include_encrypted_reasoning": true,
+		"codex_degradation_mitigation_enabled":  true,
+	}
+	cleanConfigForGroupType(config, "aggregate")
+
+	assert.NotContains(t, config, "responses_include_encrypted_reasoning")
+	assert.Equal(t, true, config["codex_degradation_mitigation_enabled"])
+}
+
+func TestValidateAndCleanConfigCodexDegradationMitigationScope(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	tests := []struct {
+		name        string
+		channelType string
+		want        bool
+	}{
+		{name: "openai responses supports codex degradation mitigation", channelType: "openai-response", want: true},
+		{name: "openai unsupported", channelType: "openai", want: false},
+		{name: "anthropic unsupported", channelType: "anthropic", want: false},
+		{name: "gemini unsupported", channelType: "gemini", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleaned, err := svc.validateAndCleanConfig(map[string]any{
+				"codex_degradation_mitigation_enabled": true,
+			}, tt.channelType)
+
+			require.NoError(t, err)
+			if tt.want {
+				assert.Equal(t, true, cleaned["codex_degradation_mitigation_enabled"])
+			} else {
+				assert.NotContains(t, cleaned, "codex_degradation_mitigation_enabled")
+			}
+		})
+	}
+}
+
 func TestValidateAndCleanConfigRejectsForceCCAndCodexTogether(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)

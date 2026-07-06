@@ -408,6 +408,8 @@ export default {
     codexAffinity: "Codex 亲和力",
     codexAffinityHint:
       "默认关闭。启用后，同一 Codex 会话会优先稳定选择同一子组；若该子组不可用或失败，会按剩余可用子组的有效权重选择。只影响选路，不修改请求头或请求体。",
+    codexAffinityRetryHint:
+      "启用 Codex 亲和力时，建议适当增加子组重试上限，避免临时 key 失败时过早切换到其他子组。",
     precondition: "前置条件",
     preconditions: "前置条件",
     preconditionMaxRequestSize: "请求大小限制",
@@ -549,6 +551,11 @@ export default {
     responsesIncludeEncryptedReasoning: "加密推理内容",
     responsesIncludeEncryptedReasoningTip:
       '仅 OpenAI Responses 生效；向请求体 include 合并 "reasoning.encrypted_content"。',
+    codexDegradationMitigation: "缓解 Codex 降智",
+    codexDegradationMitigationTip:
+      "仅 OpenAI Responses 流式请求生效；检测 Codex 推理截断指纹后，缓存最终输出、继续 reasoning 轮次，并折叠为一个下游 SSE 响应。",
+    codexDegradationMitigationAffinityHint:
+      "聚合分组开启后建议同时启用 Codex 亲和力，让同一 Codex 会话稳定命中同一子分组。",
     ccSupport: "强制 CC 支持",
     ccSupportTooltip1: "启用 Claude Code 兼容模式，允许 Claude 客户端通过 /claude 端点连接。",
     ccSupportTooltip2: "请求将自动从 Claude 格式转换为 OpenAI 格式后转发到上游。",
