@@ -307,6 +307,7 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 	if err != nil {
 		return nil, err
 	}
+	cleanConfigForGroupType(cleanedConfig, groupType)
 	if err := validateParamOverrides(params.ParamOverrides); err != nil {
 		return nil, err
 	}
@@ -948,6 +949,7 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		if err != nil {
 			return nil, err
 		}
+		cleanConfigForGroupType(cleanedConfig, group.GroupType)
 
 		// Check whether force endpoint flags are being disabled before performing any database write.
 		// If so, verify that this group is not used as a forced sub-group in a matching aggregate group.
@@ -2841,6 +2843,8 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any, channelT
 	}
 	if channelType != "openai-response" {
 		delete(configMap, "codex_affinity_enabled")
+		delete(configMap, "responses_include_encrypted_reasoning")
+		delete(configMap, "codex_degradation_mitigation_enabled")
 	}
 	if isConfigBoolEnabled(datatypes.JSONMap(configMap), "cc_support") &&
 		isConfigBoolEnabled(datatypes.JSONMap(configMap), "codex_support") {
@@ -2906,6 +2910,15 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any, channelT
 	}
 
 	return finalMap, nil
+}
+
+func cleanConfigForGroupType(configMap map[string]any, groupType string) {
+	if configMap == nil {
+		return
+	}
+	if groupType == "aggregate" {
+		delete(configMap, "responses_include_encrypted_reasoning")
+	}
 }
 
 func positiveNumericConfigValue(value any) (any, bool) {

@@ -1324,6 +1324,17 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			}
 
 			isStream = channelHandler.IsStreamRequest(c, finalBodyBytes)
+			if codexDegradationMitigationShouldEnable(c, group, originalGroup, finalBodyBytes, isStream) {
+				finalBodyBytes, err = prepareCodexDegradationMitigationInitialPayload(finalBodyBytes)
+				if err != nil {
+					logrus.WithError(err).Warn("Failed to prepare Codex degradation mitigation payload")
+				} else {
+					c.Set(ctxKeyCodexDegradationMitigation, true)
+					isStream = channelHandler.IsStreamRequest(c, finalBodyBytes)
+				}
+			} else {
+				c.Set(ctxKeyCodexDegradationMitigation, false)
+			}
 
 			// Apply forced streaming for direct OpenAI Responses requests (non-CC mode).
 			// Codex-compatible upstreams require stream: true for reliable responses.
@@ -1727,6 +1738,15 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 				}
 			} else if forceCodexMode {
 				ps.handleForceCodexStreamingResponse(c, resp)
+			} else if codexDegradationMitigationEnabled(c) {
+				codexMitigationRoundTrip := func(continuationBody []byte) (*http.Response, error) {
+					continuationReq, err := codexMitigationRequestWithBody(req.Context(), req, continuationBody)
+					if err != nil {
+						return nil, err
+					}
+					return client.Do(continuationReq)
+				}
+				ps.handleCodexDegradationMitigationStreamingResponse(c, resp, bodyBytes, group, originalGroup, codexMitigationRoundTrip)
 			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {
@@ -2224,6 +2244,20 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 	isStream = subGroupChannelHandler.IsStreamRequest(c, finalBodyBytes)
+	if codexDegradationMitigationShouldEnable(c, group, originalGroup, finalBodyBytes, isStream) {
+		finalBodyBytes, err = prepareCodexDegradationMitigationInitialPayload(finalBodyBytes)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to prepare Codex degradation mitigation payload for sub-group")
+		} else {
+			c.Set(ctxKeyCodexDegradationMitigation, true)
+			isStream = subGroupChannelHandler.IsStreamRequest(c, finalBodyBytes)
+		}
+	} else {
+		c.Set(ctxKeyCodexDegradationMitigation, false)
+	}
 
 	// Apply forced streaming for direct OpenAI Responses sub-group requests (non-CC mode).
 	// Clear any stale forced stream state from previous sub-group attempts.
@@ -2558,6 +2592,15 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				}
 			} else if forceCodexMode {
 				ps.handleForceCodexStreamingResponse(c, resp)
+			} else if codexDegradationMitigationEnabled(c) {
+				codexMitigationRoundTrip := func(continuationBody []byte) (*http.Response, error) {
+					continuationReq, err := codexMitigationRequestWithBody(req.Context(), req, continuationBody)
+					if err != nil {
+						return nil, err
+					}
+					return client.Do(continuationReq)
+				}
+				ps.handleCodexDegradationMitigationStreamingResponse(c, resp, finalBodyBytes, group, originalGroup, codexMitigationRoundTrip)
 			} else if isFunctionCallEnabled(c) {
 				ps.handleFunctionCallStreamingResponse(c, resp)
 			} else {

@@ -59,7 +59,7 @@ func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Gro
 	if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
 		return true
 	}
-	if isCCEnabled(c) || isCodexEnabled(c) || isFunctionCallEnabled(c) || isOpenAIResponseForcedStream(c) {
+	if isCCEnabled(c) || isCodexEnabled(c) || isFunctionCallEnabled(c) || isOpenAIResponseForcedStream(c) || codexDegradationMitigationEnabled(c) {
 		return true
 	}
 	return false
@@ -282,7 +282,10 @@ func isAnthropicMessagesEndpoint(path, method string) bool {
 }
 
 func (ps *ProxyServer) applyResponsesIncludeConfig(bodyBytes []byte, group *models.Group) ([]byte, error) {
-	if len(bodyBytes) == 0 || !getGroupConfigBool(group, "responses_include_encrypted_reasoning") {
+	if len(bodyBytes) == 0 ||
+		group == nil ||
+		group.ChannelType != "openai-response" ||
+		!getGroupConfigBool(group, "responses_include_encrypted_reasoning") {
 		return bodyBytes, nil
 	}
 

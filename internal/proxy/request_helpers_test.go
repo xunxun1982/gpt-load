@@ -569,7 +569,10 @@ func TestApplyResponsesIncludeConfig(t *testing.T) {
 	ps := &ProxyServer{}
 
 	t.Run("add encrypted reasoning include", func(t *testing.T) {
-		group := &models.Group{Config: datatypes.JSONMap{"responses_include_encrypted_reasoning": true}}
+		group := &models.Group{
+			ChannelType: "openai-response",
+			Config:      datatypes.JSONMap{"responses_include_encrypted_reasoning": true},
+		}
 		input := []byte(`{"model":"gpt-5","include":["web_search_call.action.sources"]}`)
 
 		result, err := ps.applyResponsesIncludeConfig(input, group)
@@ -585,7 +588,10 @@ func TestApplyResponsesIncludeConfig(t *testing.T) {
 	})
 
 	t.Run("does not duplicate existing include", func(t *testing.T) {
-		group := &models.Group{Config: datatypes.JSONMap{"responses_include_encrypted_reasoning": true}}
+		group := &models.Group{
+			ChannelType: "openai-response",
+			Config:      datatypes.JSONMap{"responses_include_encrypted_reasoning": true},
+		}
 		input := []byte(`{"model":"gpt-5","include":["reasoning.encrypted_content"]}`)
 
 		result, err := ps.applyResponsesIncludeConfig(input, group)
@@ -607,6 +613,18 @@ func TestApplyResponsesIncludeConfig(t *testing.T) {
 
 	t.Run("disabled", func(t *testing.T) {
 		group := &models.Group{Config: datatypes.JSONMap{}}
+		input := []byte(`{"model":"gpt-5"}`)
+
+		result, err := ps.applyResponsesIncludeConfig(input, group)
+		assert.NoError(t, err)
+		assert.Equal(t, input, result)
+	})
+
+	t.Run("non responses group ignored", func(t *testing.T) {
+		group := &models.Group{
+			ChannelType: "openai",
+			Config:      datatypes.JSONMap{"responses_include_encrypted_reasoning": true},
+		}
 		input := []byte(`{"model":"gpt-5"}`)
 
 		result, err := ps.applyResponsesIncludeConfig(input, group)

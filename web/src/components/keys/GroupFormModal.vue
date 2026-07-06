@@ -133,6 +133,7 @@ interface GroupFormData {
   validation_prompt_mode: "default" | "random_queue";
   request_stream_mode: "default" | "force_stream" | "force_non_stream";
   responses_include_encrypted_reasoning: boolean;
+  codex_degradation_mitigation_enabled: boolean;
   simulated_client: "off" | "codex" | "claude_code";
   simulated_codex_version: string;
   simulated_claude_code_version: string;
@@ -193,6 +194,7 @@ const formData = reactive<GroupFormData>({
   validation_prompt_mode: "default",
   request_stream_mode: "default",
   responses_include_encrypted_reasoning: false,
+  codex_degradation_mitigation_enabled: false,
   simulated_client: "off",
   simulated_codex_version: DEFAULT_CODEX_VERSION,
   simulated_claude_code_version: DEFAULT_CLAUDE_CODE_VERSION,
@@ -252,6 +254,7 @@ const controlledConfigKeys = new Set([
   "force_stream",
   "force_non_stream",
   "responses_include_encrypted_reasoning",
+  "codex_degradation_mitigation_enabled",
   "simulated_client",
   "simulated_codex_version",
   "simulated_claude_code_version",
@@ -448,6 +451,7 @@ watch(
     }
     if (newChannelType !== "openai-response") {
       formData.responses_include_encrypted_reasoning = false;
+      formData.codex_degradation_mitigation_enabled = false;
     }
     if (!supportsCCSupport(newChannelType)) {
       formData.cc_support = false;
@@ -548,6 +552,7 @@ function resetForm() {
     validation_prompt_mode: "default",
     request_stream_mode: "default",
     responses_include_encrypted_reasoning: false,
+    codex_degradation_mitigation_enabled: false,
     simulated_client: "off",
     simulated_codex_version: DEFAULT_CODEX_VERSION,
     simulated_claude_code_version: DEFAULT_CLAUDE_CODE_VERSION,
@@ -628,6 +633,12 @@ function loadGroupData() {
     props.group.channel_type === "openai-response" &&
     typeof responsesIncludeEncryptedReasoningRaw === "boolean"
       ? responsesIncludeEncryptedReasoningRaw
+      : false;
+  const codexDegradationMitigationRaw = rawConfig["codex_degradation_mitigation_enabled"];
+  const codexDegradationMitigation =
+    props.group.channel_type === "openai-response" &&
+    typeof codexDegradationMitigationRaw === "boolean"
+      ? codexDegradationMitigationRaw
       : false;
   const simulatedClientRaw = rawConfig["simulated_client"];
   const normalizedSimulatedClient =
@@ -732,6 +743,7 @@ function loadGroupData() {
     validation_prompt_mode: validationPromptMode,
     request_stream_mode: requestStreamMode,
     responses_include_encrypted_reasoning: responsesIncludeEncryptedReasoning,
+    codex_degradation_mitigation_enabled: codexDegradationMitigation,
     simulated_client: simulatedClient,
     simulated_codex_version: simulatedCodexVersion,
     simulated_claude_code_version: simulatedClaudeCodeVersion,
@@ -1511,6 +1523,15 @@ async function handleSubmit() {
       config["responses_include_encrypted_reasoning"] = true;
     } else {
       delete config["responses_include_encrypted_reasoning"];
+    }
+
+    if (
+      formData.channel_type === "openai-response" &&
+      formData.codex_degradation_mitigation_enabled
+    ) {
+      config["codex_degradation_mitigation_enabled"] = true;
+    } else {
+      delete config["codex_degradation_mitigation_enabled"];
     }
 
     if (formData.cc_support && formData.codex_support) {
@@ -2300,6 +2321,22 @@ async function handleSubmit() {
                     />
                     <span class="advanced-control-hint">
                       {{ t("keys.responsesIncludeEncryptedReasoningTip") }}
+                    </span>
+                  </div>
+                </n-form-item>
+
+                <n-form-item
+                  v-if="formData.channel_type === 'openai-response'"
+                  :label="t('keys.codexDegradationMitigation')"
+                  path="codex_degradation_mitigation_enabled"
+                >
+                  <div class="advanced-control-row">
+                    <n-switch
+                      v-model:value="formData.codex_degradation_mitigation_enabled"
+                      size="small"
+                    />
+                    <span class="advanced-control-hint">
+                      {{ t("keys.codexDegradationMitigationTip") }}
                     </span>
                   </div>
                 </n-form-item>
