@@ -1,12 +1,15 @@
 package httpclient
 
 import (
+	"crypto/tls"
 	"gpt-load/internal/utils"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -165,6 +168,28 @@ func TestGetClient_WithSkipTLSVerify(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, transport.TLSClientConfig)
 	assert.True(t, transport.TLSClientConfig.InsecureSkipVerify)
+	assert.Equal(t, uint16(tls.VersionTLS12), transport.TLSClientConfig.MinVersion)
+}
+
+func TestGetClient_WithSkipTLSVerifyLogsWarning(t *testing.T) {
+	hook := captureGlobalLogrusEntries(t)
+	manager := NewHTTPClientManager()
+
+	manager.GetClient(&Config{
+		RequestTimeout: 5 * time.Second,
+		SkipTLSVerify:  true,
+	})
+
+	for _, entry := range hook.AllEntries() {
+		if entry.Message != "HTTP client created with TLS certificate verification disabled" {
+			continue
+		}
+		assert.Equal(t, logrus.WarnLevel, entry.Level)
+		assert.Equal(t, true, entry.Data["skip_tls_verify"])
+		assert.NotEmpty(t, entry.Data["fingerprint"])
+		return
+	}
+	require.Fail(t, "expected skip_tls_verify warning log")
 }
 
 // TestGetClient_Concurrent tests concurrent client access
@@ -240,6 +265,21 @@ func TestConfig_FingerprintIncludesSkipTLSVerify(t *testing.T) {
 	insecure := (&Config{RequestTimeout: 30 * time.Second, SkipTLSVerify: true}).getFingerprint()
 
 	assert.NotEqual(t, secure, insecure)
+}
+
+func captureGlobalLogrusEntries(t *testing.T) *logrustest.Hook {
+	t.Helper()
+
+	logger := logrus.StandardLogger()
+	originalHooks := make(logrus.LevelHooks, len(logger.Hooks))
+	for level, hooks := range logger.Hooks {
+		originalHooks[level] = append([]logrus.Hook(nil), hooks...)
+	}
+	t.Cleanup(func() {
+		logger.ReplaceHooks(originalHooks)
+	})
+
+	return logrustest.NewGlobal()
 }
 
 // TestGetClient_DifferentConfigs tests multiple different configurations

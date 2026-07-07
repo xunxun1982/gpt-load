@@ -136,7 +136,10 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	}
 	if config.SkipTLSVerify {
 		// #nosec G402 -- only enabled by explicit admin configuration for broken upstream certificates.
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		transport.TLSClientConfig = &tls.Config{
+			MinVersion:         tls.VersionTLS12, // Keep protocol downgrade protection explicit when verification is skipped.
+			InsecureSkipVerify: true,
+		}
 	}
 
 	// Set HTTP proxy with validation and detailed logging
@@ -174,15 +177,19 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 
 	m.clients[fingerprint] = newClient
 
-	// Log client creation with full configuration details for debugging
-	// Note: has_proxy field removed as it's redundant (can be inferred from proxy_url being non-empty)
-	logrus.WithFields(logrus.Fields{
+	// Log client creation with full configuration details for debugging.
+	// Note: has_proxy field removed as it's redundant (can be inferred from proxy_url being non-empty).
+	clientLogFields := logrus.Fields{
 		"fingerprint":        fingerprint,
 		"proxy_url":          utils.SanitizeProxyString(trimmedProxyURL),
 		"skip_tls_verify":    config.SkipTLSVerify,
 		"timeout":            config.RequestTimeout,
 		"max_conns_per_host": maxConnsPerHost,
-	}).Debug("Created new HTTP client with optimized connection pool")
+	}
+	if config.SkipTLSVerify {
+		logrus.WithFields(clientLogFields).Warn("HTTP client created with TLS certificate verification disabled")
+	}
+	logrus.WithFields(clientLogFields).Debug("Created new HTTP client with optimized connection pool")
 
 	return newClient
 }
