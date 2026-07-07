@@ -435,6 +435,7 @@ async function handleSubmit() {
               :placeholder="t('keys.subMaxRetriesPlaceholder')"
               :min="0"
               :max="50"
+              clearable
               style="width: 100%"
             />
           </n-form-item>
