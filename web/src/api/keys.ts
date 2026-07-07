@@ -509,6 +509,11 @@ export const keysApi = {
     await http.post(`/groups/${aggregateGroupId}/sub-groups/${subGroupId}/reset-health`);
   },
 
+  // Reset health metrics for all sub-groups in an aggregate group
+  async resetAllSubGroupHealth(aggregateGroupId: number): Promise<void> {
+    await http.post(`/groups/${aggregateGroupId}/sub-groups-health/reset`);
+  },
+
   // Reset model redirect health metrics
   async resetModelRedirectHealth(
     groupId: number,

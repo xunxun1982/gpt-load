@@ -972,6 +972,27 @@ func (s *Server) ResetSubGroupHealth(c *gin.Context) {
 	response.SuccessI18n(c, "success.health_reset", nil)
 }
 
+// ResetAllSubGroupHealth handles resetting health metrics for all sub-groups in an aggregate group.
+// POST /api/groups/:id/sub-groups-health/reset
+func (s *Server) ResetAllSubGroupHealth(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		response.ErrorI18nFromAPIError(c, app_errors.ErrBadRequest, "validation.invalid_group_id")
+		return
+	}
+
+	if err := s.AggregateGroupService.ResetAllSubGroupHealth(c.Request.Context(), uint(id)); err != nil {
+		logrus.WithError(err).WithField("group_id", id).Error("Failed to reset all sub-group health metrics")
+		if s.handleGroupError(c, err) {
+			return
+		}
+		response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "error.health_reset_failed")
+		return
+	}
+
+	response.SuccessI18n(c, "success.health_reset", nil)
+}
+
 // ResetModelRedirectHealth handles resetting health metrics for a model redirect target.
 // POST /api/groups/:id/model-redirect-health/reset
 func (s *Server) ResetModelRedirectHealth(c *gin.Context) {

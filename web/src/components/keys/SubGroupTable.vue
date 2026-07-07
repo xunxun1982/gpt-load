@@ -286,6 +286,36 @@ async function resetSubGroupHealth(subGroup: SubGroupInfo) {
   });
 }
 
+// Reset health metrics for every sub-group in the selected aggregate group
+async function resetAllSubGroupHealth() {
+  if (!props.selectedGroup?.id || !props.subGroups?.length) {
+    return;
+  }
+
+  const d = dialog.warning({
+    title: t("subGroups.resetAllHealth"),
+    content: t("subGroups.confirmResetAllHealth"),
+    positiveText: t("common.confirm"),
+    negativeText: t("common.cancel"),
+    onPositiveClick: async () => {
+      if (!props.selectedGroup?.id) {
+        return;
+      }
+
+      d.loading = true;
+      try {
+        await keysApi.resetAllSubGroupHealth(props.selectedGroup.id);
+        emit("refresh");
+      } catch (error) {
+        console.error("Failed to reset all sub-group health:", error);
+        message.error(t("common.operationFailed"));
+      } finally {
+        d.loading = false;
+      }
+    },
+  });
+}
+
 // Handle success after modal operations
 function handleSuccess() {
   emit("refresh");
@@ -332,6 +362,19 @@ function formatDateTime(isoString: string | null | undefined): string {
             <n-icon :component="Add" />
           </template>
           {{ t("subGroups.addSubGroup") }}
+        </n-button>
+        <n-button
+          type="warning"
+          size="small"
+          secondary
+          @click="resetAllSubGroupHealth"
+          :disabled="!props.subGroups?.length"
+          :title="t('subGroups.resetAllHealthTip')"
+        >
+          <template #icon>
+            <n-icon :component="RefreshOutline" />
+          </template>
+          {{ t("subGroups.resetAllHealth") }}
         </n-button>
       </div>
       <div class="toolbar-right">
