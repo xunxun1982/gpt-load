@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -30,6 +31,7 @@ type Config struct {
 	TLSHandshakeTimeout   time.Duration
 	ExpectContinueTimeout time.Duration
 	ProxyURL              string
+	SkipTLSVerify         bool
 }
 
 // HTTPClientManager manages the lifecycle of HTTP clients.
@@ -132,6 +134,13 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 		ReadBufferSize:        config.ReadBufferSize,
 		DisableKeepAlives:     false, // Ensure keep-alives are enabled for connection reuse
 	}
+	if config.SkipTLSVerify {
+		// #nosec G402 -- only enabled by explicit admin configuration for broken upstream certificates.
+		transport.TLSClientConfig = &tls.Config{
+			MinVersion:         tls.VersionTLS12, // Keep protocol downgrade protection explicit when verification is skipped.
+			InsecureSkipVerify: true,
+		}
+	}
 
 	// Set HTTP proxy with validation and detailed logging
 	// Trim whitespace from proxy URL before parsing to handle common configuration issues
@@ -168,14 +177,19 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 
 	m.clients[fingerprint] = newClient
 
-	// Log client creation with full configuration details for debugging
-	// Note: has_proxy field removed as it's redundant (can be inferred from proxy_url being non-empty)
-	logrus.WithFields(logrus.Fields{
+	// Log client creation with full configuration details for debugging.
+	// Note: has_proxy field removed as it's redundant (can be inferred from proxy_url being non-empty).
+	clientLogFields := logrus.Fields{
 		"fingerprint":        fingerprint,
 		"proxy_url":          utils.SanitizeProxyString(trimmedProxyURL),
+		"skip_tls_verify":    config.SkipTLSVerify,
 		"timeout":            config.RequestTimeout,
 		"max_conns_per_host": maxConnsPerHost,
-	}).Debug("Created new HTTP client with optimized connection pool")
+	}
+	if config.SkipTLSVerify {
+		logrus.WithFields(clientLogFields).Warn("HTTP client created with TLS certificate verification disabled")
+	}
+	logrus.WithFields(clientLogFields).Debug("Created new HTTP client with optimized connection pool")
 
 	return newClient
 }
@@ -231,7 +245,7 @@ func (m *HTTPClientManager) CloseIdleConnections() {
 func (c *Config) getFingerprint() string {
 	normalizedProxy := strings.TrimSpace(c.ProxyURL)
 	return fmt.Sprintf(
-		"ct:%.0fs|rt:%.0fs|it:%.0fs|mic:%d|mich:%d|rht:%.0fs|dc:%t|wbs:%d|rbs:%d|fh2:%t|tlst:%.0fs|ect:%.0fs|proxy:%s",
+		"ct:%.0fs|rt:%.0fs|it:%.0fs|mic:%d|mich:%d|rht:%.0fs|dc:%t|wbs:%d|rbs:%d|fh2:%t|tlst:%.0fs|ect:%.0fs|proxy:%s|stv:%t",
 		c.ConnectTimeout.Seconds(),
 		c.RequestTimeout.Seconds(),
 		c.IdleConnTimeout.Seconds(),
@@ -245,5 +259,6 @@ func (c *Config) getFingerprint() string {
 		c.TLSHandshakeTimeout.Seconds(),
 		c.ExpectContinueTimeout.Seconds(),
 		normalizedProxy,
+		c.SkipTLSVerify,
 	)
 }

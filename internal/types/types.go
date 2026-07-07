@@ -36,6 +36,7 @@ type SystemSettings struct {
 	MaxIdleConns            int    `json:"max_idle_conns" default:"100" name:"config.max_idle_conns" category:"config.category.request" desc:"config.max_idle_conns_desc" validate:"required,min=1"`
 	MaxIdleConnsPerHost     int    `json:"max_idle_conns_per_host" default:"50" name:"config.max_idle_conns_per_host" category:"config.category.request" desc:"config.max_idle_conns_per_host_desc" validate:"required,min=1,ltecsfield=MaxIdleConns"`
 	ProxyURL                string `json:"proxy_url" name:"config.proxy_url" category:"config.category.request" desc:"config.proxy_url_desc"`
+	SkipTLSVerify           bool   `json:"skip_tls_verify" default:"false" name:"config.skip_tls_verify" category:"config.category.request" desc:"config.skip_tls_verify_desc"`
 
 	// Proxy pool health-check settings are managed from More > Proxy Pool only.
 	ProxyPoolTestTargetURL              string `json:"proxy_pool_test_target_url" default:"https://www.gstatic.com/generate_204" name:"config.proxy_pool_test_target_url" category:"-" desc:"config.proxy_pool_test_target_url_desc" validate:"required"`

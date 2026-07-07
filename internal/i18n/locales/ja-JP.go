@@ -188,6 +188,8 @@ var MessagesJaJP = map[string]string{
 	"config.max_idle_conns_per_host_desc":                  "HTTPクライアント接続プールで各上流ホストに許可される最大アイドル接続数。",
 	"config.proxy_url":                                     "プロキシサーバーURL",
 	"config.proxy_url_desc":                                "グローバルHTTP/HTTPS/SOCKS5プロキシサーバーURL。例：http://user:pass@host:port。空の場合は環境変数設定を使用。",
+	"config.skip_tls_verify":                               "TLS証明書検証をスキップ",
+	"config.skip_tls_verify_desc":                          "上流サービスのTLS証明書検証をスキップするかどうか。上流またはゲートウェイ証明書に問題があり、セキュリティリスクを受け入れる場合のみ有効にしてください。",
 	"config.proxy_pool_test_target_url":                    "プロキシプール検査ターゲットURL",
 	"config.proxy_pool_test_target_url_desc":               "プロキシプール接続検査で使用するHTTP/HTTPSターゲットURL。",
 	"config.proxy_pool_test_timeout_seconds":               "プロキシプール検査タイムアウト（秒）",

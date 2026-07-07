@@ -210,6 +210,8 @@ var MessagesZhCN = map[string]string{
 	"config.max_idle_conns_per_host_desc":                  "HTTP 客户端连接池对每个上游主机允许的最大空闲连接数。",
 	"config.proxy_url":                                     "代理服务器地址",
 	"config.proxy_url_desc":                                "全局 HTTP/HTTPS/SOCKS5 代理服务器地址，例如：http://user:pass@host:port。如果为空，则使用环境变量配置。",
+	"config.skip_tls_verify":                               "忽略 TLS 证书验证",
+	"config.skip_tls_verify_desc":                          "是否跳过上游服务 TLS 证书验证。仅在上游或代理网关证书异常且你明确接受安全风险时启用。",
 	"config.proxy_pool_test_target_url":                    "代理池检测目标地址",
 	"config.proxy_pool_test_target_url_desc":               "代理池连通性检测使用的 HTTP/HTTPS 目标地址。",
 	"config.proxy_pool_test_timeout_seconds":               "代理池检测超时（秒）",

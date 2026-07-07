@@ -210,6 +210,8 @@ var MessagesEnUS = map[string]string{
 	"config.max_idle_conns_per_host_desc":                  "Maximum number of idle connections allowed per upstream host in the HTTP client connection pool.",
 	"config.proxy_url":                                     "Proxy Server URL",
 	"config.proxy_url_desc":                                "Global HTTP/HTTPS/SOCKS5 proxy server URL, e.g., http://user:pass@host:port. If empty, uses environment variable configuration.",
+	"config.skip_tls_verify":                               "Skip TLS Certificate Verification",
+	"config.skip_tls_verify_desc":                          "Whether to skip TLS certificate verification for upstream services. Enable only for broken upstream or gateway certificates when you accept the security risk.",
 	"config.proxy_pool_test_target_url":                    "Proxy Pool Test Target URL",
 	"config.proxy_pool_test_target_url_desc":               "HTTP/HTTPS target URL used by proxy pool connectivity checks.",
 	"config.proxy_pool_test_timeout_seconds":               "Proxy Pool Test Timeout (seconds)",
