@@ -182,6 +182,21 @@ func createTestGroup(t *testing.T, db *gorm.DB, name string, channelType string)
 	return group
 }
 
+func requireAffinityKeyForSubGroup(t *testing.T, ps *ProxyServer, group *models.Group, subGroupID uint, prefix string) string {
+	t.Helper()
+
+	for i := 0; i < 10000; i++ {
+		candidate := prefix + "-" + strconv.Itoa(i)
+		selection, err := ps.subGroupManager.SelectSubGroupWithRetryAffinityResult(group, nil, candidate)
+		require.NoError(t, err)
+		if selection.PrimaryID == subGroupID && selection.SelectedID == subGroupID {
+			return candidate
+		}
+	}
+	require.FailNowf(t, "affinity key not found", "no %s key selected sub-group %d", prefix, subGroupID)
+	return ""
+}
+
 // createTestKey creates a test API key for a group
 func createTestKey(t *testing.T, db *gorm.DB, groupID uint, keyValue string, encSvc encryption.Service) *models.APIKey {
 	t.Helper()
@@ -1537,7 +1552,11 @@ func TestHandleProxyAggregateCodexAffinityDoesNotTouchNonAffinitySubGroup(t *tes
 		ps.groupManager.Stop(context.Background())
 	})
 
-	body := []byte(`{"model":"gpt-5","input":"hello","prompt_cache_key":"affinity-902"}`)
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+	affinityKey := requireAffinityKeyForSubGroup(t, ps, cachedAggregate, affinitySubGroup.ID, "affinity-unique")
+
+	body := []byte(`{"model":"gpt-5","input":"hello","prompt_cache_key":"` + affinityKey + `"}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
@@ -2701,7 +2720,8 @@ func TestExecuteRequestWithAggregateRetryLimitsAffinityKeyRetriesByParentSubMaxR
 	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5","input":"hello","prompt_cache_key":"affinity-902"}`)
+	affinityKey := requireAffinityKeyForSubGroup(t, ps, cachedAggregate, affinitySubGroup.ID, "affinity-sub-retry")
+	body := []byte(`{"model":"gpt-5","input":"hello","prompt_cache_key":"` + affinityKey + `"}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
@@ -2805,17 +2825,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityFallbackStripsEncryptedRea
 	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
 	require.NoError(t, err)
 
-	affinityKey := ""
-	for i := 0; i < 10000; i++ {
-		candidate := "affinity-strip-" + strconv.Itoa(i)
-		_, id, err := ps.subGroupManager.SelectSubGroupWithRetryAffinity(cachedAggregate, nil, candidate)
-		require.NoError(t, err)
-		if id == primarySubGroup.ID {
-			affinityKey = candidate
-			break
-		}
-	}
-	require.NotEmpty(t, affinityKey)
+	affinityKey := requireAffinityKeyForSubGroup(t, ps, cachedAggregate, primarySubGroup.ID, "affinity-strip")
 
 	body := []byte(`{"model":"gpt-5","prompt_cache_key":"` + affinityKey + `","include":["reasoning.encrypted_content","web_search_call.results"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"ciphertext"}]}`)
 	w := httptest.NewRecorder()
@@ -3098,7 +3108,8 @@ func TestExecuteRequestWithAggregateRetrySubMaxRetriesDoesNotCapParentGroupRetri
 	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5","input":"hello","prompt_cache_key":"affinity-parent-2876"}`)
+	affinityKey := requireAffinityKeyForSubGroup(t, ps, cachedAggregate, affinitySubGroup.ID, "affinity-parent")
+	body := []byte(`{"model":"gpt-5","input":"hello","prompt_cache_key":"` + affinityKey + `"}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))

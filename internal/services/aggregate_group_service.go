@@ -478,6 +478,10 @@ func (s *AggregateGroupService) ResetSubGroupHealth(ctx context.Context, groupID
 		return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
 	}
 
+	return s.resetOneSubGroupHealth(groupID, subGroupID)
+}
+
+func (s *AggregateGroupService) resetOneSubGroupHealth(groupID, subGroupID uint) error {
 	if s.OnSubGroupHealthReset != nil {
 		return s.OnSubGroupHealthReset(groupID, subGroupID)
 	}
@@ -505,19 +509,9 @@ func (s *AggregateGroupService) ResetAllSubGroupHealth(ctx context.Context, grou
 		return nil
 	}
 
-	if s.OnSubGroupHealthReset == nil && s.dynamicWeightManager == nil {
-		return NewI18nError(app_errors.ErrInternalServer, "error.dynamic_weight_not_configured", nil)
-	}
-
 	var errs []error
 	for _, subGroupID := range subGroupIDs {
-		var err error
-		if s.OnSubGroupHealthReset != nil {
-			err = s.OnSubGroupHealthReset(groupID, subGroupID)
-		} else {
-			err = s.dynamicWeightManager.ResetSubGroupMetrics(groupID, subGroupID)
-		}
-		if err != nil {
+		if err := s.resetOneSubGroupHealth(groupID, subGroupID); err != nil {
 			errs = append(errs, err)
 		}
 	}
