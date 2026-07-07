@@ -110,6 +110,59 @@ func TestNewBaseChannelAllowsUnlimitedStreamTimeout(t *testing.T) {
 	assert.Zero(t, base.StreamClient.Timeout)
 }
 
+func TestNewBaseChannelUsesEachGroupSkipTLSVerify(t *testing.T) {
+	t.Parallel()
+
+	factory := setupTestFactory(t)
+	upstreams := []map[string]any{
+		{"url": "https://api.openai.com", "weight": 100},
+	}
+	upstreamsJSON, err := json.Marshal(upstreams)
+	require.NoError(t, err)
+
+	baseConfig := types.SystemSettings{
+		ConnectTimeout:          15,
+		NonStreamRequestTimeout: 45,
+		StreamRequestTimeout:    120,
+		IdleConnTimeout:         90,
+		MaxIdleConns:            100,
+		MaxIdleConnsPerHost:     10,
+		ResponseHeaderTimeout:   30,
+	}
+	insecureConfig := baseConfig
+	insecureConfig.SkipTLSVerify = true
+
+	secure, err := factory.newBaseChannel("openai", &models.Group{
+		ID:              1,
+		Name:            "secure-child",
+		ChannelType:     "openai",
+		Upstreams:       datatypes.JSON(upstreamsJSON),
+		EffectiveConfig: baseConfig,
+	})
+	require.NoError(t, err)
+
+	insecure, err := factory.newBaseChannel("openai", &models.Group{
+		ID:              2,
+		Name:            "insecure-child",
+		ChannelType:     "openai",
+		Upstreams:       datatypes.JSON(upstreamsJSON),
+		EffectiveConfig: insecureConfig,
+	})
+	require.NoError(t, err)
+
+	secureTransport, ok := secure.HTTPClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	if secureTransport.TLSClientConfig != nil {
+		assert.False(t, secureTransport.TLSClientConfig.InsecureSkipVerify)
+	}
+
+	insecureTransport, ok := insecure.HTTPClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotNil(t, insecureTransport.TLSClientConfig)
+	assert.True(t, insecureTransport.TLSClientConfig.InsecureSkipVerify)
+	assert.NotSame(t, secure.HTTPClient, insecure.HTTPClient)
+}
+
 func TestNewBaseChannelUsesSelectedProxyForHTTPRequests(t *testing.T) {
 	t.Parallel()
 

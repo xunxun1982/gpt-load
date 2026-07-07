@@ -143,6 +143,7 @@ func TestGetGroupConfigOptionsIncludesRetryDelayAndBackoff(t *testing.T) {
 	var retryDelay *ConfigOption
 	var retryBackoff *ConfigOption
 	var retryBackoffMaxPercent *ConfigOption
+	var skipTLSVerify *ConfigOption
 	for i := range options {
 		require.NotEqual(t, "retry_exponential_backoff", options[i].Key)
 		if options[i].Key == "retry_delay_ms" {
@@ -153,6 +154,9 @@ func TestGetGroupConfigOptionsIncludesRetryDelayAndBackoff(t *testing.T) {
 		}
 		if options[i].Key == "retry_backoff_max_percent" {
 			retryBackoffMaxPercent = &options[i]
+		}
+		if options[i].Key == "skip_tls_verify" {
+			skipTLSVerify = &options[i]
 		}
 	}
 
@@ -170,6 +174,11 @@ func TestGetGroupConfigOptionsIncludesRetryDelayAndBackoff(t *testing.T) {
 	assert.Equal(t, "config.retry_backoff_max_percent", retryBackoffMaxPercent.Name)
 	assert.Equal(t, "config.retry_backoff_max_percent_desc", retryBackoffMaxPercent.Description)
 	assert.Equal(t, 500, retryBackoffMaxPercent.DefaultValue)
+
+	require.NotNil(t, skipTLSVerify)
+	assert.Equal(t, "config.skip_tls_verify", skipTLSVerify.Name)
+	assert.Equal(t, "config.skip_tls_verify_desc", skipTLSVerify.Description)
+	assert.Equal(t, false, skipTLSVerify.DefaultValue)
 }
 
 // TestCreateGroup tests group creation

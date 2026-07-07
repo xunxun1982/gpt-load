@@ -151,6 +151,22 @@ func TestGetClient_WithProxy(t *testing.T) {
 	assert.NotNil(t, client.Transport)
 }
 
+func TestGetClient_WithSkipTLSVerify(t *testing.T) {
+	t.Parallel()
+
+	manager := NewHTTPClientManager()
+
+	client := manager.GetClient(&Config{
+		RequestTimeout: 5 * time.Second,
+		SkipTLSVerify:  true,
+	})
+
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotNil(t, transport.TLSClientConfig)
+	assert.True(t, transport.TLSClientConfig.InsecureSkipVerify)
+}
+
 // TestGetClient_Concurrent tests concurrent client access
 func TestGetClient_Concurrent(t *testing.T) {
 	t.Parallel()
@@ -215,6 +231,15 @@ func TestConfig_Fingerprint(t *testing.T) {
 
 	assert.Equal(t, fp1, fp2, "Same configs should have same fingerprint")
 	assert.NotEqual(t, fp1, fp3, "Different configs should have different fingerprints")
+}
+
+func TestConfig_FingerprintIncludesSkipTLSVerify(t *testing.T) {
+	t.Parallel()
+
+	secure := (&Config{RequestTimeout: 30 * time.Second}).getFingerprint()
+	insecure := (&Config{RequestTimeout: 30 * time.Second, SkipTLSVerify: true}).getFingerprint()
+
+	assert.NotEqual(t, secure, insecure)
 }
 
 // TestGetClient_DifferentConfigs tests multiple different configurations

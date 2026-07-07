@@ -77,6 +77,7 @@ type GroupConfig struct {
 	MaxIdleConnsPerHost          *int    `json:"max_idle_conns_per_host,omitempty"`
 	ResponseHeaderTimeout        *int    `json:"response_header_timeout,omitempty"`
 	ProxyURL                     *string `json:"proxy_url,omitempty"`
+	SkipTLSVerify                *bool   `json:"skip_tls_verify,omitempty"`
 	MaxRetries                   *int    `json:"max_retries,omitempty"`
 	RetryDelayMs                 *int    `json:"retry_delay_ms,omitempty"`
 	RetryBackoffEnabled          *bool   `json:"retry_backoff_enabled,omitempty"`

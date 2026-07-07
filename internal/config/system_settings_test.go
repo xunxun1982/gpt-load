@@ -999,6 +999,20 @@ func TestGetEffectiveConfigResolvesSystemProxyWhenGroupConfigUnmarshalFails(t *t
 	assert.Equal(t, "http://proxy.example.com:8080", cfg.ProxyURL)
 }
 
+func TestGetEffectiveConfigAllowsGroupSkipTLSVerifyOverride(t *testing.T) {
+	manager := setupSystemSettingsManagerWithSettings(t, types.SystemSettings{
+		SkipTLSVerify: true,
+	})
+
+	inherited := manager.GetEffectiveConfig(datatypes.JSONMap{})
+	assert.True(t, inherited.SkipTLSVerify)
+
+	overridden := manager.GetEffectiveConfig(datatypes.JSONMap{
+		"skip_tls_verify": false,
+	})
+	assert.False(t, overridden.SkipTLSVerify)
+}
+
 func TestResolveRuntimeProxyURLKeepsReferenceWhenResolverUnavailable(t *testing.T) {
 	manager := NewSystemSettingsManager()
 	ref := utils.BuildProxyPoolItemRef(12)
