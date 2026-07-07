@@ -405,7 +405,7 @@ export default {
     maxRetries: "最大リトライ回数",
     maxRetriesPlaceholder: "1 回の集約リクエストでサブグループを切り替える最大回数（0-50）",
     subMaxRetries: "サブグループ最大リトライ",
-    subMaxRetriesPlaceholder: "1 つのサブグループ内でのキー再試行上限（0 は追加上限なし、0-50）",
+    subMaxRetriesPlaceholder: "空欄は追加上限なし、0 は追加キー再試行なし（0-50）",
     healthResetInterval: "健康度リセット間隔",
     healthResetDisabled: "自動リセットしない",
     healthResetEveryMinutes: "{count}分ごと",

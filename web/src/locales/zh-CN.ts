@@ -398,7 +398,7 @@ export default {
     maxRetries: "最大重试次数",
     maxRetriesPlaceholder: "单次聚合请求可切换子组的最大次数（0-50）",
     subMaxRetries: "子组重试上限",
-    subMaxRetriesPlaceholder: "限制单个子组内的 Key 重试次数（0 表示不额外限制，范围 0-50）",
+    subMaxRetriesPlaceholder: "留空表示不额外限制；0 表示不做额外 Key 重试（范围 0-50）",
     healthResetInterval: "健康度重置周期",
     healthResetDisabled: "不自动重置",
     healthResetEveryMinutes: "每 {count} 分钟",

@@ -505,24 +505,23 @@ func (s *AggregateGroupService) ResetAllSubGroupHealth(ctx context.Context, grou
 		return nil
 	}
 
-	if s.OnSubGroupHealthReset != nil {
-		for _, subGroupID := range subGroupIDs {
-			if err := s.OnSubGroupHealthReset(groupID, subGroupID); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if s.dynamicWeightManager == nil {
+	if s.OnSubGroupHealthReset == nil && s.dynamicWeightManager == nil {
 		return NewI18nError(app_errors.ErrInternalServer, "error.dynamic_weight_not_configured", nil)
 	}
 
+	var errs []error
 	for _, subGroupID := range subGroupIDs {
-		if err := s.dynamicWeightManager.ResetSubGroupMetrics(groupID, subGroupID); err != nil {
-			return err
+		var err error
+		if s.OnSubGroupHealthReset != nil {
+			err = s.OnSubGroupHealthReset(groupID, subGroupID)
+		} else {
+			err = s.dynamicWeightManager.ResetSubGroupMetrics(groupID, subGroupID)
+		}
+		if err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func validateSubGroupWeight(weight int) error {

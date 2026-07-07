@@ -405,7 +405,7 @@ export default {
     maxRetries: "Max Retries",
     maxRetriesPlaceholder: "Max sub-group failovers per aggregate request (0-50)",
     subMaxRetries: "Sub-group max retries",
-    subMaxRetriesPlaceholder: "Max key retries inside one sub-group (0 means no extra cap, 0-50)",
+    subMaxRetriesPlaceholder: "Blank: no extra cap; 0 disables extra key retries (0-50)",
     healthResetInterval: "Health Reset Interval",
     healthResetDisabled: "Do not reset automatically",
     healthResetEveryMinutes: "Every {count} minutes",

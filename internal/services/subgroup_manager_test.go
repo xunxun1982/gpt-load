@@ -234,6 +234,33 @@ func TestSelectSubGroupWithRetryAffinityFallsBackWhenPrimaryHasNoActiveKeys(t *t
 	assert.True(t, result.UsedFallback)
 }
 
+func TestSelectSubGroupWithRetryAffinitySkipsZeroWeightPrimary(t *testing.T) {
+	t.Parallel()
+
+	manager, mockStore := newTestManager(t)
+
+	group := &models.Group{
+		ID:        1,
+		Name:      "aggregate-group",
+		GroupType: "aggregate",
+		SubGroups: []models.GroupSubGroup{
+			{SubGroupID: 10, SubGroupName: "disabled-by-weight", Weight: 0, SubGroupEnabled: true},
+			{SubGroupID: 20, SubGroupName: "enabled-weight", Weight: 10, SubGroupEnabled: true},
+		},
+	}
+
+	mockStore.LPush("group:10:active_keys", "key1")
+	mockStore.LPush("group:20:active_keys", "key2")
+
+	result, err := manager.SelectSubGroupWithRetryAffinityResult(group, nil, "codex-zero-weight")
+	require.NoError(t, err)
+	assert.Equal(t, uint(20), result.PrimaryID)
+	assert.Equal(t, "enabled-weight", result.PrimaryName)
+	assert.Equal(t, uint(20), result.SelectedID)
+	assert.Equal(t, "enabled-weight", result.SelectedName)
+	assert.False(t, result.UsedFallback)
+}
+
 func TestRebuildSelectors(t *testing.T) {
 	t.Parallel()
 

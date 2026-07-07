@@ -631,19 +631,26 @@ func parseMaxRetries(config map[string]any) int {
 }
 
 // parseSubMaxRetries extracts and validates sub_max_retries from group config.
-// Returns a value clamped to the range [0, 100].
-func parseSubMaxRetries(config map[string]any) int {
-	return parseRetryConfigInt(config, "sub_max_retries")
+// Returns the clamped value and whether the parent explicitly configured it.
+func parseSubMaxRetries(config map[string]any) (int, bool) {
+	if config == nil {
+		return 0, false
+	}
+	_, ok := config["sub_max_retries"]
+	if !ok {
+		return 0, false
+	}
+	return parseRetryConfigInt(config, "sub_max_retries"), true
 }
 
-func subGroupKeyMaxRetries(subGroupCfg types.SystemSettings, parentSubMaxRetries int) int {
+func subGroupKeyMaxRetries(subGroupCfg types.SystemSettings, parentSubMaxRetries int, parentSubMaxRetriesSet bool) int {
 	maxRetries := subGroupCfg.MaxRetries
 	if maxRetries < 0 {
 		maxRetries = 0
 	} else if maxRetries > 100 {
 		maxRetries = 100
 	}
-	if parentSubMaxRetries > 0 && maxRetries > parentSubMaxRetries {
+	if parentSubMaxRetriesSet && maxRetries > parentSubMaxRetries {
 		return parentSubMaxRetries
 	}
 	return maxRetries
@@ -1948,13 +1955,14 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Get sub-group key retry upper bound. This limits retries inside the selected
 	// sub-group only; aggregate-level sub-group switches are controlled by max_retries.
-	subMaxRetries := parseSubMaxRetries(originalGroup.Config)
+	subMaxRetries, subMaxRetriesSet := parseSubMaxRetries(originalGroup.Config)
 
 	logrus.WithFields(logrus.Fields{
-		"aggregate_group": originalGroup.Name,
-		"max_retries":     maxRetries,
-		"sub_max_retries": subMaxRetries,
-		"attempt_count":   retryCtx.attemptCount,
+		"aggregate_group":     originalGroup.Name,
+		"max_retries":         maxRetries,
+		"sub_max_retries":     subMaxRetries,
+		"sub_max_retries_set": subMaxRetriesSet,
+		"attempt_count":       retryCtx.attemptCount,
 	}).Debug("Aggregate retry configuration")
 
 	// Pre-check: if this is the first attempt, check if there are any valid sub-groups
@@ -2610,7 +2618,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		// Check sub-group's key retry limit
 		subGroupCfg := group.EffectiveConfig
 		subGroupKeyRetryCount := retryCtx.subGroupKeyRetryMap[subGroupID]
-		subGroupMaxRetries := subGroupKeyMaxRetries(subGroupCfg, subMaxRetries)
+		subGroupMaxRetries := subGroupKeyMaxRetries(subGroupCfg, subMaxRetries, subMaxRetriesSet)
 
 		// Determine if sub-group has exhausted its key retries
 		isSubGroupKeyRetryExhausted := subGroupKeyRetryCount >= subGroupMaxRetries

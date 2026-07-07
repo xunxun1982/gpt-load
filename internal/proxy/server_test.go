@@ -3119,6 +3119,114 @@ func TestExecuteRequestWithAggregateRetrySubMaxRetriesDoesNotCapParentGroupRetri
 	assert.Equal(t, int32(1), atomic.LoadInt32(&secondFallbackAttempts))
 }
 
+func TestExecuteRequestWithAggregateRetryExplicitZeroSubMaxRetriesDisablesKeyRetries(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps, memStore := setupTestProxyServerWithStore(t, db)
+
+	var primaryAttempts int32
+	var fallbackAttempts int32
+	var fallbackKey *models.APIKey
+	var enableFallback sync.Once
+
+	primaryUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&primaryAttempts, 1)
+		enableFallback.Do(func() {
+			if fallbackKey != nil {
+				_ = memStore.LPush(activeKeysListKeyForTest(uint64(fallbackKey.GroupID)), uint64(fallbackKey.ID))
+			}
+		})
+		http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
+	}))
+	t.Cleanup(primaryUpstream.Close)
+
+	fallbackUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&fallbackAttempts, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(fallbackUpstream.Close)
+
+	primarySubGroup := createTestGroup(t, db, "agg-zero-sub-retry-primary", "openai")
+	primarySubGroup.Upstreams = []byte(`[{"url":"` + primaryUpstream.URL + `","weight":100}]`)
+	primarySubGroup.Config = map[string]any{
+		"max_retries":         10,
+		"blacklist_threshold": 100,
+	}
+	primarySubGroup.EffectiveConfig = systemSettingsWithRetryTimeout(10, 1)
+	require.NoError(t, db.Save(primarySubGroup).Error)
+
+	fallbackSubGroup := createTestGroup(t, db, "agg-zero-sub-retry-fallback", "openai")
+	fallbackSubGroup.Upstreams = []byte(`[{"url":"` + fallbackUpstream.URL + `","weight":100}]`)
+	fallbackSubGroup.Config = map[string]any{
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	fallbackSubGroup.EffectiveConfig = systemSettingsWithRetryTimeout(0, 1)
+	require.NoError(t, db.Save(fallbackSubGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-zero-sub-retry-parent",
+		ChannelType: "openai",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config: map[string]any{
+			"max_retries":     1,
+			"sub_max_retries": 0,
+		},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      primarySubGroup.ID,
+		SubGroupName:    primarySubGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          1,
+	}).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      fallbackSubGroup.ID,
+		SubGroupName:    fallbackSubGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          1000,
+	}).Error)
+
+	for i := 0; i < 11; i++ {
+		createTestKey(t, db, primarySubGroup.ID, "sk-agg-zero-sub-retry-primary-"+strconv.Itoa(i), ps.encryptionSvc)
+	}
+	fallbackKey = createTestKey(t, db, fallbackSubGroup.ID, "sk-agg-zero-sub-retry-fallback", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, memStore.Delete(activeKeysListKeyForTest(uint64(fallbackSubGroup.ID))))
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-test"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/chat/completions", bytes.NewReader(body))
+
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&primaryAttempts))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&fallbackAttempts))
+}
+
 func TestExecuteRequestWithAggregateRetryPinsSubGroupDuringKeyRetries(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
