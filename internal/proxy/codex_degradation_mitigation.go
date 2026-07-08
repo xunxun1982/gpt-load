@@ -401,7 +401,7 @@ func (s *codexMitigationState) logContinuationRequest(reasoningTokens *int64) {
 		fields["group_id"] = s.group.ID
 		fields["group_name"] = s.group.Name
 	}
-	if s.originalGroup != nil {
+	if s.originalGroup != nil && s.originalGroup != s.group {
 		fields["original_group_id"] = s.originalGroup.ID
 		fields["original_group_name"] = s.originalGroup.Name
 	}

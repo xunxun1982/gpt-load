@@ -191,6 +191,12 @@ func TestCodexDegradationMitigationLogsStandardContinuation(t *testing.T) {
 	assert.Equal(t, logrus.InfoLevel, entry.Level)
 	assert.Equal(t, "standard", entry.Data["route_type"])
 	assert.Equal(t, "standard-response", entry.Data["group_name"])
+	assert.NotContains(t, entry.Data, "original_group_id")
+	assert.NotContains(t, entry.Data, "original_group_name")
+	assert.Equal(t, 1, entry.Data["round"])
+	assert.Equal(t, 1, entry.Data["continuation"])
+	assert.Equal(t, int64(518), entry.Data["truncation_step"])
+	assert.Equal(t, int64(516), entry.Data["reasoning_tokens"])
 	assert.NotContains(t, logrusHookText(hook), "enc_1")
 }
 
@@ -228,6 +234,10 @@ func TestCodexDegradationMitigationLogsAggregateContinuation(t *testing.T) {
 	assert.Equal(t, "aggregate", entry.Data["route_type"])
 	assert.Equal(t, "aggregate-response", entry.Data["aggregate_group_name"])
 	assert.Equal(t, "child-response", entry.Data["sub_group_name"])
+	assert.Equal(t, 1, entry.Data["round"])
+	assert.Equal(t, 1, entry.Data["continuation"])
+	assert.Equal(t, int64(518), entry.Data["truncation_step"])
+	assert.Equal(t, int64(516), entry.Data["reasoning_tokens"])
 	assert.NotContains(t, logrusHookText(hook), "enc_1")
 }
 
