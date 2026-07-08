@@ -25,7 +25,6 @@ export default {
   reorderStart: "初始值",
   reorderStep: "间隔",
   reorderPreview: "将按当前全局顺序更新全部站点的排序号。",
-  reorderNoSites: "当前列表没有站点",
   reorderInvalidInput: "请输入有效的初始值和间隔",
   reorderSortSuccess: "排序号已更新",
   baseUrl: "站点链接",

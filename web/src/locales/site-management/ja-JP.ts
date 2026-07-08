@@ -25,7 +25,6 @@ export default {
   reorderStart: "開始値",
   reorderStep: "間隔",
   reorderPreview: "現在の全体順で全サイトの並び順番号を更新します。",
-  reorderNoSites: "現在の一覧にサイトがありません",
   reorderInvalidInput: "有効な開始値と間隔を入力してください",
   reorderSortSuccess: "並び順番号を更新しました",
   baseUrl: "サイトURL",

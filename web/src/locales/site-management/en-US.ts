@@ -25,7 +25,6 @@ export default {
   reorderStart: "Start",
   reorderStep: "Step",
   reorderPreview: "This will update sort numbers for all sites using the current global order.",
-  reorderNoSites: "The current list has no sites",
   reorderInvalidInput: "Enter a valid start value and step",
   reorderSortSuccess: "Sort numbers updated",
   baseUrl: "Site URL",

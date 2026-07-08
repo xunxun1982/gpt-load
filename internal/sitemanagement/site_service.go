@@ -418,21 +418,8 @@ func lockExistingSiteIDsForReorder(tx *gorm.DB, ids []uint) (int64, error) {
 	return int64(len(existingIDs)), nil
 }
 
-func (s *SiteService) ReorderSites(ctx context.Context, items []SiteReorderItem) error {
-	if err := validateSiteReorderItems(items); err != nil {
-		return err
-	}
-
-	tx := s.db.WithContext(ctx).Begin()
-	if err := tx.Error; err != nil {
-		return app_errors.ParseDBError(err)
-	}
-	defer func() {
-		if tx != nil {
-			tx.Rollback()
-		}
-	}()
-
+func reorderSitesInTx(tx *gorm.DB, items []SiteReorderItem) error {
+	// The public callers validate items before opening the transaction.
 	caseSQL, args, ids := buildSiteReorderCase(items)
 	count, err := lockExistingSiteIDsForReorder(tx, ids)
 	if err != nil {
@@ -454,7 +441,27 @@ func (s *SiteService) ReorderSites(ctx context.Context, items []SiteReorderItem)
 	if count != int64(len(ids)) {
 		return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.reorder_site_not_found", nil)
 	}
+	return nil
+}
 
+func (s *SiteService) ReorderSites(ctx context.Context, items []SiteReorderItem) error {
+	if err := validateSiteReorderItems(items); err != nil {
+		return err
+	}
+
+	tx := s.db.WithContext(ctx).Begin()
+	if err := tx.Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	defer func() {
+		if tx != nil {
+			tx.Rollback()
+		}
+	}()
+
+	if err := reorderSitesInTx(tx, items); err != nil {
+		return err
+	}
 	if err := tx.Commit().Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
@@ -468,11 +475,24 @@ func (s *SiteService) RenumberSites(ctx context.Context, start, step int) error 
 		return err
 	}
 
+	tx := s.db.WithContext(ctx).Begin()
+	if err := tx.Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	defer func() {
+		if tx != nil {
+			tx.Rollback()
+		}
+	}()
+
 	var ids []uint
-	if err := s.db.WithContext(ctx).
-		Model(&ManagedSite{}).
-		Order("sort ASC, id ASC").
-		Pluck("id", &ids).Error; err != nil {
+	// Read IDs inside the reorder transaction so the snapshot matches the update work.
+	query := tx.Model(&ManagedSite{}).Order("sort ASC, id ASC")
+	switch tx.Dialector.Name() {
+	case "mysql", "postgres":
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.Pluck("id", &ids).Error; err != nil {
 		return app_errors.ParseDBError(err)
 	}
 	if len(ids) == 0 {
@@ -486,7 +506,16 @@ func (s *SiteService) RenumberSites(ctx context.Context, start, step int) error 
 			Sort: start + i*step,
 		}
 	}
-	return s.ReorderSites(ctx, items)
+
+	if err := reorderSitesInTx(tx, items); err != nil {
+		return err
+	}
+	if err := tx.Commit().Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	tx = nil
+	s.InvalidateSiteListCache()
+	return nil
 }
 
 func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (*ManagedSiteDTO, error) {

@@ -1627,9 +1627,9 @@ async function confirmReorderSites() {
       start: Math.trunc(start),
       step: Math.trunc(step),
     });
-    await loadSites();
     message.success(t("siteManagement.reorderSortSuccess"));
     showReorderModal.value = false;
+    await loadSites();
   } catch (_) {
     /* handled by centralized error handler */
   } finally {

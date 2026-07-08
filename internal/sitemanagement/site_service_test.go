@@ -238,6 +238,45 @@ func TestSiteService_ReorderSitesUpdatesSortAndInvalidatesCache(t *testing.T) {
 	assert.Equal(t, []int{10, 15, 20}, []int{sites[0].Sort, sites[1].Sort, sites[2].Sort})
 }
 
+func TestSiteService_ReorderSitesValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewSiteService(db, memStore, encSvc)
+
+	site, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Validation Site",
+		BaseURL:  "https://validation.example.com",
+		Sort:     1,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		items []SiteReorderItem
+	}{
+		{name: "empty items", items: nil},
+		{name: "zero id", items: []SiteReorderItem{{ID: 0, Sort: 1}}},
+		{name: "negative sort", items: []SiteReorderItem{{ID: site.ID, Sort: -1}}},
+		{name: "duplicate id", items: []SiteReorderItem{{ID: site.ID, Sort: 1}, {ID: site.ID, Sort: 2}}},
+		{name: "site not found", items: []SiteReorderItem{{ID: site.ID + 999, Sort: 1}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := service.ReorderSites(context.Background(), tt.items)
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestSiteService_RenumberSitesUpdatesAllSitesInCurrentOrder(t *testing.T) {
 	t.Parallel()
 
@@ -272,6 +311,35 @@ func TestSiteService_RenumberSitesUpdatesAllSitesInCurrentOrder(t *testing.T) {
 	for i, site := range sites {
 		assert.Equal(t, fmt.Sprintf("Renumber %02d", i+1), site.Name)
 		assert.Equal(t, 100+i*10, site.Sort)
+	}
+}
+
+func TestSiteService_RenumberSitesValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewSiteService(db, memStore, encSvc)
+
+	tests := []struct {
+		name  string
+		start int
+		step  int
+	}{
+		{name: "negative start", start: -1, step: 10},
+		{name: "zero step", start: 1, step: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := service.RenumberSites(context.Background(), tt.start, tt.step)
+			require.Error(t, err)
+		})
 	}
 }
 
