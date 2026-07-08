@@ -3,8 +3,10 @@ package proxy
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"errors"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,6 +52,15 @@ func compressGzipForResponseHandlerTest(t *testing.T, body []byte) []byte {
 		t.Fatalf("failed to close gzip writer: %v", err)
 	}
 	return buf.Bytes()
+}
+
+func largeBase64PayloadForResponseHandlerTest(size int) string {
+	rng := rand.New(rand.NewSource(42))
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = byte(rng.Intn(256))
+	}
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 func (r *errorAfterReadCloser) Read(p []byte) (int, error) {
@@ -475,6 +486,226 @@ func TestHandleNormalResponseSkipsTokenAccountingOnCopyError(t *testing.T) {
 		t.Fatalf("unexpected token usage from truncated body: %+v source=%q ok=%v", usage, source, ok)
 	}
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleNormalResponseLogsDecodedCompressedBodyWithoutChangingClientBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"choices":[{"message":{"content":"pong"}}],"usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}}`)
+	compressedBody := compressGzipForResponseHandlerTest(t, body)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(compressedBody)),
+		Header: http.Header{
+			"Content-Encoding": []string{"gzip"},
+		},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	assert.Equal(t, compressedBody, w.Body.Bytes())
+	rawLogBody, exists := c.Get("response_body")
+	require.True(t, exists)
+	logBody, ok := rawLogBody.(string)
+	require.True(t, ok)
+	assert.Contains(t, logBody, `"content":"pong"`)
+	assert.NotContains(t, logBody, "\x1f\x8b")
+	usage, source, ok := getTokenUsage(c)
+	require.True(t, ok)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(12), usage.TotalTokens)
+}
+
+func TestHandleNormalResponseParsesCompressedUsageWithoutBodyLogging(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"choices":[{"message":{"content":"pong"}}],"usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}}`)
+	compressedBody := compressGzipForResponseHandlerTest(t, body)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(compressedBody)),
+		Header: http.Header{
+			"Content-Encoding": []string{"gzip"},
+		},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	assert.Equal(t, compressedBody, w.Body.Bytes())
+	_, exists := c.Get("response_body")
+	assert.False(t, exists)
+	usage, source, ok := getTokenUsage(c)
+	require.True(t, ok)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(12), usage.TotalTokens)
+}
+
+func TestHandleNormalResponseParsesCompressedUsagePastCaptureLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	payload := largeBase64PayloadForResponseHandlerTest(96 * 1024)
+	body := []byte(`{"choices":[{"message":{"content":"` + payload + `"}}],"usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}}`)
+	compressedBody := compressGzipForResponseHandlerTest(t, body)
+	require.Greater(t, len(compressedBody), maxResponseCaptureBytes)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(compressedBody)),
+		Header: http.Header{
+			"Content-Encoding": []string{"gzip"},
+		},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	assert.Equal(t, compressedBody, w.Body.Bytes())
+	_, exists := c.Get("response_body")
+	assert.False(t, exists)
+	usage, source, ok := getTokenUsage(c)
+	require.True(t, ok)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(12), usage.TotalTokens)
+}
+
+func TestHandleNormalResponseParsesCompressedUsagePastLogCaptureLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	payload := largeBase64PayloadForResponseHandlerTest(96 * 1024)
+	body := []byte(`{"choices":[{"message":{"content":"` + payload + `"}}],"usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}}`)
+	compressedBody := compressGzipForResponseHandlerTest(t, body)
+	require.Greater(t, len(compressedBody), maxResponseCaptureBytes)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(compressedBody)),
+		Header: http.Header{
+			"Content-Encoding": []string{"gzip"},
+		},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	assert.Equal(t, compressedBody, w.Body.Bytes())
+	rawLogBody, exists := c.Get("response_body")
+	require.True(t, exists)
+	logBody, ok := rawLogBody.(string)
+	require.True(t, ok)
+	assert.Contains(t, logBody, "compressed response omitted")
+	assert.NotContains(t, logBody, "\x1f\x8b")
+	usage, source, ok := getTokenUsage(c)
+	require.True(t, ok)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(12), usage.TotalTokens)
+}
+
+func TestHandleStreamingResponseLogsDecodedCompressedBodyWithoutChangingClientBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	streamBody := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello Zip\"}}]}\n\n" +
+		"data: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5,\"total_tokens\":12}}\n\n" +
+		"data: [DONE]\n\n")
+	compressedBody := compressGzipForResponseHandlerTest(t, streamBody)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(compressedBody)),
+		Header: http.Header{
+			"Content-Encoding": []string{"gzip"},
+		},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	assert.Equal(t, compressedBody, w.Body.Bytes())
+	rawLogBody, exists := c.Get("response_body")
+	require.True(t, exists)
+	logBody, ok := rawLogBody.(string)
+	require.True(t, ok)
+	assert.Contains(t, logBody, "Hello Zip")
+	assert.NotContains(t, logBody, "\x1f\x8b")
+	usage, source, ok := getTokenUsage(c)
+	require.True(t, ok)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(12), usage.TotalTokens)
+}
+
+func TestHandleStreamingResponseLogsCompressedUsagePastCaptureLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	payload := largeBase64PayloadForResponseHandlerTest(96 * 1024)
+	streamBody := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"" + payload + "\"}}]}\n\n" +
+		"data: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5,\"total_tokens\":12}}\n\n" +
+		"data: [DONE]\n\n")
+	compressedBody := compressGzipForResponseHandlerTest(t, streamBody)
+	require.Greater(t, len(compressedBody), maxResponseCaptureBytes)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(compressedBody)),
+		Header: http.Header{
+			"Content-Encoding": []string{"gzip"},
+		},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	assert.Equal(t, compressedBody, w.Body.Bytes())
+	rawLogBody, exists := c.Get("response_body")
+	require.True(t, exists)
+	logBody, ok := rawLogBody.(string)
+	require.True(t, ok)
+	assert.NotContains(t, logBody, "\x1f\x8b")
+	usage, source, ok := getTokenUsage(c)
+	require.True(t, ok)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(12), usage.TotalTokens)
+}
+
+func TestHandleStreamingResponseParsesCompressedUsagePastCaptureLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	payload := largeBase64PayloadForResponseHandlerTest(96 * 1024)
+	streamBody := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"" + payload + "\"}}]}\n\n" +
+		"data: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5,\"total_tokens\":12}}\n\n" +
+		"data: [DONE]\n\n")
+	compressedBody := compressGzipForResponseHandlerTest(t, streamBody)
+	require.Greater(t, len(compressedBody), maxResponseCaptureBytes)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(compressedBody)),
+		Header: http.Header{
+			"Content-Encoding": []string{"gzip"},
+		},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	assert.Equal(t, compressedBody, w.Body.Bytes())
+	usage, source, ok := getTokenUsage(c)
+	require.True(t, ok)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(12), usage.TotalTokens)
 }
 
 func TestLimitedResponseCaptureWriter(t *testing.T) {

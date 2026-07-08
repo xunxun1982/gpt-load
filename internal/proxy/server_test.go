@@ -216,6 +216,172 @@ func createTestKey(t *testing.T, db *gorm.DB, groupID uint, keyValue string, enc
 	return apiKey
 }
 
+func TestHandleProxyAggregateSkipsParentChannelInitialization(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name             string
+		parentType       string
+		childType        string
+		path             string
+		body             []byte
+		responseBody     string
+		responseContent  string
+		wantUpstreamPath string
+	}{
+		{
+			name:             "openai chat aggregate",
+			parentType:       "openai",
+			childType:        "openai",
+			path:             "/v1/chat/completions",
+			body:             []byte(`{"model":"search","messages":[{"role":"user","content":"ping"}],"stream":false}`),
+			responseBody:     `{"id":"chatcmpl-test","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop","index":0}]}`,
+			responseContent:  "application/json",
+			wantUpstreamPath: "/v1/chat/completions",
+		},
+		{
+			name:             "openai responses aggregate",
+			parentType:       "openai-response",
+			childType:        "openai-response",
+			path:             "/v1/responses",
+			body:             []byte(`{"model":"search","input":"ping","stream":true}`),
+			responseBody:     "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-test\",\"object\":\"response\",\"output\":[]}}\n\n",
+			responseContent:  "text/event-stream",
+			wantUpstreamPath: "/v1/responses",
+		},
+		{
+			name:             "anthropic aggregate",
+			parentType:       "anthropic",
+			childType:        "anthropic",
+			path:             "/v1/messages",
+			body:             []byte(`{"model":"search","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`),
+			responseBody:     `{"id":"msg-test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"search","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			responseContent:  "application/json",
+			wantUpstreamPath: "/v1/messages",
+		},
+		{
+			name:             "gemini aggregate",
+			parentType:       "gemini",
+			childType:        "gemini",
+			path:             "/v1beta/models/search:generateContent",
+			body:             []byte(`{"contents":[{"role":"user","parts":[{"text":"ping"}]}]}`),
+			responseBody:     `{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP"}]}`,
+			responseContent:  "application/json",
+			wantUpstreamPath: "/v1beta/models/search:generateContent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			db := setupTestDB(t)
+			ps := setupTestProxyServer(t, db)
+
+			receivedPath := make(chan string, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedPath <- r.URL.Path
+				w.Header().Set("Content-Type", tt.responseContent)
+				_, _ = io.WriteString(w, tt.responseBody)
+			}))
+			t.Cleanup(upstream.Close)
+
+			subGroup := createTestGroup(t, db, tt.name+"-sub", tt.childType)
+			subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+			require.NoError(t, db.Save(subGroup).Error)
+
+			aggregateGroup := &models.Group{
+				Name:        strings.ReplaceAll(tt.name, " ", "-"),
+				ChannelType: tt.parentType,
+				GroupType:   "aggregate",
+				Enabled:     true,
+				Upstreams:   []byte(`[]`),
+				Config:      map[string]any{"max_retries": 0},
+			}
+			require.NoError(t, db.Create(aggregateGroup).Error)
+			require.NoError(t, db.Create(&models.GroupSubGroup{
+				GroupID:         aggregateGroup.ID,
+				SubGroupID:      subGroup.ID,
+				SubGroupName:    subGroup.Name,
+				SubGroupEnabled: true,
+				Weight:          100,
+			}).Error)
+
+			createTestKey(t, db, subGroup.ID, "sk-aggregate-parent-empty-upstream", ps.encryptionSvc)
+			require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+			require.NoError(t, ps.groupManager.Initialize())
+			t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+tt.path, bytes.NewReader(tt.body))
+			c.Params = gin.Params{{Key: "group_name", Value: aggregateGroup.Name}}
+
+			ps.HandleProxy(c)
+
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, tt.wantUpstreamPath, <-receivedPath)
+		})
+	}
+}
+
+func TestIsGenericStreamRequestDetectsGeminiNativeStreamPath(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/gemini/v1beta/models/gemini-pro:streamGenerateContent", bytes.NewReader(nil))
+
+	assert.True(t, isGenericStreamRequest(c, []byte(`{"contents":[]}`)))
+}
+
+func TestIsGenericStreamRequestDetectsAcceptHeader(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/openai/v1/chat/completions", bytes.NewReader(nil))
+	c.Request.Header.Set("Accept", "text/event-stream")
+
+	assert.True(t, isGenericStreamRequest(c, nil))
+}
+
+func TestIsGenericStreamRequestDetectsQueryParam(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/openai/v1/chat/completions?stream=true", bytes.NewReader(nil))
+
+	assert.True(t, isGenericStreamRequest(c, nil))
+}
+
+func TestIsGenericStreamRequestDetectsJSONBodyStreamTrue(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/openai/v1/chat/completions", bytes.NewReader([]byte(`{"stream":true}`)))
+
+	assert.True(t, isGenericStreamRequest(c, []byte(`{"stream":true}`)))
+}
+
+func TestIsGenericStreamRequestReturnsFalseForNonStream(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/openai/v1/chat/completions", bytes.NewReader([]byte(`{"stream":false}`)))
+
+	assert.False(t, isGenericStreamRequest(c, []byte(`{"stream":false}`)))
+}
+
 func TestNewProxyServer(t *testing.T) {
 	t.Parallel()
 
