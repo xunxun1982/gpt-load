@@ -118,7 +118,7 @@ const defaultFormData = {
   sort: 1,
   proxy_keys: "",
   max_retries: 0,
-  sub_max_retries: 0,
+  sub_max_retries: null as number | null,
   health_reset_interval_seconds: 0,
   codex_affinity_enabled: false,
   codex_degradation_mitigation_enabled: false,
@@ -183,7 +183,9 @@ function loadGroupData() {
 
   const config = (props.group.config || {}) as GroupConfig;
   const maxRetries = config.max_retries ?? 0;
-  const subMaxRetries = config.sub_max_retries ?? 0;
+  const subMaxRetries = Object.prototype.hasOwnProperty.call(config, "sub_max_retries")
+    ? (config.sub_max_retries ?? 0)
+    : null;
   const healthResetIntervalSeconds = config.health_reset_interval_seconds ?? 0;
   const codexAffinityEnabled = config.codex_affinity_enabled === true;
   const codexDegradationMitigationEnabled =
@@ -294,6 +296,19 @@ async function handleSubmit() {
       preconditions[item.key] = item.value;
     }
 
+    const config: Record<string, unknown> = {
+      max_retries: formData.max_retries ?? 0,
+      health_reset_interval_seconds: formData.health_reset_interval_seconds ?? 0,
+      codex_affinity_enabled:
+        formData.channel_type === "openai-response" && formData.codex_affinity_enabled === true,
+      codex_degradation_mitigation_enabled:
+        formData.channel_type === "openai-response" &&
+        formData.codex_degradation_mitigation_enabled === true,
+    };
+    if (formData.sub_max_retries !== null) {
+      config.sub_max_retries = formData.sub_max_retries;
+    }
+
     // Build submit payload
     const submitData = {
       name: formData.name,
@@ -303,16 +318,7 @@ async function handleSubmit() {
       sort: formData.sort,
       proxy_keys: formData.proxy_keys,
       group_type: "aggregate" as const,
-      config: {
-        max_retries: formData.max_retries ?? 0,
-        sub_max_retries: formData.sub_max_retries ?? 0,
-        health_reset_interval_seconds: formData.health_reset_interval_seconds ?? 0,
-        codex_affinity_enabled:
-          formData.channel_type === "openai-response" && formData.codex_affinity_enabled === true,
-        codex_degradation_mitigation_enabled:
-          formData.channel_type === "openai-response" &&
-          formData.codex_degradation_mitigation_enabled === true,
-      },
+      config,
       preconditions,
     };
 
@@ -418,6 +424,7 @@ async function handleSubmit() {
               :placeholder="t('keys.maxRetriesPlaceholder')"
               :min="0"
               :max="50"
+              clearable
               style="width: 100%"
             />
           </n-form-item>
@@ -428,6 +435,7 @@ async function handleSubmit() {
               :placeholder="t('keys.subMaxRetriesPlaceholder')"
               :min="0"
               :max="50"
+              clearable
               style="width: 100%"
             />
           </n-form-item>

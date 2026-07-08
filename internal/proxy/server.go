@@ -210,6 +210,9 @@ func codexAggregateAffinityKey(c *gin.Context, group *models.Group, bodyBytes []
 	if value := firstNonEmptyHeader(c, "Conversation_ID", "conversation_id"); value != "" {
 		return value
 	}
+	if value := codexTurnMetadataAffinityKey(firstNonEmptyHeader(c, "X-Codex-Turn-Metadata")); value != "" {
+		return value
+	}
 	if value := firstNonEmptyHeader(c, "X-Codex-Window-Id", "x-codex-window-id"); value != "" {
 		return value
 	}
@@ -218,10 +221,125 @@ func codexAggregateAffinityKey(c *gin.Context, group *models.Group, bodyBytes []
 	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
 		return ""
 	}
-	if value, ok := payload["prompt_cache_key"].(string); ok {
+	if value := stringFromJSONMap(payload, "prompt_cache_key"); value != "" {
+		return value
+	}
+	if metadata, ok := payload["client_metadata"].(map[string]any); ok {
+		if value := stringFromJSONMap(metadata, "x-codex-window-id"); value != "" {
+			return value
+		}
+		if value := codexTurnMetadataAffinityKey(stringFromJSONMap(metadata, "x-codex-turn-metadata")); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func codexTurnMetadataAffinityKey(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ""
+	}
+	if value := stringFromJSONMap(payload, "prompt_cache_key"); value != "" {
+		return value
+	}
+	return stringFromJSONMap(payload, "window_id")
+}
+
+func stringFromJSONMap(payload map[string]any, key string) string {
+	if value, ok := payload[key].(string); ok {
 		return strings.TrimSpace(value)
 	}
 	return ""
+}
+
+func stripCodexAffinityFallbackEncryptedReasoning(bodyBytes []byte) ([]byte, bool, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return bodyBytes, false, err
+	}
+
+	changed := stripResponsesEncryptedReasoningInclude(payload)
+	if stripReasoningInputItems(payload) {
+		changed = true
+	}
+	if !changed {
+		return bodyBytes, false, nil
+	}
+
+	result, err := json.Marshal(payload)
+	if err != nil {
+		return bodyBytes, false, err
+	}
+	return result, true, nil
+}
+
+func stripResponsesEncryptedReasoningInclude(payload map[string]any) bool {
+	rawInclude, ok := payload["include"]
+	if !ok {
+		return false
+	}
+	include, ok := rawInclude.([]any)
+	if !ok {
+		return false
+	}
+
+	filtered := make([]any, 0, len(include))
+	removed := false
+	for _, item := range include {
+		if text, ok := item.(string); ok && text == responsesEncryptedReasoning {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	if !removed {
+		return false
+	}
+	if len(filtered) == 0 {
+		delete(payload, "include")
+	} else {
+		payload["include"] = filtered
+	}
+	return true
+}
+
+func stripReasoningInputItems(payload map[string]any) bool {
+	switch input := payload["input"].(type) {
+	case []any:
+		filtered := make([]any, 0, len(input))
+		removed := false
+		for _, item := range input {
+			if isReasoningResponseItem(item) {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		if removed {
+			payload["input"] = filtered
+		}
+		return removed
+	case map[string]any:
+		if isReasoningResponseItem(input) {
+			payload["input"] = []any{}
+			return true
+		}
+	}
+	return false
+}
+
+func isReasoningResponseItem(item any) bool {
+	itemMap, ok := item.(map[string]any)
+	if !ok {
+		return false
+	}
+	itemType, _ := itemMap["type"].(string)
+	return strings.TrimSpace(itemType) == "reasoning"
 }
 
 func isCodexClientRequest(c *gin.Context, group *models.Group) bool {
@@ -345,18 +463,19 @@ type ProxyServer struct {
 // retryContext holds the retry state for a single request
 // This context is created per request and lives only for the request's lifetime
 type retryContext struct {
-	excludedSubGroups   map[uint]bool // Sub-group IDs that have failed in the current request (only for current aggregate group)
-	attemptCount        int           // Current attempt count (aggregate-level sub-group switches)
-	originalBodyBytes   []byte        // Original request body (before any sub-group mapping)
-	originalPath        string        // Original request path (for CC support restoration)
-	subGroupKeyRetryMap map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
-	forcedSubGroupID    uint          // Keeps key-level retries on the selected sub-group until its retry budget is exhausted
-	lifecycleCtx        context.Context
-	lifecycleCancel     context.CancelFunc
-	lifecycleConfig     types.SystemSettings
-	lifecycleConfigSet  bool
-	lifecycleStartTime  time.Time
-	lifecycleStreamMode bool
+	excludedSubGroups              map[uint]bool // Sub-group IDs that have failed in the current request (only for current aggregate group)
+	attemptCount                   int           // Current attempt count (aggregate-level sub-group switches)
+	originalBodyBytes              []byte        // Original request body (before any sub-group mapping)
+	originalPath                   string        // Original request path (for CC support restoration)
+	subGroupKeyRetryMap            map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
+	forcedSubGroupID               uint          // Keeps key-level retries on the selected sub-group until its retry budget is exhausted
+	codexAffinityPrimarySubGroupID uint          // Stable primary sub-group for Codex affinity requests
+	lifecycleCtx                   context.Context
+	lifecycleCancel                context.CancelFunc
+	lifecycleConfig                types.SystemSettings
+	lifecycleConfigSet             bool
+	lifecycleStartTime             time.Time
+	lifecycleStreamMode            bool
 }
 
 // safeProxyURL returns the proxy URL value with credentials redacted for safe logging.
@@ -511,10 +630,30 @@ func parseMaxRetries(config map[string]any) int {
 	return parseRetryConfigInt(config, "max_retries")
 }
 
-// parseSubMaxRetries extracts and validates sub_max_retries from group config
-// Returns a value clamped to the range [0, 100]
-func parseSubMaxRetries(config map[string]any) int {
-	return parseRetryConfigInt(config, "sub_max_retries")
+// parseSubMaxRetries extracts and validates sub_max_retries from group config.
+// Returns the clamped value and whether the parent explicitly configured it.
+func parseSubMaxRetries(config map[string]any) (int, bool) {
+	if config == nil {
+		return 0, false
+	}
+	_, ok := config["sub_max_retries"]
+	if !ok {
+		return 0, false
+	}
+	return parseRetryConfigInt(config, "sub_max_retries"), true
+}
+
+func subGroupKeyMaxRetries(subGroupCfg types.SystemSettings, parentSubMaxRetries int, parentSubMaxRetriesSet bool) int {
+	maxRetries := subGroupCfg.MaxRetries
+	if maxRetries < 0 {
+		maxRetries = 0
+	} else if maxRetries > 100 {
+		maxRetries = 100
+	}
+	if parentSubMaxRetriesSet && maxRetries > parentSubMaxRetries {
+		return parentSubMaxRetries
+	}
+	return maxRetries
 }
 
 // isForceFunctionCallEnabled checks whether the force_function_call flag is enabled
@@ -970,27 +1109,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		}
 	}
 
-	// Select sub-group if this is an aggregate group
-	subGroupName, err := ps.subGroupManager.SelectSubGroup(originalGroup)
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"aggregate_group": originalGroup.Name,
-			"error":           err,
-		}).Error("Failed to select sub-group from aggregate")
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, "No available sub-groups"))
-		ps.logEarlyError(c, originalGroup, startTime, http.StatusServiceUnavailable, fmt.Errorf("no available sub-groups: %v", err))
-		return
-	}
-
 	group := originalGroup
-	if subGroupName != "" {
-		group, err = ps.groupManager.GetGroupByName(subGroupName)
-		if err != nil {
-			response.Error(c, app_errors.ParseDBError(err))
-			ps.logEarlyError(c, originalGroup, startTime, http.StatusNotFound, fmt.Errorf("sub-group not found: %s", subGroupName))
-			return
-		}
-	}
 
 	channelHandler, err := ps.channelFactory.GetChannel(group)
 	if err != nil {
@@ -1834,19 +1953,16 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}).Debug("Aggregate group has no explicit max_retries config, using sub-group count as default")
 	}
 
-	// Get sub-group level max retries. When set to 0 or omitted, it does not override
-	// the aggregate group's max_retries. For positive values, it acts as an upper
-	// bound for aggregate retries to keep total attempts small.
-	subMaxRetries := parseSubMaxRetries(originalGroup.Config)
-	if subMaxRetries > 0 && maxRetries > subMaxRetries {
-		maxRetries = subMaxRetries
-	}
+	// Get sub-group key retry upper bound. This limits retries inside the selected
+	// sub-group only; aggregate-level sub-group switches are controlled by max_retries.
+	subMaxRetries, subMaxRetriesSet := parseSubMaxRetries(originalGroup.Config)
 
 	logrus.WithFields(logrus.Fields{
-		"aggregate_group": originalGroup.Name,
-		"max_retries":     maxRetries,
-		"sub_max_retries": subMaxRetries,
-		"attempt_count":   retryCtx.attemptCount,
+		"aggregate_group":     originalGroup.Name,
+		"max_retries":         maxRetries,
+		"sub_max_retries":     subMaxRetries,
+		"sub_max_retries_set": subMaxRetriesSet,
+		"attempt_count":       retryCtx.attemptCount,
 	}).Debug("Aggregate retry configuration")
 
 	// Pre-check: if this is the first attempt, check if there are any valid sub-groups
@@ -1878,7 +1994,13 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		retryCtx.forcedSubGroupID = 0
 		var err error
 		if affinityKey := codexAggregateAffinityKey(c, originalGroup, bodyBytes); affinityKey != "" {
-			subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetryAffinity(originalGroup, retryCtx.excludedSubGroups, affinityKey)
+			var selection services.AffinitySubGroupSelection
+			selection, err = ps.subGroupManager.SelectSubGroupWithRetryAffinityResult(originalGroup, retryCtx.excludedSubGroups, affinityKey)
+			subGroupName = selection.SelectedName
+			subGroupID = selection.SelectedID
+			if selection.PrimaryID != 0 {
+				retryCtx.codexAffinityPrimarySubGroupID = selection.PrimaryID
+			}
 		} else {
 			subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetry(originalGroup, retryCtx.excludedSubGroups)
 		}
@@ -1919,6 +2041,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Store current sub-group ID for failure handling
 	c.Set("current_sub_group_id", subGroupID)
+	codexAffinityFallback := retryCtx.codexAffinityPrimarySubGroupID != 0 &&
+		subGroupID != retryCtx.codexAffinityPrimarySubGroupID
 	clearModelRedirectContext(c)
 
 	// Apply model mapping for the selected sub-group
@@ -2258,6 +2382,23 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	} else {
 		c.Set(ctxKeyCodexDegradationMitigation, false)
 	}
+	if codexAffinityFallback {
+		c.Set(ctxKeyCodexDegradationMitigation, false)
+		strippedBody, stripped, stripErr := stripCodexAffinityFallbackEncryptedReasoning(finalBodyBytes)
+		if stripErr != nil {
+			logrus.WithError(stripErr).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to strip encrypted reasoning for Codex affinity fallback sub-group")
+		} else if stripped {
+			finalBodyBytes = strippedBody
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+				"primary_id":      retryCtx.codexAffinityPrimarySubGroupID,
+			}).Debug("Stripped encrypted reasoning for Codex affinity fallback sub-group")
+		}
+	}
 
 	// Apply forced streaming for direct OpenAI Responses sub-group requests (non-CC mode).
 	// Clear any stale forced stream state from previous sub-group attempts.
@@ -2477,16 +2618,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		// Check sub-group's key retry limit
 		subGroupCfg := group.EffectiveConfig
 		subGroupKeyRetryCount := retryCtx.subGroupKeyRetryMap[subGroupID]
-		// Clamp sub-group max retries defensively. We intentionally do not reuse
-		// parseRetryConfigInt here because this value comes from EffectiveConfig
-		// (already parsed from raw config) and we want to avoid changing its
-		// existing parsing semantics while still enforcing a hard upper bound.
-		subGroupMaxRetries := subGroupCfg.MaxRetries
-		if subGroupMaxRetries < 0 {
-			subGroupMaxRetries = 0
-		} else if subGroupMaxRetries > 100 {
-			subGroupMaxRetries = 100
-		}
+		subGroupMaxRetries := subGroupKeyMaxRetries(subGroupCfg, subMaxRetries, subMaxRetriesSet)
 
 		// Determine if sub-group has exhausted its key retries
 		isSubGroupKeyRetryExhausted := subGroupKeyRetryCount >= subGroupMaxRetries

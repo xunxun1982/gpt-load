@@ -724,6 +724,172 @@ func TestResetSubGroupHealthAllowsDisabledSubGroup(t *testing.T) {
 	assert.True(t, called)
 }
 
+func TestResetAllSubGroupHealthResetsEverySubGroup(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	aggregateGroup := models.Group{
+		Name:        "aggregate-reset-all-sub-health",
+		DisplayName: "Aggregate Reset All Sub Health",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	firstSubGroup := models.Group{
+		Name:        "sub-reset-all-first",
+		DisplayName: "Sub Reset All First",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	secondSubGroup := models.Group{
+		Name:        "sub-reset-all-second",
+		DisplayName: "Sub Reset All Second",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&aggregateGroup).Error)
+	require.NoError(t, db.Create(&firstSubGroup).Error)
+	require.NoError(t, db.Create(&secondSubGroup).Error)
+	require.NoError(t, db.Model(&secondSubGroup).Update("enabled", false).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:    aggregateGroup.ID,
+		SubGroupID: firstSubGroup.ID,
+		Weight:     100,
+	}).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:    aggregateGroup.ID,
+		SubGroupID: secondSubGroup.ID,
+		Weight:     100,
+	}).Error)
+
+	resetIDs := make(map[uint]bool)
+	service.OnSubGroupHealthReset = func(aggregateGroupID, subGroupID uint) error {
+		assert.Equal(t, aggregateGroup.ID, aggregateGroupID)
+		resetIDs[subGroupID] = true
+		return nil
+	}
+
+	require.NoError(t, service.ResetAllSubGroupHealth(context.Background(), aggregateGroup.ID))
+	assert.Equal(t, map[uint]bool{
+		firstSubGroup.ID:  true,
+		secondSubGroup.ID: true,
+	}, resetIDs)
+}
+
+func TestResetAllSubGroupHealthReturnsErrorWhenDynamicWeightManagerMissing(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	aggregateGroup := models.Group{
+		Name:        "aggregate-reset-all-missing-dwm",
+		DisplayName: "Aggregate Reset All Missing DWM",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	subGroup := models.Group{
+		Name:        "sub-reset-all-missing-dwm",
+		DisplayName: "Sub Reset All Missing DWM",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&aggregateGroup).Error)
+	require.NoError(t, db.Create(&subGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:    aggregateGroup.ID,
+		SubGroupID: subGroup.ID,
+		Weight:     100,
+	}).Error)
+
+	err := service.ResetAllSubGroupHealth(context.Background(), aggregateGroup.ID)
+	require.Error(t, err)
+	var i18nErr *I18nError
+	require.ErrorAs(t, err, &i18nErr)
+	assert.Equal(t, app_errors.ErrInternalServer.Code, i18nErr.APIError.Code)
+	assert.Equal(t, "error.dynamic_weight_not_configured", i18nErr.MessageID)
+}
+
+func TestResetAllSubGroupHealthAttemptsEverySubGroupAfterHookFailure(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+
+	aggregateGroup := models.Group{
+		Name:        "aggregate-reset-all-partial-failure",
+		DisplayName: "Aggregate Reset All Partial Failure",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	firstSubGroup := models.Group{
+		Name:        "sub-reset-all-partial-first",
+		DisplayName: "Sub Reset All Partial First",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	secondSubGroup := models.Group{
+		Name:        "sub-reset-all-partial-second",
+		DisplayName: "Sub Reset All Partial Second",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		TestModel:   "gpt-4",
+		Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:      datatypes.JSONMap{},
+	}
+	require.NoError(t, db.Create(&aggregateGroup).Error)
+	require.NoError(t, db.Create(&firstSubGroup).Error)
+	require.NoError(t, db.Create(&secondSubGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:    aggregateGroup.ID,
+		SubGroupID: firstSubGroup.ID,
+		Weight:     100,
+	}).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:    aggregateGroup.ID,
+		SubGroupID: secondSubGroup.ID,
+		Weight:     100,
+	}).Error)
+
+	resetErr := errors.New("reset failed")
+	resetIDs := make(map[uint]bool)
+	service.OnSubGroupHealthReset = func(aggregateGroupID, subGroupID uint) error {
+		assert.Equal(t, aggregateGroup.ID, aggregateGroupID)
+		resetIDs[subGroupID] = true
+		if subGroupID == firstSubGroup.ID {
+			return resetErr
+		}
+		return nil
+	}
+
+	err := service.ResetAllSubGroupHealth(context.Background(), aggregateGroup.ID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, resetErr)
+	assert.Equal(t, map[uint]bool{
+		firstSubGroup.ID:  true,
+		secondSubGroup.ID: true,
+	}, resetIDs)
+}
+
 func TestGenerateCacheKey(t *testing.T) {
 	t.Parallel()
 

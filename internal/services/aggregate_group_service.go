@@ -478,6 +478,10 @@ func (s *AggregateGroupService) ResetSubGroupHealth(ctx context.Context, groupID
 		return NewI18nError(app_errors.ErrResourceNotFound, "group.sub_group_not_found", nil)
 	}
 
+	return s.resetOneSubGroupHealth(groupID, subGroupID)
+}
+
+func (s *AggregateGroupService) resetOneSubGroupHealth(groupID, subGroupID uint) error {
 	if s.OnSubGroupHealthReset != nil {
 		return s.OnSubGroupHealthReset(groupID, subGroupID)
 	}
@@ -485,6 +489,33 @@ func (s *AggregateGroupService) ResetSubGroupHealth(ctx context.Context, groupID
 		return NewI18nError(app_errors.ErrInternalServer, "error.dynamic_weight_not_configured", nil)
 	}
 	return s.dynamicWeightManager.ResetSubGroupMetrics(groupID, subGroupID)
+}
+
+// ResetAllSubGroupHealth clears runtime and persisted health metrics for all sub-group relations in an aggregate group.
+func (s *AggregateGroupService) ResetAllSubGroupHealth(ctx context.Context, groupID uint) error {
+	_, err := FindAggregateGroupByID(ctx, s.db, groupID)
+	if err != nil {
+		return err
+	}
+
+	var subGroupIDs []uint
+	if err := s.db.WithContext(ctx).
+		Model(&models.GroupSubGroup{}).
+		Where("group_id = ?", groupID).
+		Pluck("sub_group_id", &subGroupIDs).Error; err != nil {
+		return err
+	}
+	if len(subGroupIDs) == 0 {
+		return nil
+	}
+
+	var errs []error
+	for _, subGroupID := range subGroupIDs {
+		if err := s.resetOneSubGroupHealth(groupID, subGroupID); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func validateSubGroupWeight(weight int) error {

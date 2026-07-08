@@ -403,10 +403,9 @@ export default {
       "Determines display order in the list, smaller numbers appear first. Recommend using intervals like 10, 20, 30 for easy adjustment",
     sortValue: "Sort value",
     maxRetries: "Max Retries",
-    maxRetriesPlaceholder: "Max retries when sub-group fails (0-5)",
+    maxRetriesPlaceholder: "Max sub-group failovers per aggregate request (0-50)",
     subMaxRetries: "Sub-group max retries",
-    subMaxRetriesPlaceholder:
-      "Max retries per sub-group within a single request (0 means no retry, 0-5)",
+    subMaxRetriesPlaceholder: "Blank: no extra cap; 0 disables extra key retries (0-50)",
     healthResetInterval: "Health Reset Interval",
     healthResetDisabled: "Do not reset automatically",
     healthResetEveryMinutes: "Every {count} minutes",
@@ -416,9 +415,9 @@ export default {
       "Aligned from 00:00 each day; resets every sub-group's health in this aggregate group",
     codexAffinity: "Codex Affinity",
     codexAffinityHint:
-      "Off by default. When enabled, the same Codex session prefers a stable sub-group. If that sub-group is unavailable or fails, remaining available sub-groups are selected by effective weight. Routing only; request headers and body are not modified.",
+      "Only applies to Codex requests on OpenAI Responses aggregate groups. Off by default. When enabled, the same Codex session prefers a stable sub-group. Only when that sub-group is unavailable or its retries are exhausted will remaining available sub-groups be selected by effective weight. Headers are unchanged; when failing over away from the affinity sub-group, Responses encrypted reasoning is stripped for compatibility.",
     codexAffinityRetryHint:
-      "When Codex Affinity is enabled, consider increasing the sub-group max retries so transient key failures stay on the same sub-group before failover.",
+      "When Codex Affinity is enabled, consider increasing sub-group max retries so transient key failures stay on the same sub-group before failover; aggregate-level failovers are still limited by Max Retries.",
     precondition: "Precondition",
     preconditions: "Preconditions",
     preconditionMaxRequestSize: "Request Size Limit",
@@ -808,7 +807,11 @@ export default {
     lastFailure: "Last Failure",
     lastSuccess: "Last Success",
     resetHealth: "Reset Health",
+    resetAllHealth: "Reset All Health",
     confirmResetHealth: 'Are you sure to reset health metrics for sub group "{name}"?',
+    confirmResetAllHealth:
+      "Are you sure to reset health metrics for all sub groups in this aggregate group?",
+    resetAllHealthTip: "Reset dynamic health metrics for all sub groups in this aggregate group",
     resetHealthSuccess: "Health metrics reset successfully",
     healthResetInterval: "Health Reset Interval",
     healthResetFollowAggregate: "Follow aggregate group",

@@ -110,35 +110,55 @@ func (m *SubGroupManager) SelectSubGroupWithRetry(group *models.Group, excludeSu
 	return selectedName, selectedID, nil
 }
 
+// AffinitySubGroupSelection describes both the selected sub-group and the stable
+// primary candidate for an affinity key.
+type AffinitySubGroupSelection struct {
+	SelectedName string
+	SelectedID   uint
+	PrimaryName  string
+	PrimaryID    uint
+	UsedFallback bool
+}
+
 // SelectSubGroupWithRetryAffinity selects a sub-group deterministically for a stable affinity key.
 func (m *SubGroupManager) SelectSubGroupWithRetryAffinity(group *models.Group, excludeSubGroupIDs map[uint]bool, affinityKey string) (string, uint, error) {
+	result, err := m.SelectSubGroupWithRetryAffinityResult(group, excludeSubGroupIDs, affinityKey)
+	return result.SelectedName, result.SelectedID, err
+}
+
+// SelectSubGroupWithRetryAffinityResult selects a sub-group and returns the stable primary candidate.
+func (m *SubGroupManager) SelectSubGroupWithRetryAffinityResult(group *models.Group, excludeSubGroupIDs map[uint]bool, affinityKey string) (AffinitySubGroupSelection, error) {
 	if group.GroupType != "aggregate" {
-		return "", 0, nil
+		return AffinitySubGroupSelection{}, nil
 	}
 	if affinityKey == "" {
-		return m.SelectSubGroupWithRetry(group, excludeSubGroupIDs)
+		selectedName, selectedID, err := m.SelectSubGroupWithRetry(group, excludeSubGroupIDs)
+		return AffinitySubGroupSelection{SelectedName: selectedName, SelectedID: selectedID}, err
 	}
 
 	selector := m.getSelector(group)
 	if selector == nil {
-		return "", 0, fmt.Errorf("no valid sub-groups available for aggregate group '%s'", group.Name)
+		return AffinitySubGroupSelection{}, fmt.Errorf("no valid sub-groups available for aggregate group '%s'", group.Name)
 	}
 
-	selectedName, selectedID := selector.selectByAffinityWithExclusion(excludeSubGroupIDs, affinityKey)
-	if selectedName == "" {
-		return "", 0, fmt.Errorf("no sub-groups with active keys for aggregate group '%s'", group.Name)
+	result := selector.selectByAffinityWithExclusionResult(excludeSubGroupIDs, affinityKey)
+	if result.SelectedName == "" {
+		return AffinitySubGroupSelection{}, fmt.Errorf("no sub-groups with active keys for aggregate group '%s'", group.Name)
 	}
 
 	if logrus.IsLevelEnabled(logrus.DebugLevel) {
 		logrus.WithFields(logrus.Fields{
 			"aggregate_group": group.Name,
-			"selected_group":  selectedName,
-			"selected_id":     selectedID,
+			"selected_group":  result.SelectedName,
+			"selected_id":     result.SelectedID,
+			"primary_group":   result.PrimaryName,
+			"primary_id":      result.PrimaryID,
+			"used_fallback":   result.UsedFallback,
 			"excluded_count":  len(excludeSubGroupIDs),
 		}).Debug("Selected sub-group from aggregate with affinity")
 	}
 
-	return selectedName, selectedID, nil
+	return result, nil
 }
 
 // RebuildSelectors rebuild all selectors based on the incoming group
@@ -452,16 +472,28 @@ func (s *selector) selectNextWithExclusion(excludeIDs map[uint]bool) (string, ui
 }
 
 func (s *selector) selectByAffinityWithExclusion(excludeIDs map[uint]bool, affinityKey string) (string, uint) {
+	result := s.selectByAffinityWithExclusionResult(excludeIDs, affinityKey)
+	return result.SelectedName, result.SelectedID
+}
+
+func (s *selector) selectByAffinityWithExclusionResult(excludeIDs map[uint]bool, affinityKey string) AffinitySubGroupSelection {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if len(s.subGroups) == 0 {
-		return "", 0
+		return AffinitySubGroupSelection{}
 	}
 
+	result := AffinitySubGroupSelection{}
 	primary := s.selectPrimaryAffinityCandidate(affinityKey)
+	if primary != nil {
+		result.PrimaryName = primary.name
+		result.PrimaryID = primary.subGroupID
+	}
 	if primary != nil && !isExcludedSubGroup(primary.subGroupID, excludeIDs, nil) && s.hasActiveKeys(primary) {
-		return primary.name, primary.subGroupID
+		result.SelectedName = primary.name
+		result.SelectedID = primary.subGroupID
+		return result
 	}
 
 	fallbackExcludeIDs := excludeIDs
@@ -481,11 +513,14 @@ func (s *selector) selectByAffinityWithExclusion(excludeIDs map[uint]bool, affin
 		}
 		attempted = append(attempted, item.subGroupID)
 		if item.enabled && !isExcludedSubGroup(item.subGroupID, fallbackExcludeIDs, nil) && s.hasActiveKeys(item) {
-			return item.name, item.subGroupID
+			result.SelectedName = item.name
+			result.SelectedID = item.subGroupID
+			result.UsedFallback = primary != nil
+			return result
 		}
 	}
 
-	return "", 0
+	return result
 }
 
 func (s *selector) selectPrimaryAffinityCandidate(affinityKey string) *subGroupItem {
