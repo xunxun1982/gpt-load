@@ -32,6 +32,7 @@ import {
   OpenOutline,
   PlayOutline,
   RefreshOutline,
+  ReorderTwoOutline,
   Search,
   SettingsOutline,
 } from "@vicons/ionicons5";
@@ -109,6 +110,13 @@ const balanceLoading = ref(false);
 // Auto check-in configuration state
 const autoCheckinRunning = ref(false);
 const showAutoCheckinConfig = ref(false);
+const showReorderModal = ref(false);
+const reorderLoading = ref(false);
+
+const reorderForm = reactive({
+  start: 1,
+  step: 10,
+});
 
 // Pagination state
 const pagination = reactive({
@@ -1601,6 +1609,34 @@ async function runAutoCheckinNow() {
   }
 }
 
+function openReorderModal() {
+  showReorderModal.value = true;
+}
+
+async function confirmReorderSites() {
+  const start = Number(reorderForm.start);
+  const step = Number(reorderForm.step);
+  if (!Number.isFinite(start) || start < 0 || !Number.isFinite(step) || step < 1) {
+    message.warning(t("siteManagement.reorderInvalidInput"));
+    return;
+  }
+
+  reorderLoading.value = true;
+  try {
+    await siteManagementApi.reorderSites({
+      start: Math.trunc(start),
+      step: Math.trunc(step),
+    });
+    await loadSites();
+    message.success(t("siteManagement.reorderSortSuccess"));
+    showReorderModal.value = false;
+  } catch (_) {
+    /* handled by centralized error handler */
+  } finally {
+    reorderLoading.value = false;
+  }
+}
+
 // Schedule mode options
 const scheduleModeOptions = computed<SelectOption[]>(() => [
   { label: t("siteManagement.scheduleModeMultiple"), value: "multiple" },
@@ -1678,11 +1714,64 @@ watch(
       style="display: none"
       @change="handleFileChange"
     />
+    <n-modal
+      v-model:show="showReorderModal"
+      preset="card"
+      :title="t('siteManagement.reorderSortTitle')"
+      style="width: 420px"
+      :mask-closable="!reorderLoading"
+    >
+      <n-form label-placement="left" label-width="80px" size="small">
+        <n-form-item :label="t('siteManagement.reorderStart')">
+          <n-input-number
+            v-model:value="reorderForm.start"
+            :min="0"
+            :precision="0"
+            style="width: 100%"
+          />
+        </n-form-item>
+        <n-form-item :label="t('siteManagement.reorderStep')">
+          <n-input-number
+            v-model:value="reorderForm.step"
+            :min="1"
+            :precision="0"
+            style="width: 100%"
+          />
+        </n-form-item>
+        <n-text depth="3" style="font-size: 12px">
+          {{ t("siteManagement.reorderPreview") }}
+        </n-text>
+      </n-form>
+      <template #footer>
+        <n-space justify="end">
+          <n-button size="small" :disabled="reorderLoading" @click="showReorderModal = false">
+            {{ t("common.cancel") }}
+          </n-button>
+          <n-button
+            size="small"
+            type="primary"
+            :loading="reorderLoading"
+            @click="confirmReorderSites"
+          >
+            {{ t("common.confirm") }}
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
     <n-space justify="space-between" align="center" :wrap="false" size="small">
       <n-space align="center" size="small">
         <n-text strong style="font-size: 15px">{{ t("siteManagement.title") }}</n-text>
       </n-space>
       <n-space size="small">
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" secondary :loading="reorderLoading" @click="openReorderModal">
+              <template #icon><n-icon :component="ReorderTwoOutline" /></template>
+              {{ t("siteManagement.reorderSort") }}
+            </n-button>
+          </template>
+          {{ t("siteManagement.reorderSortTooltip") }}
+        </n-tooltip>
         <!-- Auto check-in config button -->
         <n-tooltip trigger="hover">
           <template #trigger>

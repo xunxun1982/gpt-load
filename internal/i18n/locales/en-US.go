@@ -94,6 +94,13 @@ var MessagesEnUS = map[string]string{
 	"validation.reorder_sort_negative":                         "Sort value cannot be negative",
 	"validation.reorder_duplicate_group":                       "Duplicate group ID in reorder items: {{.id}}",
 	"validation.reorder_group_not_found":                       "Reorder items contain non-existent group",
+	"site_management.validation.reorder_items_required":        "Site reorder items cannot be empty",
+	"site_management.validation.reorder_site_id":               "Reorder item contains invalid site ID",
+	"site_management.validation.reorder_sort_negative":         "Sort value cannot be negative",
+	"site_management.validation.reorder_start_negative":        "Start sort number cannot be negative",
+	"site_management.validation.reorder_step_invalid":          "Sort number step must be at least 1",
+	"site_management.validation.reorder_duplicate_site":        "Duplicate site ID in reorder items: {{.id}}",
+	"site_management.validation.reorder_site_not_found":        "Reorder items contain non-existent site",
 
 	// Task related
 	"task.validation_started": "Key validation task started",
@@ -167,6 +174,7 @@ var MessagesEnUS = map[string]string{
 	"success.sites_imported":          "Imported {{.imported}} site(s), skipped {{.skipped}} (total: {{.total}})",
 	"success.sites_exported":          "Exported {{.count}} site(s) successfully",
 	"success.groups_reordered":        "Group order saved",
+	"success.sites_reordered":         "Site sort numbers updated",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}} is too short ({{.length}} characters), recommend at least 16 characters",

@@ -58,6 +58,11 @@ type UpdateManagedSiteRequest struct {
 	AuthValue *string `json:"auth_value"`
 }
 
+type SiteReorderRequest struct {
+	Start int `json:"start"`
+	Step  int `json:"step"`
+}
+
 func (s *Server) ListManagedSites(c *gin.Context) {
 	// Route to paginated or non-paginated endpoint based on query params.
 	// Design decision: Keep both endpoints for backward compatibility and different use cases:
@@ -201,6 +206,19 @@ func (s *Server) UpdateManagedSite(c *gin.Context) {
 		return
 	}
 	response.Success(c, site)
+}
+
+func (s *Server) ReorderManagedSites(c *gin.Context) {
+	var req SiteReorderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+
+	if err := s.SiteService.RenumberSites(c.Request.Context(), req.Start, req.Step); HandleServiceError(c, err) {
+		return
+	}
+	response.SuccessI18n(c, "success.sites_reordered", nil)
 }
 
 func (s *Server) DeleteManagedSite(c *gin.Context) {

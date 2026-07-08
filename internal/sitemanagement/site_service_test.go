@@ -188,6 +188,93 @@ func TestSiteService_ListSites(t *testing.T) {
 	assert.Len(t, sites2, 5)
 }
 
+func TestSiteService_ReorderSitesUpdatesSortAndInvalidatesCache(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewSiteService(db, memStore, encSvc)
+
+	a, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Reorder A",
+		BaseURL:  "https://a.example.com",
+		Sort:     1,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+	b, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Reorder B",
+		BaseURL:  "https://b.example.com",
+		Sort:     2,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+	c, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Reorder C",
+		BaseURL:  "https://c.example.com",
+		Sort:     3,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+
+	_, err = service.ListSites(context.Background())
+	require.NoError(t, err)
+
+	err = service.ReorderSites(context.Background(), []SiteReorderItem{
+		{ID: a.ID, Sort: 10},
+		{ID: b.ID, Sort: 15},
+		{ID: c.ID, Sort: 20},
+	})
+	require.NoError(t, err)
+
+	sites, err := service.ListSites(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sites, 3)
+	assert.Equal(t, []int{10, 15, 20}, []int{sites[0].Sort, sites[1].Sort, sites[2].Sort})
+}
+
+func TestSiteService_RenumberSitesUpdatesAllSitesInCurrentOrder(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewSiteService(db, memStore, encSvc)
+
+	for i := 25; i >= 1; i-- {
+		_, err = service.CreateSite(context.Background(), CreateSiteParams{
+			Name:     fmt.Sprintf("Renumber %02d", i),
+			BaseURL:  fmt.Sprintf("https://%02d.example.com", i),
+			Sort:     i * 10,
+			AuthType: AuthTypeNone,
+		})
+		require.NoError(t, err)
+	}
+
+	_, err = service.ListSites(context.Background())
+	require.NoError(t, err)
+
+	err = service.RenumberSites(context.Background(), 100, 10)
+	require.NoError(t, err)
+
+	sites, err := service.ListSites(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sites, 25)
+	for i, site := range sites {
+		assert.Equal(t, fmt.Sprintf("Renumber %02d", i+1), site.Name)
+		assert.Equal(t, 100+i*10, site.Sort)
+	}
+}
+
 // TestSiteService_CopySite tests site copying
 func TestSiteService_CopySite(t *testing.T) {
 	t.Parallel()

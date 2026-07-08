@@ -19,6 +19,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const autoCheckinConfigUpdatedChannel = "managed_site:auto_checkin_config_updated"
@@ -96,6 +97,11 @@ type UpdateSiteParams struct {
 
 	AuthType  *string
 	AuthValue *string
+}
+
+type SiteReorderItem struct {
+	ID   uint
+	Sort int
 }
 
 func (s *SiteService) ListSites(ctx context.Context) ([]ManagedSiteDTO, error) {
@@ -351,6 +357,136 @@ func (s *SiteService) InvalidateSiteListCache() {
 	s.siteListCacheMu.Lock()
 	s.siteListCache = nil
 	s.siteListCacheMu.Unlock()
+}
+
+func validateSiteReorderItems(items []SiteReorderItem) error {
+	if len(items) == 0 {
+		return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.reorder_items_required", nil)
+	}
+
+	seen := make(map[uint]struct{}, len(items))
+	for _, item := range items {
+		if item.ID == 0 {
+			return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.reorder_site_id", nil)
+		}
+		if item.Sort < 0 {
+			return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.reorder_sort_negative", nil)
+		}
+		if _, ok := seen[item.ID]; ok {
+			return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.reorder_duplicate_site", map[string]any{"id": item.ID})
+		}
+		seen[item.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validateSiteRenumberParams(start, step int) error {
+	if start < 0 {
+		return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.reorder_start_negative", nil)
+	}
+	if step < 1 {
+		return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.reorder_step_invalid", nil)
+	}
+	return nil
+}
+
+func buildSiteReorderCase(items []SiteReorderItem) (string, []any, []uint) {
+	args := make([]any, 0, len(items)*2)
+	ids := make([]uint, 0, len(items))
+	caseSQL := strings.Builder{}
+	caseSQL.WriteString("CASE id")
+	for _, item := range items {
+		caseSQL.WriteString(" WHEN ? THEN ?")
+		args = append(args, item.ID, item.Sort)
+		ids = append(ids, item.ID)
+	}
+	caseSQL.WriteString(" ELSE sort END")
+	return caseSQL.String(), args, ids
+}
+
+func lockExistingSiteIDsForReorder(tx *gorm.DB, ids []uint) (int64, error) {
+	query := tx.Model(&ManagedSite{}).Where("id IN ?", ids)
+	switch tx.Dialector.Name() {
+	case "mysql", "postgres":
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+
+	var existingIDs []uint
+	if err := query.Pluck("id", &existingIDs).Error; err != nil {
+		return 0, err
+	}
+	return int64(len(existingIDs)), nil
+}
+
+func (s *SiteService) ReorderSites(ctx context.Context, items []SiteReorderItem) error {
+	if err := validateSiteReorderItems(items); err != nil {
+		return err
+	}
+
+	tx := s.db.WithContext(ctx).Begin()
+	if err := tx.Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	defer func() {
+		if tx != nil {
+			tx.Rollback()
+		}
+	}()
+
+	caseSQL, args, ids := buildSiteReorderCase(items)
+	count, err := lockExistingSiteIDsForReorder(tx, ids)
+	if err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	if count != int64(len(ids)) {
+		return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.reorder_site_not_found", nil)
+	}
+
+	result := tx.Model(&ManagedSite{}).
+		Where("id IN ?", ids).
+		Update("sort", gorm.Expr(caseSQL, args...))
+	if result.Error != nil {
+		return app_errors.ParseDBError(result.Error)
+	}
+	if err := tx.Model(&ManagedSite{}).Where("id IN ?", ids).Count(&count).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	if count != int64(len(ids)) {
+		return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.reorder_site_not_found", nil)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	tx = nil
+	s.InvalidateSiteListCache()
+	return nil
+}
+
+func (s *SiteService) RenumberSites(ctx context.Context, start, step int) error {
+	if err := validateSiteRenumberParams(start, step); err != nil {
+		return err
+	}
+
+	var ids []uint
+	if err := s.db.WithContext(ctx).
+		Model(&ManagedSite{}).
+		Order("sort ASC, id ASC").
+		Pluck("id", &ids).Error; err != nil {
+		return app_errors.ParseDBError(err)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	items := make([]SiteReorderItem, len(ids))
+	for i, id := range ids {
+		items[i] = SiteReorderItem{
+			ID:   id,
+			Sort: start + i*step,
+		}
+	}
+	return s.ReorderSites(ctx, items)
 }
 
 func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (*ManagedSiteDTO, error) {

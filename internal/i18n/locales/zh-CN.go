@@ -94,6 +94,13 @@ var MessagesZhCN = map[string]string{
 	"validation.reorder_sort_negative":                         "排序值不能为负数",
 	"validation.reorder_duplicate_group":                       "排序项中存在重复分组ID: {{.id}}",
 	"validation.reorder_group_not_found":                       "排序项包含不存在的分组",
+	"site_management.validation.reorder_items_required":        "站点排序项不能为空",
+	"site_management.validation.reorder_site_id":               "排序项包含无效站点ID",
+	"site_management.validation.reorder_sort_negative":         "排序值不能为负数",
+	"site_management.validation.reorder_start_negative":        "初始排序号不能为负数",
+	"site_management.validation.reorder_step_invalid":          "排序号间隔必须大于等于 1",
+	"site_management.validation.reorder_duplicate_site":        "排序项中存在重复站点ID: {{.id}}",
+	"site_management.validation.reorder_site_not_found":        "排序项包含不存在的站点",
 
 	// Task related
 	"task.validation_started": "密钥验证任务已开始",
@@ -167,6 +174,7 @@ var MessagesZhCN = map[string]string{
 	"success.sites_imported":          "已导入 {{.imported}} 个站点，跳过 {{.skipped}} 个（共 {{.total}} 个）",
 	"success.sites_exported":          "已成功导出 {{.count}} 个站点",
 	"success.groups_reordered":        "分组排序已保存",
+	"success.sites_reordered":         "站点排序号已更新",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}}长度不足（{{.length}}字符），建议至少16字符",
