@@ -104,11 +104,8 @@ func (s *BindingService) BindGroupToSite(ctx context.Context, groupID uint, site
 
 		return nil
 	})
-	if err == nil && s.CacheInvalidationCallback != nil {
-		s.CacheInvalidationCallback()
-	}
 	if err == nil {
-		s.invalidateSitesForBindingCache()
+		s.invalidateBindingCaches()
 	}
 	return err
 }
@@ -145,11 +142,8 @@ func (s *BindingService) UnbindGroupFromSite(ctx context.Context, groupID uint) 
 
 		return nil
 	})
-	if err == nil && s.CacheInvalidationCallback != nil {
-		s.CacheInvalidationCallback()
-	}
 	if err == nil {
-		s.invalidateSitesForBindingCache()
+		s.invalidateBindingCaches()
 	}
 	return err
 }
@@ -183,11 +177,8 @@ func (s *BindingService) UnbindSiteFromGroup(ctx context.Context, siteID uint) e
 
 		return nil
 	})
-	if err == nil && s.CacheInvalidationCallback != nil {
-		s.CacheInvalidationCallback()
-	}
 	if err == nil {
-		s.invalidateSitesForBindingCache()
+		s.invalidateBindingCaches()
 	}
 	return err
 }
@@ -444,6 +435,13 @@ func (s *BindingService) invalidateSitesForBindingCache() {
 	s.cacheMu.Lock()
 	s.cache = nil
 	s.cacheMu.Unlock()
+}
+
+func (s *BindingService) invalidateBindingCaches() {
+	if s.CacheInvalidationCallback != nil {
+		s.CacheInvalidationCallback()
+	}
+	s.invalidateSitesForBindingCache()
 }
 
 // isTaskRunning checks if an import or delete task is currently running.

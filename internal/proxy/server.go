@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gpt-load/internal/channel"
@@ -41,6 +42,13 @@ const (
 	retryBackoffRampRetries     = 100
 	retryDelayJitterRatio       = 0.30
 	statusClientClosedRequest   = 499
+	maxRetryConfigRetries       = 5000
+	maxSubRetryConfigRetries    = 500
+)
+
+const (
+	codexAggregateAffinityTTL        = time.Hour
+	codexAggregateAffinityMaxEntries = 10240
 )
 
 var quotaExhaustedRateMarkers = []string{
@@ -207,13 +215,10 @@ func codexAggregateAffinityKey(c *gin.Context, group *models.Group, bodyBytes []
 	if value := firstNonEmptyHeader(c, "Session_ID", "session_id"); value != "" {
 		return value
 	}
+	if value := firstNonEmptyHeader(c, "X-Session-ID", "x-session-id"); value != "" {
+		return value
+	}
 	if value := firstNonEmptyHeader(c, "Conversation_ID", "conversation_id"); value != "" {
-		return value
-	}
-	if value := codexTurnMetadataAffinityKey(firstNonEmptyHeader(c, "X-Codex-Turn-Metadata")); value != "" {
-		return value
-	}
-	if value := firstNonEmptyHeader(c, "X-Codex-Window-Id", "x-codex-window-id"); value != "" {
 		return value
 	}
 
@@ -221,16 +226,28 @@ func codexAggregateAffinityKey(c *gin.Context, group *models.Group, bodyBytes []
 	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
 		return ""
 	}
-	if value := stringFromJSONMap(payload, "prompt_cache_key"); value != "" {
-		return value
-	}
 	if metadata, ok := payload["client_metadata"].(map[string]any); ok {
+		if value := stringFromJSONMap(metadata, "thread_id"); value != "" {
+			return value
+		}
+		if value := stringFromJSONMap(metadata, "session_id"); value != "" {
+			return value
+		}
 		if value := stringFromJSONMap(metadata, "x-codex-window-id"); value != "" {
 			return value
 		}
 		if value := codexTurnMetadataAffinityKey(stringFromJSONMap(metadata, "x-codex-turn-metadata")); value != "" {
 			return value
 		}
+	}
+	if value := codexTurnMetadataAffinityKey(firstNonEmptyHeader(c, "X-Codex-Turn-Metadata")); value != "" {
+		return value
+	}
+	if value := firstNonEmptyHeader(c, "X-Codex-Window-Id", "x-codex-window-id"); value != "" {
+		return value
+	}
+	if value := stringFromJSONMap(payload, "prompt_cache_key"); value != "" {
+		return value
 	}
 	return ""
 }
@@ -340,6 +357,122 @@ func isReasoningResponseItem(item any) bool {
 	}
 	itemType, _ := itemMap["type"].(string)
 	return strings.TrimSpace(itemType) == "reasoning"
+}
+
+type codexAggregateAffinityCacheEntry struct {
+	subGroupID uint
+	expiresAt  time.Time
+	touchedAt  time.Time
+}
+
+type codexAggregateAffinityCache struct {
+	mu      sync.RWMutex
+	entries map[string]codexAggregateAffinityCacheEntry
+	ttl     time.Duration
+	maxSize int
+}
+
+func newCodexAggregateAffinityCache(ttl time.Duration, maxSize int) *codexAggregateAffinityCache {
+	if ttl <= 0 {
+		ttl = codexAggregateAffinityTTL
+	}
+	if maxSize <= 0 {
+		maxSize = codexAggregateAffinityMaxEntries
+	}
+	return &codexAggregateAffinityCache{
+		entries: make(map[string]codexAggregateAffinityCacheEntry),
+		ttl:     ttl,
+		maxSize: maxSize,
+	}
+}
+
+func (cache *codexAggregateAffinityCache) get(key string, now time.Time) (uint, bool) {
+	if cache == nil || key == "" {
+		return 0, false
+	}
+	cache.mu.RLock()
+	entry, ok := cache.entries[key]
+	cache.mu.RUnlock()
+	if !ok {
+		return 0, false
+	}
+	if !entry.expiresAt.After(now) {
+		cache.mu.Lock()
+		if current, exists := cache.entries[key]; exists && !current.expiresAt.After(now) {
+			delete(cache.entries, key)
+		}
+		cache.mu.Unlock()
+		return 0, false
+	}
+
+	cache.mu.Lock()
+	if current, exists := cache.entries[key]; exists && current.expiresAt.After(now) {
+		current.touchedAt = now
+		current.expiresAt = now.Add(cache.ttl)
+		cache.entries[key] = current
+		entry = current
+	} else {
+		entry.subGroupID = 0
+	}
+	cache.mu.Unlock()
+	if entry.subGroupID == 0 {
+		return 0, false
+	}
+	return entry.subGroupID, true
+}
+
+func (cache *codexAggregateAffinityCache) set(key string, subGroupID uint, now time.Time) {
+	if cache == nil || key == "" || subGroupID == 0 {
+		return
+	}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	cache.entries[key] = codexAggregateAffinityCacheEntry{
+		subGroupID: subGroupID,
+		expiresAt:  now.Add(cache.ttl),
+		touchedAt:  now,
+	}
+	cache.evictLocked(now)
+}
+
+func (cache *codexAggregateAffinityCache) evictLocked(now time.Time) {
+	for key, entry := range cache.entries {
+		if !entry.expiresAt.After(now) {
+			delete(cache.entries, key)
+		}
+	}
+	for len(cache.entries) > cache.maxSize {
+		var oldestKey string
+		var oldestTime time.Time
+		for key, entry := range cache.entries {
+			if oldestKey == "" || entry.touchedAt.Before(oldestTime) {
+				oldestKey = key
+				oldestTime = entry.touchedAt
+			}
+		}
+		if oldestKey == "" {
+			return
+		}
+		delete(cache.entries, oldestKey)
+	}
+}
+
+func codexAggregateAffinityCacheKey(groupID uint, affinityKey string, model string) string {
+	affinityKey = strings.TrimSpace(affinityKey)
+	model = strings.TrimSpace(model)
+	if groupID == 0 || affinityKey == "" {
+		return ""
+	}
+	return strconv.FormatUint(uint64(groupID), 10) + "\x00" + model + "\x00" + affinityKey
+}
+
+func modelFromRequestBody(bodyBytes []byte) string {
+	var payload map[string]any
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return ""
+	}
+	return stringFromJSONMap(payload, "model")
 }
 
 func isCodexClientRequest(c *gin.Context, group *models.Group) bool {
@@ -458,6 +591,7 @@ type ProxyServer struct {
 	requestLogService    *services.RequestLogService
 	encryptionSvc        encryption.Service
 	dynamicWeightManager *services.DynamicWeightManager // Optional dynamic weight manager for adaptive load balancing
+	codexAffinityCache   *codexAggregateAffinityCache
 }
 
 // retryContext holds the retry state for a single request
@@ -469,6 +603,7 @@ type retryContext struct {
 	originalPath                   string        // Original request path (for CC support restoration)
 	subGroupKeyRetryMap            map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
 	forcedSubGroupID               uint          // Keeps key-level retries on the selected sub-group until its retry budget is exhausted
+	codexAffinityKey               string        // Stable Codex affinity key for this aggregate request
 	codexAffinityPrimarySubGroupID uint          // Stable primary sub-group for Codex affinity requests
 	lifecycleCtx                   context.Context
 	lifecycleCancel                context.CancelFunc
@@ -563,7 +698,7 @@ func sanitizeInternalError(err error) error {
 }
 
 // parseRetryConfigInt extracts and validates a retry-related integer config value.
-// Returns a value clamped to the range [0, 100].
+// Aggregate failovers and per-sub-group key retries have separate UI/runtime caps.
 func parseRetryConfigInt(config map[string]any, key string) int {
 	if config == nil {
 		return 0
@@ -611,21 +746,22 @@ func parseRetryConfigInt(config map[string]any, key string) int {
 		}).Warn("Unexpected type for retry config value")
 	}
 
-	// Clamp to reasonable range: 0-100
-	// Note: Previously limited to 5, but users may need higher retry counts
-	// for high-availability scenarios with many upstreams or sub-groups.
 	if retries < 0 {
 		return 0
 	}
-	if retries > 100 {
-		return 100
+	maxRetries := maxRetryConfigRetries
+	if key == "sub_max_retries" {
+		maxRetries = maxSubRetryConfigRetries
+	}
+	if retries > maxRetries {
+		return maxRetries
 	}
 
 	return retries
 }
 
 // parseMaxRetries extracts and validates max_retries from group config
-// Returns a value clamped to the range [0, 100]
+// Returns a value clamped to the range [0, 5000].
 func parseMaxRetries(config map[string]any) int {
 	return parseRetryConfigInt(config, "max_retries")
 }
@@ -647,8 +783,6 @@ func subGroupKeyMaxRetries(subGroupCfg types.SystemSettings, parentSubMaxRetries
 	maxRetries := subGroupCfg.MaxRetries
 	if maxRetries < 0 {
 		maxRetries = 0
-	} else if maxRetries > 100 {
-		maxRetries = 100
 	}
 	if parentSubMaxRetriesSet && maxRetries > parentSubMaxRetries {
 		return parentSubMaxRetries
@@ -1060,6 +1194,7 @@ func NewProxyServer(
 		requestLogService:    requestLogService,
 		encryptionSvc:        encryptionSvc,
 		dynamicWeightManager: nil, // Set via SetDynamicWeightManager if needed
+		codexAffinityCache:   newCodexAggregateAffinityCache(codexAggregateAffinityTTL, codexAggregateAffinityMaxEntries),
 	}, nil
 }
 
@@ -2023,12 +2158,32 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		retryCtx.forcedSubGroupID = 0
 		var err error
 		if affinityKey := codexAggregateAffinityKey(c, originalGroup, bodyBytes); affinityKey != "" {
-			var selection services.AffinitySubGroupSelection
-			selection, err = ps.subGroupManager.SelectSubGroupWithRetryAffinityResult(originalGroup, retryCtx.excludedSubGroups, affinityKey)
-			subGroupName = selection.SelectedName
-			subGroupID = selection.SelectedID
-			if selection.PrimaryID != 0 {
-				retryCtx.codexAffinityPrimarySubGroupID = selection.PrimaryID
+			retryCtx.codexAffinityKey = affinityKey
+			model := modelFromRequestBody(bodyBytes)
+			cacheKey := codexAggregateAffinityCacheKey(originalGroup.ID, affinityKey, model)
+			if cachedSubGroupID, ok := ps.codexAffinityCache.get(cacheKey, time.Now()); ok {
+				var cached bool
+				subGroupName, subGroupID, cached = forcedAggregateSubGroup(originalGroup, cachedSubGroupID, retryCtx.excludedSubGroups)
+				if cached {
+					retryCtx.codexAffinityPrimarySubGroupID = cachedSubGroupID
+					logrus.WithFields(logrus.Fields{
+						"aggregate_group": originalGroup.Name,
+						"selected_group":  subGroupName,
+						"selected_id":     subGroupID,
+						"model":           model,
+					}).Debug("Selected Codex aggregate sub-group from affinity cache")
+				}
+			}
+			if subGroupID == 0 {
+				var selection services.AffinitySubGroupSelection
+				selection, err = ps.subGroupManager.SelectSubGroupWithRetryAffinityResult(originalGroup, retryCtx.excludedSubGroups, affinityKey)
+				subGroupName = selection.SelectedName
+				subGroupID = selection.SelectedID
+				// Keep a cached successful sub-group as this request's primary so
+				// failover to any other sub-group strips incompatible encrypted reasoning.
+				if selection.PrimaryID != 0 && retryCtx.codexAffinityPrimarySubGroupID == 0 {
+					retryCtx.codexAffinityPrimarySubGroupID = selection.PrimaryID
+				}
 			}
 		} else {
 			subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetry(originalGroup, retryCtx.excludedSubGroups)
@@ -2413,6 +2568,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 	if codexAffinityFallback {
 		c.Set(ctxKeyCodexDegradationMitigation, false)
+		// Do not treat every invalid_responses_request as encrypted-reasoning incompatibility:
+		// that code also covers malformed tools and other schema errors, so only strip
+		// Responses encrypted reasoning after affinity retry has failed over to another sub-group.
 		strippedBody, stripped, stripErr := stripCodexAffinityFallbackEncryptedReasoning(finalBodyBytes)
 		if stripErr != nil {
 			logrus.WithError(stripErr).WithFields(logrus.Fields{
@@ -2814,6 +2972,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 
 	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+	if retryCtx.codexAffinityKey != "" {
+		cacheKey := codexAggregateAffinityCacheKey(originalGroup.ID, retryCtx.codexAffinityKey, modelFromRequestBody(retryCtx.originalBodyBytes))
+		ps.codexAffinityCache.set(cacheKey, subGroupID, time.Now())
+	}
 }
 
 // countAvailableSubGroups counts the number of available sub-groups

@@ -423,6 +423,13 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid high sub_max_retries",
+			config: map[string]any{
+				"sub_max_retries": float64(500),
+			},
+			expectError: false,
+		},
+		{
 			name: "valid retry_delay_ms",
 			config: map[string]any{
 				"retry_delay_ms": float64(1000),
