@@ -509,6 +509,33 @@ func TestHandleNormalResponseLogsDecodedCompressedBodyWithoutChangingClientBody(
 	assert.Equal(t, int64(12), usage.TotalTokens)
 }
 
+func TestHandleNormalResponseParsesCompressedUsageWithoutBodyLogging(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"choices":[{"message":{"content":"pong"}}],"usage":{"prompt_tokens":7,"completion_tokens":5,"total_tokens":12}}`)
+	compressedBody := compressGzipForResponseHandlerTest(t, body)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(compressedBody)),
+		Header: http.Header{
+			"Content-Encoding": []string{"gzip"},
+		},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	assert.Equal(t, compressedBody, w.Body.Bytes())
+	_, exists := c.Get("response_body")
+	assert.False(t, exists)
+	usage, source, ok := getTokenUsage(c)
+	require.True(t, ok)
+	assert.Equal(t, models.TokenUsageSourceUpstream, source)
+	assert.Equal(t, int64(12), usage.TotalTokens)
+}
+
 func TestHandleStreamingResponseLogsDecodedCompressedBodyWithoutChangingClientBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

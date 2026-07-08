@@ -337,6 +337,51 @@ func TestIsGenericStreamRequestDetectsGeminiNativeStreamPath(t *testing.T) {
 	assert.True(t, isGenericStreamRequest(c, []byte(`{"contents":[]}`)))
 }
 
+func TestIsGenericStreamRequestDetectsAcceptHeader(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/openai/v1/chat/completions", bytes.NewReader(nil))
+	c.Request.Header.Set("Accept", "text/event-stream")
+
+	assert.True(t, isGenericStreamRequest(c, nil))
+}
+
+func TestIsGenericStreamRequestDetectsQueryParam(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/openai/v1/chat/completions?stream=true", bytes.NewReader(nil))
+
+	assert.True(t, isGenericStreamRequest(c, nil))
+}
+
+func TestIsGenericStreamRequestDetectsJSONBodyStreamTrue(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/openai/v1/chat/completions", bytes.NewReader([]byte(`{"stream":true}`)))
+
+	assert.True(t, isGenericStreamRequest(c, []byte(`{"stream":true}`)))
+}
+
+func TestIsGenericStreamRequestReturnsFalseForNonStream(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/openai/v1/chat/completions", bytes.NewReader([]byte(`{"stream":false}`)))
+
+	assert.False(t, isGenericStreamRequest(c, []byte(`{"stream":false}`)))
+}
+
 func TestNewProxyServer(t *testing.T) {
 	t.Parallel()
 

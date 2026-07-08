@@ -33,9 +33,10 @@ type tailUsageCapture struct {
 }
 
 type limitedResponseCaptureWriter struct {
-	writer  io.Writer
-	limit   int
-	capture strings.Builder
+	writer    io.Writer
+	limit     int
+	capture   strings.Builder
+	truncated bool
 }
 
 func newLimitedResponseCaptureWriter(writer io.Writer, limit int) *limitedResponseCaptureWriter {
@@ -51,8 +52,11 @@ func (w *limitedResponseCaptureWriter) Write(p []byte) (int, error) {
 		toCapture := p[:n]
 		if remaining := w.limit - w.capture.Len(); len(toCapture) > remaining {
 			toCapture = toCapture[:remaining]
+			w.truncated = true
 		}
 		_, _ = w.capture.Write(toCapture)
+	} else if n > 0 && w.limit > 0 {
+		w.truncated = true
 	}
 	return n, err
 }
@@ -347,6 +351,7 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response) {
 	// Check if response body capturing is enabled
 	shouldCapture := shouldCaptureResponse(c)
+	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
 
 	if shouldCapture {
 		// Read response body and capture it
@@ -357,7 +362,9 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 		}
 
 		logBody, logBodyDecoded := decodeResponseBodyForLog(resp, body)
-		c.Set("response_body", sanitizeAndTruncateBytesForLog(logBody, maxResponseCaptureBytes))
+		if shouldCapture {
+			c.Set("response_body", sanitizeAndTruncateBytesForLog(logBody, maxResponseCaptureBytes))
+		}
 		if logBodyDecoded {
 			setTokenUsageOrEstimateFromFullBodyIf(c, logBody, resp.StatusCode < http.StatusBadRequest)
 		}
@@ -365,6 +372,18 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 		// Write to client
 		if _, err := c.Writer.Write(body); err != nil {
 			logUpstreamError("writing response body", err)
+		}
+	} else if contentEncoding != "" {
+		capture := newLimitedResponseCaptureWriter(c.Writer, maxResponseCaptureBytes)
+		if _, err := io.Copy(capture, resp.Body); err != nil {
+			logUpstreamError("copying compressed response body", err)
+			return
+		}
+		if !capture.truncated {
+			logBody, logBodyDecoded := decodeResponseBodyForLog(resp, []byte(capture.capture.String()))
+			if logBodyDecoded {
+				setTokenUsageOrEstimateFromFullBodyIf(c, logBody, resp.StatusCode < http.StatusBadRequest)
+			}
 		}
 	} else {
 		usageCapture := &tailUsageCapture{

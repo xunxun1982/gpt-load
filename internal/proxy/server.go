@@ -1508,7 +1508,7 @@ func requestLifecycleContext(parent context.Context, cfg types.SystemSettings, i
 }
 
 func isGenericStreamRequest(c *gin.Context, bodyBytes []byte) bool {
-	if c != nil && c.Request != nil && strings.HasSuffix(c.Request.URL.Path, ":streamGenerateContent") {
+	if strings.HasSuffix(c.Request.URL.Path, ":streamGenerateContent") {
 		return true
 	}
 
@@ -1949,6 +1949,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	startTime time.Time,
 	retryCtx *retryContext,
 ) {
+	// The parent aggregate handler can be nil; all sub-group request operations
+	// must use the subGroupChannelHandler selected below.
 	// Restore original path for retry attempts to allow each sub-group to apply its own CC support
 	// This is necessary because different sub-groups may have different CC support settings.
 	restoreOriginalPath(c, retryCtx)
