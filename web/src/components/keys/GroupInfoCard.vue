@@ -512,10 +512,14 @@ async function handleToggleEnabled(enabled: boolean) {
 }
 
 // Site binding handlers
-function handleSiteBound(siteId: number, _siteName: string) {
+function handleSiteBound(siteId: number, _siteName: string, siteSort?: number) {
   if (props.group) {
     // Emit refresh to reload group data from server
-    emit("refresh", { ...props.group, bound_site_id: siteId });
+    emit("refresh", {
+      ...props.group,
+      bound_site_id: siteId,
+      ...(siteSort !== undefined ? { sort: siteSort } : {}),
+    });
   }
 }
 

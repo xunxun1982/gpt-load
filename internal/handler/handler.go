@@ -128,6 +128,9 @@ func NewServer(params NewServerParams) *Server {
 	if params.SiteService != nil && params.BindingService != nil {
 		params.SiteService.SyncSiteEnabledToGroupCallback = params.BindingService.SyncSiteEnabledToGroup
 	}
+	if params.SiteService != nil && params.GroupService != nil {
+		params.SiteService.InvalidateGroupListCacheCallback = params.GroupService.InvalidateGroupListCache
+	}
 
 	return s
 }

@@ -88,9 +88,12 @@ func (s *BindingService) BindGroupToSite(ctx context.Context, groupID uint, site
 		// Note: Multiple groups can bind to the same site (many-to-one)
 		// No need to check if site is already bound to another group
 
-		// Update group's bound_site_id
+		// Keep the bound group in the same sort position as its site.
 		if err := tx.Model(&models.Group{}).Where("id = ?", groupID).
-			Update("bound_site_id", siteID).Error; err != nil {
+			Updates(map[string]any{
+				"bound_site_id": siteID,
+				"sort":          site.Sort,
+			}).Error; err != nil {
 			return app_errors.ParseDBError(err)
 		}
 
@@ -103,6 +106,9 @@ func (s *BindingService) BindGroupToSite(ctx context.Context, groupID uint, site
 	})
 	if err == nil && s.CacheInvalidationCallback != nil {
 		s.CacheInvalidationCallback()
+	}
+	if err == nil {
+		s.invalidateSitesForBindingCache()
 	}
 	return err
 }
@@ -142,6 +148,9 @@ func (s *BindingService) UnbindGroupFromSite(ctx context.Context, groupID uint) 
 	if err == nil && s.CacheInvalidationCallback != nil {
 		s.CacheInvalidationCallback()
 	}
+	if err == nil {
+		s.invalidateSitesForBindingCache()
+	}
 	return err
 }
 
@@ -176,6 +185,9 @@ func (s *BindingService) UnbindSiteFromGroup(ctx context.Context, siteID uint) e
 	})
 	if err == nil && s.CacheInvalidationCallback != nil {
 		s.CacheInvalidationCallback()
+	}
+	if err == nil {
+		s.invalidateSitesForBindingCache()
 	}
 	return err
 }
@@ -426,6 +438,12 @@ func (s *BindingService) ListSitesForBinding(ctx context.Context) ([]ManagedSite
 	s.cacheMu.Unlock()
 
 	return result, nil
+}
+
+func (s *BindingService) invalidateSitesForBindingCache() {
+	s.cacheMu.Lock()
+	s.cache = nil
+	s.cacheMu.Unlock()
 }
 
 // isTaskRunning checks if an import or delete task is currently running.

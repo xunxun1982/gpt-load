@@ -36,6 +36,8 @@ type SiteService struct {
 
 	// Callback for syncing enabled status to bound group (set by handler layer)
 	SyncSiteEnabledToGroupCallback func(ctx context.Context, siteID uint, enabled bool) error
+	// Invalidate group list cache after site sort changes sync to bound groups.
+	InvalidateGroupListCacheCallback func()
 }
 
 // siteListCacheEntry holds cached site list data
@@ -359,6 +361,12 @@ func (s *SiteService) InvalidateSiteListCache() {
 	s.siteListCacheMu.Unlock()
 }
 
+func (s *SiteService) invalidateGroupListCache() {
+	if s.InvalidateGroupListCacheCallback != nil {
+		s.InvalidateGroupListCacheCallback()
+	}
+}
+
 func validateSiteReorderItems(items []SiteReorderItem) error {
 	if len(items) == 0 {
 		return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.reorder_items_required", nil)
@@ -395,6 +403,20 @@ func buildSiteReorderCase(items []SiteReorderItem) (string, []any, []uint) {
 	ids := make([]uint, 0, len(items))
 	caseSQL := strings.Builder{}
 	caseSQL.WriteString("CASE id")
+	for _, item := range items {
+		caseSQL.WriteString(" WHEN ? THEN ?")
+		args = append(args, item.ID, item.Sort)
+		ids = append(ids, item.ID)
+	}
+	caseSQL.WriteString(" ELSE sort END")
+	return caseSQL.String(), args, ids
+}
+
+func buildBoundGroupSortSyncCase(items []SiteReorderItem) (string, []any, []uint) {
+	args := make([]any, 0, len(items)*2)
+	ids := make([]uint, 0, len(items))
+	caseSQL := strings.Builder{}
+	caseSQL.WriteString("CASE bound_site_id")
 	for _, item := range items {
 		caseSQL.WriteString(" WHEN ? THEN ?")
 		args = append(args, item.ID, item.Sort)
@@ -441,6 +463,20 @@ func reorderSitesInTx(tx *gorm.DB, items []SiteReorderItem) error {
 	if count != int64(len(ids)) {
 		return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.reorder_site_not_found", nil)
 	}
+	if err := syncBoundGroupSortsForSitesInTx(tx, items); err != nil {
+		return err
+	}
+	return nil
+}
+
+func syncBoundGroupSortsForSitesInTx(tx *gorm.DB, items []SiteReorderItem) error {
+	caseSQL, args, ids := buildBoundGroupSortSyncCase(items)
+	result := tx.Model(&models.Group{}).
+		Where("bound_site_id IN ?", ids).
+		Update("sort", gorm.Expr(caseSQL, args...))
+	if result.Error != nil {
+		return app_errors.ParseDBError(result.Error)
+	}
 	return nil
 }
 
@@ -467,6 +503,7 @@ func (s *SiteService) ReorderSites(ctx context.Context, items []SiteReorderItem)
 	}
 	tx = nil
 	s.InvalidateSiteListCache()
+	s.invalidateGroupListCache()
 	return nil
 }
 
@@ -515,6 +552,7 @@ func (s *SiteService) RenumberSites(ctx context.Context, start, step int) error 
 	}
 	tx = nil
 	s.InvalidateSiteListCache()
+	s.invalidateGroupListCache()
 	return nil
 }
 
