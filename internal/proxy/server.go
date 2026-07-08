@@ -1111,11 +1111,14 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 	group := originalGroup
 
-	channelHandler, err := ps.channelFactory.GetChannel(group)
-	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to get channel for group '%s': %v", groupName, err)))
-		ps.logEarlyError(c, group, startTime, http.StatusInternalServerError, fmt.Errorf("failed to get channel: %v", err))
-		return
+	var channelHandler channel.ChannelProxy
+	if originalGroup.GroupType != "aggregate" {
+		channelHandler, err = ps.channelFactory.GetChannel(group)
+		if err != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to get channel for group '%s': %v", groupName, err)))
+			ps.logEarlyError(c, group, startTime, http.StatusInternalServerError, fmt.Errorf("failed to get channel: %v", err))
+			return
+		}
 	}
 
 	// Read request body using the tiered buffer pool to reduce reallocations.
@@ -1243,7 +1246,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		if originalGroup.GroupType == "aggregate" && retryCtx != nil {
 			finalBodyBytes = bodyBytes
 			retryCtx.originalBodyBytes = bodyBytes // Save original body for retries
-			isStream = channelHandler.IsStreamRequest(c, finalBodyBytes)
+			isStream = isGenericStreamRequest(c, finalBodyBytes)
 		} else {
 			// Apply model mapping first (before param overrides to allow overriding the mapped model if needed)
 			bodyBytesAfterMapping, originalModel := ps.applyModelMapping(bodyBytes, group)
@@ -1502,6 +1505,30 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 func requestLifecycleContext(parent context.Context, cfg types.SystemSettings, isStream bool) (context.Context, context.CancelFunc) {
 	return requestLifecycleContextAt(parent, cfg, isStream, time.Now())
+}
+
+func isGenericStreamRequest(c *gin.Context, bodyBytes []byte) bool {
+	if c != nil && c.Request != nil && strings.HasSuffix(c.Request.URL.Path, ":streamGenerateContent") {
+		return true
+	}
+
+	if strings.Contains(c.GetHeader("Accept"), "text/event-stream") {
+		return true
+	}
+
+	if c.Query("stream") == "true" {
+		return true
+	}
+
+	type streamPayload struct {
+		Stream bool `json:"stream"`
+	}
+	var p streamPayload
+	if err := json.Unmarshal(bodyBytes, &p); err == nil {
+		return p.Stream
+	}
+
+	return false
 }
 
 func requestLifecycleContextAt(parent context.Context, cfg types.SystemSettings, isStream bool, start time.Time) (context.Context, context.CancelFunc) {

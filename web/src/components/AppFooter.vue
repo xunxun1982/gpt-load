@@ -222,6 +222,15 @@ onMounted(() => {
             >
               tbphp
             </a>
+            ,
+            <a
+              href="https://github.com/xunxun1982"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="author-link"
+            >
+              xunxun
+            </a>
           </span>
           <span class="license-text">MIT License</span>
         </div>

@@ -229,6 +229,25 @@ func sanitizeAndTruncateBytesForLog(value []byte, limit int) string {
 	return sanitizeAndTruncateStringForLog(string(value), limit)
 }
 
+func decodeResponseBodyForLog(resp *http.Response, body []byte) ([]byte, bool) {
+	if resp == nil || len(body) == 0 {
+		return body, true
+	}
+	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
+	if contentEncoding == "" {
+		return body, true
+	}
+	decoded, err := utils.DecompressResponseWithLimit(contentEncoding, body, maxResponseCaptureBytes)
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to decode response body for logging")
+		return []byte("[compressed response omitted: decompressed body exceeds log capture limit]"), false
+	}
+	if bytes.Equal(decoded, body) {
+		return []byte("[compressed response omitted: unsupported or invalid content encoding]"), false
+	}
+	return decoded, true
+}
+
 func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Response) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -249,6 +268,9 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	if shouldCapture {
 		responseCapture = bytes.NewBuffer(make([]byte, 0, 4096))
 	}
+	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
+	encodedResponse := contentEncoding != ""
+	var encodedCapture bytes.Buffer
 	var usageParser tokenusage.SSEParser
 	var estimateCapture estimatedTokenCapture
 	var failureCapture sseLogicalFailureCapture
@@ -257,17 +279,28 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			usageParser.Write(buf[:n])
-			estimateCapture.Write(buf[:n])
-			failureCapture.Write(buf[:n])
-			if _, writeErr := c.Writer.Write(buf[:n]); writeErr != nil {
+			chunk := buf[:n]
+			if encodedResponse {
+				if encodedCapture.Len() < maxResponseCaptureBytes {
+					toWrite := chunk
+					if encodedCapture.Len()+len(toWrite) > maxResponseCaptureBytes {
+						toWrite = toWrite[:maxResponseCaptureBytes-encodedCapture.Len()]
+					}
+					encodedCapture.Write(toWrite)
+				}
+			} else {
+				usageParser.Write(chunk)
+				estimateCapture.Write(chunk)
+				failureCapture.Write(chunk)
+			}
+			if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
 				logUpstreamError("writing stream to client", writeErr)
 				return
 			}
 
 			// Capture response data if enabled (up to max capture limit)
-			if responseCapture != nil && responseCapture.Len() < maxResponseCaptureBytes {
-				toWrite := buf[:n]
+			if !encodedResponse && responseCapture != nil && responseCapture.Len() < maxResponseCaptureBytes {
+				toWrite := chunk
 				if responseCapture.Len()+n > maxResponseCaptureBytes {
 					toWrite = buf[:maxResponseCaptureBytes-responseCapture.Len()]
 				}
@@ -285,11 +318,22 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 		}
 	}
 
-	failureCapture.Finish()
-	// Store captured response in context for logging
-	if responseCapture != nil && responseCapture.Len() > 0 {
+	if encodedResponse {
+		decoded, ok := decodeResponseBodyForLog(resp, encodedCapture.Bytes())
+		if len(decoded) > 0 {
+			if responseCapture != nil {
+				c.Set("response_body", sanitizeAndTruncateBytesForLog(decoded, maxResponseCaptureBytes))
+			}
+			if ok {
+				usageParser.Write(decoded)
+				estimateCapture.Write(decoded)
+				failureCapture.Write(decoded)
+			}
+		}
+	} else if responseCapture != nil && responseCapture.Len() > 0 {
 		c.Set("response_body", sanitizeAndTruncateStringForLog(responseCapture.String(), maxResponseCaptureBytes))
 	}
+	failureCapture.Finish()
 	if failureCapture.statusCode > 0 {
 		setLogicalFailureContext(c, failureCapture.statusCode, failureCapture.errorCode, failureCapture.errorMessage)
 	}
@@ -312,8 +356,11 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 			return
 		}
 
-		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
+		logBody, logBodyDecoded := decodeResponseBodyForLog(resp, body)
+		c.Set("response_body", sanitizeAndTruncateBytesForLog(logBody, maxResponseCaptureBytes))
+		if logBodyDecoded {
+			setTokenUsageOrEstimateFromFullBodyIf(c, logBody, resp.StatusCode < http.StatusBadRequest)
+		}
 
 		// Write to client
 		if _, err := c.Writer.Write(body); err != nil {
