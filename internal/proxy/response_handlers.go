@@ -39,6 +39,19 @@ type limitedResponseCaptureWriter struct {
 	truncated bool
 }
 
+type streamFlushWriter struct {
+	writer  io.Writer
+	flusher http.Flusher
+}
+
+func (w streamFlushWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	if n > 0 && w.flusher != nil {
+		w.flusher.Flush()
+	}
+	return n, err
+}
+
 func newLimitedResponseCaptureWriter(writer io.Writer, limit int) *limitedResponseCaptureWriter {
 	return &limitedResponseCaptureWriter{
 		writer: writer,
@@ -252,6 +265,55 @@ func decodeResponseBodyForLog(resp *http.Response, body []byte) ([]byte, bool) {
 	return decoded, true
 }
 
+func isSupportedResponseContentEncoding(contentEncoding string) bool {
+	switch strings.ToLower(strings.TrimSpace(contentEncoding)) {
+	case "gzip", "deflate", "br", "zstd":
+		return true
+	default:
+		return false
+	}
+}
+
+func captureDecodedResponseChunk(responseCapture *bytes.Buffer, chunk []byte) {
+	if responseCapture == nil || responseCapture.Len() >= maxResponseCaptureBytes {
+		return
+	}
+	toWrite := chunk
+	if responseCapture.Len()+len(toWrite) > maxResponseCaptureBytes {
+		toWrite = toWrite[:maxResponseCaptureBytes-responseCapture.Len()]
+	}
+	responseCapture.Write(toWrite)
+}
+
+func copyRemainingStreamToClient(c *gin.Context, r io.Reader, flusher http.Flusher) {
+	if _, err := io.Copy(streamFlushWriter{writer: c.Writer, flusher: flusher}, r); err != nil {
+		logUpstreamError("copying remaining compressed stream to client", err)
+	}
+}
+
+func setTokenUsageOrEstimateFromCompressedReader(c *gin.Context, contentEncoding string, encodedBody io.ReadCloser, allowEstimate bool) error {
+	decodedReader, err := utils.NewDecompressReader(contentEncoding, encodedBody)
+	if err != nil {
+		return err
+	}
+	defer decodedReader.Close()
+
+	usageCapture := &tailUsageCapture{
+		limit: maxUsageTailCaptureBytes,
+	}
+	estimateCapture := &estimatedTokenCapture{}
+	if _, err := io.Copy(io.MultiWriter(usageCapture, estimateCapture), decodedReader); err != nil {
+		return err
+	}
+	if len(usageCapture.buf) > 0 && setTokenUsageFromBody(c, usageCapture.buf) {
+		return nil
+	}
+	if allowEstimate {
+		setEstimatedOutputTokens(c, estimateCapture.Tokens())
+	}
+	return nil
+}
+
 func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Response) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -274,55 +336,86 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	}
 	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
 	encodedResponse := contentEncoding != ""
+	decodedEncodedResponse := encodedResponse && isSupportedResponseContentEncoding(contentEncoding)
 	var encodedCapture bytes.Buffer
 	var usageParser tokenusage.SSEParser
 	var estimateCapture estimatedTokenCapture
 	var failureCapture sseLogicalFailureCapture
 
 	buf := make([]byte, 4*1024)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			chunk := buf[:n]
-			if encodedResponse {
-				if encodedCapture.Len() < maxResponseCaptureBytes {
-					toWrite := chunk
-					if encodedCapture.Len()+len(toWrite) > maxResponseCaptureBytes {
-						toWrite = toWrite[:maxResponseCaptureBytes-encodedCapture.Len()]
-					}
-					encodedCapture.Write(toWrite)
-				}
-			} else {
+	if decodedEncodedResponse {
+		teeReader := io.TeeReader(resp.Body, streamFlushWriter{writer: c.Writer, flusher: flusher})
+		decodedReader, err := utils.NewDecompressReader(contentEncoding, io.NopCloser(teeReader))
+		if err != nil {
+			logUpstreamError("creating compressed stream decoder", err)
+			copyRemainingStreamToClient(c, resp.Body, flusher)
+			return
+		}
+		defer decodedReader.Close()
+
+		for {
+			n, err := decodedReader.Read(buf)
+			if n > 0 {
+				chunk := buf[:n]
 				usageParser.Write(chunk)
 				estimateCapture.Write(chunk)
 				failureCapture.Write(chunk)
+				captureDecodedResponseChunk(responseCapture, chunk)
 			}
-			if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
-				logUpstreamError("writing stream to client", writeErr)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				logUpstreamError("decoding compressed stream", err)
+				copyRemainingStreamToClient(c, resp.Body, flusher)
 				return
 			}
-
-			// Capture response data if enabled (up to max capture limit)
-			if !encodedResponse && responseCapture != nil && responseCapture.Len() < maxResponseCaptureBytes {
-				toWrite := chunk
-				if responseCapture.Len()+n > maxResponseCaptureBytes {
-					toWrite = buf[:maxResponseCaptureBytes-responseCapture.Len()]
+		}
+	} else {
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				chunk := buf[:n]
+				if encodedResponse {
+					if encodedCapture.Len() < maxResponseCaptureBytes {
+						toWrite := chunk
+						if encodedCapture.Len()+len(toWrite) > maxResponseCaptureBytes {
+							toWrite = toWrite[:maxResponseCaptureBytes-encodedCapture.Len()]
+						}
+						encodedCapture.Write(toWrite)
+					}
+				} else {
+					usageParser.Write(chunk)
+					estimateCapture.Write(chunk)
+					failureCapture.Write(chunk)
 				}
-				responseCapture.Write(toWrite)
-			}
+				if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
+					logUpstreamError("writing stream to client", writeErr)
+					return
+				}
 
-			flusher.Flush()
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			logUpstreamError("reading from upstream", err)
-			return
+				// Capture response data if enabled (up to max capture limit)
+				if !encodedResponse {
+					captureDecodedResponseChunk(responseCapture, chunk)
+				}
+
+				flusher.Flush()
+			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				logUpstreamError("reading from upstream", err)
+				return
+			}
 		}
 	}
 
-	if encodedResponse {
+	if decodedEncodedResponse {
+		if responseCapture != nil && responseCapture.Len() > 0 {
+			c.Set("response_body", sanitizeAndTruncateStringForLog(responseCapture.String(), maxResponseCaptureBytes))
+		}
+	} else if encodedResponse {
 		decoded, ok := decodeResponseBodyForLog(resp, encodedCapture.Bytes())
 		if len(decoded) > 0 {
 			if responseCapture != nil {
@@ -362,11 +455,14 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 		}
 
 		logBody, logBodyDecoded := decodeResponseBodyForLog(resp, body)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(logBody, maxResponseCaptureBytes))
-		}
+		c.Set("response_body", sanitizeAndTruncateBytesForLog(logBody, maxResponseCaptureBytes))
 		if logBodyDecoded {
 			setTokenUsageOrEstimateFromFullBodyIf(c, logBody, resp.StatusCode < http.StatusBadRequest)
+		} else if isSupportedResponseContentEncoding(contentEncoding) {
+			err := setTokenUsageOrEstimateFromCompressedReader(c, contentEncoding, io.NopCloser(bytes.NewReader(body)), resp.StatusCode < http.StatusBadRequest)
+			if err != nil {
+				logUpstreamError("decoding compressed response body for token accounting", err)
+			}
 		}
 
 		// Write to client
@@ -374,16 +470,17 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 			logUpstreamError("writing response body", err)
 		}
 	} else if contentEncoding != "" {
-		capture := newLimitedResponseCaptureWriter(c.Writer, maxResponseCaptureBytes)
-		if _, err := io.Copy(capture, resp.Body); err != nil {
-			logUpstreamError("copying compressed response body", err)
-			return
-		}
-		if !capture.truncated {
-			logBody, logBodyDecoded := decodeResponseBodyForLog(resp, []byte(capture.capture.String()))
-			if logBodyDecoded {
-				setTokenUsageOrEstimateFromFullBodyIf(c, logBody, resp.StatusCode < http.StatusBadRequest)
+		if isSupportedResponseContentEncoding(contentEncoding) {
+			teeReader := io.TeeReader(resp.Body, c.Writer)
+			err := setTokenUsageOrEstimateFromCompressedReader(c, contentEncoding, io.NopCloser(teeReader), resp.StatusCode < http.StatusBadRequest)
+			if err != nil {
+				logUpstreamError("decoding compressed response body for token accounting", err)
+				if _, copyErr := io.Copy(c.Writer, resp.Body); copyErr != nil {
+					logUpstreamError("copying remaining compressed response body", copyErr)
+				}
 			}
+		} else if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+			logUpstreamError("copying compressed response body", err)
 		}
 	} else {
 		usageCapture := &tailUsageCapture{
