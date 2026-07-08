@@ -318,7 +318,7 @@ func (s *codexMitigationState) run(firstResp *http.Response) {
 		})
 
 		if result.terminal != nil && result.truncated && result.hasEncrypted && s.continuations < codexMitigationMaxContinuations {
-			nextResp, ok := s.continueRound(result.roundReasoning, result.replayBytes)
+			nextResp, ok := s.continueRound(result.roundReasoning, result.replayBytes, result.reasoningTokens)
 			if !ok {
 				return
 			}
@@ -343,7 +343,7 @@ func (s *codexMitigationState) run(firstResp *http.Response) {
 	}
 }
 
-func (s *codexMitigationState) continueRound(roundReasoning []map[string]any, replayBytes int) (*http.Response, bool) {
+func (s *codexMitigationState) continueRound(roundReasoning []map[string]any, replayBytes int, reasoningTokens *int64) (*http.Response, bool) {
 	if s.roundTrip == nil {
 		s.writeSyntheticIncomplete("upstream_error")
 		return nil, false
@@ -368,6 +368,7 @@ func (s *codexMitigationState) continueRound(roundReasoning []map[string]any, re
 	}
 	s.replayTail = append(s.replayTail, codexMitigationCommentaryMarker(s.marker))
 
+	s.logContinuationRequest(reasoningTokens)
 	nextResp, err := s.roundTrip(nextBody)
 	if err != nil {
 		logrus.WithError(sanitizeInternalError(err)).Warn("Codex degradation mitigation: continuation request failed")
@@ -386,6 +387,34 @@ func (s *codexMitigationState) continueRound(roundReasoning []map[string]any, re
 		return nil, false
 	}
 	return nextResp, true
+}
+
+func (s *codexMitigationState) logContinuationRequest(reasoningTokens *int64) {
+	fields := logrus.Fields{
+		"round":            s.roundNo,
+		"continuation":     s.continuations,
+		"truncation_step":  codexMitigationDefaultStep,
+		"reasoning_tokens": codexMitigationNullableInt(reasoningTokens),
+		"route_type":       "standard",
+	}
+	if s.group != nil {
+		fields["group_id"] = s.group.ID
+		fields["group_name"] = s.group.Name
+	}
+	if s.originalGroup != nil && s.originalGroup != s.group {
+		fields["original_group_id"] = s.originalGroup.ID
+		fields["original_group_name"] = s.originalGroup.Name
+	}
+	if s.originalGroup != nil && s.originalGroup.GroupType == "aggregate" && s.originalGroup != s.group {
+		fields["route_type"] = "aggregate"
+		fields["aggregate_group_id"] = s.originalGroup.ID
+		fields["aggregate_group_name"] = s.originalGroup.Name
+		if s.group != nil {
+			fields["sub_group_id"] = s.group.ID
+			fields["sub_group_name"] = s.group.Name
+		}
+	}
+	logrus.WithFields(fields).Info("Codex degradation mitigation: starting continuation request")
 }
 
 func (s *codexMitigationState) processRound(resp *http.Response) codexMitigationRoundResult {

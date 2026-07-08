@@ -13,6 +13,8 @@ import (
 	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
@@ -162,6 +164,83 @@ func TestCodexDegradationMitigationFoldDropsTruncatedOutputAndContinuesOnce(t *t
 	assert.Contains(t, output, "data: [DONE]")
 }
 
+func TestCodexDegradationMitigationLogsStandardContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	hook := captureGlobalLogrusEntries(t)
+	group := &models.Group{
+		Name:        "standard-response",
+		GroupType:   "standard",
+		ChannelType: "openai-response",
+		Config:      datatypes.JSONMap{"codex_degradation_mitigation_enabled": true},
+	}
+	baseBody := []byte(`{"model":"gpt-5","stream":true,"input":[{"role":"user","content":"hi"}]}`)
+	first := codexMitigationTestResponse(codexMitigationTestSSE("resp_1", "discarded-first", 516, "enc_1"))
+	second := codexMitigationTestResponse(codexMitigationTestSSE("resp_2", "final-answer", 20, "enc_2"))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/standard-response/v1/responses", strings.NewReader(string(baseBody)))
+
+	ps := &ProxyServer{}
+	ps.handleCodexDegradationMitigationStreamingResponse(c, first, baseBody, group, group, func([]byte) (*http.Response, error) {
+		return second, nil
+	})
+
+	entry := requireCodexMitigationContinuationLog(t, hook)
+	assert.Equal(t, logrus.InfoLevel, entry.Level)
+	assert.Equal(t, "standard", entry.Data["route_type"])
+	assert.Equal(t, "standard-response", entry.Data["group_name"])
+	assert.NotContains(t, entry.Data, "original_group_id")
+	assert.NotContains(t, entry.Data, "original_group_name")
+	assert.Equal(t, 1, entry.Data["round"])
+	assert.Equal(t, 1, entry.Data["continuation"])
+	assert.Equal(t, int64(518), entry.Data["truncation_step"])
+	assert.Equal(t, int64(516), entry.Data["reasoning_tokens"])
+	assert.NotContains(t, logrusHookText(hook), "enc_1")
+}
+
+func TestCodexDegradationMitigationLogsAggregateContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	hook := captureGlobalLogrusEntries(t)
+	parent := &models.Group{
+		Name:        "aggregate-response",
+		GroupType:   "aggregate",
+		ChannelType: "openai-response",
+		Config:      datatypes.JSONMap{"codex_degradation_mitigation_enabled": true},
+	}
+	child := &models.Group{
+		Name:        "child-response",
+		GroupType:   "standard",
+		ChannelType: "openai-response",
+		Config:      datatypes.JSONMap{},
+	}
+	baseBody := []byte(`{"model":"gpt-5","stream":true,"input":[{"role":"user","content":"hi"}]}`)
+	first := codexMitigationTestResponse(codexMitigationTestSSE("resp_1", "discarded-first", 516, "enc_1"))
+	second := codexMitigationTestResponse(codexMitigationTestSSE("resp_2", "final-answer", 20, "enc_2"))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/aggregate-response/v1/responses", strings.NewReader(string(baseBody)))
+
+	ps := &ProxyServer{}
+	ps.handleCodexDegradationMitigationStreamingResponse(c, first, baseBody, child, parent, func([]byte) (*http.Response, error) {
+		return second, nil
+	})
+
+	entry := requireCodexMitigationContinuationLog(t, hook)
+	assert.Equal(t, logrus.InfoLevel, entry.Level)
+	assert.Equal(t, "aggregate", entry.Data["route_type"])
+	assert.Equal(t, "aggregate-response", entry.Data["aggregate_group_name"])
+	assert.Equal(t, "child-response", entry.Data["sub_group_name"])
+	assert.Equal(t, 1, entry.Data["round"])
+	assert.Equal(t, 1, entry.Data["continuation"])
+	assert.Equal(t, int64(518), entry.Data["truncation_step"])
+	assert.Equal(t, int64(516), entry.Data["reasoning_tokens"])
+	assert.NotContains(t, logrusHookText(hook), "enc_1")
+}
+
 func TestCodexDegradationMitigationContinuesWhenAnyReasoningHasEncryptedContent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -224,6 +303,18 @@ func TestCodexDegradationMitigationBuffersFunctionCallAcrossContinuation(t *test
 	assert.Contains(t, output, "final_call_args")
 	assert.Contains(t, output, "response.function_call_arguments.delta")
 	assert.Contains(t, output, "data: [DONE]")
+}
+
+func requireCodexMitigationContinuationLog(t *testing.T, hook *logrustest.Hook) *logrus.Entry {
+	t.Helper()
+
+	for _, entry := range hook.AllEntries() {
+		if entry.Message == "Codex degradation mitigation: starting continuation request" {
+			return entry
+		}
+	}
+	require.Fail(t, "missing Codex degradation mitigation continuation log", logrusHookText(hook))
+	return nil
 }
 
 func TestCodexDegradationMitigationStopsBeforeContinuationOnDownstreamWriteError(t *testing.T) {
