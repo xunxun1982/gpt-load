@@ -747,6 +747,11 @@ func TestFormatUpstreamAddrForLog(t *testing.T) {
 			expected:     "https://api.example.com/v1/chat/completions (manual proxy: http://proxy.example.com:8080)",
 		},
 		{
+			name:         "upstream_redacts_sensitive_query",
+			upstreamAddr: "https://user:secret@api.example.com/v1/chat/completions?key=plain-secret&x-goog-api-key=goog-secret&model=gpt",
+			expected:     "https://api.example.com/v1/chat/completions?key=%5BREDACTED%5D&model=gpt&x-goog-api-key=%5BREDACTED%5D",
+		},
+		{
 			name:         "manual_proxy_redacts_credentials",
 			upstreamAddr: "https://api.example.com/v1/chat/completions",
 			proxyURL:     strPtr("http://user:password@proxy.example.com:8080"),
@@ -799,6 +804,11 @@ func TestLogRequestRecordsProxyInfoInUpstreamAddr(t *testing.T) {
 			expected:     "https://api.example.com/v1/models (manual proxy: http://%2A%2A%2A@proxy.example.com:8080)",
 		},
 		{
+			name:         "upstream query redacted",
+			upstreamAddr: "https://user:secret@api.example.com/v1/models?key=plain-secret&x-goog-api-key=goog-secret&safe=1",
+			expected:     "https://api.example.com/v1/models?key=%5BREDACTED%5D&safe=1&x-goog-api-key=%5BREDACTED%5D",
+		},
+		{
 			name:         "gateway proxy",
 			upstreamAddr: "https://betterclau.de/openai/api.example.com/v1/models",
 			gatewayProxy: "betterclaude",
@@ -828,6 +838,8 @@ func TestLogRequestRecordsProxyInfoInUpstreamAddr(t *testing.T) {
 			logEntry := popRecordedRequestLog(t, memStore)
 			assert.Equal(t, tt.expected, logEntry.UpstreamAddr)
 			assert.NotContains(t, logEntry.UpstreamAddr, "password")
+			assert.NotContains(t, logEntry.UpstreamAddr, "plain-secret")
+			assert.NotContains(t, logEntry.UpstreamAddr, "goog-secret")
 		})
 	}
 }
@@ -1067,8 +1079,10 @@ func TestExecuteRequestWithRetryStopsWhenNonStreamLifecycleTimeoutExpires(t *tes
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
 
-	group := createTestGroup(t, db, "timeout-retry", "openai")
+	group := createTestGroup(t, db, "timeout-retry-zero-delay", "openai")
+	group.Config = map[string]any{"max_retries": 5000}
 	group.EffectiveConfig = systemSettingsWithRetryTimeout(1, 1)
+	group.EffectiveConfig.RetryDelayMs = 0
 	createTestKey(t, db, group.ID, "sk-timeout-retry-1", ps.encryptionSvc)
 	createTestKey(t, db, group.ID, "sk-timeout-retry-2", ps.encryptionSvc)
 	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
@@ -1087,7 +1101,7 @@ func TestExecuteRequestWithRetryStopsWhenNonStreamLifecycleTimeoutExpires(t *tes
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/timeout-retry/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-test"}`)))
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/timeout-retry-zero-delay/v1/chat/completions", bytes.NewReader([]byte(`{"model":"gpt-test"}`)))
 
 	client := &http.Client{Timeout: 3 * time.Second}
 	ps.executeRequestWithRetry(c, &testChannelProxy{client: client, url: upstream.URL}, group, group, []byte(`{"model":"gpt-test"}`), false, time.Now(), 0)
@@ -1316,6 +1330,118 @@ func TestCodexAggregateAffinityKeyDisabledForNonCodexAggregate(t *testing.T) {
 	c.Request.Header.Set("Session_ID", "header-session")
 
 	assert.Empty(t, codexAggregateAffinityKey(c, group, body))
+}
+
+func TestCodexAggregateAffinityCacheUsesLRUAndTTL(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	cache := newCodexAggregateAffinityCache(time.Hour, 2)
+
+	cache.set("a", 1, now)
+	cache.set("b", 2, now.Add(time.Second))
+	got, ok := cache.get("a", now.Add(2*time.Second))
+	require.True(t, ok)
+	assert.Equal(t, uint(1), got)
+
+	cache.set("c", 3, now.Add(3*time.Second))
+	_, ok = cache.get("b", now.Add(4*time.Second))
+	assert.False(t, ok)
+	got, ok = cache.get("a", now.Add(4*time.Second))
+	require.True(t, ok)
+	assert.Equal(t, uint(1), got)
+	got, ok = cache.get("c", now.Add(4*time.Second))
+	require.True(t, ok)
+	assert.Equal(t, uint(3), got)
+
+	_, ok = cache.get("a", now.Add(2*time.Hour))
+	assert.False(t, ok)
+	assert.Len(t, cache.entries, 1)
+}
+
+func TestCodexAggregateAffinityCacheSetRemovesExpiredTailEntries(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	cache := newCodexAggregateAffinityCache(time.Hour, 4)
+
+	cache.set("expired-a", 1, now.Add(-2*time.Hour))
+	cache.set("expired-b", 2, now.Add(-90*time.Minute))
+	cache.set("fresh", 3, now)
+	cache.set("new", 4, now.Add(time.Second))
+
+	assert.Len(t, cache.entries, 2)
+	_, ok := cache.get("expired-a", now.Add(time.Second))
+	assert.False(t, ok)
+	_, ok = cache.get("expired-b", now.Add(time.Second))
+	assert.False(t, ok)
+}
+
+func TestRetryContextCachesCodexRequestPayloadAndModel(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	group := &models.Group{
+		Name:        "codex-aggregate",
+		GroupType:   "aggregate",
+		ChannelType: "openai-response",
+		Config: map[string]any{
+			"codex_affinity_enabled": true,
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+
+	retryCtx := &retryContext{
+		originalBodyBytes: []byte(`{"model":"gpt-5","client_metadata":{"thread_id":"stable-thread"}}`),
+	}
+	payload, ok := retryCtx.codexRequestPayload([]byte(`{"model":"ignored"}`))
+	require.True(t, ok)
+	assert.Equal(t, "stable-thread", codexAggregateAffinityKeyFromPayload(c, group, payload, ok))
+	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel([]byte(`{"model":"ignored"}`)))
+
+	retryCtx.originalBodyBytes = []byte(`{"model":"mutated","client_metadata":{"thread_id":"mutated-thread"}}`)
+	payload, ok = retryCtx.codexRequestPayload(nil)
+	require.True(t, ok)
+	assert.Equal(t, "stable-thread", codexAggregateAffinityKeyFromPayload(c, group, payload, ok))
+	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel(nil))
+}
+
+func TestCodexAggregateAffinityHeaderKeyAvoidsBodyPayloadParsing(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	group := &models.Group{
+		Name:        "codex-aggregate",
+		GroupType:   "aggregate",
+		ChannelType: "openai-response",
+		Config: map[string]any{
+			"codex_affinity_enabled": true,
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+	c.Request.Header.Set("Session_ID", "header-session")
+
+	retryCtx := &retryContext{
+		originalBodyBytes: []byte(`{"model":"gpt-5","client_metadata":{"thread_id":"stable-thread"}}`),
+	}
+	affinityKey := codexAggregateAffinityHeaderKey(c, group)
+	if affinityKey == "" {
+		payload, payloadOK := retryCtx.codexRequestPayload(nil)
+		affinityKey = codexAggregateAffinityKeyFromPayload(c, group, payload, payloadOK)
+	}
+
+	assert.Equal(t, "header-session", affinityKey)
+	assert.False(t, retryCtx.codexParsedPayloadSet)
+	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel(nil))
+	assert.False(t, retryCtx.codexParsedPayloadSet)
 }
 
 func TestExecuteRequestWithRetryWaitsConfiguredDelayBeforeRetry(t *testing.T) {
@@ -2179,7 +2305,7 @@ func TestExecuteRequestWithAggregateRetryStopsWhenNonStreamLifecycleTimeoutExpir
 		Enabled:     true,
 		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
 		Config: map[string]any{
-			"max_retries": 1,
+			"max_retries": 5000,
 		},
 	}
 	require.NoError(t, db.Create(aggregateGroup).Error)
