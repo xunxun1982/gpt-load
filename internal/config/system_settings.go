@@ -506,7 +506,7 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			if intVal < 0 {
 				return fmt.Errorf("value for %s (%d) is below minimum value (%d)", key, intVal, 0)
 			}
-			// Upper bound (0-5) is enforced at runtime by proxy server clamping logic.
+			// Upper bound (0-500) is enforced at runtime by proxy server clamping logic.
 			continue
 		}
 

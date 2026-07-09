@@ -17,7 +17,7 @@ interface Props {
 }
 
 interface Emits {
-  (e: "bound", siteId: number, siteName: string): void;
+  (e: "bound", siteId: number, siteName: string, siteSort?: number): void;
   (e: "unbound"): void;
   (e: "navigate-to-site", siteId: number): void;
 }
@@ -80,7 +80,7 @@ async function handleBind() {
     message.success(t("binding.bindSuccess"));
     triggerSiteBindingRefresh();
     await loadSites();
-    emit("bound", siteId, boundSiteName.value);
+    emit("bound", siteId, boundSiteName.value, site?.sort);
   } catch (_) {
     // Error handled by http interceptor
   }

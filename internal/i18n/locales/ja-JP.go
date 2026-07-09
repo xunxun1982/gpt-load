@@ -94,6 +94,13 @@ var MessagesJaJP = map[string]string{
 	"validation.reorder_sort_negative":                         "並び順の値は負数にできません",
 	"validation.reorder_duplicate_group":                       "並び替え項目に重複したグループIDがあります: {{.id}}",
 	"validation.reorder_group_not_found":                       "並び替え項目に存在しないグループが含まれています",
+	"site_management.validation.reorder_items_required":        "サイト並び替え項目は空にできません",
+	"site_management.validation.reorder_site_id":               "並び替え項目に無効なサイトIDが含まれています",
+	"site_management.validation.reorder_sort_negative":         "並び順の値は負数にできません",
+	"site_management.validation.reorder_start_negative":        "開始値は負数にできません",
+	"site_management.validation.reorder_step_invalid":          "並び順番号の間隔は1以上である必要があります",
+	"site_management.validation.reorder_duplicate_site":        "並び替え項目に重複したサイトIDがあります: {{.id}}",
+	"site_management.validation.reorder_site_not_found":        "並び替え項目に存在しないサイトが含まれています",
 
 	// Task related
 	"task.validation_started": "キー検証タスクが開始されました",
@@ -145,6 +152,7 @@ var MessagesJaJP = map[string]string{
 	"success.sites_imported":          "{{.imported}}個のサイトをインポートしました。{{.skipped}}個をスキップしました（合計: {{.total}}個）",
 	"success.sites_exported":          "{{.count}}個のサイトを正常にエクスポートしました",
 	"success.groups_reordered":        "グループの並び順を保存しました",
+	"success.sites_reordered":         "サイトの並び順番号を更新しました",
 
 	// Password security related
 	"security.password_too_short":         "{{.keyType}}が短すぎます（{{.length}}文字）。少なくとも16文字を推奨します",

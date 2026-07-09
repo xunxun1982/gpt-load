@@ -179,6 +179,10 @@ export const siteManagementApi = {
     return res.data;
   },
 
+  async reorderSites(payload: { start: number; step: number }): Promise<void> {
+    await http.put("/site-management/reorder", payload, { hideMessage: true });
+  },
+
   deleteSite(id: number): Promise<void> {
     return http.delete(`/site-management/sites/${id}`);
   },

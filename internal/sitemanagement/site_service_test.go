@@ -188,6 +188,275 @@ func TestSiteService_ListSites(t *testing.T) {
 	assert.Len(t, sites2, 5)
 }
 
+func TestSiteService_ReorderSitesUpdatesSortAndInvalidatesCache(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewSiteService(db, memStore, encSvc)
+
+	a, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Reorder A",
+		BaseURL:  "https://a.example.com",
+		Sort:     1,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+	b, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Reorder B",
+		BaseURL:  "https://b.example.com",
+		Sort:     2,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+	c, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Reorder C",
+		BaseURL:  "https://c.example.com",
+		Sort:     3,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+
+	_, err = service.ListSites(context.Background())
+	require.NoError(t, err)
+
+	err = service.ReorderSites(context.Background(), []SiteReorderItem{
+		{ID: a.ID, Sort: 10},
+		{ID: b.ID, Sort: 15},
+		{ID: c.ID, Sort: 20},
+	})
+	require.NoError(t, err)
+
+	sites, err := service.ListSites(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sites, 3)
+	assert.Equal(t, []int{10, 15, 20}, []int{sites[0].Sort, sites[1].Sort, sites[2].Sort})
+}
+
+func TestSiteService_ReorderSitesSyncsBoundGroupSorts(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewSiteService(db, memStore, encSvc)
+
+	a, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Bound Sort A",
+		BaseURL:  "https://bound-a.example.com",
+		Sort:     1,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+	b, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Bound Sort B",
+		BaseURL:  "https://bound-b.example.com",
+		Sort:     2,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+
+	boundA1 := models.Group{Name: "bound-a-1", Upstreams: []byte("[]"), BoundSiteID: &a.ID, Sort: 100}
+	boundA2 := models.Group{Name: "bound-a-2", Upstreams: []byte("[]"), BoundSiteID: &a.ID, Sort: 110}
+	boundB := models.Group{Name: "bound-b", Upstreams: []byte("[]"), BoundSiteID: &b.ID, Sort: 120}
+	unbound := models.Group{Name: "unbound", Upstreams: []byte("[]"), Sort: 130}
+	require.NoError(t, db.Create(&[]models.Group{boundA1, boundA2, boundB, unbound}).Error)
+
+	err = service.ReorderSites(context.Background(), []SiteReorderItem{
+		{ID: a.ID, Sort: 30},
+		{ID: b.ID, Sort: 40},
+	})
+	require.NoError(t, err)
+
+	var groups []models.Group
+	require.NoError(t, db.Order("name ASC").Find(&groups).Error)
+	require.Len(t, groups, 4)
+	assert.Equal(t, []int{30, 30, 40, 130}, []int{groups[0].Sort, groups[1].Sort, groups[2].Sort, groups[3].Sort})
+}
+
+func TestSiteService_ReorderSitesInvalidatesGroupListCache(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewSiteService(db, memStore, encSvc)
+	invalidated := false
+	service.InvalidateGroupListCacheCallback = func() {
+		invalidated = true
+	}
+
+	site, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Cache Sync Site",
+		BaseURL:  "https://cache-sync.example.com",
+		Sort:     1,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+
+	err = service.ReorderSites(context.Background(), []SiteReorderItem{{ID: site.ID, Sort: 20}})
+	require.NoError(t, err)
+	assert.True(t, invalidated)
+}
+
+func TestSiteService_ReorderSitesValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewSiteService(db, memStore, encSvc)
+
+	site, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Validation Site",
+		BaseURL:  "https://validation.example.com",
+		Sort:     1,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		items []SiteReorderItem
+	}{
+		{name: "empty items", items: nil},
+		{name: "zero id", items: []SiteReorderItem{{ID: 0, Sort: 1}}},
+		{name: "negative sort", items: []SiteReorderItem{{ID: site.ID, Sort: -1}}},
+		{name: "duplicate id", items: []SiteReorderItem{{ID: site.ID, Sort: 1}, {ID: site.ID, Sort: 2}}},
+		{name: "site not found", items: []SiteReorderItem{{ID: site.ID + 999, Sort: 1}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := service.ReorderSites(context.Background(), tt.items)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestSiteService_RenumberSitesUpdatesAllSitesInCurrentOrder(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewSiteService(db, memStore, encSvc)
+
+	for i := 25; i >= 1; i-- {
+		_, err = service.CreateSite(context.Background(), CreateSiteParams{
+			Name:     fmt.Sprintf("Renumber %02d", i),
+			BaseURL:  fmt.Sprintf("https://%02d.example.com", i),
+			Sort:     i * 10,
+			AuthType: AuthTypeNone,
+		})
+		require.NoError(t, err)
+	}
+
+	_, err = service.ListSites(context.Background())
+	require.NoError(t, err)
+
+	err = service.RenumberSites(context.Background(), 100, 10)
+	require.NoError(t, err)
+
+	sites, err := service.ListSites(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sites, 25)
+	for i, site := range sites {
+		assert.Equal(t, fmt.Sprintf("Renumber %02d", i+1), site.Name)
+		assert.Equal(t, 100+i*10, site.Sort)
+	}
+}
+
+func TestSiteService_RenumberSitesSyncsBoundGroupSorts(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewSiteService(db, memStore, encSvc)
+
+	first, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Renumber Bound First",
+		BaseURL:  "https://first.example.com",
+		Sort:     10,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+	second, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Renumber Bound Second",
+		BaseURL:  "https://second.example.com",
+		Sort:     20,
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+
+	firstGroup := models.Group{Name: "renumber-bound-first", Upstreams: []byte("[]"), BoundSiteID: &first.ID, Sort: 1}
+	secondGroup := models.Group{Name: "renumber-bound-second", Upstreams: []byte("[]"), BoundSiteID: &second.ID, Sort: 2}
+	require.NoError(t, db.Create(&[]models.Group{firstGroup, secondGroup}).Error)
+
+	err = service.RenumberSites(context.Background(), 100, 10)
+	require.NoError(t, err)
+
+	var groups []models.Group
+	require.NoError(t, db.Order("name ASC").Find(&groups).Error)
+	require.Len(t, groups, 2)
+	assert.Equal(t, []int{100, 110}, []int{groups[0].Sort, groups[1].Sort})
+}
+
+func TestSiteService_RenumberSitesValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewSiteService(db, memStore, encSvc)
+
+	tests := []struct {
+		name  string
+		start int
+		step  int
+	}{
+		{name: "negative start", start: -1, step: 10},
+		{name: "zero step", start: 1, step: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := service.RenumberSites(context.Background(), tt.start, tt.step)
+			require.Error(t, err)
+		})
+	}
+}
+
 // TestSiteService_CopySite tests site copying
 func TestSiteService_CopySite(t *testing.T) {
 	t.Parallel()

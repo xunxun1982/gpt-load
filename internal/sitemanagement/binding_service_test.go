@@ -63,6 +63,36 @@ func TestBindingService_BindGroupToSite(t *testing.T) {
 	assert.Equal(t, site.ID, *updated.BoundSiteID)
 }
 
+func TestBindingService_BindGroupToSiteSyncsGroupSort(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+
+	err := db.AutoMigrate(&ManagedSite{}, &models.Group{})
+	require.NoError(t, err)
+
+	service := NewBindingService(db, services.ReadOnlyDB{DB: db}, nil)
+
+	site := ManagedSite{
+		Name:    "Sorted Site",
+		BaseURL: "https://example.com",
+		Sort:    70,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	group := createTestGroup(t, db, "Sorted Group", func(g *models.Group) {
+		g.Sort = 10
+	})
+	require.NotZero(t, group.ID)
+
+	err = service.BindGroupToSite(context.Background(), group.ID, site.ID)
+	require.NoError(t, err)
+
+	var updated models.Group
+	require.NoError(t, db.First(&updated, group.ID).Error)
+	assert.Equal(t, 70, updated.Sort)
+}
+
 // TestBindingService_BindGroupToSite_AggregateGroup tests that aggregate groups cannot be bound
 func TestBindingService_BindGroupToSite_AggregateGroup(t *testing.T) {
 	t.Parallel()

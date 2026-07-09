@@ -423,7 +423,7 @@ async function handleSubmit() {
               v-model:value="formData.max_retries"
               :placeholder="t('keys.maxRetriesPlaceholder')"
               :min="0"
-              :max="50"
+              :max="5000"
               clearable
               style="width: 100%"
             />
@@ -434,7 +434,7 @@ async function handleSubmit() {
               v-model:value="formData.sub_max_retries"
               :placeholder="t('keys.subMaxRetriesPlaceholder')"
               :min="0"
-              :max="50"
+              :max="500"
               clearable
               style="width: 100%"
             />
