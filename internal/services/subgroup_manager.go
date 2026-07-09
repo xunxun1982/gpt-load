@@ -161,6 +161,15 @@ func (m *SubGroupManager) SelectSubGroupWithRetryAffinityResult(group *models.Gr
 	return result, nil
 }
 
+// HasActiveKeys checks the same active-key store that aggregate selectors use.
+func (m *SubGroupManager) HasActiveKeys(subGroupID uint) bool {
+	if m == nil || m.store == nil || subGroupID == 0 {
+		return false
+	}
+	item := &subGroupItem{subGroupID: subGroupID, activeKeysKey: activeKeysListKey(subGroupID)}
+	return (&selector{store: m.store}).hasActiveKeys(item)
+}
+
 // RebuildSelectors rebuild all selectors based on the incoming group
 func (m *SubGroupManager) RebuildSelectors(groups map[string]*models.Group) {
 	newSelectors := make(map[uint]*selector)

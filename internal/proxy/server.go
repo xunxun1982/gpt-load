@@ -2253,14 +2253,21 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				if cachedSubGroupID, ok := ps.codexAffinityCache.get(cacheKey, time.Now()); ok {
 					var cached bool
 					subGroupName, subGroupID, cached = forcedAggregateSubGroup(originalGroup, cachedSubGroupID, retryCtx.excludedSubGroups)
+					// Cache hits bypass the selector, so re-check the active-key list.
+					// Do not cache this result; stale positives would reintroduce bad routing.
 					if cached {
 						retryCtx.codexAffinityPrimarySubGroupID = cachedSubGroupID
+					}
+					if cached && ps.subGroupManager.HasActiveKeys(cachedSubGroupID) {
 						logrus.WithFields(logrus.Fields{
 							"aggregate_group": originalGroup.Name,
 							"selected_group":  subGroupName,
 							"selected_id":     subGroupID,
 							"model":           model,
 						}).Debug("Selected Codex aggregate sub-group from affinity cache")
+					} else {
+						subGroupName = ""
+						subGroupID = 0
 					}
 				}
 				if subGroupID == 0 {

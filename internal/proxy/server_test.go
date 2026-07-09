@@ -1377,6 +1377,79 @@ func TestCodexAggregateAffinityCacheSetRemovesExpiredTailEntries(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestCodexAggregateAffinityCacheFallsBackWhenCachedSubGroupHasNoActiveKeys(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	authorization := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp-test","object":"response","created_at":0,"status":"completed","model":"gpt-5","output":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	staleSubGroup := createTestGroup(t, db, "codex-stale-cache-sub", "openai-response")
+	staleSubGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	require.NoError(t, db.Save(staleSubGroup).Error)
+
+	activeSubGroup := createTestGroup(t, db, "codex-active-cache-sub", "openai-response")
+	activeSubGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	require.NoError(t, db.Save(activeSubGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "codex-affinity-stale-cache",
+		ChannelType: "openai-response",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[]`),
+		Config: map[string]any{
+			"max_retries":            0,
+			"codex_affinity_enabled": true,
+		},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      staleSubGroup.ID,
+		SubGroupName:    staleSubGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      activeSubGroup.ID,
+		SubGroupName:    activeSubGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, activeSubGroup.ID, "sk-codex-active-cache", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	body := []byte(`{"model":"gpt-5","input":"ping","stream":false}`)
+	affinityKey := "sticky-session"
+	cacheKey := codexAggregateAffinityCacheKey(aggregateGroup.ID, affinityKey, "gpt-5")
+	ps.codexAffinityCache.set(cacheKey, staleSubGroup.ID, time.Now())
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Originator", "codex_cli_rs")
+	c.Request.Header.Set("Session_ID", affinityKey)
+	c.Params = gin.Params{{Key: "group_name", Value: aggregateGroup.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, "Bearer sk-codex-active-cache", <-authorization)
+}
+
 func TestRetryContextCachesCodexRequestPayloadAndModel(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -3479,6 +3552,98 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 	require.NoError(t, json.Unmarshal(<-cachedBodies, &cachedPayload))
 	assert.True(t, jsonArrayContainsStringForTest(cachedPayload["include"], responsesEncryptedReasoning))
 	assert.True(t, jsonInputContainsReasoningItemForTest(cachedPayload["input"]))
+
+	var fallbackPayload map[string]any
+	require.NoError(t, json.Unmarshal(<-fallbackBodies, &fallbackPayload))
+	assert.False(t, jsonArrayContainsStringForTest(fallbackPayload["include"], responsesEncryptedReasoning))
+	assert.False(t, jsonInputContainsReasoningItemForTest(fallbackPayload["input"]))
+}
+
+func TestExecuteRequestWithAggregateRetryCodexAffinityStaleCachedPrimaryStripsOnFallback(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	fallbackBodies := make(chan []byte, 1)
+	fallbackUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		fallbackBodies <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(fallbackUpstream.Close)
+
+	staleSubGroup := createTestGroup(t, db, "agg-affinity-stale-primary", "openai-response")
+	staleSubGroup.Upstreams = []byte(`[{"url":"` + fallbackUpstream.URL + `","weight":100}]`)
+	staleSubGroup.Config = map[string]any{"force_non_stream": true}
+	staleSubGroup.EffectiveConfig = systemSettingsWithRetryTimeout(0, 1)
+	require.NoError(t, db.Save(staleSubGroup).Error)
+
+	fallbackSubGroup := createTestGroup(t, db, "agg-affinity-stale-fallback", "openai-response")
+	fallbackSubGroup.Upstreams = []byte(`[{"url":"` + fallbackUpstream.URL + `","weight":100}]`)
+	fallbackSubGroup.Config = map[string]any{"force_non_stream": true}
+	fallbackSubGroup.EffectiveConfig = systemSettingsWithRetryTimeout(0, 1)
+	require.NoError(t, db.Save(fallbackSubGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-affinity-stale-primary-parent",
+		ChannelType: "openai-response",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config: map[string]any{
+			"max_retries":            0,
+			"codex_affinity_enabled": true,
+		},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      staleSubGroup.ID,
+		SubGroupName:    staleSubGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          1,
+	}).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      fallbackSubGroup.ID,
+		SubGroupName:    fallbackSubGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          5000,
+	}).Error)
+
+	createTestKey(t, db, fallbackSubGroup.ID, "sk-agg-affinity-stale-fallback", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+
+	affinityKey := requireAffinityKeyForSubGroup(t, ps, cachedAggregate, fallbackSubGroup.ID, "affinity-stale-primary")
+	model := "gpt-5"
+	ps.codexAffinityCache.set(codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, model), staleSubGroup.ID, time.Now())
+	body := []byte(`{"model":"` + model + `","client_metadata":{"thread_id":"` + affinityKey + `"},"include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+	require.Equal(t, http.StatusOK, w.Code)
 
 	var fallbackPayload map[string]any
 	require.NoError(t, json.Unmarshal(<-fallbackBodies, &fallbackPayload))
