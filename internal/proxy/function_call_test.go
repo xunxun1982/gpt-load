@@ -625,6 +625,100 @@ func TestHandleFunctionCallResponsesNormalResponseConvertsXMLToFunctionCall(t *t
 	}
 }
 
+func TestHandleFunctionCallResponsesNormalResponseRecordsLogicalFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := `{"id":"resp_failed","status":"failed","error":{"code":"server_error","message":"temporary upstream failure"}}`
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallResponsesNormalResponse(c, upstreamResp)
+
+	statusCode, _, logicalFailure := logicalStatusFromContext(c)
+	if !logicalFailure {
+		t.Fatal("expected Responses logical failure to be recorded")
+	}
+	if statusCode != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, statusCode)
+	}
+	if !strings.Contains(w.Body.String(), `"status":"failed"`) {
+		t.Fatalf("expected failed response passthrough, got %s", w.Body.String())
+	}
+}
+
+func TestHandleFunctionCallResponsesNormalResponseMarksInvalidJSONProcessingFailed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"status":`)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallResponsesNormalResponse(c, upstreamResp)
+
+	processingFailed, exists := c.Get(ctxKeyResponseProcessingFailed)
+	if !exists || processingFailed != true {
+		t.Fatal("expected invalid Responses JSON to mark response processing failed")
+	}
+}
+
+func TestHandleFunctionCallCrossProtocolNormalResponsesMarkInvalidJSONProcessingFailed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name    string
+		handler func(*ProxyServer, *gin.Context, *http.Response)
+	}{
+		{
+			name: "openai_chat",
+			handler: func(ps *ProxyServer, c *gin.Context, resp *http.Response) {
+				ps.handleFunctionCallNormalResponse(c, resp)
+			},
+		},
+		{
+			name: "anthropic",
+			handler: func(ps *ProxyServer, c *gin.Context, resp *http.Response) {
+				ps.handleFunctionCallAnthropicNormalResponse(c, resp)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"invalid":`)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}
+
+			tt.handler(&ProxyServer{}, c, resp)
+
+			processingFailed, exists := c.Get(ctxKeyResponseProcessingFailed)
+			if !exists || processingFailed != true {
+				t.Fatal("expected invalid JSON to mark response processing failed")
+			}
+		})
+	}
+}
+
 func TestHandleFunctionCallAnthropicNormalResponseConvertsXMLToToolUse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -707,6 +801,100 @@ func TestHandleFunctionCallResponsesStreamingResponseConvertsXMLToFunctionCall(t
 	}
 	if strings.Contains(output, "<invoke") || strings.Contains(output, "<<CALL_resp>>") {
 		t.Fatalf("expected XML function call text to be removed, got %s", output)
+	}
+}
+
+func TestHandleFunctionCallResponsesStreamingResponseRecordsLogicalFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	streamBody := strings.Join([]string{
+		`event: response.failed`,
+		`data: {"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"code":"rate_limit_exceeded","message":"rate limit exceeded"}}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	statusCode, _, logicalFailure := logicalStatusFromContext(c)
+	if !logicalFailure {
+		t.Fatal("expected Responses stream logical failure to be recorded")
+	}
+	if statusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected status %d, got %d", http.StatusTooManyRequests, statusCode)
+	}
+}
+
+func TestHandleFunctionCallResponsesStreamingResponseDoesNotCompleteWithoutTerminalEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	streamBody := strings.Join([]string{
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"<<CALL_resp>> <invoke name=\"web_search\"><parameter name=\"query\">weather</parameter></invoke>"}`,
+		``,
+	}, "\n")
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	processingFailed, exists := c.Get(ctxKeyResponseProcessingFailed)
+	if !exists || processingFailed != true {
+		t.Fatal("expected missing Responses terminal event to mark response processing failed")
+	}
+	if strings.Contains(w.Body.String(), "response.completed") {
+		t.Fatalf("unexpected synthesized completion for truncated stream: %s", w.Body.String())
+	}
+}
+
+func TestHandleFunctionCallResponsesStreamingResponseMarksInvalidEventProcessingFailed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	streamBody := strings.Join([]string{
+		`data: {invalid}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`,
+		``,
+	}, "\n")
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
+
+	ps := &ProxyServer{}
+	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
+
+	processingFailed, exists := c.Get(ctxKeyResponseProcessingFailed)
+	if !exists || processingFailed != true {
+		t.Fatal("expected invalid Responses event to mark response processing failed")
 	}
 }
 

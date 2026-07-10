@@ -1348,6 +1348,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	// Fallback: if we cannot parse JSON, behave like normal response handler.
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
+		markResponseProcessingFailed(c)
 		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
 		if shouldCapture {
 			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
@@ -1754,6 +1755,13 @@ func (ps *ProxyServer) handleFunctionCallResponsesNormalResponse(c *gin.Context,
 
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
+		markResponseProcessingFailed(c)
+		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), false)
+		return
+	}
+	errorCode, errorMessage := responsesErrorFields(payload)
+	setResponsesLogicalFailure(c, stringFromJSONMap(payload, "status"), errorCode, errorMessage)
+	if _, _, logicalFailure := logicalStatusFromContext(c); logicalFailure {
 		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), false)
 		return
 	}
@@ -1834,6 +1842,7 @@ func (ps *ProxyServer) handleFunctionCallAnthropicNormalResponse(c *gin.Context,
 
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
+		markResponseProcessingFailed(c)
 		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), false)
 		return
 	}
@@ -2763,18 +2772,42 @@ func (ps *ProxyServer) handleFunctionCallResponsesStreamingBody(c *gin.Context, 
 	result, err := readFunctionCallSSEEvents(body)
 	if err != nil {
 		logUpstreamError("reading Responses function call stream", err)
+		markResponseProcessingFailed(c)
 		writeUpstreamErrorBodyReadFailure(c)
 		return
 	}
 	if result.Passthrough != nil {
-		if err := copyFunctionCallSSEPassthrough(c, result.Passthrough, flusher); err != nil {
+		var failureCapture sseLogicalFailureCapture
+		if _, err := io.Copy(io.MultiWriter(c.Writer, &failureCapture), result.Passthrough); err != nil {
 			logUpstreamError("passing through Responses function call stream", err)
+			markResponseProcessingFailed(c)
 		}
+		flusher.Flush()
+		failureCapture.apply(c)
 		return
 	}
 	events := result.Events
-
-	text, responseID, model := collectResponsesFunctionCallStreamText(c, events)
+	text, responseID, model, terminalSeen := collectResponsesFunctionCallStreamText(c, events)
+	if !terminalSeen {
+		markResponseProcessingFailed(c)
+		if err := replayFunctionCallSSEEvents(c, events, flusher); err != nil {
+			logUpstreamError("replaying incomplete Responses function call stream", err)
+		}
+		return
+	}
+	if _, processingFailed := c.Get(ctxKeyResponseProcessingFailed); processingFailed {
+		if err := replayFunctionCallSSEEvents(c, events, flusher); err != nil {
+			logUpstreamError("replaying unverified Responses function call stream", err)
+		}
+		return
+	}
+	if _, _, logicalFailure := logicalStatusFromContext(c); logicalFailure {
+		if err := replayFunctionCallSSEEvents(c, events, flusher); err != nil {
+			logUpstreamError("replaying failed Responses function call stream", err)
+			markResponseProcessingFailed(c)
+		}
+		return
+	}
 	calls := parseFunctionCallsXML(text, triggerSignal)
 	if len(calls) == 0 && strings.Contains(text, "<function_calls>") {
 		calls = parseFunctionCallsXML(text, "")
@@ -3148,10 +3181,11 @@ func replayFunctionCallSSEEvents(c *gin.Context, events []functionCallSSEEvent, 
 	return nil
 }
 
-func collectResponsesFunctionCallStreamText(c *gin.Context, events []functionCallSSEEvent) (string, string, string) {
+func collectResponsesFunctionCallStreamText(c *gin.Context, events []functionCallSSEEvent) (string, string, string, bool) {
 	var text strings.Builder
 	responseID := ""
 	model := ""
+	terminalSeen := false
 	var outputEstimate estimatedTokenCapture
 	for _, event := range events {
 		if event.Data == "" || strings.TrimSpace(event.Data) == "[DONE]" {
@@ -3159,11 +3193,15 @@ func collectResponsesFunctionCallStreamText(c *gin.Context, events []functionCal
 		}
 		var payload map[string]any
 		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
+			markResponseProcessingFailed(c)
 			continue
 		}
 		eventType, _ := payload["type"].(string)
 		if eventType == "" {
 			eventType = event.Event
+		}
+		if eventType == "response.completed" || eventType == "response.done" || eventType == "response.failed" {
+			terminalSeen = true
 		}
 		if resp, ok := payload["response"].(map[string]any); ok {
 			if id, _ := resp["id"].(string); id != "" {
@@ -3175,6 +3213,16 @@ func collectResponsesFunctionCallStreamText(c *gin.Context, events []functionCal
 			if eventType == "response.completed" && text.Len() == 0 {
 				text.WriteString(extractResponsesOutputText(resp))
 			}
+			if eventType == "response.failed" || strings.EqualFold(stringFromJSONMap(resp, "status"), "failed") {
+				errorCode, errorMessage := responsesErrorFields(resp)
+				if errorCode == "" && errorMessage == "" {
+					errorCode, errorMessage = responsesErrorFields(payload)
+				}
+				setResponsesLogicalFailure(c, "failed", errorCode, errorMessage)
+			}
+		} else if eventType == "response.failed" {
+			errorCode, errorMessage := responsesErrorFields(payload)
+			setResponsesLogicalFailure(c, "failed", errorCode, errorMessage)
 		}
 		switch eventType {
 		case "response.output_text.delta":
@@ -3195,7 +3243,15 @@ func collectResponsesFunctionCallStreamText(c *gin.Context, events []functionCal
 	if _, _, ok := getTokenUsage(c); !ok {
 		setEstimatedOutputTokens(c, outputEstimate.Tokens())
 	}
-	return text.String(), responseID, model
+	return text.String(), responseID, model, terminalSeen
+}
+
+func responsesErrorFields(payload map[string]any) (string, string) {
+	errorPayload, _ := payload["error"].(map[string]any)
+	if errorPayload == nil {
+		return "", ""
+	}
+	return stringFromJSONMap(errorPayload, "code"), stringFromJSONMap(errorPayload, "message")
 }
 
 func collectAnthropicFunctionCallStreamText(c *gin.Context, events []functionCallSSEEvent) (string, string, string, int, int) {
