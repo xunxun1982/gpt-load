@@ -263,6 +263,64 @@ func TestHandleNormalResponsePrefersUpstreamUsage(t *testing.T) {
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
 }
 
+func TestHandleNormalResponseRecordsLargeCompressedResponsesFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte(`{"id":"resp_failed","status":"failed","error":{"code":"server_error","message":"temporary upstream failure"},"padding":"` + strings.Repeat("x", maxResponseCaptureBytes+1024) + `"}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(compressGzipForResponseHandlerTest(t, body))),
+		Header:     http.Header{"Content-Encoding": []string{"gzip"}},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	statusCode, _, logicalFailure := logicalStatusFromContext(c)
+	require.True(t, logicalFailure)
+	assert.Equal(t, http.StatusBadGateway, statusCode)
+}
+
+func TestHandleNormalResponseRecordsIdentityEncodedResponsesFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"status":"failed","error":{"code":"server_error","message":"temporary upstream failure"}}`)),
+		Header:     http.Header{"Content-Encoding": []string{"identity"}},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	statusCode, _, logicalFailure := logicalStatusFromContext(c)
+	require.True(t, logicalFailure)
+	assert.Equal(t, http.StatusBadGateway, statusCode)
+}
+
+func TestHandleNormalResponseMarksUnsupportedEncodedResponsesStatusUnverified(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`opaque response`)),
+		Header:     http.Header{"Content-Encoding": []string{"custom"}},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	unverified, exists := c.Get(ctxKeyResponsesStatusUnverified)
+	require.True(t, exists)
+	assert.Equal(t, true, unverified)
+}
+
 func TestHandleStreamingResponseParsesResponsesUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -342,6 +400,27 @@ func TestHandleStreamingResponseRecordsResponsesFailedRateLimit(t *testing.T) {
 		assert.Contains(t, body, "Concurrency limit exceeded")
 	}
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleStreamingResponseMarksInvalidResponsesEventUnverified(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			"data: {invalid}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+		)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	unverified, exists := c.Get(ctxKeyResponsesStatusUnverified)
+	require.True(t, exists)
+	assert.Equal(t, true, unverified)
 }
 
 func TestHandleStreamingResponseSanitizesCapturedLogicalFailureBody(t *testing.T) {

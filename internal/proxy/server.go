@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"container/list"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -233,11 +235,10 @@ func codexAggregateAffinityHeaderKey(c *gin.Context, group *models.Group) string
 }
 
 func codexAggregateAffinityEnabled(c *gin.Context, group *models.Group) bool {
-	if c == nil || group == nil || group.GroupType != "aggregate" || group.ChannelType != "openai-response" ||
-		!getGroupConfigBool(group, "codex_affinity_enabled") || !isCodexClientRequest(c, group) {
-		return false
-	}
-	return true
+	return c != nil && c.Request != nil && group != nil &&
+		group.GroupType == "aggregate" &&
+		group.ChannelType == "openai-response" &&
+		getGroupConfigBool(group, "codex_affinity_enabled")
 }
 
 func codexAggregateAffinityKeyFromPayload(c *gin.Context, group *models.Group, payload map[string]any, payloadOK bool) string {
@@ -434,7 +435,6 @@ func (cache *codexAggregateAffinityCache) get(key string, now time.Time) (uint, 
 		return 0, false
 	}
 
-	entry.expiresAt = now.Add(cache.ttl)
 	cache.order.MoveToFront(element)
 	return entry.subGroupID, true
 }
@@ -498,9 +498,19 @@ func codexAggregateAffinityCacheKey(groupID uint, affinityKey string, model stri
 	if groupID == 0 || affinityKey == "" {
 		return ""
 	}
-	// Keep the raw key only inside this process-local cache; it is never logged.
-	// Add hashing only if memory disclosure becomes part of the threat model.
-	return strconv.FormatUint(uint64(groupID), 10) + "\x00" + model + "\x00" + affinityKey
+
+	h := sha256.New()
+	var numberBuffer [20]byte
+	_, _ = h.Write(strconv.AppendUint(numberBuffer[:0], uint64(groupID), 10))
+	_, _ = io.WriteString(h, "\x00")
+	writeField := func(value string) {
+		_, _ = h.Write(strconv.AppendInt(numberBuffer[:0], int64(len(value)), 10))
+		_, _ = io.WriteString(h, ":")
+		_, _ = io.WriteString(h, value)
+	}
+	writeField(model)
+	writeField(affinityKey)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func modelFromRequestBody(bodyBytes []byte) string {
@@ -511,28 +521,6 @@ func modelFromRequestBody(bodyBytes []byte) string {
 		return ""
 	}
 	return strings.TrimSpace(payload.Model)
-}
-
-func isCodexClientRequest(c *gin.Context, group *models.Group) bool {
-	if c == nil || c.Request == nil {
-		return false
-	}
-	if isCodexPath(c.Request.URL.Path, group.Name) {
-		return true
-	}
-	if strings.EqualFold(strings.TrimSpace(c.Request.Header.Get("Originator")), "codex_cli_rs") {
-		return true
-	}
-	userAgent := strings.ToLower(c.Request.Header.Get("User-Agent"))
-	if strings.Contains(userAgent, "codex") {
-		return true
-	}
-	for name := range c.Request.Header {
-		if strings.HasPrefix(strings.ToLower(name), "x-codex-") {
-			return true
-		}
-	}
-	return false
 }
 
 func firstNonEmptyHeader(c *gin.Context, names ...string) string {
@@ -617,6 +605,8 @@ const (
 	ctxKeyUpstreamLogicalStatusCode   = "upstream_logical_status_code"
 	ctxKeyUpstreamLogicalErrorMessage = "upstream_logical_error_message"
 	ctxKeyUpstreamUserAgent           = "upstream_user_agent"
+	ctxKeyResponsesStatusUnverified   = "responses_status_unverified"
+	ctxKeyResponseProcessingFailed    = "response_processing_failed"
 )
 
 // ProxyServer represents the proxy server
@@ -642,6 +632,7 @@ type retryContext struct {
 	subGroupKeyRetryMap            map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
 	forcedSubGroupID               uint          // Keeps key-level retries on the selected sub-group until its retry budget is exhausted
 	codexAffinityKey               string        // Stable Codex affinity key for this aggregate request
+	codexAffinityCacheKey          string        // Precomputed bounded cache key reused across retries and binding
 	codexAffinityPrimarySubGroupID uint          // Stable primary sub-group for Codex affinity requests
 	codexParsedPayload             map[string]any
 	codexParsedPayloadSet          bool
@@ -684,6 +675,11 @@ func (rc *retryContext) codexRequestModel(bodyBytes []byte) string {
 		return modelFromRequestBody(bodyBytes)
 	}
 	if !rc.codexParsedModelSet {
+		if rc.codexParsedPayloadSet && rc.codexParsedPayload != nil {
+			rc.codexParsedModel = stringFromJSONMap(rc.codexParsedPayload, "model")
+			rc.codexParsedModelSet = true
+			return rc.codexParsedModel
+		}
 		source := rc.originalBodyBytes
 		if len(source) == 0 {
 			source = bodyBytes
@@ -2249,7 +2245,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			retryCtx.codexAffinityKey = affinityKey
 			if affinityKey != "" {
 				model := retryCtx.codexRequestModel(bodyBytes)
-				cacheKey := codexAggregateAffinityCacheKey(originalGroup.ID, affinityKey, model)
+				if retryCtx.codexAffinityCacheKey == "" {
+					retryCtx.codexAffinityCacheKey = codexAggregateAffinityCacheKey(originalGroup.ID, affinityKey, model)
+				}
+				cacheKey := retryCtx.codexAffinityCacheKey
 				if cachedSubGroupID, ok := ps.codexAffinityCache.get(cacheKey, time.Now()); ok {
 					var cached bool
 					subGroupName, subGroupID, cached = forcedAggregateSubGroup(originalGroup, cachedSubGroupID, retryCtx.excludedSubGroups)
@@ -2271,14 +2270,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 					}
 				}
 				if subGroupID == 0 {
-					var selection services.AffinitySubGroupSelection
-					selection, err = ps.subGroupManager.SelectSubGroupWithRetryAffinityResult(originalGroup, retryCtx.excludedSubGroups, affinityKey)
-					subGroupName = selection.SelectedName
-					subGroupID = selection.SelectedID
-					// Keep a cached successful sub-group as this request's primary so
-					// failover to any other sub-group strips incompatible encrypted reasoning.
-					if selection.PrimaryID != 0 && retryCtx.codexAffinityPrimarySubGroupID == 0 {
-						retryCtx.codexAffinityPrimarySubGroupID = selection.PrimaryID
+					subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetry(originalGroup, retryCtx.excludedSubGroups)
+					// A cache miss uses the aggregate group's normal effective-weight
+					// selector. Keep the first selected sub-group as this request's
+					// primary, but bind the session only after a successful response.
+					if subGroupID != 0 && retryCtx.codexAffinityPrimarySubGroupID == 0 {
+						retryCtx.codexAffinityPrimarySubGroupID = subGroupID
 					}
 				}
 			} else {
@@ -2676,6 +2673,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				"aggregate_group": originalGroup.Name,
 				"sub_group":       group.Name,
 			}).Warn("Failed to strip encrypted reasoning for Codex affinity fallback sub-group")
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, "Invalid request body for Codex affinity fallback"))
+			ps.logEarlyError(c, originalGroup, startTime, http.StatusBadRequest, errors.New("invalid JSON request body for Codex affinity fallback"))
+			return
 		} else if stripped {
 			finalBodyBytes = strippedBody
 			logrus.WithFields(logrus.Fields{
@@ -3071,9 +3071,15 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 
 	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
-	if retryCtx.codexAffinityKey != "" {
-		cacheKey := codexAggregateAffinityCacheKey(originalGroup.ID, retryCtx.codexAffinityKey, retryCtx.codexRequestModel(bodyBytes))
-		ps.codexAffinityCache.set(cacheKey, subGroupID, time.Now())
+	if retryCtx.codexAffinityCacheKey != "" &&
+		resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices &&
+		c.Writer.Status() >= http.StatusOK && c.Writer.Status() < http.StatusMultipleChoices {
+		_, _, logicalFailure := logicalStatusFromContext(c)
+		_, statusUnverified := c.Get(ctxKeyResponsesStatusUnverified)
+		_, processingFailed := c.Get(ctxKeyResponseProcessingFailed)
+		if !logicalFailure && !statusUnverified && !processingFailed {
+			ps.codexAffinityCache.set(retryCtx.codexAffinityCacheKey, subGroupID, time.Now())
+		}
 	}
 }
 
