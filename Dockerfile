@@ -6,6 +6,11 @@ FROM node:26.5.0-alpine3.24 AS node-builder
 ARG VERSION=1.0.0
 WORKDIR /build
 
+# The npm bundled with an official Node image can vary between releases.
+# Pin it explicitly so Docker builds match CI and the generated lockfile.
+RUN npm install --global npm@12.0.0 \
+    && test "$(npm --version)" = "12.0.0"
+
 # Leverage Docker layer caching for dependencies
 COPY ./web/package*.json ./
 RUN npm ci --no-audit

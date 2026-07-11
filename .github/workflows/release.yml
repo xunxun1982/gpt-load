@@ -11,6 +11,7 @@ on:
       - "*"
 
 env:
+  # Keep GO_VERSION exactly in sync with go.mod because Actions uses GOTOOLCHAIN=local.
   GO_VERSION: "1.26.5"
   NODE_VERSION: "26.4.0"
   NPM_VERSION: "12.0.0"
@@ -71,7 +72,12 @@ jobs:
           cache: "npm"
           cache-dependency-path: "web/package-lock.json"
 
-      - name: Verify bundled npm version
+      # setup-node's bundled npm version can differ by platform and Node release.
+      # Install the project-pinned version explicitly before verifying it.
+      - name: Install pinned npm version
+        run: npm install --global "npm@${{ env.NPM_VERSION }}"
+
+      - name: Verify npm version
         run: test "$(npm --version)" = "${{ env.NPM_VERSION }}"
 
       - name: Build Frontend

@@ -16,7 +16,9 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          # Keep this exactly in sync with go.mod. Actions uses GOTOOLCHAIN=local,
+          # so an older patch release cannot load the module or generate PGO data.
+          go-version: "1.26.5"
           cache: true
           cache-dependency-path: go.sum
 
