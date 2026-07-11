@@ -38,8 +38,10 @@ services:
   # 如果需要安装 MySQL、PostgreSQL 或 Redis，请取消以下注释并配置相应的环境变量。
   # 并且要在上方的depends_on中取消注释相应的依赖服务。
 
+  # IMPORTANT: Back up existing data and follow the upstream major-version
+  # upgrade procedure before changing a database image used in production.
   # mysql:
-  #   image: mysql:8.2
+  #   image: mysql:9.7.1
   #   container_name: gpt-load-mysql
   #   restart: always
   #   environment:
@@ -54,7 +56,7 @@ services:
   #     retries: 10
 
   # postgres:
-  #   image: "postgres:16"
+  #   image: "postgres:18.4"
   #   container_name: gpt-load-postgres
   #   environment:
   #     POSTGRES_USER: postgres
@@ -69,7 +71,7 @@ services:
   #     retries: 10
 
   # redis:
-  #   image: redis:latest
+  #   image: redis:8.8.0
   #   container_name: gpt-load-redis
   #   restart: always
   #   healthcheck:
