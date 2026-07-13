@@ -60,7 +60,7 @@ func TestDashboardRPMStatsUsesReadDBWhenWritePoolIsBusy(t *testing.T) {
 		close(released)
 	}()
 
-	server := &Server{DB: writeDB, ReadDB: readDB}
+	server := &Server{DB: writeDB, readDB: readDB}
 	startedAt := time.Now()
 	stats, err := server.getRPMStats(now)
 	elapsed := time.Since(startedAt)

@@ -161,25 +161,49 @@ func (p *sseLogicalFailureCapture) Write(chunk []byte) (int, error) {
 	}
 }
 
-func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
+func streamJSONPayload(line []byte) []byte {
 	line = bytes.TrimSpace(line)
-	if !bytes.HasPrefix(line, []byte("data:")) {
+	switch {
+	case bytes.HasPrefix(line, []byte("data:")):
+		data := bytes.TrimSpace(line[len("data:"):])
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+			return nil
+		}
+		return data
+	case len(line) > 0 && line[0] == '{':
+		// Some gateways emit a JSON error line after SSE comments without a data prefix.
+		return line
+	default:
+		return nil
+	}
+}
+
+func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
+	data := streamJSONPayload(line)
+	if len(data) == 0 {
 		return
 	}
-	data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
 	eventType := strings.TrimSpace(gjson.GetBytes(data, "type").String())
 	responseStatus := strings.TrimSpace(gjson.GetBytes(data, "response.status").String())
 	if eventType == "response.completed" || eventType == "response.done" || eventType == "response.failed" {
 		p.terminalSeen = true
 	}
-	if eventType != "response.failed" && !strings.EqualFold(responseStatus, "failed") {
+	topLevelError := gjson.GetBytes(data, "error")
+	if !topLevelError.IsObject() && eventType != "response.failed" && !strings.EqualFold(responseStatus, "failed") {
 		return
 	}
 	errorCode := strings.TrimSpace(gjson.GetBytes(data, "error.code").String())
 	if errorCode == "" {
+		errorCode = strings.TrimSpace(gjson.GetBytes(data, "error.type").String())
+	}
+	if errorCode == "" {
 		errorCode = strings.TrimSpace(gjson.GetBytes(data, "response.error.code").String())
 	}
-	p.recordFailure(errorCode, "")
+	errorMessage := strings.TrimSpace(gjson.GetBytes(data, "error.message").String())
+	if errorMessage == "" {
+		errorMessage = strings.TrimSpace(gjson.GetBytes(data, "response.error.message").String())
+	}
+	p.recordFailure(errorCode, errorMessage)
 }
 
 func (p *sseLogicalFailureCapture) Finish() {
@@ -205,12 +229,8 @@ func (p *sseLogicalFailureCapture) apply(c *gin.Context) {
 }
 
 func (p *sseLogicalFailureCapture) parseLine(line []byte) {
-	line = bytes.TrimSpace(line)
-	if !bytes.HasPrefix(line, []byte("data:")) {
-		return
-	}
-	data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+	data := streamJSONPayload(line)
+	if len(data) == 0 {
 		return
 	}
 
@@ -242,6 +262,9 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 	errorMessage := ""
 	if payload.Error != nil {
 		errorCode = strings.TrimSpace(payload.Error.Code)
+		if errorCode == "" {
+			errorCode = strings.TrimSpace(payload.Error.Type)
+		}
 		errorMessage = strings.TrimSpace(payload.Error.Message)
 	}
 	if payload.Response != nil && payload.Response.Error != nil {
@@ -253,7 +276,7 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 		}
 	}
 
-	isFailed := payload.Type == "response.failed" || (payload.Response != nil && strings.EqualFold(strings.TrimSpace(payload.Response.Status), "failed"))
+	isFailed := payload.Error != nil || payload.Type == "response.failed" || (payload.Response != nil && strings.EqualFold(strings.TrimSpace(payload.Response.Status), "failed"))
 	if !isFailed {
 		return
 	}

@@ -24,7 +24,7 @@ const (
 // BalanceInfo represents the balance information for a site
 type BalanceInfo struct {
 	SiteID  uint    `json:"site_id"`
-	Balance *string `json:"balance"` // nil means not available, string for display (may be negative)
+	Balance *string `json:"balance"` // nil means no authoritative refresh value; an empty string is authoritative
 }
 
 // userSelfResponse represents the /api/user/self API response structure
@@ -199,10 +199,10 @@ func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uin
 	updated := false
 
 	for siteID, info := range results {
-		balance := ""
-		if info.Balance != nil {
-			balance = *info.Balance
+		if info.Balance == nil {
+			continue
 		}
+		balance := *info.Balance
 
 		// Update only balance fields to avoid touching other columns
 		if err := s.db.WithContext(ctx).Model(&ManagedSite{}).
@@ -228,12 +228,9 @@ func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uin
 func (s *BalanceService) FetchSiteBalance(ctx context.Context, site *ManagedSite) *BalanceInfo {
 	result := s.fetchSiteBalanceInternal(ctx, site)
 
-	// Empty balance is authoritative for this refresh and clears stale cached values.
-	balance := ""
 	if result.Balance != nil {
-		balance = *result.Balance
+		s.updateSiteBalance(ctx, site.ID, *result.Balance)
 	}
-	s.updateSiteBalance(ctx, site.ID, balance)
 
 	return result
 }

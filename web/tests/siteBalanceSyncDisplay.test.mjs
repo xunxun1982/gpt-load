@@ -42,7 +42,7 @@ const subGroupTable = readSource("../src/components/keys/SubGroupTable.vue");
 const groupInfoCard = readSource("../src/components/keys/GroupInfoCard.vue");
 
 test("binding site snapshot exposes and stores cached balances", () => {
-  assert.match(siteApi, /last_balance:\s*string/);
+  assert.match(siteApi, /last_balance:\s*string\s*\|\s*null/);
   assert.match(siteApi, /listSitesForBinding\(hideMessage = false\)/);
   assert.match(appState, /siteBalances:\s*Record<number, string \| null>/);
   assert.match(appState, /export function replaceSiteBalances/);
@@ -89,7 +89,12 @@ test("stale paginated site responses do not overwrite newer balance updates", as
   assert.match(sitePanel, /updateSiteBalances\(result\.sites, siteBalanceRevision\)/);
 });
 
-test("site management pushes single and batch refresh results into shared balances", () => {
+test("site management only pushes authoritative refresh results into shared balances", () => {
+  assert.match(
+    sitePanel,
+    /if \(result\.balance === null\) \{\s*(?:\/\/[^\r\n]*(?:\r?\n|$)\s*)*return;\s*\}/
+  );
+  assert.match(sitePanel, /if \(!isNaN\(siteId\) && info\.balance !== null\)/);
   assert.match(sitePanel, /updateSiteBalance\(siteId, result\.balance\)/);
   assert.match(sitePanel, /updateSiteBalance\(siteId, info\.balance\)/);
   assert.match(sitePanel, /Object\.prototype\.hasOwnProperty\.call\(balances\.value, site\.id\)/);

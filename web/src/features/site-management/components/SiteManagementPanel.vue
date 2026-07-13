@@ -1456,15 +1456,19 @@ function handleNavigateToGroup(groupId: number) {
 async function fetchSiteBalance(siteId: number) {
   try {
     const result = await siteManagementApi.fetchSiteBalance(siteId);
+    if (result.balance === null) {
+      // A null result is non-authoritative, so keep the last successful UI value.
+      return;
+    }
     balances.value[siteId] = result.balance;
     updateSiteBalance(siteId, result.balance);
     // Also update the site in the list to reflect the new balance
     const site = sites.value.find(s => s.id === siteId);
     if (site) {
-      site.last_balance = result.balance ?? "";
+      site.last_balance = result.balance;
     }
   } catch (_) {
-    // Keep existing value or set to null on error
+    // Keep the last successful balance on refresh errors.
   }
 }
 
@@ -1477,16 +1481,17 @@ async function refreshAllBalances() {
     // Update balances map with results
     for (const [siteIdStr, info] of Object.entries(results)) {
       const siteId = parseInt(siteIdStr, 10);
-      if (!isNaN(siteId)) {
+      if (!isNaN(siteId) && info.balance !== null) {
         balances.value[siteId] = info.balance;
         updateSiteBalance(siteId, info.balance);
         // Also update the site in the list
         const site = sites.value.find(s => s.id === siteId);
         if (site) {
-          site.last_balance = info.balance ?? "";
+          site.last_balance = info.balance;
         }
       }
     }
+    // The request completed even when some sites had no authoritative update.
     message.success(t("siteManagement.balanceRefreshed"));
   } catch (_) {
     // Error handled by centralized error handler

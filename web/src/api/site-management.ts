@@ -52,7 +52,7 @@ export interface SiteBindingOption {
   name: string;
   sort: number;
   enabled: boolean;
-  last_balance: string;
+  last_balance: string | null;
   bound_group_count?: number;
 }
 

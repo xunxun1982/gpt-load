@@ -22,7 +22,7 @@ import (
 // Server contains dependencies for HTTP handlers
 type Server struct {
 	DB                         *gorm.DB
-	ReadDB                     *gorm.DB
+	readDB                     *gorm.DB
 	config                     types.ConfigManager
 	SettingsManager            *config.SystemSettingsManager
 	GroupManager               *services.GroupManager
@@ -84,7 +84,7 @@ func NewServer(params NewServerParams) *Server {
 	}
 	s := &Server{
 		DB:                         params.DB,
-		ReadDB:                     readDB,
+		readDB:                     readDB,
 		config:                     params.Config,
 		SettingsManager:            params.SettingsManager,
 		GroupManager:               params.GroupManager,
@@ -143,8 +143,9 @@ func NewServer(params NewServerParams) *Server {
 }
 
 func (s *Server) readOnlyDB() *gorm.DB {
-	if s.ReadDB != nil {
-		return s.ReadDB
+	// Keep the fallback for tests and lightweight handlers that construct Server directly.
+	if s.readDB != nil {
+		return s.readDB
 	}
 	return s.DB
 }

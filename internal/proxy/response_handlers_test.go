@@ -402,6 +402,85 @@ func TestHandleStreamingResponseRecordsResponsesFailedRateLimit(t *testing.T) {
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
 }
 
+func TestHandleStreamingResponseRecordsTopLevelErrorAfterSSEComments(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "bare JSON error",
+			body: ": PING\n\n: PING\n\n" +
+				`{"error":{"message":"openai_error","type":"bad_response_status_code","param":"","code":"bad_response_status_code"}}`,
+		},
+		{
+			name: "data event error",
+			body: ": PING\n\n" +
+				`data: {"error":{"message":"openai_error","type":"bad_response_status_code","param":"","code":"bad_response_status_code"}}` + "\n\n",
+		},
+		{
+			name: "oversized bare JSON error",
+			body: `{"error":{"message":"openai_error","type":"bad_response_status_code","param":"","code":"bad_response_status_code"},"padding":"` +
+				strings.Repeat("x", maxCodexStreamLineBytes) + `"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+			}
+
+			ps := &ProxyServer{}
+			ps.handleStreamingResponse(c, resp)
+
+			statusCode, exists := c.Get(ctxKeyUpstreamLogicalStatusCode)
+			if assert.True(t, exists) {
+				assert.Equal(t, http.StatusBadGateway, statusCode)
+			}
+			message, exists := c.Get(ctxKeyUpstreamLogicalErrorMessage)
+			if assert.True(t, exists) {
+				assert.Equal(t, "openai_error", message)
+			}
+		})
+	}
+}
+
+func TestHandleStreamingResponseIgnoresNonErrorSSELines(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "comment only", body: ": PING\n\n"},
+		{name: "normal data event", body: `data: {"id":"chatcmpl-test","choices":[]}` + "\n\n"},
+		{name: "bare success JSON", body: `{"ok":true}`},
+		{name: "null error", body: `data: {"error":null,"id":"chatcmpl-test"}` + "\n\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+			}
+
+			ps := &ProxyServer{}
+			ps.handleStreamingResponse(c, resp)
+
+			_, exists := c.Get(ctxKeyUpstreamLogicalStatusCode)
+			assert.False(t, exists)
+		})
+	}
+}
+
 func TestHandleStreamingResponseMarksInvalidResponsesEventUnverified(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
