@@ -18,6 +18,7 @@ import (
 func TestCodexUserAgent(t *testing.T) {
 	t.Parallel()
 
+	assert.Equal(t, "0.144.3", DefaultCodexVersion)
 	assert.NotEmpty(t, CodexUserAgent)
 	assert.Equal(t, BuildCodexUserAgent(DefaultCodexVersion), CodexUserAgent)
 	assert.Contains(t, CodexUserAgent, "codex-tui/"+DefaultCodexVersion)
@@ -164,8 +165,12 @@ func TestOpenAIResponseChannel_ValidateKey_AppliesSimulatedCodexClient(t *testin
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, BuildCodexUserAgent("0.150.1"), r.Header.Get("User-Agent"))
 		assert.Equal(t, "0.150.1", r.Header.Get("Version"))
-		assert.Equal(t, "codex_cli_rs", r.Header.Get("Originator"))
-		assert.Equal(t, "terminal_resize_reflow", r.Header.Get("X-Codex-Beta-Features"))
+		assert.Equal(t, "codex-tui", r.Header.Get("Originator"))
+		assert.Empty(t, r.Header.Get("X-Codex-Beta-Features"))
+		assert.NotEmpty(t, r.Header.Get("X-Codex-Installation-Id"))
+		assert.NotEmpty(t, r.Header.Get("Session-Id"))
+		assert.NotEmpty(t, r.Header.Get("Thread-Id"))
+		assert.Equal(t, r.Header.Get("Thread-Id"), r.Header.Get("x-client-request-id"))
 		assert.NotEmpty(t, r.Header.Get("X-Codex-Turn-Metadata"))
 		assert.NotEmpty(t, r.Header.Get("X-Codex-Window-Id"))
 		assert.Equal(t, "responses=experimental", r.Header.Get("OpenAI-Beta"))
@@ -178,6 +183,14 @@ func TestOpenAIResponseChannel_ValidateKey_AppliesSimulatedCodexClient(t *testin
 		include, ok := body["include"].([]any)
 		if assert.True(t, ok) {
 			assert.Contains(t, include, "reasoning.encrypted_content")
+		}
+		clientMetadata, ok := body["client_metadata"].(map[string]any)
+		if assert.True(t, ok) {
+			assert.Equal(t, r.Header.Get("X-Codex-Installation-Id"), clientMetadata["x-codex-installation-id"])
+			assert.Equal(t, r.Header.Get("Session-Id"), clientMetadata["session_id"])
+			assert.Equal(t, r.Header.Get("Thread-Id"), clientMetadata["thread_id"])
+			assert.Equal(t, r.Header.Get("X-Codex-Window-Id"), clientMetadata["x-codex-window-id"])
+			assert.Equal(t, r.Header.Get("X-Codex-Turn-Metadata"), clientMetadata["x-codex-turn-metadata"])
 		}
 
 		w.WriteHeader(http.StatusOK)
@@ -211,6 +224,46 @@ func TestOpenAIResponseChannel_ValidateKey_AppliesSimulatedCodexClient(t *testin
 	)
 	assert.NoError(t, err)
 	assert.True(t, valid)
+}
+
+func TestOpenAIResponseChannel_ValidateKeyWithTrace_UsesSimulatedCodexBody(t *testing.T) {
+	t.Parallel()
+
+	upstreamBody := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		upstreamBody <- body
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response"}`))
+	}))
+	defer server.Close()
+
+	ch := &OpenAIResponseChannel{
+		BaseChannel: &BaseChannel{
+			ValidationEndpoint: "/v1/responses",
+			TestModel:          "gpt-5.2-codex",
+			HTTPClient:         server.Client(),
+			Upstreams: []UpstreamInfo{
+				{URL: mustParseURL(server.URL), Weight: 100, HTTPClient: server.Client()},
+			},
+		},
+	}
+
+	valid, trace, err := ch.ValidateKeyWithTrace(
+		context.Background(),
+		&models.APIKey{KeyValue: "test-key"},
+		&models.Group{Config: datatypes.JSONMap{"simulated_client": "codex"}},
+	)
+	assert.NoError(t, err)
+	assert.True(t, valid)
+	if !assert.NotNil(t, trace) {
+		return
+	}
+
+	var tracedBody map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(trace.RequestBody), &tracedBody))
+	assert.Equal(t, <-upstreamBody, tracedBody)
 }
 
 func TestOpenAIResponseChannel_ValidateKey_ForceNonStreamControlsValidationStream(t *testing.T) {
@@ -253,14 +306,20 @@ func TestOpenAIResponseChannel_ValidateKey_UsesConfiguredEndpointForSimulatedCod
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/responses", r.URL.Path)
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))
-		assert.Equal(t, "codex_cli_rs", r.Header.Get("Originator"))
-		assert.NotEmpty(t, r.Header.Get("Session_ID"))
-		assert.Equal(t, r.Header.Get("Session_ID"), r.Header.Get("Conversation_ID"))
+		assert.Equal(t, "codex-tui", r.Header.Get("Originator"))
+		assert.NotEmpty(t, r.Header.Get("Session-Id"))
+		assert.NotEmpty(t, r.Header.Get("Thread-Id"))
+		assert.Equal(t, r.Header.Get("Thread-Id"), r.Header.Get("x-client-request-id"))
 
 		var body map[string]any
 		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		assert.Equal(t, "gpt-5.2-codex", body["model"])
 		assert.Equal(t, "You are a helpful coding assistant.", body["instructions"])
+		clientMetadata, ok := body["client_metadata"].(map[string]any)
+		if assert.True(t, ok) {
+			assert.Equal(t, r.Header.Get("Session-Id"), clientMetadata["session_id"])
+			assert.Equal(t, r.Header.Get("Thread-Id"), clientMetadata["thread_id"])
+		}
 		input, ok := body["input"].([]any)
 		if assert.True(t, ok) && assert.Len(t, input, 1) {
 			item, ok := input[0].(map[string]any)

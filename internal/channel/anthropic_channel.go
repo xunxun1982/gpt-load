@@ -23,7 +23,7 @@ func init() {
 // ClaudeCodeUserAgent is the User-Agent header value for Claude Code CLI requests.
 // Format: claude-cli/VERSION (external, cli) - matches the official Claude Code CLI client.
 // Check: https://github.com/anthropics/claude-code/releases
-const DefaultClaudeCodeVersion = "2.1.195"
+const DefaultClaudeCodeVersion = "2.1.207"
 
 // BuildClaudeCodeUserAgent builds the Claude Code CLI User-Agent string for the given version.
 func BuildClaudeCodeUserAgent(version string) string {
@@ -120,7 +120,9 @@ func (ch *AnthropicChannel) validateKey(ctx context.Context, apiKey *models.APIK
 		headerCtx := utils.NewHeaderVariableContext(group, apiKey)
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
-	ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group))
+	if rewrittenBody := ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group)); rewrittenBody != nil {
+		body = rewrittenBody
+	}
 
 	var trace *ValidationTrace
 	if captureTrace {
@@ -202,13 +204,30 @@ func buildAnthropicValidationPayload(group *models.Group, model string) (gin.H, 
 }
 
 func buildClaudeCodeValidationUserID(version string) (string, error) {
+	return buildClaudeCodeUserID(version, "")
+}
+
+func buildClaudeCodeUserID(version, sessionID string) (string, error) {
 	deviceID, err := randomHexString(32)
 	if err != nil {
 		return "", err
 	}
-	sessionID := uuid.NewString()
+	if strings.TrimSpace(sessionID) == "" {
+		sessionID = uuid.NewString()
+	}
 	if isClaudeCodeJSONMetadataVersion(version) {
-		return fmt.Sprintf("{\"device_id\":\"%s\",\"account_uuid\":\"\",\"session_id\":\"%s\"}", deviceID, sessionID), nil
+		encoded, err := json.Marshal(struct {
+			DeviceID    string `json:"device_id"`
+			AccountUUID string `json:"account_uuid"`
+			SessionID   string `json:"session_id"`
+		}{
+			DeviceID:  deviceID,
+			SessionID: sessionID,
+		})
+		if err != nil {
+			return "", err
+		}
+		return string(encoded), nil
 	}
 	return "user_" + deviceID + "_account__session_" + sessionID, nil
 }

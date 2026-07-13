@@ -146,7 +146,9 @@ func (ch *GeminiChannel) validateKey(ctx context.Context, apiKey *models.APIKey,
 		headerCtx := utils.NewHeaderVariableContext(group, apiKey)
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
-	ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group))
+	if rewrittenBody := ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group)); rewrittenBody != nil {
+		body = rewrittenBody
+	}
 
 	var trace *ValidationTrace
 	if captureTrace {
