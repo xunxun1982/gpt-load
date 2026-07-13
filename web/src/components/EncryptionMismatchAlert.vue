@@ -134,8 +134,7 @@ onMounted(() => {
                   font-size: 12px;
                 "
               >
-docker compose run --rm gpt-load migrate-keys --to "your-encryption-key"</pre
-              >
+docker compose run --rm gpt-load migrate-keys --to "your-encryption-key"</pre>
               <p style="margin: 8px 0 0 0">
                 3. {{ t("encryptionAlert.scenario.dataNotEncrypted.step3") }}
               </p>
@@ -160,8 +159,7 @@ docker compose run --rm gpt-load migrate-keys --to "your-encryption-key"</pre
                     font-size: 12px;
                   "
                 >
-ENCRYPTION_KEY=your-correct-encryption-key</pre
-                >
+ENCRYPTION_KEY=your-correct-encryption-key</pre>
                 <p style="margin: 4px 0">
                   2. {{ t("encryptionAlert.scenario.keyMismatch.solution1Step2") }}
                 </p>
@@ -187,8 +185,7 @@ ENCRYPTION_KEY=your-correct-encryption-key</pre
                     font-size: 12px;
                   "
                 >
-docker compose run --rm gpt-load migrate-keys --from "old-key" --to "new-key"</pre
-                >
+docker compose run --rm gpt-load migrate-keys --from "old-key" --to "new-key"</pre>
                 <p style="margin: 4px 0">
                   3. {{ t("encryptionAlert.scenario.keyMismatch.solution2Step3") }}
                 </p>
@@ -217,8 +214,7 @@ docker compose run --rm gpt-load migrate-keys --from "old-key" --to "new-key"</p
                     font-size: 12px;
                   "
                 >
-ENCRYPTION_KEY=your-original-encryption-key</pre
-                >
+ENCRYPTION_KEY=your-original-encryption-key</pre>
                 <p style="margin: 4px 0">
                   2. {{ t("encryptionAlert.scenario.keyNotConfigured.solution1Step2") }}
                 </p>
@@ -244,8 +240,7 @@ ENCRYPTION_KEY=your-original-encryption-key</pre
                     font-size: 12px;
                   "
                 >
-docker compose run --rm gpt-load migrate-keys --from "old-key"</pre
-                >
+docker compose run --rm gpt-load migrate-keys --from "old-key"</pre>
                 <p style="margin: 4px 0">
                   3. {{ t("encryptionAlert.scenario.keyNotConfigured.solution2Step3") }}
                 </p>

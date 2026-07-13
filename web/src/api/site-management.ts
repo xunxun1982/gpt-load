@@ -47,6 +47,15 @@ export interface BoundGroupInfo {
   enabled: boolean;
 }
 
+export interface SiteBindingOption {
+  id: number;
+  name: string;
+  sort: number;
+  enabled: boolean;
+  last_balance: string | null;
+  bound_group_count?: number;
+}
+
 export interface ManagedSiteDTO {
   id: number;
   name: string;
@@ -251,10 +260,8 @@ export const siteManagementApi = {
 
   // Get sites available for binding (sorted by sort order)
   // Each site includes bound_group_count for display
-  async listSitesForBinding(): Promise<
-    { id: number; name: string; sort: number; enabled: boolean; bound_group_count?: number }[]
-  > {
-    const res = await http.get("/site-management/sites-for-binding");
+  async listSitesForBinding(hideMessage = false): Promise<SiteBindingOption[]> {
+    const res = await http.get("/site-management/sites-for-binding", { hideMessage });
     return res.data || [];
   },
 

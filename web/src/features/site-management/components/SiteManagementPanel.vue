@@ -21,7 +21,13 @@ import {
 } from "@/api/site-management";
 import { useAutoCheckinStatus } from "@/features/site-management/composables/useAutoCheckinStatus";
 import { proxyPoolApi } from "@/api/proxy-pool";
-import { appState } from "@/utils/app-state";
+import {
+  appState,
+  getSiteBalanceRevision,
+  updateSiteBalance,
+  updateSiteBalances,
+} from "@/utils/app-state";
+import { formatBalanceValue } from "@/utils/display";
 import { askExportMode, askImportMode } from "@/utils/export-import";
 import {
   Close,
@@ -320,6 +326,7 @@ async function focusSiteFromRoute(siteId: number) {
 
 // Load sites with pagination
 async function loadSites(options: LoadSitesOptions = {}) {
+  const siteBalanceRevision = getSiteBalanceRevision();
   loading.value = true;
   try {
     const focusSiteId = options.focusSiteId ?? null;
@@ -335,6 +342,7 @@ async function loadSites(options: LoadSitesOptions = {}) {
 
     const result = await siteManagementApi.listSitesPaginated(params);
     sites.value = result.sites;
+    updateSiteBalances(result.sites, siteBalanceRevision);
     pagination.page = result.page;
     pagination.total = result.total;
     pagination.totalPages = result.total_pages;
@@ -1448,14 +1456,19 @@ function handleNavigateToGroup(groupId: number) {
 async function fetchSiteBalance(siteId: number) {
   try {
     const result = await siteManagementApi.fetchSiteBalance(siteId);
+    if (result.balance === null) {
+      // A null result is non-authoritative, so keep the last successful UI value.
+      return;
+    }
     balances.value[siteId] = result.balance;
+    updateSiteBalance(siteId, result.balance);
     // Also update the site in the list to reflect the new balance
     const site = sites.value.find(s => s.id === siteId);
-    if (site && result.balance) {
+    if (site) {
       site.last_balance = result.balance;
     }
   } catch (_) {
-    // Keep existing value or set to null on error
+    // Keep the last successful balance on refresh errors.
   }
 }
 
@@ -1468,15 +1481,17 @@ async function refreshAllBalances() {
     // Update balances map with results
     for (const [siteIdStr, info] of Object.entries(results)) {
       const siteId = parseInt(siteIdStr, 10);
-      if (!isNaN(siteId)) {
+      if (!isNaN(siteId) && info.balance !== null) {
         balances.value[siteId] = info.balance;
+        updateSiteBalance(siteId, info.balance);
         // Also update the site in the list
         const site = sites.value.find(s => s.id === siteId);
-        if (site && info.balance) {
+        if (site) {
           site.last_balance = info.balance;
         }
       }
     }
+    // The request completed even when some sites had no authoritative update.
     message.success(t("siteManagement.balanceRefreshed"));
   } catch (_) {
     // Error handled by centralized error handler
@@ -1489,15 +1504,11 @@ async function refreshAllBalances() {
 // Priority: 1. Local state (from manual refresh) 2. Database cache (last_balance)
 function getBalanceDisplay(site: ManagedSiteDTO): string {
   // Check local state first (updated by manual refresh)
-  const localBalance = balances.value[site.id];
-  if (localBalance !== undefined && localBalance !== null) {
-    return localBalance;
+  if (Object.prototype.hasOwnProperty.call(balances.value, site.id)) {
+    return formatBalanceValue(balances.value[site.id]);
   }
   // Fall back to database cached balance
-  if (site.last_balance && site.last_balance !== "") {
-    return site.last_balance;
-  }
-  return "-";
+  return formatBalanceValue(site.last_balance);
 }
 
 // Check if site type supports balance fetching

@@ -52,7 +52,7 @@ func setupKeyDeleteServiceTest(t *testing.T) (*gorm.DB, *KeyDeleteService) {
 	})
 
 	keyValidator := keypool.NewKeyValidator(keypool.KeyValidatorParams{})
-	keyService := NewKeyService(db, keyProvider, keyValidator, encSvc, nil)
+	keyService := NewKeyService(db, ReadOnlyDB{DB: db}, keyProvider, keyValidator, encSvc, nil)
 
 	taskService := NewTaskService(memStore)
 	deleteService := NewKeyDeleteService(taskService, keyService)

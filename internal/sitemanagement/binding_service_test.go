@@ -3,16 +3,42 @@ package sitemanagement
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/services"
+	"gpt-load/internal/store"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+type blockingGetStore struct {
+	store.Store
+	entered chan struct{}
+	resume  chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingGetStore) Get(key string) ([]byte, error) {
+	s.once.Do(func() {
+		close(s.entered)
+		<-s.resume
+	})
+	return s.Store.Get(key)
+}
+
+func TestNewBindingServiceUsesEventDrivenBalanceCacheTTL(t *testing.T) {
+	t.Parallel()
+
+	service := NewBindingService(nil, services.ReadOnlyDB{}, nil)
+
+	assert.Equal(t, 5*time.Minute, service.cacheTTL)
+}
 
 // createTestGroup creates a test group with required fields
 func createTestGroup(tb testing.TB, db *gorm.DB, name string, opts ...func(*models.Group)) *models.Group {
@@ -321,9 +347,10 @@ func TestBindingService_ListSitesForBinding(t *testing.T) {
 
 	// Create sites
 	site1 := ManagedSite{
-		Name:    "Site A",
-		BaseURL: "https://example.com",
-		Sort:    1,
+		Name:        "Site A",
+		BaseURL:     "https://example.com",
+		Sort:        1,
+		LastBalance: "$12.34",
 	}
 	err = db.Create(&site1).Error
 	require.NoError(t, err)
@@ -347,7 +374,157 @@ func TestBindingService_ListSitesForBinding(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, sites, 2)
 	assert.Equal(t, int64(1), sites[0].BoundGroupCount)
+	assert.Equal(t, "$12.34", sites[0].LastBalance)
 	assert.Equal(t, int64(0), sites[1].BoundGroupCount)
+}
+
+func TestBindingService_ListSitesForBindingDoesNotRepopulateInvalidatedCache(t *testing.T) {
+	db := setupTestDB(t)
+
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+
+	site := ManagedSite{
+		Name:        "Test Site",
+		BaseURL:     "https://example.com",
+		LastBalance: "$12.34",
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewBindingService(db, services.ReadOnlyDB{DB: db}, nil)
+	queryRead := make(chan struct{})
+	resumeQuery := make(chan struct{})
+	var blockOnce sync.Once
+	require.NoError(t, db.Callback().Query().After("gorm:query").Register(
+		"test:block_sites_for_binding_cache_fill",
+		func(tx *gorm.DB) {
+			if tx.Statement.Table != "managed_sites" {
+				return
+			}
+			if _, ok := tx.Statement.Dest.(*[]ManagedSite); !ok {
+				return
+			}
+			blockOnce.Do(func() {
+				close(queryRead)
+				<-resumeQuery
+			})
+		},
+	))
+
+	type listResult struct {
+		sites []ManagedSiteDTO
+		err   error
+	}
+	resultCh := make(chan listResult, 1)
+	go func() {
+		sites, err := service.ListSitesForBinding(context.Background())
+		resultCh <- listResult{sites: sites, err: err}
+	}()
+
+	resumed := false
+	defer func() {
+		if !resumed {
+			close(resumeQuery)
+		}
+	}()
+
+	select {
+	case <-queryRead:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the binding snapshot query")
+	}
+
+	require.NoError(t, db.Model(&ManagedSite{}).
+		Where("id = ?", site.ID).
+		Update("last_balance", "$99.00").Error)
+	service.InvalidateSitesForBindingCache()
+	close(resumeQuery)
+	resumed = true
+
+	var first listResult
+	select {
+	case first = <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first binding snapshot")
+	}
+	require.NoError(t, first.err)
+	require.Len(t, first.sites, 1)
+	assert.Equal(t, "$12.34", first.sites[0].LastBalance)
+
+	refreshed, err := service.ListSitesForBinding(context.Background())
+	require.NoError(t, err)
+	require.Len(t, refreshed, 1)
+	assert.Equal(t, "$99.00", refreshed[0].LastBalance)
+}
+
+func TestBindingService_ListSitesForBindingHandlesInvalidationBeforeStaleCacheReturn(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+	require.NoError(t, db.Create(&ManagedSite{
+		Name:        "Test Site",
+		BaseURL:     "https://example.com",
+		LastBalance: "$99.00",
+	}).Error)
+
+	baseStore := store.NewMemoryStore()
+	taskWriter := services.NewTaskService(baseStore)
+	_, err := taskWriter.StartTask(services.TaskTypeKeyImport, "test", 1)
+	require.NoError(t, err)
+
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	taskReader := services.NewTaskService(&blockingGetStore{
+		Store:   baseStore,
+		entered: entered,
+		resume:  resume,
+	})
+	service := NewBindingService(db, services.ReadOnlyDB{DB: db}, taskReader)
+	service.cache = &sitesForBindingCacheEntry{
+		Data:      []ManagedSiteDTO{{ID: 1, LastBalance: "$12.34"}},
+		ExpiresAt: time.Now().Add(-time.Second),
+	}
+
+	type listOutcome struct {
+		sites      []ManagedSiteDTO
+		err        error
+		panicValue any
+	}
+	outcomeCh := make(chan listOutcome, 1)
+	go func() {
+		outcome := listOutcome{}
+		defer func() {
+			outcome.panicValue = recover()
+			outcomeCh <- outcome
+		}()
+		outcome.sites, outcome.err = service.ListSitesForBinding(context.Background())
+	}()
+
+	resumed := false
+	defer func() {
+		if !resumed {
+			close(resume)
+		}
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the task status read")
+	}
+
+	service.InvalidateSitesForBindingCache()
+	close(resume)
+	resumed = true
+
+	var outcome listOutcome
+	select {
+	case outcome = <-outcomeCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the binding snapshot")
+	}
+	assert.Nil(t, outcome.panicValue)
+	require.NoError(t, outcome.err)
+	require.Len(t, outcome.sites, 1)
+	assert.Equal(t, "$99.00", outcome.sites[0].LastBalance)
 }
 
 // TestBindingService_CheckGroupCanDelete tests group deletion check

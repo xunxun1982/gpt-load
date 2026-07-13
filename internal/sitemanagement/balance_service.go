@@ -24,7 +24,7 @@ const (
 // BalanceInfo represents the balance information for a site
 type BalanceInfo struct {
 	SiteID  uint    `json:"site_id"`
-	Balance *string `json:"balance"` // nil means not available, string for display (may be negative)
+	Balance *string `json:"balance"` // nil means no authoritative refresh value; an empty string is authoritative
 }
 
 // userSelfResponse represents the /api/user/self API response structure
@@ -54,6 +54,7 @@ type BalanceService struct {
 	stealthClientMgr *StealthClientManager
 	proxyClients     sync.Map // Cache for proxy-enabled HTTP clients
 	proxyResolver    managedSiteProxyURLResolver
+	cacheInvalidator func()
 
 	// Background refresh control
 	stopCh    chan struct{}
@@ -84,6 +85,17 @@ func NewBalanceService(db *gorm.DB, encryptionSvc encryption.Service) *BalanceSe
 
 func (s *BalanceService) SetProxyURLResolver(resolver managedSiteProxyURLResolver) {
 	s.proxyResolver = resolver
+}
+
+// SetCacheInvalidationCallback registers a callback for cached balance consumers.
+func (s *BalanceService) SetCacheInvalidationCallback(callback func()) {
+	s.cacheInvalidator = callback
+}
+
+func (s *BalanceService) invalidateBalanceConsumers() {
+	if s.cacheInvalidator != nil {
+		s.cacheInvalidator()
+	}
 }
 
 // Start begins the background balance refresh scheduler
@@ -184,12 +196,13 @@ func (s *BalanceService) refreshAllBalancesBackground() {
 // updateBalancesInDB updates balance cache in database
 func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uint]*BalanceInfo) {
 	today := GetBeijingCheckinDay()
+	updated := false
 
 	for siteID, info := range results {
-		balance := ""
-		if info.Balance != nil {
-			balance = *info.Balance
+		if info.Balance == nil {
+			continue
 		}
+		balance := *info.Balance
 
 		// Update only balance fields to avoid touching other columns
 		if err := s.db.WithContext(ctx).Model(&ManagedSite{}).
@@ -200,7 +213,13 @@ func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uin
 			}).Error; err != nil {
 			logrus.WithError(err).WithField("site_id", siteID).
 				Debug("Failed to update balance cache")
+			continue
 		}
+		updated = true
+	}
+
+	if updated {
+		s.invalidateBalanceConsumers()
 	}
 }
 
@@ -209,7 +228,6 @@ func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uin
 func (s *BalanceService) FetchSiteBalance(ctx context.Context, site *ManagedSite) *BalanceInfo {
 	result := s.fetchSiteBalanceInternal(ctx, site)
 
-	// Update database for single-site fetch
 	if result.Balance != nil {
 		s.updateSiteBalance(ctx, site.ID, *result.Balance)
 	}
@@ -268,7 +286,9 @@ func (s *BalanceService) updateSiteBalance(ctx context.Context, siteID uint, bal
 		}).Error; err != nil {
 		logrus.WithError(err).WithField("site_id", siteID).
 			Debug("Failed to update site balance cache")
+		return
 	}
+	s.invalidateBalanceConsumers()
 }
 
 // supportsBalance checks if a site type supports balance fetching

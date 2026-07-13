@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
+import { siteManagementApi } from "@/api/site-management";
 import EncryptionMismatchAlert from "@/components/EncryptionMismatchAlert.vue";
 import GroupInfoCard from "@/components/keys/GroupInfoCard.vue";
 import GroupList from "@/components/keys/GroupList.vue";
@@ -7,12 +8,13 @@ import KeyTable from "@/components/keys/KeyTable.vue";
 import QuickNavigation from "@/components/keys/QuickNavigation.vue";
 import SubGroupTable from "@/components/keys/SubGroupTable.vue";
 import type { Group, SubGroupInfo } from "@/types/models";
-import { appState } from "@/utils/app-state";
+import { appState, getSiteBalanceRevision, replaceSiteBalances } from "@/utils/app-state";
 import { getNearestGroupIdAfterDeletion, getSidebarOrderedGroupIds } from "@/utils/group-sidebar";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 const LAST_SELECTED_GROUP_ID_KEY = "keys:lastGroupId";
+const SITE_BALANCE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const groups = ref<Group[]>([]);
 const loading = ref(false);
 const selectedGroup = ref<Group | null>(null);
@@ -26,6 +28,9 @@ const groupListRef = ref<InstanceType<typeof GroupList> | null>(null);
 const activeChannelType = ref<string | undefined>(undefined);
 // Timer for resetting active channel type
 const activeChannelResetTimer = ref<number | undefined>(undefined);
+let siteBalanceRefreshPromise: Promise<void> | null = null;
+let siteBalanceRefreshTimer: number | undefined;
+let siteBalanceSyncActive = false;
 
 // Get visible channel types for quick navigation
 const visibleChannelTypes = computed(() => {
@@ -116,8 +121,36 @@ function setLastSelectedGroupId(groupId?: number | null) {
 }
 
 onMounted(async () => {
-  await loadGroups();
+  siteBalanceSyncActive = true;
+  siteBalanceRefreshTimer = window.setInterval(loadSiteBalances, SITE_BALANCE_REFRESH_INTERVAL_MS);
+  await Promise.all([loadGroups(), loadSiteBalances()]);
 });
+
+function loadSiteBalances(): Promise<void> {
+  if (!siteBalanceSyncActive) {
+    return Promise.resolve();
+  }
+
+  if (siteBalanceRefreshPromise) {
+    return siteBalanceRefreshPromise;
+  }
+
+  const refreshRevision = getSiteBalanceRevision();
+  siteBalanceRefreshPromise = (async () => {
+    try {
+      const sites = await siteManagementApi.listSitesForBinding(true);
+      if (siteBalanceSyncActive) {
+        replaceSiteBalances(sites, refreshRevision);
+      }
+    } catch (_) {
+      // Silent background synchronization; keep the last known snapshot.
+    }
+  })().finally(() => {
+    siteBalanceRefreshPromise = null;
+  });
+
+  return siteBalanceRefreshPromise;
+}
 
 async function loadGroups() {
   try {
@@ -401,6 +434,10 @@ function handleQuickNavigate(sectionKey: string, channelType: string) {
 
 // Clean up timer on component unmount
 onBeforeUnmount(() => {
+  siteBalanceSyncActive = false;
+  if (siteBalanceRefreshTimer) {
+    clearInterval(siteBalanceRefreshTimer);
+  }
   if (activeChannelResetTimer.value) {
     clearTimeout(activeChannelResetTimer.value);
   }

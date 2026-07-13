@@ -2394,7 +2394,7 @@ func (s *GroupService) GetGroupStats(ctx context.Context, groupID uint) (*GroupS
 		// Short DB lookup with small, configurable timeout
 		qctx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
 		defer cancel()
-		if err := s.db.WithContext(qctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
+		if err := s.readDB.WithContext(qctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
 			return nil, app_errors.ParseDBError(err)
 		}
 	}
@@ -2447,7 +2447,7 @@ func (s *GroupService) queryMultipleTimeRangeStats(ctx context.Context, groupID 
 	queryCtx, cancel := context.WithTimeout(ctx, getDBLookupTimeout())
 	defer cancel()
 
-	if err := s.db.WithContext(queryCtx).Raw(query,
+	if err := s.readDB.WithContext(queryCtx).Raw(query,
 		time24hAgo, time24hAgo,
 		time7dAgo, time7dAgo,
 		groupID, time30dAgo, endTime,

@@ -52,7 +52,7 @@ func setupKeyImportServiceTest(tb testing.TB) (*gorm.DB, *KeyImportService, *Tas
 		DB:              db,
 		SettingsManager: settingsManager,
 	})
-	keyService := NewKeyService(db, keyProvider, keyValidator, encryptionSvc, nil)
+	keyService := NewKeyService(db, ReadOnlyDB{DB: db}, keyProvider, keyValidator, encryptionSvc, nil)
 
 	taskService := NewTaskService(memStore)
 	bulkImportService := NewBulkImportService(db)

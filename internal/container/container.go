@@ -147,7 +147,18 @@ func BuildContainer() (*dig.Container, error) {
 	}); err != nil {
 		return nil, err
 	}
-	if err := container.Provide(sitemanagement.NewBindingService); err != nil {
+	if err := container.Provide(func(
+		db *gorm.DB,
+		readDB services.ReadOnlyDB,
+		taskService *services.TaskService,
+		balanceSvc *sitemanagement.BalanceService,
+		siteSvc *sitemanagement.SiteService,
+	) *sitemanagement.BindingService {
+		bindingSvc := sitemanagement.NewBindingService(db, readDB, taskService)
+		balanceSvc.SetCacheInvalidationCallback(bindingSvc.InvalidateSitesForBindingCache)
+		siteSvc.SetCacheInvalidationCallback(bindingSvc.InvalidateSitesForBindingCache)
+		return bindingSvc
+	}); err != nil {
 		return nil, err
 	}
 

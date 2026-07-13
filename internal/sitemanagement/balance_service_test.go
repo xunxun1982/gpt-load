@@ -43,6 +43,10 @@ func TestBalanceService_FetchSiteBalance(t *testing.T) {
 	require.NoError(t, err)
 
 	service := NewBalanceService(db, encSvc)
+	invalidations := 0
+	service.SetCacheInvalidationCallback(func() {
+		invalidations++
+	})
 
 	// Create test site
 	authValue, _ := encSvc.Encrypt("test-token")
@@ -61,6 +65,44 @@ func TestBalanceService_FetchSiteBalance(t *testing.T) {
 	require.NotNil(t, result)
 	require.NotNil(t, result.Balance)
 	assert.Equal(t, "$1.00", *result.Balance)
+
+	var updated ManagedSite
+	require.NoError(t, db.First(&updated, site.ID).Error)
+	assert.Equal(t, "$1.00", updated.LastBalance)
+	assert.Equal(t, 1, invalidations)
+}
+
+func TestBalanceService_FetchSiteBalanceKeepsCachedBalanceOnFetchFailure(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	service := NewBalanceService(db, encSvc)
+	invalidations := 0
+	service.SetCacheInvalidationCallback(func() {
+		invalidations++
+	})
+
+	site := &ManagedSite{
+		Name:            "No Auth Site",
+		BaseURL:         "https://example.com",
+		SiteType:        SiteTypeNewAPI,
+		LastBalance:     "$9.99",
+		LastBalanceDate: "2026-01-01",
+	}
+	require.NoError(t, db.Create(site).Error)
+
+	result := service.FetchSiteBalance(context.Background(), site)
+	require.NotNil(t, result)
+	assert.Nil(t, result.Balance)
+
+	var updated ManagedSite
+	require.NoError(t, db.First(&updated, site.ID).Error)
+	assert.Equal(t, "$9.99", updated.LastBalance)
+	assert.Equal(t, "2026-01-01", updated.LastBalanceDate)
+	assert.Equal(t, 0, invalidations)
 }
 
 func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
@@ -414,7 +456,7 @@ func TestBalanceService_GetHTTPClient(t *testing.T) {
 	})
 }
 
-// TestBalanceService_UpdateBalancesInDB tests database update
+// TestBalanceService_UpdateBalancesInDB tests database updates for successful fetches only.
 func TestBalanceService_UpdateBalancesInDB(t *testing.T) {
 	t.Parallel()
 
@@ -425,33 +467,67 @@ func TestBalanceService_UpdateBalancesInDB(t *testing.T) {
 	require.NoError(t, err)
 
 	service := NewBalanceService(db, encSvc)
+	invalidations := 0
+	service.SetCacheInvalidationCallback(func() {
+		invalidations++
+	})
 
-	// Create site
-	site := ManagedSite{
-		Name:     "Test Site",
-		BaseURL:  "https://example.com",
+	updatedSite := ManagedSite{
+		Name:     "Updated Site",
+		BaseURL:  "https://updated.example.com",
 		SiteType: SiteTypeNewAPI,
 	}
-	err = db.Create(&site).Error
-	require.NoError(t, err)
+	failedSite := ManagedSite{
+		Name:            "Failed Site",
+		BaseURL:         "https://failed.example.com",
+		SiteType:        SiteTypeNewAPI,
+		LastBalance:     "$9.99",
+		LastBalanceDate: "2026-01-01",
+	}
+	emptySite := ManagedSite{
+		Name:            "Empty Site",
+		BaseURL:         "https://empty.example.com",
+		SiteType:        SiteTypeNewAPI,
+		LastBalance:     "$1.23",
+		LastBalanceDate: "2026-01-01",
+	}
+	require.NoError(t, db.Create(&updatedSite).Error)
+	require.NoError(t, db.Create(&failedSite).Error)
+	require.NoError(t, db.Create(&emptySite).Error)
 
-	// Update balance
 	balance := "$5.00"
+	emptyBalance := ""
 	results := map[uint]*BalanceInfo{
-		site.ID: {
-			SiteID:  site.ID,
+		updatedSite.ID: {
+			SiteID:  updatedSite.ID,
 			Balance: &balance,
+		},
+		failedSite.ID: {
+			SiteID: failedSite.ID,
+		},
+		emptySite.ID: {
+			SiteID:  emptySite.ID,
+			Balance: &emptyBalance,
 		},
 	}
 
 	service.updateBalancesInDB(context.Background(), results)
 
-	// Verify update
 	var updated ManagedSite
-	err = db.First(&updated, site.ID).Error
-	require.NoError(t, err)
+	require.NoError(t, db.First(&updated, updatedSite.ID).Error)
 	assert.Equal(t, "$5.00", updated.LastBalance)
 	assert.NotEmpty(t, updated.LastBalanceDate)
+
+	var failed ManagedSite
+	require.NoError(t, db.First(&failed, failedSite.ID).Error)
+	assert.Equal(t, "$9.99", failed.LastBalance)
+	assert.Equal(t, "2026-01-01", failed.LastBalanceDate)
+
+	var empty ManagedSite
+	require.NoError(t, db.First(&empty, emptySite.ID).Error)
+	assert.Empty(t, empty.LastBalance)
+	assert.Equal(t, GetBeijingCheckinDay(), empty.LastBalanceDate)
+	assert.Equal(t, 1, invalidations)
 }
 
 // TestBalanceService_RefreshScheduler tests the background refresh scheduler

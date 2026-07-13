@@ -1166,7 +1166,9 @@ function handleNavigateToSite(siteId: number) {
 }
 
 .site-binding-in-header {
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   margin-top: 4px;
 }
 

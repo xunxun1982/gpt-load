@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
-import { siteManagementApi } from "@/api/site-management";
-import { triggerSiteBindingRefresh } from "@/utils/app-state";
+import { siteManagementApi, type SiteBindingOption } from "@/api/site-management";
+import { appState, triggerSiteBindingRefresh } from "@/utils/app-state";
+import { formatBalanceValue } from "@/utils/display";
 import { ArrowForward, LinkOutline, UnlinkOutline } from "@vicons/ionicons5";
-import { NButton, NIcon, NSelect, NSpace, NTag, NTooltip, useMessage } from "naive-ui";
+import { NButton, NIcon, NSelect, NTag, NTooltip, useMessage } from "naive-ui";
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -25,15 +26,7 @@ interface Emits {
 const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
 
-interface SiteOption {
-  id: number;
-  name: string;
-  sort: number;
-  enabled: boolean;
-  bound_group_count?: number;
-}
-
-const sites = ref<SiteOption[]>([]);
+const sites = ref<SiteBindingOption[]>([]);
 const loading = ref(false);
 const selectedSiteId = ref<number | null>(null);
 const boundSiteName = ref<string>("");
@@ -50,6 +43,23 @@ const siteOptions = computed(() => {
 // Check if current group has a bound site
 const hasBoundSite = computed(() => {
   return props.boundSiteId !== null && props.boundSiteId !== undefined && props.boundSiteId > 0;
+});
+
+const balanceSiteId = computed(() => {
+  return hasBoundSite.value ? props.boundSiteId : selectedSiteId.value;
+});
+
+const balanceDisplay = computed(() => {
+  const siteId = balanceSiteId.value;
+  if (!siteId) {
+    return "-";
+  }
+
+  if (Object.prototype.hasOwnProperty.call(appState.siteBalances, siteId)) {
+    return formatBalanceValue(appState.siteBalances[siteId]);
+  }
+
+  return formatBalanceValue(sites.value.find(site => site.id === siteId)?.last_balance);
 });
 
 async function loadSites() {
@@ -138,9 +148,10 @@ onMounted(() => {
 
 <template>
   <div class="site-binding-selector">
-    <n-space align="center" :size="8" :wrap="false">
+    <div class="binding-row">
       <!-- Site selector -->
       <n-select
+        class="site-select"
         v-model:value="selectedSiteId"
         :options="siteOptions"
         :placeholder="t('binding.selectSite')"
@@ -149,8 +160,11 @@ onMounted(() => {
         filterable
         clearable
         size="small"
-        style="min-width: 180px"
       />
+
+      <span class="site-balance" :title="balanceDisplay">
+        {{ balanceDisplay }}
+      </span>
 
       <!-- Bind/Unbind button -->
       <n-tooltip v-if="!hasBoundSite" trigger="hover">
@@ -201,7 +215,7 @@ onMounted(() => {
         </template>
         {{ t("binding.navigateToSite") }}
       </n-tooltip>
-    </n-space>
+    </div>
   </div>
 </template>
 
@@ -209,11 +223,63 @@ onMounted(() => {
 .site-binding-selector {
   display: flex;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.binding-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.site-select {
+  flex: 1 1 180px;
+  min-width: 80px;
+  max-width: 180px;
+}
+
+.binding-row :deep(.n-button) {
+  flex: 0 0 auto;
+}
+
+.site-balance {
+  display: inline-block;
+  flex: 0 0 auto;
+  max-width: 112px;
+  overflow: hidden;
+  padding: 3px 8px;
+  color: #2080f0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(32, 128, 240, 0.1);
+  border: 1px solid rgba(32, 128, 240, 0.22);
+  border-radius: 999px;
 }
 
 .bound-site-tag {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 140px;
+  overflow: hidden;
   cursor: pointer;
   transition: all 0.2s ease;
+}
+
+.bound-site-tag :deep(.n-tag__content) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bound-site-tag:hover {
