@@ -8,6 +8,7 @@ import (
 
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
+	"gpt-load/internal/services"
 	"gpt-load/internal/store"
 
 	"github.com/glebarez/sqlite"
@@ -15,6 +16,38 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestSiteServiceUpdateInvalidatesBindingSnapshot(t *testing.T) {
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+
+	site := ManagedSite{
+		Name:    "Old Site Name",
+		BaseURL: "https://example.com",
+		Enabled: true,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	bindingService := NewBindingService(db, services.ReadOnlyDB{DB: db}, nil)
+	siteService := NewSiteService(db, memStore, encSvc)
+	siteService.SetCacheInvalidationCallback(bindingService.InvalidateSitesForBindingCache)
+
+	initial, err := bindingService.ListSitesForBinding(context.Background())
+	require.NoError(t, err)
+	require.Len(t, initial, 1)
+	assert.Equal(t, "Old Site Name", initial[0].Name)
+
+	newName := "New Site Name"
+	_, err = siteService.UpdateSite(context.Background(), site.ID, UpdateSiteParams{Name: &newName})
+	require.NoError(t, err)
+
+	refreshed, err := bindingService.ListSitesForBinding(context.Background())
+	require.NoError(t, err)
+	require.Len(t, refreshed, 1)
+	assert.Equal(t, newName, refreshed[0].Name)
+}
 
 // TestSiteService_CreateSite tests site creation
 func TestSiteService_CreateSite(t *testing.T) {

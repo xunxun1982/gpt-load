@@ -21,8 +21,8 @@ import (
 // Stats Get dashboard statistics
 func (s *Server) Stats(c *gin.Context) {
 	var activeKeys, invalidKeys int64
-	s.DB.Model(&models.APIKey{}).Where("status = ?", models.KeyStatusActive).Count(&activeKeys)
-	s.DB.Model(&models.APIKey{}).Where("status = ?", models.KeyStatusInvalid).Count(&invalidKeys)
+	s.readOnlyDB().Model(&models.APIKey{}).Where("status = ?", models.KeyStatusActive).Count(&activeKeys)
+	s.readOnlyDB().Model(&models.APIKey{}).Where("status = ?", models.KeyStatusInvalid).Count(&invalidKeys)
 
 	now := time.Now()
 	rpmStats, err := s.getRPMStats(now)
@@ -166,7 +166,7 @@ func (s *Server) Chart(c *gin.Context) {
 	}
 
 	var hourlyStats []hourlyStat
-	query := s.DB.Table("group_hourly_stats").
+	query := s.readOnlyDB().Table("group_hourly_stats").
 		Where("time >= ? AND time < ?", startHour, endExclusive)
 
 	// AI suggestion: Use groupID != 0 instead of groupIDStr != ""
@@ -178,7 +178,7 @@ func (s *Server) Chart(c *gin.Context) {
 	} else {
 		query = query.
 			Select("time, COALESCE(SUM(success_count), 0) AS success_count, COALESCE(SUM(failure_count), 0) AS failure_count").
-			Where("group_id NOT IN (?)", s.DB.Table("groups").Select("id").Where("group_type = ?", "aggregate")).
+			Where("group_id NOT IN (?)", s.readOnlyDB().Table("groups").Select("id").Where("group_type = ?", "aggregate")).
 			Group("time")
 	}
 
@@ -329,10 +329,10 @@ type hourlyStatResult struct {
 
 func (s *Server) getHourlyStats(startTime, endTime time.Time) (hourlyStatResult, error) {
 	var result hourlyStatResult
-	err := s.DB.Table("group_hourly_stats").
+	err := s.readOnlyDB().Table("group_hourly_stats").
 		Where("time >= ? AND time < ?", startTime, endTime).
 		Where("group_id NOT IN (?)",
-			s.DB.Table("groups").Select("id").Where("group_type = ?", "aggregate")).
+			s.readOnlyDB().Table("groups").Select("id").Where("group_type = ?", "aggregate")).
 		Select("COALESCE(SUM(success_count), 0) + COALESCE(SUM(failure_count), 0) as total_requests, COALESCE(SUM(failure_count), 0) as total_failures").
 		Scan(&result).Error
 	return result, err
@@ -349,7 +349,7 @@ func (s *Server) parseTokenUsageGroupFilter(c *gin.Context) (uint, bool, error) 
 	}
 	groupID := uint(parsed)
 	var group models.Group
-	if err := s.DB.Select("id", "group_type").First(&group, groupID).Error; err != nil {
+	if err := s.readOnlyDB().Select("id", "group_type").First(&group, groupID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return groupID, false, nil
 		}
@@ -389,7 +389,7 @@ func applyTokenUsageAggregateExclusion(query *gorm.DB, groupID uint, filterByPar
 
 func (s *Server) getTokenUsageSummary(startTime, endTime time.Time, groupID uint, filterByParent bool, modelFilter string) (models.TokenUsageCard, error) {
 	var summary models.TokenUsageCard
-	query := s.DB.Model(&models.ModelTokenHourlyStat{}).
+	query := s.readOnlyDB().Model(&models.ModelTokenHourlyStat{}).
 		Where("time >= ? AND time < ?", startTime, endTime)
 	query = applyTokenUsageAggregateExclusion(query, groupID, filterByParent)
 	query = applyTokenUsageGroupFilter(query, groupID, filterByParent)
@@ -409,7 +409,7 @@ func (s *Server) getTokenUsageSummary(startTime, endTime time.Time, groupID uint
 
 func (s *Server) getModelTokenUsageItems(startTime, endTime time.Time, groupID uint, filterByParent bool, modelFilter string, limit int) ([]models.ModelTokenUsageItem, error) {
 	var items []models.ModelTokenUsageItem
-	query := s.DB.Model(&models.ModelTokenHourlyStat{}).
+	query := s.readOnlyDB().Model(&models.ModelTokenHourlyStat{}).
 		Where("time >= ? AND time < ?", startTime, endTime)
 	query = applyTokenUsageAggregateExclusion(query, groupID, filterByParent)
 	query = applyTokenUsageGroupFilter(query, groupID, filterByParent)
@@ -451,7 +451,7 @@ func (s *Server) getTokenUsageChartData(c *gin.Context, startTime, endTime time.
 	}
 
 	var hourlyStats []tokenHourlyStat
-	query := s.DB.Model(&models.ModelTokenHourlyStat{}).
+	query := s.readOnlyDB().Model(&models.ModelTokenHourlyStat{}).
 		Where("time >= ? AND time < ?", startTime, endTime)
 	query = applyTokenUsageAggregateExclusion(query, groupID, filterByParent)
 	query = applyTokenUsageGroupFilter(query, groupID, filterByParent)
@@ -544,7 +544,7 @@ func (s *Server) getRPMStats(now time.Time) (models.StatCard, error) {
 	twentyMinutesAgo := now.Add(-20 * time.Minute)
 
 	var result rpmStatResult
-	err := s.DB.Model(&models.RequestLog{}).
+	err := s.readOnlyDB().Model(&models.RequestLog{}).
 		Select("count(case when timestamp >= ? then 1 end) as current_requests, count(case when timestamp >= ? and timestamp < ? then 1 end) as previous_requests", tenMinutesAgo, twentyMinutesAgo, tenMinutesAgo).
 		Where("timestamp >= ? AND request_type = ?", twentyMinutesAgo, models.RequestTypeFinal).
 		Scan(&result).Error
@@ -623,7 +623,7 @@ func (s *Server) getSecurityWarnings(c *gin.Context) []models.SecurityWarning {
 
 	// Check group-level proxy keys
 	var groups []models.Group
-	if err := s.DB.Where("proxy_keys IS NOT NULL AND proxy_keys != ''").Find(&groups).Error; err == nil {
+	if err := s.readOnlyDB().Where("proxy_keys IS NOT NULL AND proxy_keys != ''").Find(&groups).Error; err == nil {
 		for _, group := range groups {
 			if group.ProxyKeys != "" {
 				proxyKeys := strings.Split(group.ProxyKeys, ",")
@@ -759,7 +759,7 @@ func (s *Server) checkEncryptionMismatch(c *gin.Context) (bool, string, string, 
 	var sampleKeys []models.APIKey
 	ctxTimeout, cancel := context.WithTimeout(c.Request.Context(), 300*time.Millisecond)
 	defer cancel()
-	if err := s.DB.WithContext(ctxTimeout).Limit(20).Where("key_hash IS NOT NULL AND key_hash != ''").Find(&sampleKeys).Error; err != nil {
+	if err := s.readOnlyDB().WithContext(ctxTimeout).Limit(20).Where("key_hash IS NOT NULL AND key_hash != ''").Find(&sampleKeys).Error; err != nil {
 		logrus.WithError(err).Warn("Encryption check sample query failed/timeout; skipping")
 		return false, ScenarioNone, "", ""
 	}

@@ -43,6 +43,10 @@ func TestBalanceService_FetchSiteBalance(t *testing.T) {
 	require.NoError(t, err)
 
 	service := NewBalanceService(db, encSvc)
+	invalidations := 0
+	service.SetCacheInvalidationCallback(func() {
+		invalidations++
+	})
 
 	// Create test site
 	authValue, _ := encSvc.Encrypt("test-token")
@@ -61,6 +65,42 @@ func TestBalanceService_FetchSiteBalance(t *testing.T) {
 	require.NotNil(t, result)
 	require.NotNil(t, result.Balance)
 	assert.Equal(t, "$1.00", *result.Balance)
+
+	var updated ManagedSite
+	require.NoError(t, db.First(&updated, site.ID).Error)
+	assert.Equal(t, "$1.00", updated.LastBalance)
+	assert.Equal(t, 1, invalidations)
+}
+
+func TestBalanceService_FetchSiteBalanceClearsStaleBalanceAndInvalidatesCache(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	service := NewBalanceService(db, encSvc)
+	invalidations := 0
+	service.SetCacheInvalidationCallback(func() {
+		invalidations++
+	})
+
+	site := &ManagedSite{
+		Name:        "No Auth Site",
+		BaseURL:     "https://example.com",
+		SiteType:    SiteTypeNewAPI,
+		LastBalance: "$9.99",
+	}
+	require.NoError(t, db.Create(site).Error)
+
+	result := service.FetchSiteBalance(context.Background(), site)
+	require.NotNil(t, result)
+	assert.Nil(t, result.Balance)
+
+	var updated ManagedSite
+	require.NoError(t, db.First(&updated, site.ID).Error)
+	assert.Empty(t, updated.LastBalance)
+	assert.Equal(t, 1, invalidations)
 }
 
 func TestBalanceService_FetchSub2APIBalance(t *testing.T) {

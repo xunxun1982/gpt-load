@@ -111,7 +111,7 @@ func setupTestGroupService(tb testing.TB, db *gorm.DB) *GroupService {
 		DB:              db,
 		SettingsManager: settingsManager,
 	})
-	keyService := NewKeyService(db, keyProvider, keyValidator, encryptionSvc, nil)
+	keyService := NewKeyService(db, ReadOnlyDB{DB: db}, keyProvider, keyValidator, encryptionSvc, nil)
 	channelFactory := &channel.Factory{}
 
 	svc := NewGroupService(
@@ -1015,7 +1015,7 @@ func TestUpdateGroupPreventsDisablingCodexSupportUsedByCodexAggregate(t *testing
 	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
-	svc.aggregateGroupService = NewAggregateGroupService(db, svc.groupManager, nil)
+	svc.aggregateGroupService = NewAggregateGroupService(db, ReadOnlyDB{DB: db}, svc.groupManager, nil)
 
 	subGroup := models.Group{
 		Name:               "codex-forced-child",
@@ -2237,7 +2237,7 @@ func TestDeleteAllGroupsClearsGroupRelatedTables(t *testing.T) {
 		time.Now(),
 	).Error)
 
-	aggregateSvc := NewAggregateGroupService(db, nil, nil)
+	aggregateSvc := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, nil, nil)
 	aggregateSvc.statsCacheMu.Lock()
 	aggregateSvc.statsCache["1,2,3"] = keyStatsCacheEntry{
 		results: map[uint]keyStatsResult{

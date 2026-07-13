@@ -20,7 +20,7 @@ func TestNewAggregateGroupService(t *testing.T) {
 	groupManager := &GroupManager{}
 	dynamicWeightManager := &DynamicWeightManager{}
 
-	service := NewAggregateGroupService(nil, groupManager, dynamicWeightManager)
+	service := NewAggregateGroupService(nil, ReadOnlyDB{}, groupManager, dynamicWeightManager)
 
 	assert.NotNil(t, service)
 	assert.Equal(t, groupManager, service.groupManager)
@@ -284,7 +284,7 @@ func TestGetEffectiveEndpointForAggregation(t *testing.T) {
 
 func TestValidateSubGroupsAllowsAnthropicAggregateCCCompatibleChannels(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	groups := []models.Group{
 		{
@@ -333,7 +333,7 @@ func TestValidateSubGroupsAllowsAnthropicAggregateCCCompatibleChannels(t *testin
 
 func TestValidateSubGroupsAllowsResponsesAggregateCodexCompatibleChannels(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	groups := []models.Group{
 		{
@@ -382,7 +382,7 @@ func TestValidateSubGroupsAllowsResponsesAggregateCodexCompatibleChannels(t *tes
 
 func TestValidateSubGroupsRejectsDuplicateGroupIDs(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	subGroup := models.Group{
 		Name:        "sub-duplicate-validation",
@@ -410,7 +410,7 @@ func TestValidateSubGroupsRejectsDuplicateGroupIDs(t *testing.T) {
 
 func TestAddSubGroupsPersistsHealthResetInterval(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	aggregateGroup := models.Group{
 		Name:        "aggregate-add-sub-health-reset",
@@ -448,7 +448,7 @@ func TestAddSubGroupsPersistsHealthResetInterval(t *testing.T) {
 
 func TestAddSubGroupsRejectsInvalidHealthResetInterval(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	aggregateGroup := models.Group{
 		Name:        "aggregate-add-sub-invalid-health-reset",
@@ -488,7 +488,7 @@ func TestAddSubGroupsRejectsInvalidHealthResetInterval(t *testing.T) {
 
 func TestValidateSubGroupsAllowsWeightUpTo5000(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	subGroup := models.Group{
 		Name:        "sub-weight-5000",
@@ -521,7 +521,7 @@ func TestValidateSubGroupsAllowsWeightUpTo5000(t *testing.T) {
 
 func TestValidateSubGroupsRejectsWeightAbove5000(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	subGroup := models.Group{
 		Name:        "sub-weight-5001",
@@ -549,7 +549,7 @@ func TestValidateSubGroupsRejectsWeightAbove5000(t *testing.T) {
 
 func TestUpdateSubGroupWeightPreservesOmittedHealthResetInterval(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	aggregateGroup := models.Group{
 		Name:        "aggregate-update-weight",
@@ -617,7 +617,7 @@ func TestUpdateSubGroupWeightPreservesOmittedHealthResetInterval(t *testing.T) {
 
 func TestUpdateSubGroupWeightPersistsMinimumEffectiveWeight(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	aggregateGroup := models.Group{
 		Name:        "aggregate-update-min-effective-weight",
@@ -682,7 +682,7 @@ func TestUpdateSubGroupWeightPersistsMinimumEffectiveWeight(t *testing.T) {
 
 func TestResetSubGroupHealthAllowsDisabledSubGroup(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	aggregateGroup := models.Group{
 		Name:        "aggregate-reset-disabled-sub",
@@ -726,7 +726,7 @@ func TestResetSubGroupHealthAllowsDisabledSubGroup(t *testing.T) {
 
 func TestResetAllSubGroupHealthResetsEverySubGroup(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	aggregateGroup := models.Group{
 		Name:        "aggregate-reset-all-sub-health",
@@ -787,7 +787,7 @@ func TestResetAllSubGroupHealthResetsEverySubGroup(t *testing.T) {
 
 func TestResetAllSubGroupHealthReturnsErrorWhenDynamicWeightManagerMissing(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	aggregateGroup := models.Group{
 		Name:        "aggregate-reset-all-missing-dwm",
@@ -826,7 +826,7 @@ func TestResetAllSubGroupHealthReturnsErrorWhenDynamicWeightManagerMissing(t *te
 
 func TestResetAllSubGroupHealthAttemptsEverySubGroupAfterHookFailure(t *testing.T) {
 	db := setupTestDB(t)
-	service := NewAggregateGroupService(db, &GroupManager{}, nil)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
 	aggregateGroup := models.Group{
 		Name:        "aggregate-reset-all-partial-failure",
@@ -893,7 +893,7 @@ func TestResetAllSubGroupHealthAttemptsEverySubGroupAfterHookFailure(t *testing.
 func TestGenerateCacheKey(t *testing.T) {
 	t.Parallel()
 
-	service := NewAggregateGroupService(nil, &GroupManager{}, nil)
+	service := NewAggregateGroupService(nil, ReadOnlyDB{}, &GroupManager{}, nil)
 
 	tests := []struct {
 		name     string
@@ -1002,7 +1002,7 @@ func TestContainsGroupID(t *testing.T) {
 func TestInvalidateStatsCacheForGroup(t *testing.T) {
 	t.Parallel()
 
-	service := NewAggregateGroupService(nil, &GroupManager{}, nil)
+	service := NewAggregateGroupService(nil, ReadOnlyDB{}, &GroupManager{}, nil)
 
 	// Populate cache with test data
 	// Note: Direct cache manipulation is acceptable in unit tests for simplicity.

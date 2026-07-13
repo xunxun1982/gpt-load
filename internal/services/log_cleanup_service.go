@@ -98,12 +98,13 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 	// Calculate cutoff time
 	cutoffTime := time.Now().AddDate(0, 0, -retentionDays).UTC()
 
-	// Batch size optimized for performance to minimize lock contention and timeout risk
-	// Uses LogCleanupBatchSize from thresholds.go for consistency
-	const batchSize = LogCleanupBatchSize
 	totalDeleted := int64(0)
 	nextLogAt := int64(LargeCleanupThreshold) // Track next threshold for progress logging
 	dialect := s.db.Dialector.Name()
+	batchSize := LogCleanupBatchSize
+	if dialect == "sqlite" {
+		batchSize = SQLiteLogCleanupBatchSize
+	}
 
 	logrus.WithFields(logrus.Fields{
 		"cutoff_time":    cutoffTime.Format(time.RFC3339),
@@ -139,44 +140,7 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 				batchSize,
 			)
 		case "sqlite":
-			// SQLite: Use direct DELETE with indexed column for better performance.
-			// First get the max timestamp of records to delete in this batch.
-			//
-			// Note: AI suggested using rowid/primary key for more deterministic batching
-			// to handle duplicate timestamps. However, our testing shows:
-			// 1. Timestamps have millisecond precision, making duplicates rare
-			// 2. Even with duplicates, the worst case is slightly variable batch sizes
-			// 3. Using rowid would require additional index and complexity
-			// 4. Current approach is simpler and performs well in production
-			var maxTS time.Time
-			// Increased timeout for SELECT query to 10s (from 5s) for better reliability
-			// Derive from batchCtx to respect parent cancellation
-			subCtx, subCancel := context.WithTimeout(batchCtx, 10*time.Second)
-			err := s.db.WithContext(subCtx).Raw(
-				"SELECT timestamp FROM request_logs WHERE timestamp < ? ORDER BY timestamp LIMIT 1 OFFSET ?",
-				cutoffTime, batchSize-1,
-			).Scan(&maxTS).Error
-			subCancel()
-
-			// Note: AI suggested separating error handling from "no records" case to avoid
-			// unintentionally deleting all remaining records on query failure. However:
-			// 1. All records being deleted are already expired and should be removed
-			// 2. If SELECT fails, falling back to delete-all is a safe degradation
-			// 3. If DELETE also fails, it will be caught by the error handling below
-			// 4. This approach is more resilient than aborting the entire cleanup task
-			if err != nil || maxTS.IsZero() {
-				// No more records or less than batchSize records, delete all remaining
-				result = s.db.WithContext(batchCtx).Exec(
-					"DELETE FROM request_logs WHERE timestamp < ?",
-					cutoffTime,
-				)
-			} else {
-				// Delete records up to maxTS (inclusive)
-				result = s.db.WithContext(batchCtx).Exec(
-					"DELETE FROM request_logs WHERE timestamp <= ?",
-					maxTS,
-				)
-			}
+			result = s.deleteSQLiteExpiredLogsBatch(batchCtx, cutoffTime, batchSize)
 		default:
 			// Fallback for unsupported dialects with explicit ID-based batching.
 			// GORM's Limit() with Delete() may be silently ignored by some databases,
@@ -237,4 +201,17 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 	} else {
 		logrus.Debug("No expired request logs found to cleanup")
 	}
+}
+
+func (s *LogCleanupService) deleteSQLiteExpiredLogsBatch(ctx context.Context, cutoffTime time.Time, batchSize int) *gorm.DB {
+	return s.db.WithContext(ctx).Exec(`
+		DELETE FROM request_logs
+		WHERE rowid IN (
+			SELECT rowid
+			FROM request_logs
+			WHERE timestamp < ?
+			ORDER BY timestamp
+			LIMIT ?
+		)
+	`, cutoffTime, batchSize)
 }

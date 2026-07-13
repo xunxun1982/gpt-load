@@ -47,6 +47,7 @@ type AggregateValidationResult struct {
 // AggregateGroupService encapsulates aggregate group specific behaviours.
 type AggregateGroupService struct {
 	db                   *gorm.DB
+	readDB               *gorm.DB
 	groupManager         *GroupManager
 	dynamicWeightManager *DynamicWeightManager
 	// Cache for key statistics to reduce database queries
@@ -67,9 +68,14 @@ type keyStatsCacheEntry struct {
 }
 
 // NewAggregateGroupService constructs an AggregateGroupService instance.
-func NewAggregateGroupService(db *gorm.DB, groupManager *GroupManager, dynamicWeightManager *DynamicWeightManager) *AggregateGroupService {
+func NewAggregateGroupService(db *gorm.DB, readDB ReadOnlyDB, groupManager *GroupManager, dynamicWeightManager *DynamicWeightManager) *AggregateGroupService {
+	rdb := readDB.DB
+	if rdb == nil {
+		rdb = db
+	}
 	return &AggregateGroupService{
 		db:                   db,
+		readDB:               rdb,
 		groupManager:         groupManager,
 		dynamicWeightManager: dynamicWeightManager,
 		statsCache:           make(map[string]keyStatsCacheEntry),
@@ -235,13 +241,13 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 
 // GetSubGroups returns sub groups for an aggregate group with complete information
 func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) ([]models.SubGroupInfo, error) {
-	_, err := FindAggregateGroupByID(ctx, s.db, groupID)
+	_, err := FindAggregateGroupByID(ctx, s.readDB, groupID)
 	if err != nil {
 		return nil, err
 	}
 
 	var groupSubGroups []models.GroupSubGroup
-	if err := s.db.WithContext(ctx).Where("group_id = ?", groupID).Find(&groupSubGroups).Error; err != nil {
+	if err := s.readDB.WithContext(ctx).Where("group_id = ?", groupID).Find(&groupSubGroups).Error; err != nil {
 		return nil, err
 	}
 
@@ -258,7 +264,7 @@ func (s *AggregateGroupService) GetSubGroups(ctx context.Context, groupID uint) 
 	}
 
 	var subGroupModels []models.Group
-	if err := s.db.WithContext(ctx).Where("id IN ?", subGroupIDs).Find(&subGroupModels).Error; err != nil {
+	if err := s.readDB.WithContext(ctx).Where("id IN ?", subGroupIDs).Find(&subGroupModels).Error; err != nil {
 		return nil, err
 	}
 
@@ -636,7 +642,7 @@ func (s *AggregateGroupService) GetParentAggregateGroups(ctx context.Context, su
 	defer cancel()
 
 	var groupSubGroups []models.GroupSubGroup
-	if err := s.db.WithContext(queryCtx).Where("sub_group_id = ?", subGroupID).Find(&groupSubGroups).Error; err != nil {
+	if err := s.readDB.WithContext(queryCtx).Where("sub_group_id = ?", subGroupID).Find(&groupSubGroups).Error; err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			// Gracefully degrade: return empty list instead of blocking
 			return []models.ParentAggregateGroupInfo{}, nil
@@ -657,7 +663,7 @@ func (s *AggregateGroupService) GetParentAggregateGroups(ctx context.Context, su
 	}
 
 	var aggregateGroupModels []models.Group
-	if err := s.db.WithContext(queryCtx).Where("id IN ?", aggregateGroupIDs).Find(&aggregateGroupModels).Error; err != nil {
+	if err := s.readDB.WithContext(queryCtx).Where("id IN ?", aggregateGroupIDs).Find(&aggregateGroupModels).Error; err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return []models.ParentAggregateGroupInfo{}, nil
 		}
@@ -737,7 +743,7 @@ func (s *AggregateGroupService) fetchSubGroupsKeyStats(ctx context.Context, grou
 	}
 
 	var statsRows []statsRow
-	err := s.db.WithContext(ctx).Raw(`
+	err := s.readDB.WithContext(ctx).Raw(`
 		SELECT
 			group_id,
 			COUNT(*) as total_keys,

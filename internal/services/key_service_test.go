@@ -61,7 +61,7 @@ func setupKeyServiceTest(tb testing.TB) (*gorm.DB, *KeyService) {
 		DB:              db,
 		SettingsManager: settingsManager,
 	})
-	keyService := NewKeyService(db, keyProvider, keyValidator, encryptionSvc, nil)
+	keyService := NewKeyService(db, ReadOnlyDB{DB: db}, keyProvider, keyValidator, encryptionSvc, nil)
 
 	return db, keyService
 }
@@ -96,7 +96,7 @@ func setupKeyServiceValidationLogTest(t *testing.T) (*gorm.DB, *KeyService, *Req
 		EncryptionSvc:   encryptionSvc,
 	})
 	requestLogService := NewRequestLogService(db, memStore, settingsManager)
-	keyService := NewKeyService(db, keyProvider, keyValidator, encryptionSvc, requestLogService)
+	keyService := NewKeyService(db, ReadOnlyDB{DB: db}, keyProvider, keyValidator, encryptionSvc, requestLogService)
 
 	return db, keyService, requestLogService, encryptionSvc
 }

@@ -31,9 +31,10 @@ type BindingService struct {
 	// SyncChildGroupsEnabledCallback syncs enabled status to child groups when parent group is enabled/disabled
 	SyncChildGroupsEnabledCallback func(ctx context.Context, parentGroupID uint, enabled bool) error
 	// Cache for ListSitesForBinding
-	cache    *sitesForBindingCacheEntry
-	cacheMu  sync.RWMutex
-	cacheTTL time.Duration
+	cache           *sitesForBindingCacheEntry
+	cacheGeneration uint64
+	cacheMu         sync.RWMutex
+	cacheTTL        time.Duration
 }
 
 // NewBindingService creates a new binding service
@@ -46,7 +47,7 @@ func NewBindingService(db *gorm.DB, readDB services.ReadOnlyDB, taskService *ser
 		db:          db,
 		readDB:      rdb,
 		taskService: taskService,
-		cacheTTL:    30 * time.Second,
+		cacheTTL:    5 * time.Minute,
 	}
 }
 
@@ -344,16 +345,21 @@ func (s *BindingService) ListSitesForBinding(ctx context.Context) ([]ManagedSite
 		s.cacheMu.RUnlock()
 		return result, nil
 	}
+	cacheGeneration := s.cacheGeneration
 	// Check if task is running and we have stale cache
 	hasStaleCache := s.cache != nil && len(s.cache.Data) > 0
 	s.cacheMu.RUnlock()
 
 	if hasStaleCache && s.isTaskRunning() {
 		s.cacheMu.RLock()
-		result := s.cache.Data
-		s.cacheMu.RUnlock()
-		logrus.Debug("ListSitesForBinding returning stale cache during task execution")
-		return result, nil
+		if s.cache == nil || len(s.cache.Data) == 0 {
+			s.cacheMu.RUnlock()
+		} else {
+			result := s.cache.Data
+			s.cacheMu.RUnlock()
+			logrus.Debug("ListSitesForBinding returning stale cache during task execution")
+			return result, nil
+		}
 	}
 
 	var sites []ManagedSite
@@ -416,15 +422,18 @@ func (s *BindingService) ListSitesForBinding(ctx context.Context) ([]ManagedSite
 			Name:            site.Name,
 			Sort:            site.Sort,
 			Enabled:         site.Enabled,
+			LastBalance:     site.LastBalance,
 			BoundGroupCount: boundCount,
 		})
 	}
 
 	// Update cache
 	s.cacheMu.Lock()
-	s.cache = &sitesForBindingCacheEntry{
-		Data:      result,
-		ExpiresAt: time.Now().Add(s.cacheTTL),
+	if s.cacheGeneration == cacheGeneration {
+		s.cache = &sitesForBindingCacheEntry{
+			Data:      result,
+			ExpiresAt: time.Now().Add(s.cacheTTL),
+		}
 	}
 	s.cacheMu.Unlock()
 
@@ -433,8 +442,14 @@ func (s *BindingService) ListSitesForBinding(ctx context.Context) ([]ManagedSite
 
 func (s *BindingService) invalidateSitesForBindingCache() {
 	s.cacheMu.Lock()
+	s.cacheGeneration++
 	s.cache = nil
 	s.cacheMu.Unlock()
+}
+
+// InvalidateSitesForBindingCache clears the cached binding snapshot after balance updates.
+func (s *BindingService) InvalidateSitesForBindingCache() {
+	s.invalidateSitesForBindingCache()
 }
 
 func (s *BindingService) invalidateBindingCaches() {

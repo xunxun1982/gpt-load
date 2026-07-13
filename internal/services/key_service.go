@@ -49,6 +49,7 @@ type RestoreKeysResult struct {
 // KeyService provides services related to API keys.
 type KeyService struct {
 	DB                        *gorm.DB
+	readDB                    *gorm.DB
 	KeyProvider               *keypool.KeyProvider
 	KeyValidator              *keypool.KeyValidator
 	EncryptionSvc             encryption.Service
@@ -79,9 +80,14 @@ func (s *KeyService) insertChunkSize() int {
 }
 
 // NewKeyService creates a new KeyService.
-func NewKeyService(db *gorm.DB, keyProvider *keypool.KeyProvider, keyValidator *keypool.KeyValidator, encryptionSvc encryption.Service, requestLogService *RequestLogService) *KeyService {
+func NewKeyService(db *gorm.DB, readDB ReadOnlyDB, keyProvider *keypool.KeyProvider, keyValidator *keypool.KeyValidator, encryptionSvc encryption.Service, requestLogService *RequestLogService) *KeyService {
+	rdb := readDB.DB
+	if rdb == nil {
+		rdb = db
+	}
 	return &KeyService{
 		DB:                db,
+		readDB:            rdb,
 		KeyProvider:       keyProvider,
 		KeyValidator:      keyValidator,
 		EncryptionSvc:     encryptionSvc,
@@ -369,7 +375,7 @@ func (s *KeyService) DeleteMultipleKeys(groupID uint, keysText string) (*DeleteK
 
 // ListKeysInGroupQuery builds a query to list all keys within a specific group, filtered by status.
 func (s *KeyService) ListKeysInGroupQuery(groupID uint, statusFilter string, searchHash string) *gorm.DB {
-	query := s.DB.Model(&models.APIKey{}).Where("group_id = ?", groupID)
+	query := s.readDB.Model(&models.APIKey{}).Where("group_id = ?", groupID)
 
 	if statusFilter != "" {
 		query = query.Where("status = ?", statusFilter)
@@ -379,7 +385,7 @@ func (s *KeyService) ListKeysInGroupQuery(groupID uint, statusFilter string, sea
 		query = query.Where("key_hash = ?", searchHash)
 	}
 
-	if s.DB.Dialector.Name() == "postgres" {
+	if s.readDB.Dialector.Name() == "postgres" {
 		query = query.Order("last_used_at DESC NULLS LAST, updated_at DESC, id DESC")
 	} else {
 		query = query.Order("last_used_at IS NULL ASC, last_used_at DESC, updated_at DESC, id DESC")

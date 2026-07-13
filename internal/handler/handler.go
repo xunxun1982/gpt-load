@@ -22,6 +22,7 @@ import (
 // Server contains dependencies for HTTP handlers
 type Server struct {
 	DB                         *gorm.DB
+	ReadDB                     *gorm.DB
 	config                     types.ConfigManager
 	SettingsManager            *config.SystemSettingsManager
 	GroupManager               *services.GroupManager
@@ -50,6 +51,7 @@ type Server struct {
 type NewServerParams struct {
 	dig.In
 	DB                         *gorm.DB
+	ReadDB                     services.ReadOnlyDB
 	Config                     types.ConfigManager
 	SettingsManager            *config.SystemSettingsManager
 	GroupManager               *services.GroupManager
@@ -76,8 +78,13 @@ type NewServerParams struct {
 
 // NewServer creates a new handler instance with dependencies injected by dig.
 func NewServer(params NewServerParams) *Server {
+	readDB := params.ReadDB.DB
+	if readDB == nil {
+		readDB = params.DB
+	}
 	s := &Server{
 		DB:                         params.DB,
+		ReadDB:                     readDB,
 		config:                     params.Config,
 		SettingsManager:            params.SettingsManager,
 		GroupManager:               params.GroupManager,
@@ -133,6 +140,13 @@ func NewServer(params NewServerParams) *Server {
 	}
 
 	return s
+}
+
+func (s *Server) readOnlyDB() *gorm.DB {
+	if s.ReadDB != nil {
+		return s.ReadDB
+	}
+	return s.DB
 }
 
 // LoginRequest represents the login request payload

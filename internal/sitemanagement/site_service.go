@@ -33,11 +33,17 @@ type SiteService struct {
 	siteListCache    *siteListCacheEntry
 	siteListCacheMu  sync.RWMutex
 	siteListCacheTTL time.Duration
+	cacheInvalidator func()
 
 	// Callback for syncing enabled status to bound group (set by handler layer)
 	SyncSiteEnabledToGroupCallback func(ctx context.Context, siteID uint, enabled bool) error
 	// Invalidate group list cache after site sort changes sync to bound groups.
 	InvalidateGroupListCacheCallback func()
+}
+
+// SetCacheInvalidationCallback registers a callback for other cached site snapshots.
+func (s *SiteService) SetCacheInvalidationCallback(callback func()) {
+	s.cacheInvalidator = callback
 }
 
 // siteListCacheEntry holds cached site list data
@@ -359,6 +365,9 @@ func (s *SiteService) InvalidateSiteListCache() {
 	s.siteListCacheMu.Lock()
 	s.siteListCache = nil
 	s.siteListCacheMu.Unlock()
+	if s.cacheInvalidator != nil {
+		s.cacheInvalidator()
+	}
 }
 
 func (s *SiteService) invalidateGroupListCache() {

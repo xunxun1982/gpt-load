@@ -107,6 +107,10 @@ const (
 	// Optimized to minimize lock contention and timeout risk
 	LogCleanupBatchSize = 1500 // records per batch
 
+	// SQLiteLogCleanupBatchSize keeps each SQLite write transaction below the slow-query window.
+	// SQLite has a single writer, so smaller bounded batches protect interactive requests.
+	SQLiteLogCleanupBatchSize = 250 // records per batch
+
 	// ImportDecryptBatchSize is the batch size for decrypt-and-insert during import
 	// Keys are decrypted and inserted in batches to provide progress feedback
 	// Balances memory usage, progress granularity, and transaction overhead

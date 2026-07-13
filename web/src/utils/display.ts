@@ -73,6 +73,26 @@ export function maskProxyKeys(keys: string): string {
     .join(", ");
 }
 
+export function formatBalanceValue(balance: string | null | undefined): string {
+  const value = balance?.trim();
+  if (!value) {
+    return "-";
+  }
+
+  const match = value.match(/\d[\d.,]*/);
+  if (!match) {
+    return "-";
+  }
+
+  const numericText = match[0].replace(/[.,]+$/, "");
+  if (!numericText) {
+    return "-";
+  }
+
+  const prefix = value.slice(0, match.index ?? 0);
+  return prefix.includes("-") ? `-${numericText}` : numericText;
+}
+
 /**
  * Formats a percentage value with dynamic precision.
  * Uses 1 decimal place for values >= 1%, and 2 decimal places for values < 1%.

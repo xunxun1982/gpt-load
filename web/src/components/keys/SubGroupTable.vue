@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { keysApi } from "@/api/keys";
 import type { Group, SubGroupInfo } from "@/types/models";
+import { appState } from "@/utils/app-state";
 import {
+  formatBalanceValue,
   formatEffectiveWeight,
   formatHealthScore,
   formatPercentage,
@@ -42,6 +44,13 @@ const message = useMessage();
 
 // Create number formatter that respects app's i18n locale
 const numberFormatter = computed(() => new Intl.NumberFormat(locale.value));
+
+function getSiteBalanceDisplay(siteId: number | null | undefined): string {
+  if (!siteId) {
+    return "-";
+  }
+  return formatBalanceValue(appState.siteBalances[siteId]);
+}
 
 // Get sub-group status based on weight and key/activity
 function getSubGroupStatus(subGroup: SubGroupInfo): {
@@ -436,6 +445,12 @@ function formatDateTime(isoString: string | null | undefined): string {
                 </div>
                 <span class="group-name">#{{ subGroup.group.name }}</span>
               </div>
+              <span
+                class="sub-group-balance"
+                :title="getSiteBalanceDisplay(subGroup.group.bound_site_id)"
+              >
+                {{ getSiteBalanceDisplay(subGroup.group.bound_site_id) }}
+              </span>
             </div>
 
             <!-- Weight display -->
@@ -815,8 +830,9 @@ function formatDateTime(isoString: string | null | undefined): string {
   font-weight: 600;
   color: var(--text-primary);
   line-height: 1.35;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -830,8 +846,9 @@ function formatDateTime(isoString: string | null | undefined): string {
   padding: 2px 6px;
   border-radius: 4px;
   line-height: 1.35;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   align-self: flex-start;
   max-width: 100%;
   min-width: 0;
@@ -868,8 +885,25 @@ function formatDateTime(isoString: string | null | undefined): string {
 .key-main {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+}
+
+.sub-group-balance {
+  display: block;
+  flex: 0 0 auto;
+  max-width: 104px;
+  overflow: hidden;
+  padding: 2px 7px;
+  color: #2080f0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(32, 128, 240, 0.1);
+  border: 1px solid rgba(32, 128, 240, 0.22);
+  border-radius: 999px;
 }
 
 .key-section {

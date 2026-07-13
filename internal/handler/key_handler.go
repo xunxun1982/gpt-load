@@ -99,7 +99,7 @@ func (s *Server) findGroupByID(c *gin.Context, groupID uint) (*models.Group, boo
 		"timeout_ms": timeoutMs,
 	}).Debug("findGroupByID: Querying database")
 
-	if err := s.DB.WithContext(ctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
+	if err := s.readOnlyDB().WithContext(ctx).Where("id = ?", groupID).Limit(1).Find(&group).Error; err != nil {
 		logrus.WithFields(logrus.Fields{
 			"group_id": groupID,
 			"error":    err,

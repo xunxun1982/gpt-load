@@ -155,7 +155,11 @@ func MigrateDatabase(db *gorm.DB) error {
 		return err
 	}
 	// Run v1.28.0 migration - Add sub-group minimum effective weight
-	return V1_28_0_AddSubGroupMinEffectiveWeight(db)
+	if err := V1_28_0_AddSubGroupMinEffectiveWeight(db); err != nil {
+		return err
+	}
+	// Run v1.29.0 migration - Add request log RPM dashboard index
+	return V1_29_0_OptimizeRequestLogDashboardIndex(db)
 }
 
 // HandleLegacyIndexes removes old indexes from previous versions to prevent migration errors
