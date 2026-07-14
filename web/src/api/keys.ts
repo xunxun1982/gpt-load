@@ -343,7 +343,8 @@ export const keysApi = {
   async updateSubGroupWeight(
     aggregateGroupId: number,
     subGroupId: number,
-    options: UpdateSubGroupWeightOptions
+    options: UpdateSubGroupWeightOptions,
+    hideMessage = false
   ): Promise<void> {
     const { weight, minEffectiveWeight, healthResetIntervalSeconds } = options;
     const payload: {
@@ -357,7 +358,9 @@ export const keysApi = {
     if (healthResetIntervalSeconds !== undefined) {
       payload.health_reset_interval_seconds = healthResetIntervalSeconds;
     }
-    await http.put(`/groups/${aggregateGroupId}/sub-groups/${subGroupId}/weight`, payload);
+    await http.put(`/groups/${aggregateGroupId}/sub-groups/${subGroupId}/weight`, payload, {
+      hideMessage,
+    });
   },
 
   // Delete a sub-group

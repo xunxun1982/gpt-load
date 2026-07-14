@@ -73,24 +73,69 @@ export function maskProxyKeys(keys: string): string {
     .join(", ");
 }
 
-export function formatBalanceValue(balance: string | null | undefined): string {
+interface BalanceText {
+  numericText: string;
+  negative: boolean;
+}
+
+function extractBalanceText(balance: string | null | undefined): BalanceText | null {
   const value = balance?.trim();
   if (!value) {
-    return "-";
+    return null;
   }
 
   const match = value.match(/\d[\d.,]*/);
   if (!match) {
-    return "-";
+    return null;
   }
 
   const numericText = match[0].replace(/[.,]+$/, "");
   if (!numericText) {
-    return "-";
+    return null;
   }
 
   const prefix = value.slice(0, match.index ?? 0);
-  return prefix.includes("-") ? `-${numericText}` : numericText;
+  return { numericText, negative: prefix.includes("-") };
+}
+
+export function formatBalanceValue(balance: string | null | undefined): string {
+  const extracted = extractBalanceText(balance);
+  if (!extracted) {
+    return "-";
+  }
+  return extracted.negative ? `-${extracted.numericText}` : extracted.numericText;
+}
+
+export function parseBalanceValue(balance: string | null | undefined): number | null {
+  const extracted = extractBalanceText(balance);
+  if (!extracted) {
+    return null;
+  }
+
+  const { numericText } = extracted;
+  const lastComma = numericText.lastIndexOf(",");
+  const lastDot = numericText.lastIndexOf(".");
+  let normalized = numericText;
+
+  if (lastComma >= 0 && lastDot >= 0) {
+    const decimalSeparator = lastComma > lastDot ? "," : ".";
+    const groupingSeparator = decimalSeparator === "," ? "." : ",";
+    normalized = numericText.split(groupingSeparator).join("").replace(decimalSeparator, ".");
+  } else {
+    const separator = lastComma >= 0 ? "," : lastDot >= 0 ? "." : "";
+    if (separator) {
+      const parts = numericText.split(separator);
+      const grouped =
+        parts.length > 2 || (parts.length === 2 && parts[0] !== "0" && parts[1]?.length === 3);
+      normalized = grouped ? parts.join("") : `${parts[0]}.${parts[1] ?? ""}`;
+    }
+  }
+
+  const value = Number(normalized);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return extracted.negative ? -value : value;
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   CreateOutline,
   EyeOutline,
   InformationCircleOutline,
+  OptionsOutline,
   RefreshOutline,
   Search,
   Trash,
@@ -35,6 +36,7 @@ import {
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import AddSubGroupModal from "./AddSubGroupModal.vue";
+import AutoSubGroupWeightModal from "./AutoSubGroupWeightModal.vue";
 import CCBadge from "./CCBadge.vue";
 import CodexBadge from "./CodexBadge.vue";
 import EditSubGroupWeightModal from "./EditSubGroupWeightModal.vue";
@@ -109,6 +111,7 @@ const groupById = computed(() => {
 const dialog = useDialog();
 
 const addModalShow = ref(false);
+const autoWeightModalShow = ref(false);
 const editModalShow = ref(false);
 const editingSubGroup = ref<SubGroupInfo | null>(null);
 
@@ -384,6 +387,19 @@ function formatDateTime(isoString: string | null | undefined): string {
             <n-icon :component="RefreshOutline" />
           </template>
           {{ t("subGroups.resetAllHealth") }}
+        </n-button>
+        <n-button
+          type="primary"
+          size="small"
+          secondary
+          :disabled="!props.subGroups?.length"
+          :title="t('subGroups.autoArrangeWeightTip')"
+          @click="autoWeightModalShow = true"
+        >
+          <template #icon>
+            <n-icon :component="OptionsOutline" />
+          </template>
+          {{ t("subGroups.autoArrangeWeight") }}
         </n-button>
       </div>
       <div class="toolbar-right">
@@ -705,6 +721,14 @@ function formatDateTime(isoString: string | null | undefined): string {
       :aggregate-group="selectedGroup"
       :existing-sub-groups="subGroups || []"
       :groups="groups || []"
+      @success="handleSuccess"
+    />
+
+    <auto-sub-group-weight-modal
+      v-if="selectedGroup?.id"
+      v-model:show="autoWeightModalShow"
+      :aggregate-group="selectedGroup"
+      :sub-groups="subGroups || []"
       @success="handleSuccess"
     />
 

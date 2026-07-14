@@ -808,6 +808,16 @@ export default {
     lastSuccess: "Last Success",
     resetHealth: "Reset Health",
     resetAllHealth: "Reset All Health",
+    autoArrangeWeight: "Auto Allocate Weights",
+    autoArrangeWeightTip: "Calculate and allocate initial sub-group weights from cached balances",
+    autoWeightTitle: "Auto Allocate Initial Weights",
+    autoWeightMax: "Maximum Weight",
+    autoWeightHint:
+      "Balances shown as - are unchanged; zero balances get weight 1; failed or missing check-ins multiply the calculated weight by 0.6.",
+    autoWeightNoEligible: "No cached balances are available for weight calculation",
+    autoWeightSuccess: "Auto allocation completed: {success} updated, {skipped} skipped",
+    autoWeightPartial:
+      "Auto allocation partially completed: {success} updated, {failed} failed, {skipped} skipped",
     confirmResetHealth: 'Are you sure to reset health metrics for sub group "{name}"?',
     confirmResetAllHealth:
       "Are you sure to reset health metrics for all sub groups in this aggregate group?",

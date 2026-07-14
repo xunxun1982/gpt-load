@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -3454,6 +3455,108 @@ func TestExecuteRequestWithAggregateRetryLimitsAffinityKeyRetriesByParentSubMaxR
 	require.NoError(t, json.Unmarshal(<-fallbackBodies, &fallbackPayload))
 	assert.False(t, jsonArrayContainsStringForTest(fallbackPayload["include"], responsesEncryptedReasoning))
 	assert.False(t, jsonInputContainsReasoningItemForTest(fallbackPayload["input"]))
+}
+
+func TestExecuteRequestWithAggregateRetryCyclesAfterEveryAffinitySubGroupFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	var attempts [3]int32
+	var attemptOrderMu sync.Mutex
+	var attemptOrder []int
+	subGroups := make([]*models.Group, 0, len(attempts))
+	for i := range attempts {
+		index := i
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			atomic.AddInt32(&attempts[index], 1)
+			attemptOrderMu.Lock()
+			attemptOrder = append(attemptOrder, index)
+			attemptOrderMu.Unlock()
+			http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
+		}))
+		t.Cleanup(upstream.Close)
+
+		subGroup := createTestGroup(t, db, fmt.Sprintf("agg-affinity-all-fail-%d", i), "openai-response")
+		subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+		subGroup.Config = map[string]any{
+			"max_retries":         0,
+			"blacklist_threshold": 100,
+			"force_non_stream":    true,
+		}
+		subGroup.EffectiveConfig = systemSettingsWithRetryTimeout(0, 1)
+		require.NoError(t, db.Save(subGroup).Error)
+		subGroups = append(subGroups, subGroup)
+	}
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-affinity-all-fail-parent",
+		ChannelType: "openai-response",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config: map[string]any{
+			"max_retries":            5,
+			"sub_max_retries":        0,
+			"codex_affinity_enabled": true,
+		},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	for _, subGroup := range subGroups {
+		require.NoError(t, db.Create(&models.GroupSubGroup{
+			GroupID:         aggregateGroup.ID,
+			SubGroupID:      subGroup.ID,
+			SubGroupName:    subGroup.Name,
+			SubGroupEnabled: true,
+			Weight:          100,
+		}).Error)
+		createTestKey(t, db, subGroup.ID, "sk-"+subGroup.Name, ps.encryptionSvc)
+	}
+
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+
+	const affinityKey = "all-fail-session"
+	const model = "gpt-5"
+	ps.codexAffinityCache.set(
+		codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, model),
+		subGroups[0].ID,
+		time.Now(),
+	)
+	body := []byte(`{"model":"` + model + `","prompt_cache_key":"` + affinityKey + `","input":"hello"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	for i := range attempts {
+		assert.Equal(t, int32(2), atomic.LoadInt32(&attempts[i]), "sub-group %d should run once per retry cycle", i)
+	}
+	attemptOrderMu.Lock()
+	actualOrder := append([]int(nil), attemptOrder...)
+	attemptOrderMu.Unlock()
+	require.Len(t, actualOrder, 6)
+	assert.Equal(t, 0, actualOrder[0], "the first retry cycle should start from the affinity sub-group")
+	assert.ElementsMatch(t, []int{0, 1, 2}, actualOrder[:3])
+	assert.Equal(t, 0, actualOrder[3], "the next retry cycle should restart from the affinity sub-group")
+	assert.ElementsMatch(t, []int{0, 1, 2}, actualOrder[3:])
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityFallbackStripsEncryptedReasoning(t *testing.T) {

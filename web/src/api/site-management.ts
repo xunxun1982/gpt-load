@@ -53,6 +53,7 @@ export interface SiteBindingOption {
   sort: number;
   enabled: boolean;
   last_balance: string | null;
+  last_checkin_status: ManagedSiteCheckinStatus;
   bound_group_count?: number;
 }
 

@@ -3148,22 +3148,18 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 			return
 		}
 
-		// Count available sub-groups (excluding disabled and no active keys)
+		// Count available sub-groups before excluding the current failure.
 		availableCount := ps.countAvailableSubGroups(originalGroup, retryCtx.excludedSubGroups)
 
-		// Only exclude the failed sub-group if there are more than 1 available
-		// If only 1 available, don't exclude it (no other choice)
-		if availableCount > 1 {
-			retryCtx.excludedSubGroups[subGroupIDUint] = true
-			logrus.WithFields(logrus.Fields{
-				"sub_group_id":    subGroupIDUint,
-				"excluded_count":  len(retryCtx.excludedSubGroups),
-				"available_count": availableCount - 1,
-			}).Debug("Added failed sub-group to exclusion list")
-		} else {
-			logrus.WithField("sub_group_id", subGroupIDUint).
-				Debug("Not excluding last available sub-group")
-		}
+		// Exclude every failed sub-group in the current cycle, including the last
+		// one. Once none remain, the existing cycle reset below makes all groups
+		// eligible again instead of pinning the remaining retries to the last group.
+		retryCtx.excludedSubGroups[subGroupIDUint] = true
+		logrus.WithFields(logrus.Fields{
+			"sub_group_id":    subGroupIDUint,
+			"excluded_count":  len(retryCtx.excludedSubGroups),
+			"available_count": max(availableCount-1, 0),
+		}).Debug("Added failed sub-group to exclusion list")
 	}
 
 	// Check if this is the last attempt
