@@ -3,10 +3,10 @@ import { keysApi } from "@/api/keys";
 import type { Group, SubGroupInfo } from "@/types/models";
 import { appState } from "@/utils/app-state";
 import {
-  formatBalanceValue,
   formatEffectiveWeight,
   formatHealthScore,
   formatPercentage,
+  formatSubGroupBalanceValue,
   getGroupDisplayName,
 } from "@/utils/display";
 import {
@@ -46,13 +46,6 @@ const message = useMessage();
 
 // Create number formatter that respects app's i18n locale
 const numberFormatter = computed(() => new Intl.NumberFormat(locale.value));
-
-function getSiteBalanceDisplay(siteId: number | null | undefined): string {
-  if (!siteId) {
-    return "-";
-  }
-  return formatBalanceValue(appState.siteBalances[siteId]);
-}
 
 // Get sub-group status based on weight and key/activity
 function getSubGroupStatus(subGroup: SubGroupInfo): {
@@ -108,6 +101,26 @@ const groupById = computed(() => {
   });
   return map;
 });
+
+const subGroupBalanceDisplays = computed(() => {
+  const displays = new Map<number, string>();
+  for (const subGroup of props.subGroups || []) {
+    if (typeof subGroup.group.id !== "number") {
+      continue;
+    }
+    displays.set(
+      subGroup.group.id,
+      formatSubGroupBalanceValue(subGroup, groupById.value, appState.siteBalances)
+    );
+  }
+  return displays;
+});
+
+function getSubGroupBalanceDisplay(subGroup: SubGroupInfo): string {
+  const groupId = subGroup.group.id;
+  return typeof groupId === "number" ? (subGroupBalanceDisplays.value.get(groupId) ?? "-") : "-";
+}
+
 const dialog = useDialog();
 
 const addModalShow = ref(false);
@@ -461,11 +474,8 @@ function formatDateTime(isoString: string | null | undefined): string {
                 </div>
                 <span class="group-name">#{{ subGroup.group.name }}</span>
               </div>
-              <span
-                class="sub-group-balance"
-                :title="getSiteBalanceDisplay(subGroup.group.bound_site_id)"
-              >
-                {{ getSiteBalanceDisplay(subGroup.group.bound_site_id) }}
+              <span class="sub-group-balance" :title="getSubGroupBalanceDisplay(subGroup)">
+                {{ getSubGroupBalanceDisplay(subGroup) }}
               </span>
             </div>
 
