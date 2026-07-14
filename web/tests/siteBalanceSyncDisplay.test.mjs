@@ -136,8 +136,83 @@ test("key balance display removes upstream currency and unit text", async () => 
   assert.equal(parseBalanceValue(null), null);
   assert.equal(parseBalanceValue("unknown"), null);
   assert.match(bindingSelector, /formatBalanceValue/);
-  assert.match(subGroupTable, /formatBalanceValue/);
+  assert.match(subGroupTable, /formatSubGroupBalanceValue/);
   assert.match(sitePanel, /formatBalanceValue/);
+});
+
+test("subgroup balance follows the binding precedence table", async () => {
+  const { formatSubGroupBalanceValue } = await loadDisplayUtils();
+  assert.equal(typeof formatSubGroupBalanceValue, "function");
+
+  const parentAndCanonicalGroups = [
+    [1, { id: 1, bound_site_id: 101 }],
+    [2, { id: 2, parent_group_id: 1, bound_site_id: 202 }],
+  ];
+  const parentGroups = [
+    [1, { id: 1, bound_site_id: 101 }],
+    [2, { id: 2, parent_group_id: 1, bound_site_id: null }],
+  ];
+  const cases = [
+    {
+      name: "subgroup response direct binding",
+      subGroup: { group: { id: 2, parent_group_id: 1, bound_site_id: 303 } },
+      groups: parentAndCanonicalGroups,
+      balances: { 101: "$1.01", 202: "$2.02", 303: "$3.03" },
+      expected: "3.03",
+    },
+    {
+      name: "canonical direct binding",
+      subGroup: { group: { id: 2, parent_group_id: 1, bound_site_id: null } },
+      groups: parentAndCanonicalGroups,
+      balances: { 101: "$1.01", 202: "$2.02" },
+      expected: "2.02",
+    },
+    {
+      name: "parent standard group binding",
+      subGroup: { group: { id: 2, parent_group_id: 1, bound_site_id: null } },
+      groups: parentGroups,
+      balances: { 101: "$1.01" },
+      expected: "1.01",
+    },
+    {
+      name: "missing parent binding",
+      subGroup: { group: { id: 2, parent_group_id: 1, bound_site_id: null } },
+      groups: [[2, { id: 2, parent_group_id: 1, bound_site_id: null }]],
+      balances: { 101: "$1.01" },
+      expected: "-",
+    },
+    {
+      name: "missing parent balance cache",
+      subGroup: { group: { id: 2, parent_group_id: 1, bound_site_id: null } },
+      groups: parentGroups,
+      balances: {},
+      expected: "-",
+    },
+    {
+      name: "missing direct balance does not fall back to parent balance",
+      subGroup: { group: { id: 2, parent_group_id: 1, bound_site_id: 303 } },
+      groups: [
+        [1, { id: 1, bound_site_id: 101 }],
+        [2, { id: 2, parent_group_id: 1, bound_site_id: null }],
+      ],
+      balances: { 101: "$1.01" },
+      expected: "-",
+    },
+  ];
+
+  for (const { name, subGroup, groups, balances, expected } of cases) {
+    assert.equal(formatSubGroupBalanceValue(subGroup, new Map(groups), balances), expected, name);
+  }
+});
+
+test("aggregate subgroup balances reuse a dedicated computed display cache", () => {
+  assert.match(subGroupTable, /const subGroupBalanceDisplays = computed\(\(\) => \{/);
+  assert.match(
+    subGroupTable,
+    /displays\.set\(\s*subGroup\.group\.id,\s*formatSubGroupBalanceValue\(\s*subGroup,\s*groupById\.value,\s*appState\.siteBalances\s*\)\s*\)/s
+  );
+  assert.match(subGroupTable, /subGroupBalanceDisplays\.value\.get\(groupId\) \?\? "-"/);
+  assert.equal(subGroupTable.match(/formatSubGroupBalanceValue\(/g)?.length, 1);
 });
 
 test("binding selector keeps balance before actions on one compact line", () => {
@@ -167,13 +242,19 @@ test("binding selector keeps balance before actions on one compact line", () => 
   assert.doesNotMatch(groupInfoCard, /\.site-binding-in-header\s*\{[^}]*flex-shrink:\s*0/s);
 });
 
-test("aggregate subgroup cards show a compact top-right balance without wrapping names", () => {
+test("aggregate subgroup cards use the shared balance resolver without wrapping names", () => {
   assert.match(subGroupTable, /class="sub-group-balance"/);
-  assert.match(subGroupTable, /getSiteBalanceDisplay\(subGroup\.group\.bound_site_id\)/);
-  assert.match(subGroupTable, /:title="getSiteBalanceDisplay\(subGroup\.group\.bound_site_id\)"/);
+  assert.match(subGroupTable, /function getSubGroupBalanceDisplay\(subGroup: SubGroupInfo\)/);
+  assert.match(
+    subGroupTable,
+    /formatSubGroupBalanceValue\(subGroup, groupById\.value, appState\.siteBalances\)/
+  );
+  assert.match(subGroupTable, /:title="getSubGroupBalanceDisplay\(subGroup\)"/);
+  assert.match(subGroupTable, /\{\{ getSubGroupBalanceDisplay\(subGroup\) \}\}/);
+  assert.doesNotMatch(subGroupTable, /getSiteBalanceDisplay\(subGroup\.group\.bound_site_id\)/);
   assert.doesNotMatch(
     subGroupTable,
-    /\{\{ t\("siteManagement\.balance"\) \}\}\s*\{\{ getSiteBalanceDisplay/
+    /\{\{ t\("siteManagement\.balance"\) \}\}\s*\{\{ getSubGroupBalanceDisplay/
   );
   assert.match(subGroupTable, /\.sub-group-balance\s*\{[^}]*white-space:\s*nowrap/s);
   assert.match(subGroupTable, /\.display-name\s*\{[^}]*white-space:\s*nowrap/s);
