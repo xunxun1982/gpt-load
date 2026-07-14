@@ -225,6 +225,9 @@ func codexAggregateAffinityHeaderKey(c *gin.Context, group *models.Group) string
 	if !codexAggregateAffinityEnabled(c, group) {
 		return ""
 	}
+	if value := firstNonEmptyHeader(c, "Session-Id", "Thread-Id", "X-Client-Request-Id"); value != "" {
+		return value
+	}
 	if value := firstNonEmptyHeader(c, "Session_ID", "session_id"); value != "" {
 		return value
 	}
@@ -236,6 +239,8 @@ func codexAggregateAffinityHeaderKey(c *gin.Context, group *models.Group) string
 
 func codexAggregateAffinityEnabled(c *gin.Context, group *models.Group) bool {
 	return c != nil && c.Request != nil && group != nil &&
+		c.Request.Method == http.MethodPost &&
+		isOpenAIResponsesEndpoint(c.Request.URL.Path) &&
 		group.GroupType == "aggregate" &&
 		group.ChannelType == "openai-response" &&
 		getGroupConfigBool(group, "codex_affinity_enabled")
@@ -1929,7 +1934,9 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	applySimulatedClientHeaders(req, group, isStream)
+	if rewrittenBody := applySimulatedClientHeaders(req, group, isStream); rewrittenBody != nil {
+		bodyBytes = rewrittenBody
+	}
 
 	// Set headers for OpenAI Responses CC mode AFTER header rules to ensure upstream compatibility.
 	// NOTE: This intentionally overrides any custom headers set by header rules.
@@ -1938,7 +1945,9 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	// Normal OpenAI Responses requests (non-CC) should use passthrough behavior (preserve client's original headers).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
 	if isOpenAIResponseCCMode(c) {
-		applyCodexCompatibleHeaders(req, group, true)
+		if rewrittenBody := applyCodexCompatibleHeaders(req, group, true); rewrittenBody != nil {
+			bodyBytes = rewrittenBody
+		}
 		req.Header.Set("Connection", "Keep-Alive")
 	}
 
@@ -2806,7 +2815,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
 
-	applySimulatedClientHeaders(req, group, isStream)
+	if rewrittenBody := applySimulatedClientHeaders(req, group, isStream); rewrittenBody != nil {
+		finalBodyBytes = rewrittenBody
+	}
 
 	// Set headers for OpenAI Responses CC mode AFTER header rules to ensure upstream compatibility.
 	// NOTE: This intentionally overrides any custom headers set by header rules.
@@ -2815,7 +2826,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Normal OpenAI Responses requests (non-CC) should use passthrough behavior (preserve client's original headers).
 	// Model fetching sets UA separately in group_service.go FetchGroupModels().
 	if isOpenAIResponseCCMode(c) {
-		applyCodexCompatibleHeaders(req, group, true)
+		if rewrittenBody := applyCodexCompatibleHeaders(req, group, true); rewrittenBody != nil {
+			finalBodyBytes = rewrittenBody
+		}
 		req.Header.Set("Connection", "Keep-Alive")
 	}
 

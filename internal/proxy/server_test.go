@@ -1175,6 +1175,63 @@ func TestCodexAggregateAffinityKeyReadsExistingCodexContext(t *testing.T) {
 	assert.JSONEq(t, `{"model":"gpt-5.4","prompt_cache_key":"body-cache-key"}`, string(body))
 }
 
+func TestCodexAggregateAffinityKeyReadsOfficialCodexHeaders(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	group := &models.Group{
+		Name:        "codex-aggregate",
+		GroupType:   "aggregate",
+		ChannelType: "openai-response",
+		Config: map[string]any{
+			"codex_affinity_enabled": true,
+		},
+	}
+	tests := []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{
+			name: "session id takes priority",
+			headers: map[string]string{
+				"session-id":          "official-session",
+				"thread-id":           "official-thread",
+				"x-client-request-id": "official-request",
+			},
+			want: "official-session",
+		},
+		{
+			name: "thread id is the fallback",
+			headers: map[string]string{
+				"thread-id":           "official-thread",
+				"x-client-request-id": "official-request",
+			},
+			want: "official-thread",
+		},
+		{
+			name: "client request id is the final official fallback",
+			headers: map[string]string{
+				"x-client-request-id": "official-request",
+			},
+			want: "official-request",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-5.4","input":"hello"}`)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
+			for name, value := range tt.headers {
+				c.Request.Header.Set(name, value)
+			}
+
+			assert.Equal(t, tt.want, codexAggregateAffinityKey(c, group, body))
+		})
+	}
+}
+
 func TestCodexAggregateAffinityKeyFallsBackToPromptCacheKey(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -1390,6 +1447,39 @@ func TestCodexAggregateAffinityKeyDisabledOutsideEnabledOpenAIResponseAggregate(
 			c.Request.Header.Set("Session_ID", "header-session")
 
 			assert.Empty(t, codexAggregateAffinityKey(c, tt.group, body))
+		})
+	}
+}
+
+func TestCodexAggregateAffinityKeyDisabledOutsideResponsesPost(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	group := &models.Group{
+		Name:        "codex-aggregate",
+		GroupType:   "aggregate",
+		ChannelType: "openai-response",
+		Config:      map[string]any{"codex_affinity_enabled": true},
+	}
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "responses get", method: http.MethodGet, path: "/proxy/codex-aggregate/v1/responses"},
+		{name: "responses compact", method: http.MethodPost, path: "/proxy/codex-aggregate/v1/responses/compact"},
+		{name: "chat completions post", method: http.MethodPost, path: "/proxy/codex-aggregate/v1/chat/completions"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			body := []byte(`{"prompt_cache_key":"body-cache-key"}`)
+			c.Request = httptest.NewRequest(tt.method, tt.path, bytes.NewReader(body))
+			c.Request.Header.Set("Session-Id", "header-session")
+
+			assert.Empty(t, codexAggregateAffinityKey(c, group, body))
 		})
 	}
 }
@@ -1737,7 +1827,7 @@ func TestExecuteRequestWithRetrySanitizesIgnorableAbortLogError(t *testing.T) {
 	assert.NotContains(t, logEntry.ErrorMessage, "goog-secret")
 }
 
-func TestExecuteRequestWithRetrySimulatedClientPreservesRequestBody(t *testing.T) {
+func TestExecuteRequestWithRetrySimulatedClaudeCodeAddsMessagesIdentity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	db := setupTestDB(t)
@@ -1748,14 +1838,16 @@ func TestExecuteRequestWithRetrySimulatedClientPreservesRequestBody(t *testing.T
 	createTestKey(t, db, group.ID, "sk-simulated-body-passthrough", ps.encryptionSvc)
 	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
 
-	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"client-owned"},"messages":[{"role":"user","content":"hello"}]}`)
+	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`)
 	receivedBody := make(chan []byte, 1)
 	receivedDangerousHeader := make(chan string, 1)
+	receivedSessionID := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 		receivedBody <- got
 		receivedDangerousHeader <- r.Header.Get("Anthropic-Dangerous-Direct-Browser-Access")
+		receivedSessionID <- r.Header.Get("X-Claude-Code-Session-Id")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	}))
@@ -1766,10 +1858,22 @@ func TestExecuteRequestWithRetrySimulatedClientPreservesRequestBody(t *testing.T
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/simulate-body-passthrough/v1/messages", bytes.NewReader(body))
 
 	client := &http.Client{Timeout: 3 * time.Second}
-	ps.executeRequestWithRetry(c, &testChannelProxy{client: client, url: upstream.URL}, group, group, body, false, time.Now(), 0)
+	ps.executeRequestWithRetry(c, &testChannelProxy{client: client, url: upstream.URL + "/v1/messages"}, group, group, body, false, time.Now(), 0)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, body, <-receivedBody)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &payload))
+	assert.Equal(t, "claude-sonnet-4-5", payload["model"])
+	metadata, ok := payload["metadata"].(map[string]any)
+	require.True(t, ok)
+	userID, ok := metadata["user_id"].(string)
+	require.True(t, ok)
+	var userIDPayload map[string]string
+	require.NoError(t, json.Unmarshal([]byte(userID), &userIDPayload))
+	assert.Equal(t, userIDPayload["session_id"], <-receivedSessionID)
+	system, ok := payload["system"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, system)
 	assert.Equal(t, "true", <-receivedDangerousHeader)
 }
 
@@ -1791,11 +1895,13 @@ func TestExecuteRequestWithRetrySimulatedCodexPreservesRequestModel(t *testing.T
 	body := []byte(`{"model":"gpt-5","input":"hello"}`)
 	receivedBody := make(chan []byte, 1)
 	receivedUserAgent := make(chan string, 1)
+	receivedHeaders := make(chan http.Header, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 		receivedBody <- got
 		receivedUserAgent <- r.Header.Get("User-Agent")
+		receivedHeaders <- r.Header.Clone()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	}))
@@ -1806,10 +1912,21 @@ func TestExecuteRequestWithRetrySimulatedCodexPreservesRequestModel(t *testing.T
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/simulate-codex-model-passthrough/v1/responses", bytes.NewReader(body))
 
 	client := &http.Client{Timeout: 3 * time.Second}
-	ps.executeRequestWithRetry(c, &testChannelProxy{client: client, url: upstream.URL}, group, group, body, false, time.Now(), 0)
+	ps.executeRequestWithRetry(c, &testChannelProxy{client: client, url: upstream.URL + "/v1/responses"}, group, group, body, false, time.Now(), 0)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.JSONEq(t, string(body), string(<-receivedBody))
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &payload))
+	assert.Equal(t, "gpt-5", payload["model"])
+	assert.Equal(t, "hello", payload["input"])
+	headers := <-receivedHeaders
+	metadata, ok := payload["client_metadata"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, headers.Get("Session-Id"), metadata["session_id"])
+	assert.Equal(t, headers.Get("Thread-Id"), metadata["thread_id"])
+	assert.Equal(t, headers.Get("X-Codex-Window-Id"), metadata["x-codex-window-id"])
+	assert.Equal(t, headers.Get("Thread-Id"), headers.Get("x-client-request-id"))
+	assert.Equal(t, "codex-tui", headers.Get("originator"))
 	assert.Equal(t, buildCodexUserAgent("0.150.1"), <-receivedUserAgent)
 }
 
@@ -1851,7 +1968,7 @@ func TestExecuteRequestWithRetryCodexCCModeUsesConfiguredSimulatedVersion(t *tes
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, buildCodexUserAgent("0.150.1"), <-receivedUserAgent)
 	assert.Equal(t, "0.150.1", <-receivedVersion)
-	assert.Equal(t, "codex_cli_rs", <-receivedOriginator)
+	assert.Equal(t, "codex-tui", <-receivedOriginator)
 }
 
 func TestExecuteRequestWithRetryForceStreamSendsStreamTrueToResponsesUpstream(t *testing.T) {
@@ -2416,13 +2533,13 @@ func TestExecuteRequestWithRetrySimulatedCodexSurvivesTwoProxyLayers(t *testing.
 	assert.Equal(t, buildCodexUserAgent("0.150.1"), headers.Get("User-Agent"))
 	assert.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
 	assert.Equal(t, "0.150.1", headers.Get("Version"))
-	assert.Equal(t, "codex_cli_rs", headers.Get("Originator"))
-	assert.Equal(t, "terminal_resize_reflow", headers.Get("X-Codex-Beta-Features"))
+	assert.Equal(t, "codex-tui", headers.Get("Originator"))
+	assert.Empty(t, headers.Get("X-Codex-Beta-Features"))
 	assert.NotEmpty(t, headers.Get("X-Codex-Turn-Metadata"))
 	assert.NotEmpty(t, headers.Get("X-Codex-Window-Id"))
-	assert.Empty(t, headers.Get("x-client-request-id"))
-	assert.Empty(t, headers.Get("Session-Id"))
-	assert.Empty(t, headers.Get("Thread-Id"))
+	assert.NotEmpty(t, headers.Get("Session-Id"))
+	assert.NotEmpty(t, headers.Get("Thread-Id"))
+	assert.Equal(t, headers.Get("Thread-Id"), headers.Get("x-client-request-id"))
 }
 
 func TestExecuteRequestWithAggregateRetryStopsWhenNonStreamLifecycleTimeoutExpires(t *testing.T) {
@@ -2618,11 +2735,15 @@ func TestExecuteRequestWithAggregateRetryAppliesOnlySelectedSubGroupSimulatedCli
 	receivedVersion := make(chan string, 1)
 	receivedOriginator := make(chan string, 1)
 	receivedAnthropicVersion := make(chan string, 1)
+	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
 		receivedUserAgent <- r.Header.Get("User-Agent")
 		receivedVersion <- r.Header.Get("Version")
 		receivedOriginator <- r.Header.Get("originator")
 		receivedAnthropicVersion <- r.Header.Get("anthropic-version")
+		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	}))
@@ -2704,8 +2825,15 @@ func TestExecuteRequestWithAggregateRetryAppliesOnlySelectedSubGroupSimulatedCli
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, buildCodexUserAgent("0.150.1"), <-receivedUserAgent)
 	assert.Equal(t, "0.150.1", <-receivedVersion)
-	assert.Equal(t, "codex_cli_rs", <-receivedOriginator)
+	assert.Equal(t, "codex-tui", <-receivedOriginator)
 	assert.Empty(t, <-receivedAnthropicVersion)
+	var receivedPayload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &receivedPayload))
+	clientMetadata, ok := receivedPayload["client_metadata"].(map[string]any)
+	require.True(t, ok)
+	assert.NotEmpty(t, clientMetadata["session_id"])
+	assert.NotContains(t, receivedPayload, "metadata")
+	assert.NotContains(t, receivedPayload, "system")
 }
 
 func TestExecuteRequestWithAggregateRetryWaitsBeforeSameSubGroupKeyRetry(t *testing.T) {
@@ -2873,14 +3001,28 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 		version          string
 		originator       string
 		anthropicVersion string
+		hasCodexMetadata bool
+		hasClaudeID      bool
+		hasClaudeSystem  bool
 	}
 	receivedHeadersCh := make(chan receivedHeaders, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(body, &payload))
+		_, hasCodexMetadata := payload["client_metadata"].(map[string]any)
+		metadata, _ := payload["metadata"].(map[string]any)
+		_, hasClaudeID := metadata["user_id"].(string)
+		_, hasClaudeSystem := payload["system"].([]any)
 		receivedHeadersCh <- receivedHeaders{
 			userAgent:        r.Header.Get("User-Agent"),
 			version:          r.Header.Get("Version"),
 			originator:       r.Header.Get("originator"),
 			anthropicVersion: r.Header.Get("anthropic-version"),
+			hasCodexMetadata: hasCodexMetadata,
+			hasClaudeID:      hasClaudeID,
+			hasClaudeSystem:  hasClaudeSystem,
 		}
 		if atomic.AddInt32(&attempts, 1) == 1 {
 			http.Error(w, `{"error":"fail first subgroup"}`, http.StatusBadGateway)
@@ -2968,11 +3110,13 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 		{
 			userAgent:  buildCodexUserAgent("0.150.1"),
 			version:    "0.150.1",
-			originator: "codex_cli_rs",
+			originator: "codex-tui",
 		},
 		{
 			userAgent:        buildClaudeCodeUserAgent("2.3.4"),
 			anthropicVersion: "2023-06-01",
+			hasClaudeID:      true,
+			hasClaudeSystem:  true,
 		},
 	}
 	assert.ElementsMatch(t, want, got)
@@ -2985,7 +3129,11 @@ func TestExecuteRequestWithAggregateRetryLogsSimulatedClientEnabledForSelectedSu
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	}))
@@ -3065,6 +3213,13 @@ func TestExecuteRequestWithAggregateRetryLogsSimulatedClientEnabledForSelectedSu
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 
 	require.Equal(t, http.StatusOK, w.Code)
+	var receivedPayload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &receivedPayload))
+	assert.Equal(t, "gpt-5", receivedPayload["model"])
+	assert.Equal(t, "hello", receivedPayload["input"])
+	assert.NotContains(t, receivedPayload, "client_metadata")
+	assert.NotContains(t, receivedPayload, "metadata")
+	assert.NotContains(t, receivedPayload, "system")
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.Equal(t, selectedSubGroup.ID, logEntry.GroupID)
 	assert.Equal(t, selectedSubGroup.Name, logEntry.GroupName)
@@ -3592,13 +3747,14 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachesSuccessfulSubGroup(t
 	require.NoError(t, err)
 
 	affinityKey := "affinity-cache-session"
-	body := []byte(`{"model":"gpt-5","prompt_cache_key":"volatile-cache","client_metadata":{"thread_id":"` + affinityKey + `"},"include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
+	body := []byte(`{"model":"gpt-5","include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
 
 	for i := 0; i < 2; i++ {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
 		c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+		c.Request.Header.Set("session-id", affinityKey)
 
 		retryCtx := &retryContext{
 			excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
@@ -3611,11 +3767,20 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachesSuccessfulSubGroup(t
 		require.Equal(t, http.StatusOK, w.Code)
 		if i == 0 {
 			require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+			for j := range cachedAggregate.SubGroups {
+				subGroup := &cachedAggregate.SubGroups[j]
+				if subGroup.SubGroupID == firstSubGroup.ID {
+					subGroup.Weight = 100
+				} else {
+					subGroup.Weight = 0
+				}
+			}
+			ps.subGroupManager.RebuildSelectors(map[string]*models.Group{cachedAggregate.Name: cachedAggregate})
 		}
 	}
 
-	assert.Equal(t, int32(0), atomic.LoadInt32(&firstAttempts))
-	assert.Equal(t, int32(2), atomic.LoadInt32(&secondAttempts))
+	require.Equal(t, int32(0), atomic.LoadInt32(&firstAttempts))
+	require.Equal(t, int32(2), atomic.LoadInt32(&secondAttempts))
 
 	for i := 0; i < 2; i++ {
 		var payload map[string]any
@@ -3744,7 +3909,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCacheMissUsesEffectiveWeig
 	assert.Equal(t, int32(50), atomic.LoadInt32(&lowWeightAttempts)+atomic.LoadInt32(&highWeightAttempts))
 }
 
-func TestExecuteRequestWithAggregateRetryCodexAffinityFirstPrimaryFailureStripsEncryptedReasoning(t *testing.T) {
+func TestExecuteRequestWithAggregateRetryCodexAffinityOfficialSessionHeaderBindsFallback(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
@@ -3763,7 +3928,9 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityFirstPrimaryFailureStripsE
 		}
 		primaryBodies <- body
 		loadFallbackKey <- ps.keyProvider.LoadKeysFromDB()
-		http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"invalid codex request","type":"new_api_error","param":"","code":"invalid_responses_request"}}`)
 	}))
 	t.Cleanup(primaryUpstream.Close)
 	fallbackUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3832,10 +3999,11 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityFirstPrimaryFailureStripsE
 	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
 	require.NoError(t, err)
 	affinityKey := "first-primary-session"
-	body := []byte(`{"model":"gpt-5","prompt_cache_key":"` + affinityKey + `","include":["reasoning.encrypted_content","web_search_call.results"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
+	body := []byte(`{"model":"gpt-5","include":["reasoning.encrypted_content","web_search_call.results"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("session-id", affinityKey)
 
 	retryCtx := &retryContext{
 		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),

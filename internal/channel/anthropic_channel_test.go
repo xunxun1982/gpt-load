@@ -18,6 +18,7 @@ import (
 func TestClaudeCodeUserAgent(t *testing.T) {
 	t.Parallel()
 
+	assert.Equal(t, "2.1.207", DefaultClaudeCodeVersion)
 	// Test that the constant is defined and has the expected format
 	assert.NotEmpty(t, ClaudeCodeUserAgent)
 	assert.Equal(t, BuildClaudeCodeUserAgent(DefaultClaudeCodeVersion), ClaudeCodeUserAgent)
@@ -198,6 +199,7 @@ func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testin
 		assert.Equal(t, "node", r.Header.Get("X-Stainless-Runtime"))
 		assert.Equal(t, "Linux", r.Header.Get("X-Stainless-OS"))
 		assert.Equal(t, "arm64", r.Header.Get("X-Stainless-Arch"))
+		assert.NotEmpty(t, r.Header.Get("X-Claude-Code-Session-Id"))
 		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
 		assert.Equal(t, "test-key", r.Header.Get("x-api-key"))
 
@@ -214,6 +216,10 @@ func TestAnthropicChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testin
 			userID, ok := metadata["user_id"].(string)
 			assert.True(t, ok)
 			assert.NotEmpty(t, userID)
+			var userIDPayload map[string]string
+			if assert.NoError(t, json.Unmarshal([]byte(userID), &userIDPayload)) {
+				assert.Equal(t, userIDPayload["session_id"], r.Header.Get("X-Claude-Code-Session-Id"))
+			}
 		}
 		system, ok := body["system"].([]any)
 		if assert.True(t, ok) && assert.NotEmpty(t, system) {

@@ -309,7 +309,8 @@ func TestApplyStreamOverrideConfig(t *testing.T) {
 
 func TestApplySimulatedClientHeaders(t *testing.T) {
 	t.Run("no config preserves client headers", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		body := []byte(`{"model":"gpt-5","input":"hello"}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 		req.Header.Set("User-Agent", "custom-client/1.0")
 		req.Header.Set("OpenAI-Beta", "custom-beta")
 
@@ -317,10 +318,13 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 
 		assert.Equal(t, "custom-client/1.0", req.Header.Get("User-Agent"))
 		assert.Equal(t, "custom-beta", req.Header.Get("OpenAI-Beta"))
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, body, got)
 	})
 
 	t.Run("codex preset sets client fingerprint without touching auth headers", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-5","input":"hello"}`)))
 		req.Header.Set("Authorization", "Bearer upstream-key")
 		req.Header.Set("x-api-key", "upstream-key")
 
@@ -331,22 +335,54 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		assert.Equal(t, buildCodexUserAgent(channel.DefaultCodexVersion), req.Header.Get("User-Agent"))
 		assert.Equal(t, channel.DefaultCodexVersion, req.Header.Get("Version"))
 		assert.Equal(t, "responses=experimental", req.Header.Get("OpenAI-Beta"))
-		assert.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
-		assert.Equal(t, "terminal_resize_reflow", req.Header.Get("X-Codex-Beta-Features"))
+		assert.Equal(t, "codex-tui", req.Header.Get("originator"))
+		assert.Empty(t, req.Header.Get("X-Codex-Beta-Features"))
+		installationID := req.Header.Get("X-Codex-Installation-Id")
+		assert.NotEmpty(t, installationID)
+		sessionID := req.Header.Get("Session-Id")
+		threadID := req.Header.Get("Thread-Id")
+		assert.NotEmpty(t, sessionID)
+		assert.NotEmpty(t, threadID)
+		assert.Equal(t, threadID, req.Header.Get("x-client-request-id"))
 		windowID := req.Header.Get("X-Codex-Window-Id")
 		assert.NotEmpty(t, windowID)
-		var turnMetadata map[string]string
-		assert.NoError(t, json.Unmarshal([]byte(req.Header.Get("X-Codex-Turn-Metadata")), &turnMetadata))
+		turnMetadataJSON := req.Header.Get("X-Codex-Turn-Metadata")
+		var turnMetadata map[string]any
+		assert.NoError(t, json.Unmarshal([]byte(turnMetadataJSON), &turnMetadata))
 		assert.Equal(t, "turn", turnMetadata["request_kind"])
 		assert.NotEmpty(t, turnMetadata["turn_id"])
 		assert.Equal(t, windowID, turnMetadata["window_id"])
-		assert.Empty(t, req.Header.Get("x-client-request-id"))
-		assert.Empty(t, req.Header.Get("Session-Id"))
-		assert.Empty(t, req.Header.Get("Thread-Id"))
+		assert.Equal(t, installationID, turnMetadata["installation_id"])
+		assert.Equal(t, sessionID, turnMetadata["session_id"])
+		assert.Equal(t, threadID, turnMetadata["thread_id"])
 		assert.Equal(t, "text/event-stream", req.Header.Get("Accept"))
 		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
 		assert.Equal(t, "Bearer upstream-key", req.Header.Get("Authorization"))
 		assert.Equal(t, "upstream-key", req.Header.Get("x-api-key"))
+
+		body, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(len(body)), req.ContentLength)
+		var payload map[string]any
+		assert.NoError(t, json.Unmarshal(body, &payload))
+		clientMetadata, ok := payload["client_metadata"].(map[string]any)
+		if assert.True(t, ok) {
+			assert.Equal(t, installationID, clientMetadata["x-codex-installation-id"])
+			assert.Equal(t, sessionID, clientMetadata["session_id"])
+			assert.Equal(t, threadID, clientMetadata["thread_id"])
+			assert.Equal(t, turnMetadata["turn_id"], clientMetadata["turn_id"])
+			assert.Equal(t, windowID, clientMetadata["x-codex-window-id"])
+			assert.Equal(t, turnMetadataJSON, clientMetadata["x-codex-turn-metadata"])
+		}
+		if assert.NotNil(t, req.GetBody) {
+			bodyCopy, getBodyErr := req.GetBody()
+			if assert.NoError(t, getBodyErr) {
+				defer bodyCopy.Close()
+				copied, readErr := io.ReadAll(bodyCopy)
+				assert.NoError(t, readErr)
+				assert.Equal(t, body, copied)
+			}
+		}
 	})
 
 	t.Run("codex preset preserves existing openai beta tokens", func(t *testing.T) {
@@ -426,7 +462,7 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		assert.Equal(t, "600", req.Header.Get("X-Stainless-Timeout"))
 		assert.Equal(t, "Bearer upstream-key", req.Header.Get("Authorization"))
 		assert.Equal(t, "upstream-key", req.Header.Get("x-api-key"))
-		assert.Empty(t, req.Header.Get("X-Claude-Code-Session-Id"))
+		assert.NotEmpty(t, req.Header.Get("X-Claude-Code-Session-Id"))
 	})
 
 	t.Run("custom client versions override default user agents", func(t *testing.T) {
@@ -440,7 +476,7 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		assert.Contains(t, codexUA, "codex-tui/1.32")
 		assert.Contains(t, codexUA, "(codex-tui; 1.32)")
 		assert.Equal(t, "1.32", codexReq.Header.Get("Version"))
-		assert.Equal(t, "codex_cli_rs", codexReq.Header.Get("originator"))
+		assert.Equal(t, "codex-tui", codexReq.Header.Get("originator"))
 
 		claudeReq := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 		claudeReq.Header.Set("anthropic-beta", "custom-beta,claude-code-20250219")
@@ -462,12 +498,13 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		assert.Equal(t, "2023-06-01", claudeReq.Header.Get("anthropic-version"))
 	})
 
-	t.Run("codex preset preserves existing runtime trace headers without synthesizing missing ones", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	t.Run("codex preset preserves existing runtime identity values", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-5","client_metadata":{"custom":"client"}}`)))
 		req.Header.Set("Session_id", "client-session")
 		req.Header.Set("Session-Id", "client-session-hyphen")
 		req.Header.Set("Thread-Id", "client-thread")
 		req.Header.Set("x-client-request-id", "client-request")
+		req.Header.Set("X-Codex-Installation-Id", "client-installation")
 		req.Header.Set("X-Codex-Window-Id", "client-window")
 		req.Header.Set("X-Codex-Turn-Metadata", `{"source":"client"}`)
 		req.Header.Set("X-Codex-Beta-Features", "client-beta")
@@ -479,29 +516,74 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 		assert.Equal(t, "client-session", req.Header.Get("Session_id"))
 		assert.Equal(t, "client-session-hyphen", req.Header.Get("Session-Id"))
 		assert.Equal(t, "client-thread", req.Header.Get("Thread-Id"))
-		assert.Equal(t, "client-request", req.Header.Get("x-client-request-id"))
+		assert.Equal(t, "client-thread", req.Header.Get("x-client-request-id"))
+		assert.Equal(t, "client-installation", req.Header.Get("X-Codex-Installation-Id"))
 		assert.Equal(t, "client-window", req.Header.Get("X-Codex-Window-Id"))
-		assert.Equal(t, `{"source":"client"}`, req.Header.Get("X-Codex-Turn-Metadata"))
 		assert.Equal(t, "client-beta", req.Header.Get("X-Codex-Beta-Features"))
+		var turnMetadata map[string]any
+		assert.NoError(t, json.Unmarshal([]byte(req.Header.Get("X-Codex-Turn-Metadata")), &turnMetadata))
+		assert.Equal(t, "client", turnMetadata["source"])
+		assert.Equal(t, "client-installation", turnMetadata["installation_id"])
+		assert.Equal(t, "client-session-hyphen", turnMetadata["session_id"])
+		assert.Equal(t, "client-thread", turnMetadata["thread_id"])
+		assert.Equal(t, "client-window", turnMetadata["window_id"])
+		body, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		var payload map[string]any
+		assert.NoError(t, json.Unmarshal(body, &payload))
+		metadata, ok := payload["client_metadata"].(map[string]any)
+		if assert.True(t, ok) {
+			assert.Equal(t, "client", metadata["custom"])
+			assert.Equal(t, "client-session-hyphen", metadata["session_id"])
+			assert.Equal(t, "client-thread", metadata["thread_id"])
+		}
 	})
 
-	t.Run("codex preset does not synthesize session routing headers", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	t.Run("codex preset preserves large turn metadata numbers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-5"}`)))
+		req.Header.Set("X-Codex-Turn-Metadata", `{"sequence":9007199254740993}`)
 
 		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
 			"simulated_client": "codex",
 		}}, false)
 
-		assert.Empty(t, req.Header.Get("Session-Id"))
-		assert.Empty(t, req.Header.Get("Thread-Id"))
-		assert.Empty(t, req.Header.Get("x-client-request-id"))
-		assert.NotEmpty(t, req.Header.Get("X-Codex-Window-Id"))
-		assert.NotEmpty(t, req.Header.Get("X-Codex-Turn-Metadata"))
-		assert.Equal(t, "terminal_resize_reflow", req.Header.Get("X-Codex-Beta-Features"))
+		decoder := json.NewDecoder(bytes.NewBufferString(req.Header.Get("X-Codex-Turn-Metadata")))
+		decoder.UseNumber()
+		var turnMetadata map[string]any
+		if assert.NoError(t, decoder.Decode(&turnMetadata)) {
+			assert.Equal(t, json.Number("9007199254740993"), turnMetadata["sequence"])
+		}
 	})
 
-	t.Run("does not modify request body", func(t *testing.T) {
-		body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"client-user"},"messages":[{"role":"user","content":"hello"}]}`)
+	t.Run("codex preset ignores null turn metadata", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-5"}`)))
+		req.Header.Set("X-Codex-Turn-Metadata", "null")
+
+		assert.NotPanics(t, func() {
+			applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+				"simulated_client": "codex",
+			}}, false)
+		})
+		assert.NotEmpty(t, req.Header.Get("X-Codex-Turn-Metadata"))
+	})
+
+	t.Run("codex preset synthesizes consistent session routing identity", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-5"}`)))
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, false)
+
+		assert.NotEmpty(t, req.Header.Get("Session-Id"))
+		assert.NotEmpty(t, req.Header.Get("Thread-Id"))
+		assert.Equal(t, req.Header.Get("Thread-Id"), req.Header.Get("x-client-request-id"))
+		assert.NotEmpty(t, req.Header.Get("X-Codex-Window-Id"))
+		assert.NotEmpty(t, req.Header.Get("X-Codex-Turn-Metadata"))
+		assert.Empty(t, req.Header.Get("X-Codex-Beta-Features"))
+	})
+
+	t.Run("claude code preset adds required messages identity", func(t *testing.T) {
+		body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 
 		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
@@ -510,7 +592,288 @@ func TestApplySimulatedClientHeaders(t *testing.T) {
 
 		got, err := io.ReadAll(req.Body)
 		assert.NoError(t, err)
+		assert.Equal(t, int64(len(got)), req.ContentLength)
+		var payload map[string]any
+		assert.NoError(t, json.Unmarshal(got, &payload))
+		metadata, ok := payload["metadata"].(map[string]any)
+		if assert.True(t, ok) {
+			userID, ok := metadata["user_id"].(string)
+			if assert.True(t, ok) {
+				var userIDPayload map[string]string
+				assert.NoError(t, json.Unmarshal([]byte(userID), &userIDPayload))
+				assert.NotEmpty(t, userIDPayload["device_id"])
+				assert.NotEmpty(t, userIDPayload["session_id"])
+				assert.Equal(t, userIDPayload["session_id"], req.Header.Get("X-Claude-Code-Session-Id"))
+			}
+		}
+		system, ok := payload["system"].([]any)
+		if assert.True(t, ok) && assert.NotEmpty(t, system) {
+			first, ok := system[0].(map[string]any)
+			if assert.True(t, ok) {
+				assert.Equal(t, "text", first["type"])
+				assert.Contains(t, first["text"], "Claude Code")
+			}
+		}
+		if assert.NotNil(t, req.GetBody) {
+			bodyCopy, getBodyErr := req.GetBody()
+			if assert.NoError(t, getBodyErr) {
+				defer bodyCopy.Close()
+				copied, readErr := io.ReadAll(bodyCopy)
+				assert.NoError(t, readErr)
+				assert.Equal(t, got, copied)
+			}
+		}
+	})
+
+	t.Run("claude code preset preserves valid messages identities without duplicate system prompt", func(t *testing.T) {
+		const headerSessionID = "87654321-4321-4321-4321-cba987654321"
+		const userID = `{"device_id":"client-device","account_uuid":"client-account","session_id":"12345678-1234-1234-1234-123456789abc"}`
+		body, err := json.Marshal(map[string]any{
+			"model":    "claude-sonnet-4-5",
+			"metadata": map[string]any{"user_id": userID, "custom": "client"},
+			"system":   []any{map[string]any{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}},
+			"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		})
+		assert.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+		req.Header.Set("X-Claude-Code-Session-Id", headerSessionID)
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "claude_code",
+		}}, false)
+
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		var payload map[string]any
+		assert.NoError(t, json.Unmarshal(got, &payload))
+		metadata, ok := payload["metadata"].(map[string]any)
+		if assert.True(t, ok) {
+			assert.Equal(t, userID, metadata["user_id"])
+			assert.Equal(t, "client", metadata["custom"])
+		}
+		system, ok := payload["system"].([]any)
+		assert.True(t, ok)
+		assert.Len(t, system, 1)
+		assert.Equal(t, headerSessionID, req.Header.Get("X-Claude-Code-Session-Id"))
+	})
+
+	t.Run("claude code preset preserves legacy identity with empty account", func(t *testing.T) {
+		const sessionID = "12345678-1234-1234-1234-123456789abc"
+		const userID = "user_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef_account__session_" + sessionID
+		body, err := json.Marshal(map[string]any{
+			"model":    "claude-sonnet-4-5",
+			"metadata": map[string]any{"user_id": userID},
+			"system":   []any{map[string]any{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}},
+			"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		})
+		assert.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+		req.Header.Set("X-Claude-Code-Session-Id", sessionID)
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client":              "claude_code",
+			"simulated_claude_code_version": "2.1.77",
+		}}, false)
+
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		var payload map[string]any
+		assert.NoError(t, json.Unmarshal(got, &payload))
+		metadata, ok := payload["metadata"].(map[string]any)
+		if assert.True(t, ok) {
+			assert.Equal(t, userID, metadata["user_id"])
+		}
+	})
+
+	t.Run("claude code preset safely encodes explicit session header", func(t *testing.T) {
+		const sessionID = `session-"quoted"}`
+		body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+		req.Header.Set("X-Claude-Code-Session-Id", sessionID)
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "claude_code",
+		}}, false)
+
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		var payload map[string]any
+		assert.NoError(t, json.Unmarshal(got, &payload))
+		metadata, ok := payload["metadata"].(map[string]any)
+		if assert.True(t, ok) {
+			userID, ok := metadata["user_id"].(string)
+			if assert.True(t, ok) {
+				var userIDPayload map[string]string
+				if assert.NoError(t, json.Unmarshal([]byte(userID), &userIDPayload)) {
+					assert.Equal(t, sessionID, userIDPayload["session_id"])
+				}
+			}
+		}
+	})
+
+	t.Run("claude code preset leaves non-messages body unchanged", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hello"}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "claude_code",
+		}}, false)
+
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
 		assert.Equal(t, body, got)
+	})
+
+	t.Run("codex preset leaves compact body unchanged", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","input":[{"role":"user","content":"hello"}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader(body))
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, false)
+
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, body, got)
+	})
+
+	t.Run("codex preset leaves non-responses body unchanged for responses channel", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","input":"hello"}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses/input_tokens", bytes.NewReader(body))
+
+		applySimulatedClientHeaders(req, &models.Group{
+			ChannelType: "openai-response",
+			Config:      datatypes.JSONMap{"simulated_client": "codex"},
+		}, false)
+
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, body, got)
+	})
+
+	t.Run("claude code preset leaves non-messages body unchanged for anthropic channel", func(t *testing.T) {
+		body := []byte(`{"model":"claude-2","prompt":"hello"}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/complete", bytes.NewReader(body))
+
+		applySimulatedClientHeaders(req, &models.Group{
+			ChannelType: "anthropic",
+			Config:      datatypes.JSONMap{"simulated_client": "claude_code"},
+		}, false)
+
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, body, got)
+	})
+
+	t.Run("claude code preset leaves count tokens body unchanged", func(t *testing.T) {
+		body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewReader(body))
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "claude_code",
+		}}, false)
+
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, body, got)
+	})
+
+	t.Run("claude code preset leaves messages subresource body unchanged", func(t *testing.T) {
+		body := []byte(`{"requests":[{"custom_id":"batch-1","params":{"model":"claude-sonnet-4-5"}}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages/batches", bytes.NewReader(body))
+
+		applySimulatedClientHeaders(req, &models.Group{
+			ChannelType: "anthropic",
+			Config: datatypes.JSONMap{
+				"simulated_client": "claude_code",
+			},
+		}, false)
+
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		assert.Equal(t, body, got)
+	})
+
+	t.Run("target endpoints preserve invalid json replay body", func(t *testing.T) {
+		for _, tt := range []struct {
+			name string
+			mode string
+			path string
+		}{
+			{name: "codex", mode: "codex", path: "/v1/responses"},
+			{name: "claude_code", mode: "claude_code", path: "/v1/messages"},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				body := []byte(`not-json`)
+				req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader(body))
+				req.GetBody = nil
+
+				applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+					"simulated_client": tt.mode,
+				}}, false)
+
+				got, err := io.ReadAll(req.Body)
+				assert.NoError(t, err)
+				assert.Equal(t, body, got)
+				if assert.NotNil(t, req.GetBody) {
+					replayBody, getBodyErr := req.GetBody()
+					if assert.NoError(t, getBodyErr) {
+						defer replayBody.Close()
+						replayed, readErr := io.ReadAll(replayBody)
+						assert.NoError(t, readErr)
+						assert.Equal(t, body, replayed)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("target endpoints resync consumed body from get body", func(t *testing.T) {
+		for _, tt := range []struct {
+			name string
+			mode string
+			path string
+		}{
+			{name: "codex", mode: "codex", path: "/v1/responses"},
+			{name: "claude_code", mode: "claude_code", path: "/v1/messages"},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				body := []byte(`not-json`)
+				req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader(body))
+				req.GetBody = func() (io.ReadCloser, error) {
+					return io.NopCloser(bytes.NewReader(body)), nil
+				}
+				req.ContentLength = -1
+				_, err := io.ReadAll(req.Body)
+				assert.NoError(t, err)
+
+				applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+					"simulated_client": tt.mode,
+				}}, false)
+
+				got, err := io.ReadAll(req.Body)
+				assert.NoError(t, err)
+				assert.Equal(t, body, got)
+				assert.Equal(t, int64(len(body)), req.ContentLength)
+			})
+		}
+	})
+
+	t.Run("codex body rewrite preserves large integers", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","input":"hello","request_id":9007199254740993}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+
+		applySimulatedClientHeaders(req, &models.Group{Config: datatypes.JSONMap{
+			"simulated_client": "codex",
+		}}, false)
+
+		got, err := io.ReadAll(req.Body)
+		assert.NoError(t, err)
+		decoder := json.NewDecoder(bytes.NewReader(got))
+		decoder.UseNumber()
+		var payload map[string]any
+		assert.NoError(t, decoder.Decode(&payload))
+		assert.Equal(t, json.Number("9007199254740993"), payload["request_id"])
 	})
 }
 

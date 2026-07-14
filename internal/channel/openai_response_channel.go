@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 func init() {
@@ -37,7 +36,7 @@ func newOpenAIResponseChannel(f *Factory, group *models.Group) (ChannelProxy, er
 }
 
 // DefaultCodexVersion is the default Codex TUI version used for simulated client fingerprints.
-const DefaultCodexVersion = "0.142.3"
+const DefaultCodexVersion = "0.144.3"
 
 // BuildCodexUserAgent builds the Codex TUI User-Agent string for the given version.
 func BuildCodexUserAgent(version string) string {
@@ -98,11 +97,8 @@ func (ch *OpenAIResponseChannel) validateKey(ctx context.Context, apiKey *models
 		headerCtx := utils.NewHeaderVariableContext(group, apiKey)
 		utils.ApplyHeaderRules(req, group.HeaderRuleList, headerCtx)
 	}
-	ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group))
-	if isCodexProbe {
-		sessionID := uuid.NewString()
-		req.Header.Set("Session_ID", sessionID)
-		req.Header.Set("Conversation_ID", sessionID)
+	if rewrittenBody := ApplySimulatedClientHeaders(req, group, validationStreamEnabled(group)); rewrittenBody != nil {
+		body = rewrittenBody
 	}
 
 	var trace *ValidationTrace

@@ -44,12 +44,12 @@ func setModelRedirectContext(c *gin.Context, originalModel string, targetIdx int
 	}
 }
 
-func applySimulatedClientHeaders(req *http.Request, group *models.Group, isStream bool) {
-	channel.ApplySimulatedClientHeaders(req, group, isStream)
+func applySimulatedClientHeaders(req *http.Request, group *models.Group, isStream bool) []byte {
+	return channel.ApplySimulatedClientHeaders(req, group, isStream)
 }
 
-func applyCodexCompatibleHeaders(req *http.Request, group *models.Group, isStream bool) {
-	channel.ApplyCodexCompatibleHeaders(req, group, isStream)
+func applyCodexCompatibleHeaders(req *http.Request, group *models.Group, isStream bool) []byte {
+	return channel.ApplyCodexCompatibleHeaders(req, group, isStream)
 }
 
 func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Group) bool {
