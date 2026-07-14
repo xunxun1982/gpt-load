@@ -739,6 +739,7 @@ function formatDateTime(isoString: string | null | undefined): string {
       v-model:show="autoWeightModalShow"
       :aggregate-group="selectedGroup"
       :sub-groups="subGroups || []"
+      :groups="groups || []"
       @success="handleSuccess"
     />
 

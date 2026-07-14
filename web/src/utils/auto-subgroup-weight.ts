@@ -37,7 +37,7 @@ export function calculateAutoSubGroupWeights(
 
     // The backend distinguishes skipped/already-checked from explicit failure and no history.
     const checkinFactor =
-      candidate.checkinStatus === "failed" || !candidate.checkinStatus ? 0.6 : 1;
+      candidate.checkinStatus === "failed" || !candidate.checkinStatus ? 0.7 : 1;
     const weight = Math.max(
       1,
       Math.min(maxWeight, Math.round((maxWeight * balance * checkinFactor) / highestBalance))

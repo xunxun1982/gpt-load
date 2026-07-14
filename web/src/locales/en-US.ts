@@ -813,7 +813,7 @@ export default {
     autoWeightTitle: "Auto Allocate Initial Weights",
     autoWeightMax: "Maximum Weight",
     autoWeightHint:
-      "Balances shown as - are unchanged; zero balances get weight 1; failed or missing check-ins multiply the calculated weight by 0.6.",
+      "Balances shown as - are unchanged; zero balances get weight 1; failed or missing check-ins multiply the calculated weight by 0.7.",
     autoWeightNoEligible: "No cached balances are available for weight calculation",
     autoWeightSuccess: "Auto allocation completed: {success} updated, {skipped} skipped",
     autoWeightPartial:

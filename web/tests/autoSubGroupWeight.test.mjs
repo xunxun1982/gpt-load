@@ -29,10 +29,22 @@ async function loadAutoWeightUtils() {
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 }
 
+async function loadDisplayUtils() {
+  const { outputText } = ts.transpileModule(readOptionalSource("../src/utils/display.ts"), {
+    compilerOptions: {
+      module: ts.ModuleKind.ES2022,
+      target: ts.ScriptTarget.ES2022,
+    },
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+}
+
 const subGroupTable = readOptionalSource("../src/components/keys/SubGroupTable.vue");
 const autoWeightModal = readOptionalSource("../src/components/keys/AutoSubGroupWeightModal.vue");
 const keysApi = readOptionalSource("../src/api/keys.ts");
 const zhLocale = readOptionalSource("../src/locales/zh-CN.ts");
+const enLocale = readOptionalSource("../src/locales/en-US.ts");
+const jaLocale = readOptionalSource("../src/locales/ja-JP.ts");
 
 test("calculates proportional initial weights with check-in penalty", async () => {
   const { calculateAutoSubGroupWeights } = await loadAutoWeightUtils();
@@ -51,10 +63,24 @@ test("calculates proportional initial weights with check-in penalty", async () =
   assert.deepEqual(result.updates, [
     { subGroupId: 1, weight: 100 },
     { subGroupId: 2, weight: 50 },
-    { subGroupId: 3, weight: 12 },
-    { subGroupId: 4, weight: 12 },
+    { subGroupId: 3, weight: 14 },
+    { subGroupId: 4, weight: 14 },
   ]);
   assert.equal(result.skippedCount, 0);
+});
+
+test("resolves subgroup site binding from canonical group and parent group", async () => {
+  const { resolveSubGroupSiteId } = await loadDisplayUtils();
+  assert.equal(typeof resolveSubGroupSiteId, "function");
+
+  const groupsById = new Map([
+    [2, { id: 2, bound_site_id: 22 }],
+    [3, { id: 3, parent_group_id: 4 }],
+    [4, { id: 4, bound_site_id: 44 }],
+  ]);
+
+  assert.equal(resolveSubGroupSiteId({ group: { id: 2 } }, groupsById), 22);
+  assert.equal(resolveSubGroupSiteId({ group: { id: 3 } }, groupsById), 44);
 });
 
 test("assigns weight one to zero and tiny balances and skips unavailable balances", async () => {
@@ -123,10 +149,16 @@ test("places auto weight button after reset-all-health and mounts the modal", ()
   assert.ok(autoIndex > resetIndex);
   assert.match(subGroupTable, /<auto-sub-group-weight-modal/);
   assert.match(subGroupTable, /v-model:show="autoWeightModalShow"/);
+  assert.match(subGroupTable, /:groups="groups \|\| \[\]"/);
   assert.match(zhLocale, /autoArrangeWeight:\s*"自动分配权重"/);
+  assert.match(zhLocale, /计算结果乘以 0\.7/);
+  assert.match(enLocale, /calculated weight by 0\.7/);
+  assert.match(jaLocale, /計算結果に 0\.7 を掛けます/);
 });
 
 test("auto weight modal reads cached data and updates only initial weight serially", () => {
+  assert.match(autoWeightModal, /typeof group\.id === "number"/);
+  assert.match(autoWeightModal, /resolveSubGroupSiteId\(subGroup, groupById\.value\)/);
   assert.match(autoWeightModal, /parseBalanceValue\(appState\.siteBalances\[siteId\]\)/);
   assert.match(autoWeightModal, /appState\.siteCheckinStatuses\[siteId\]/);
   assert.match(autoWeightModal, /for \(const update of result\.updates\)/);

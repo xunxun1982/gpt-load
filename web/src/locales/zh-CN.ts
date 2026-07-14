@@ -774,7 +774,7 @@ export default {
     autoWeightTitle: "自动分配初始权重",
     autoWeightMax: "最高权重",
     autoWeightHint:
-      "余额为 - 的不修改；余额为 0 的设为 1；最近签到失败或从未签到的计算结果乘以 0.6。",
+      "余额为 - 的不修改；余额为 0 的设为 1；最近签到失败或从未签到的计算结果乘以 0.7。",
     autoWeightNoEligible: "没有可用于计算权重的缓存余额",
     autoWeightSuccess: "自动分配完成：成功 {success} 个，跳过 {skipped} 个",
     autoWeightPartial: "自动分配部分完成：成功 {success} 个，失败 {failed} 个，跳过 {skipped} 个",
