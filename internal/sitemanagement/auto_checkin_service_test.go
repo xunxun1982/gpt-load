@@ -1212,7 +1212,7 @@ func TestAutoCheckinRandomScheduleSkipsCurrentWindowAfterSuccess(t *testing.T) {
 }
 
 func TestAutoCheckinRandomScheduleSkipsCrossMidnightWindowAfterSuccess(t *testing.T) {
-	t.Parallel()
+	t.Setenv("TZ", fallbackTimezoneName)
 
 	now := time.Date(2026, 6, 13, 1, 30, 0, 0, beijingLocation)
 	cfg := &AutoCheckinConfig{
