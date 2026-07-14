@@ -43,11 +43,26 @@ const groupInfoCard = readSource("../src/components/keys/GroupInfoCard.vue");
 
 test("binding site snapshot exposes and stores cached balances", () => {
   assert.match(siteApi, /last_balance:\s*string\s*\|\s*null/);
+  assert.match(siteApi, /last_checkin_status:\s*ManagedSiteCheckinStatus/);
   assert.match(siteApi, /listSitesForBinding\(hideMessage = false\)/);
   assert.match(appState, /siteBalances:\s*Record<number, string \| null>/);
+  assert.match(appState, /siteCheckinStatuses:\s*Record<number, ManagedSiteCheckinStatus>/);
   assert.match(appState, /export function replaceSiteBalances/);
   assert.match(appState, /export function updateSiteBalance/);
   assert.match(appState, /export function getSiteBalanceRevision/);
+});
+
+test("binding site snapshot stores cached check-in status with balances", async () => {
+  const { appState: runtimeState, replaceSiteBalances } = await loadAppStateUtils();
+
+  replaceSiteBalances([
+    { id: 1, last_balance: "$10.00", last_checkin_status: "failed" },
+    { id: 2, last_balance: "0", last_checkin_status: "" },
+  ]);
+
+  assert.equal(runtimeState.siteBalances[1], "$10.00");
+  assert.equal(runtimeState.siteCheckinStatuses[1], "failed");
+  assert.equal(runtimeState.siteCheckinStatuses[2], "");
 });
 
 test("keys page bounds background balance staleness with a five-minute refresh", () => {
@@ -101,7 +116,7 @@ test("site management only pushes authoritative refresh results into shared bala
 });
 
 test("key balance display removes upstream currency and unit text", async () => {
-  const { formatBalanceValue } = await loadDisplayUtils();
+  const { formatBalanceValue, parseBalanceValue } = await loadDisplayUtils();
 
   assert.equal(formatBalanceValue("$12.34"), "12.34");
   assert.equal(formatBalanceValue("¥8.90"), "8.90");
@@ -110,6 +125,16 @@ test("key balance display removes upstream currency and unit text", async () => 
   assert.equal(formatBalanceValue("- €0.50"), "-0.50");
   assert.equal(formatBalanceValue(null), "-");
   assert.equal(formatBalanceValue("unknown"), "-");
+  assert.equal(parseBalanceValue("$12.34"), 12.34);
+  assert.equal(parseBalanceValue("CNY 1,234.56"), 1234.56);
+  assert.equal(parseBalanceValue("EUR 1.234,56"), 1234.56);
+  assert.equal(parseBalanceValue("0.125"), 0.125);
+  assert.equal(parseBalanceValue("0,125"), 0.125);
+  assert.equal(parseBalanceValue("1,234"), 1234);
+  assert.equal(parseBalanceValue("0"), 0);
+  assert.equal(parseBalanceValue("- €0.50"), -0.5);
+  assert.equal(parseBalanceValue(null), null);
+  assert.equal(parseBalanceValue("unknown"), null);
   assert.match(bindingSelector, /formatBalanceValue/);
   assert.match(subGroupTable, /formatBalanceValue/);
   assert.match(sitePanel, /formatBalanceValue/);

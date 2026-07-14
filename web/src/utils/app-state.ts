@@ -1,4 +1,11 @@
+import type { ManagedSiteCheckinStatus } from "@/api/site-management";
 import { reactive } from "vue";
+
+interface SiteSnapshotInput {
+  id: number;
+  last_balance?: string | null;
+  last_checkin_status?: ManagedSiteCheckinStatus;
+}
 
 interface AppState {
   loading: boolean;
@@ -7,6 +14,7 @@ interface AppState {
   syncOperationTrigger: number;
   siteBindingTrigger: number;
   siteBalances: Record<number, string | null>;
+  siteCheckinStatuses: Record<number, ManagedSiteCheckinStatus>;
   // Direct control for progress bar visibility
   forceShowProgressBar: boolean;
   progressBarGroupName?: string;
@@ -29,6 +37,7 @@ export const appState = reactive<AppState>({
   syncOperationTrigger: 0,
   siteBindingTrigger: 0,
   siteBalances: {},
+  siteCheckinStatuses: {},
   forceShowProgressBar: false,
   progressBarGroupName: undefined,
 });
@@ -72,33 +81,34 @@ export function getSiteBalanceRevision() {
   return siteBalanceRevision;
 }
 
-export function replaceSiteBalances(
-  sites: Array<{ id: number; last_balance?: string | null }>,
-  expectedRevision?: number
-) {
+export function replaceSiteBalances(sites: SiteSnapshotInput[], expectedRevision?: number) {
   if (expectedRevision !== undefined && siteBalanceRevision !== expectedRevision) {
     return false;
   }
 
   const balances: Record<number, string | null> = {};
+  const checkinStatuses: Record<number, ManagedSiteCheckinStatus> = {};
   for (const site of sites) {
     balances[site.id] = normalizeSiteBalance(site.last_balance);
+    checkinStatuses[site.id] = site.last_checkin_status ?? "";
   }
   appState.siteBalances = balances;
+  appState.siteCheckinStatuses = checkinStatuses;
   siteBalanceRevision++;
   return true;
 }
 
-export function updateSiteBalances(
-  sites: Array<{ id: number; last_balance?: string | null }>,
-  expectedRevision?: number
-) {
+export function updateSiteBalances(sites: SiteSnapshotInput[], expectedRevision?: number) {
   if (expectedRevision !== undefined && siteBalanceRevision !== expectedRevision) {
     return false;
   }
 
   for (const site of sites) {
     appState.siteBalances[site.id] = normalizeSiteBalance(site.last_balance);
+    // Balance-only refreshes do not carry authoritative check-in state, so keep the cached status.
+    if (site.last_checkin_status !== undefined) {
+      appState.siteCheckinStatuses[site.id] = site.last_checkin_status;
+    }
   }
   if (sites.length > 0) {
     siteBalanceRevision++;

@@ -793,6 +793,16 @@ export default {
     lastSuccess: "最後の成功",
     resetHealth: "健康度をリセット",
     resetAllHealth: "全ての健康度をリセット",
+    autoArrangeWeight: "重みを自動割り当て",
+    autoArrangeWeightTip: "キャッシュされた残高からサブグループの初期重みを計算して割り当てます",
+    autoWeightTitle: "初期重みを自動割り当て",
+    autoWeightMax: "最大重み",
+    autoWeightHint:
+      "残高が - の場合は変更せず、残高が 0 の場合は重みを 1 にします。直近のチェックインが失敗または未実施の場合、計算結果に 0.6 を掛けます。",
+    autoWeightNoEligible: "重み計算に使用できるキャッシュ残高がありません",
+    autoWeightSuccess: "自動割り当てが完了しました：成功 {success} 件、スキップ {skipped} 件",
+    autoWeightPartial:
+      "自動割り当てが一部完了しました：成功 {success} 件、失敗 {failed} 件、スキップ {skipped} 件",
     confirmResetHealth: 'サブグループ "{name}" の健康度指標をリセットしてもよろしいですか？',
     confirmResetAllHealth:
       "現在の集約グループ内の全サブグループのヘルスメトリクスをリセットしてもよろしいですか？",

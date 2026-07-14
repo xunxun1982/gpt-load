@@ -347,10 +347,11 @@ func TestBindingService_ListSitesForBinding(t *testing.T) {
 
 	// Create sites
 	site1 := ManagedSite{
-		Name:        "Site A",
-		BaseURL:     "https://example.com",
-		Sort:        1,
-		LastBalance: "$12.34",
+		Name:              "Site A",
+		BaseURL:           "https://example.com",
+		Sort:              1,
+		LastBalance:       "$12.34",
+		LastCheckInStatus: "failed",
 	}
 	err = db.Create(&site1).Error
 	require.NoError(t, err)
@@ -375,6 +376,7 @@ func TestBindingService_ListSitesForBinding(t *testing.T) {
 	assert.Len(t, sites, 2)
 	assert.Equal(t, int64(1), sites[0].BoundGroupCount)
 	assert.Equal(t, "$12.34", sites[0].LastBalance)
+	assert.Equal(t, "failed", sites[0].LastCheckInStatus)
 	assert.Equal(t, int64(0), sites[1].BoundGroupCount)
 }
 
