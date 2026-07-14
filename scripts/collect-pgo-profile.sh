@@ -168,19 +168,22 @@ for pkg in ${PACKAGES}; do
     # Use -tags to match build environment (go_json for high-performance JSON)
     # Capture both stdout and stderr, but don't fail on test failures
     set +e  # Temporarily disable exit on error
-    go test \
+    TEST_OUTPUT=$(go test \
         -tags "${GO_TAGS}" \
         -timeout="${GO_TEST_TIMEOUT}" \
         -cpuprofile="${PROFILE_PATH}" \
         -count=1 \
-        "${pkg}" >/dev/null 2>&1
+        "${pkg}" 2>&1)
     TEST_EXIT_CODE=$?
     set -e  # Re-enable exit on error
 
     if [ ${TEST_EXIT_CODE} -eq 0 ]; then
         echo "  ✓ Tests passed"
     else
-        echo "  ⚠️  Tests failed or no tests found (exit code: ${TEST_EXIT_CODE}), but profile may still be generated"
+        echo "  ⚠️  Tests failed (exit code: ${TEST_EXIT_CODE}), but profile may still be generated"
+        if [ -n "${TEST_OUTPUT}" ]; then
+            printf '%s\n' "${TEST_OUTPUT}" | sed 's/^/    /'
+        fi
     fi
 
     # Check if profile was created
