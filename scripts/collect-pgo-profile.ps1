@@ -173,13 +173,16 @@ foreach ($pkg in $packages) {
     # Run test with -count=1 to avoid caching
     # Use -tags to match build environment (go_json for high-performance JSON)
     try {
-        & go test -tags $GO_TAGS "-timeout=$GO_TEST_TIMEOUT" "-cpuprofile=$testProfile" -count=1 $pkg *> $null
+        $testOutput = & go test -tags $GO_TAGS "-timeout=$GO_TEST_TIMEOUT" "-cpuprofile=$testProfile" -count=1 $pkg 2>&1
         $testExitCode = $LASTEXITCODE
 
         if ($testExitCode -eq 0) {
             Write-Host "  ✓ Tests passed" -ForegroundColor Green
         } else {
-            Write-Host "  ⚠️  Tests failed or no tests found (exit code: $testExitCode), but profile may still be generated" -ForegroundColor Yellow
+            Write-Host "  ⚠️  Tests failed (exit code: $testExitCode), but profile may still be generated" -ForegroundColor Yellow
+            $testOutput | ForEach-Object {
+                Write-Host "    $_" -ForegroundColor DarkGray
+            }
         }
     } catch {
         Write-Host "  ⚠️  Test execution failed: $_" -ForegroundColor Yellow
