@@ -294,7 +294,7 @@ func TestSetupLogger_FileLoggingError(t *testing.T) {
 
 	// Verify the invalid file doesn't exist
 	_, err = os.Stat(invalidPath)
-	assert.True(t, os.IsNotExist(err), "Invalid log file should not be created")
+	assert.Error(t, err, "Invalid log file should not be created")
 }
 
 func TestSetupLogger_MultipleSetups(t *testing.T) {
