@@ -3,7 +3,7 @@ import { keysApi } from "@/api/keys";
 import type { Group, SubGroupInfo } from "@/types/models";
 import { appState } from "@/utils/app-state";
 import { calculateAutoSubGroupWeights } from "@/utils/auto-subgroup-weight";
-import { parseBalanceValue } from "@/utils/display";
+import { parseBalanceValue, resolveSubGroupSiteId } from "@/utils/display";
 import { Close } from "@vicons/ionicons5";
 import {
   NAlert,
@@ -15,13 +15,14 @@ import {
   NModal,
   useMessage,
 } from "naive-ui";
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 interface Props {
   show: boolean;
   aggregateGroup: Group | null;
   subGroups: SubGroupInfo[];
+  groups: Group[];
 }
 
 interface Emits {
@@ -35,6 +36,15 @@ const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
 const maxWeight = ref(100);
+const groupById = computed(() => {
+  const groups = new Map<number, Group>();
+  for (const group of props.groups) {
+    if (typeof group.id === "number") {
+      groups.set(group.id, group);
+    }
+  }
+  return groups;
+});
 
 watch(
   () => props.show,
@@ -64,11 +74,12 @@ async function handleSubmit() {
   }
 
   const candidates = props.subGroups.map(subGroup => {
-    const siteId = subGroup.group.bound_site_id;
+    const siteId = resolveSubGroupSiteId(subGroup, groupById.value);
+    const hasSite = siteId !== null && siteId !== undefined;
     return {
       subGroupId: subGroup.group.id ?? 0,
-      balance: siteId ? parseBalanceValue(appState.siteBalances[siteId]) : null,
-      checkinStatus: siteId ? appState.siteCheckinStatuses[siteId] : "",
+      balance: hasSite ? parseBalanceValue(appState.siteBalances[siteId]) : null,
+      checkinStatus: hasSite ? appState.siteCheckinStatuses[siteId] : "",
     };
   });
   const result = calculateAutoSubGroupWeights(candidates, maxWeight.value);

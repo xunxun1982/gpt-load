@@ -798,7 +798,7 @@ export default {
     autoWeightTitle: "初期重みを自動割り当て",
     autoWeightMax: "最大重み",
     autoWeightHint:
-      "残高が - の場合は変更せず、残高が 0 の場合は重みを 1 にします。直近のチェックインが失敗または未実施の場合、計算結果に 0.6 を掛けます。",
+      "残高が - の場合は変更せず、残高が 0 の場合は重みを 1 にします。直近のチェックインが失敗または未実施の場合、計算結果に 0.7 を掛けます。",
     autoWeightNoEligible: "重み計算に使用できるキャッシュ残高がありません",
     autoWeightSuccess: "自動割り当てが完了しました：成功 {success} 件、スキップ {skipped} 件",
     autoWeightPartial:

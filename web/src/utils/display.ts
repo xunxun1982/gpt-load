@@ -106,20 +106,29 @@ export function formatBalanceValue(balance: string | null | undefined): string {
   return extracted.negative ? `-${extracted.numericText}` : extracted.numericText;
 }
 
+export function resolveSubGroupSiteId(
+  subGroup: SubGroupInfo,
+  groupsById: ReadonlyMap<number, Group>
+): number | null | undefined {
+  const canonicalGroup =
+    typeof subGroup.group.id === "number" ? groupsById.get(subGroup.group.id) : undefined;
+  const ownSiteId = subGroup.group.bound_site_id ?? canonicalGroup?.bound_site_id;
+  const parentGroupId = subGroup.group.parent_group_id ?? canonicalGroup?.parent_group_id;
+
+  return (
+    ownSiteId ??
+    (parentGroupId === null || parentGroupId === undefined
+      ? undefined
+      : groupsById.get(parentGroupId)?.bound_site_id)
+  );
+}
+
 export function formatSubGroupBalanceValue(
   subGroup: SubGroupInfo,
   groupsById: ReadonlyMap<number, Group>,
   siteBalances: Readonly<Record<number, string | null | undefined>>
 ): string {
-  const canonicalGroup =
-    typeof subGroup.group.id === "number" ? groupsById.get(subGroup.group.id) : undefined;
-  const ownSiteId = subGroup.group.bound_site_id ?? canonicalGroup?.bound_site_id;
-  const parentGroupId = subGroup.group.parent_group_id ?? canonicalGroup?.parent_group_id;
-  const parentSiteId =
-    parentGroupId === null || parentGroupId === undefined
-      ? undefined
-      : groupsById.get(parentGroupId)?.bound_site_id;
-  const siteId = ownSiteId ?? parentSiteId;
+  const siteId = resolveSubGroupSiteId(subGroup, groupsById);
 
   return formatBalanceValue(siteId === null || siteId === undefined ? null : siteBalances[siteId]);
 }
