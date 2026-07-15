@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/i18n"
 	"gpt-load/internal/models"
+	"gpt-load/internal/services"
 	"gpt-load/internal/sitemanagement"
 	"gpt-load/internal/store"
 
@@ -230,6 +233,7 @@ func TestImportManagedSitesSuccessMessageInterpolatesCounts(t *testing.T) {
 
 	body := []byte(`{
 		"version":"1.0",
+		"auto_balance":{"global_enabled":false,"interval_hours":6},
 		"sites":[
 			{
 				"name":"Imported Site",
@@ -260,4 +264,145 @@ func TestImportManagedSitesSuccessMessageInterpolatesCounts(t *testing.T) {
 	assert.Equal(t, float64(1), data["imported"])
 	assert.Equal(t, float64(0), data["skipped"])
 	assert.Equal(t, float64(1), data["total"])
+	autoBalance, err := server.SiteService.GetAutoBalanceConfig(req.Context())
+	require.NoError(t, err)
+	assert.False(t, autoBalance.GlobalEnabled)
+	assert.Equal(t, 6, autoBalance.IntervalHours)
+}
+
+func TestUpdateAutoBalanceConfigRejectsInvalidJSON(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPut, "/site-management/auto-balance/config", strings.NewReader("{"))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	(&Server{}).UpdateAutoBalanceConfig(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "INVALID_JSON")
+}
+
+func TestImportAllPublishesManagedSiteScheduleUpdateAfterCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&models.Group{},
+		&sitemanagement.ManagedSite{},
+		&sitemanagement.ManagedSiteSetting{},
+	))
+
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+	kvStore := store.NewMemoryStore()
+	t.Cleanup(func() { kvStore.Close() })
+	sub, err := kvStore.Subscribe("managed_site:auto_checkin_config_updated")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Close() })
+
+	server := &Server{
+		DB:                  db,
+		EncryptionSvc:       encSvc,
+		ImportExportService: services.NewImportExportService(db, nil, encSvc),
+		SiteService:         sitemanagement.NewSiteService(db, kvStore, encSvc),
+		BalanceService:      sitemanagement.NewBalanceService(db, encSvc),
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/system/import", strings.NewReader(`{
+		"version":"2.0",
+		"managed_sites":{
+			"auto_balance":{"global_enabled":false,"interval_hours":6},
+			"sites":[]
+		}
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	server.ImportAll(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	select {
+	case <-sub.Channel():
+	case <-time.After(time.Second):
+		t.Fatal("system import did not publish the managed-site schedule update")
+	}
+}
+
+func TestExportAllIncludesScheduleConfigWithoutManagedSites(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&models.Group{},
+		&models.DynamicWeightMetric{},
+		&sitemanagement.ManagedSite{},
+		&sitemanagement.ManagedSiteSetting{},
+	))
+	require.NoError(t, db.Create(&sitemanagement.ManagedSiteSetting{
+		ID:                          1,
+		AutoBalanceEnabled:          true,
+		BalanceRefreshIntervalHours: 6,
+	}).Error)
+	require.NoError(t, db.Model(&sitemanagement.ManagedSiteSetting{}).
+		Where("id = ?", 1).
+		Update("auto_balance_enabled", false).Error)
+
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+	server := &Server{
+		ImportExportService: services.NewImportExportService(db, nil, encSvc),
+		EncryptionSvc:       encSvc,
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/system/export", nil)
+
+	server.ExportAll(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var payload struct {
+		Data SystemExportData `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &payload))
+	require.NotNil(t, payload.Data.ManagedSites)
+	require.NotNil(t, payload.Data.ManagedSites.AutoBalance)
+	assert.False(t, payload.Data.ManagedSites.AutoBalance.GlobalEnabled)
+	assert.Equal(t, 6, payload.Data.ManagedSites.AutoBalance.IntervalHours)
+	assert.Empty(t, payload.Data.ManagedSites.Sites)
+}
+
+func TestImportManagedSitesRequestsLocalBalanceReschedule(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&sitemanagement.ManagedSite{},
+		&sitemanagement.ManagedSiteSetting{},
+	))
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+	balanceService := sitemanagement.NewBalanceService(db, encSvc)
+	server := &Server{
+		SiteService:    sitemanagement.NewSiteService(db, nil, encSvc),
+		BalanceService: balanceService,
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/site-management/import", strings.NewReader(`{
+		"version":"1.0",
+		"auto_balance":{"global_enabled":false,"interval_hours":6},
+		"sites":[]
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	server.ImportManagedSites(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	rescheduleCh := reflect.ValueOf(balanceService).Elem().FieldByName("rescheduleCh")
+	assert.Equal(t, 1, rescheduleCh.Len())
 }

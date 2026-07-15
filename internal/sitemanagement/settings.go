@@ -2,7 +2,7 @@ package sitemanagement
 
 import "time"
 
-// ManagedSiteSetting stores global auto check-in configuration.
+// ManagedSiteSetting stores global site-management schedule configuration.
 //
 // This table is expected to contain exactly one row (ID = 1).
 // The explicit columns keep migrations simple and portable across SQLite/MySQL/Postgres.
@@ -10,6 +10,10 @@ type ManagedSiteSetting struct {
 	ID uint `gorm:"primaryKey;autoIncrement" json:"id"`
 
 	AutoCheckinEnabled bool `gorm:"not null;default:false" json:"auto_checkin_enabled"`
+	AutoBalanceEnabled bool `gorm:"not null;default:true" json:"auto_balance_enabled"`
+
+	// BalanceRefreshIntervalHours is anchored to 00:00 in the site-management timezone.
+	BalanceRefreshIntervalHours int `gorm:"not null;default:24" json:"balance_refresh_interval_hours"`
 
 	// ScheduleTimes stores multiple check-in times in "HH:MM" format, comma-separated.
 	// Example: "09:00,12:00,18:00" for three daily check-ins.

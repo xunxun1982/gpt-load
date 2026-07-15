@@ -22,7 +22,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const autoCheckinConfigUpdatedChannel = "managed_site:auto_checkin_config_updated"
+const siteScheduleConfigUpdatedChannel = "managed_site:auto_checkin_config_updated"
 
 type SiteService struct {
 	db            *gorm.DB
@@ -1098,32 +1098,81 @@ func (s *SiteService) UpdateAutoCheckinConfig(ctx context.Context, cfg AutoCheck
 		return nil, err
 	}
 
-	st.AutoCheckinEnabled = cfg.GlobalEnabled
-	st.ScheduleTimes = strings.Join(cfg.ScheduleTimes, ",")
-	st.WindowStart = cfg.WindowStart
-	st.WindowEnd = cfg.WindowEnd
-	st.ScheduleMode = mode
-	st.DeterministicTime = strings.TrimSpace(cfg.DeterministicTime)
-	st.RetryEnabled = cfg.RetryStrategy.Enabled
-	st.RetryIntervalMinutes = clampInt(cfg.RetryStrategy.IntervalMinutes, 1, 24*60)
-	st.RetryMaxAttemptsPerDay = clampInt(cfg.RetryStrategy.MaxAttemptsPerDay, 1, 10)
-	st.UpdatedAt = time.Now()
-
-	if err := s.db.WithContext(ctx).Save(st).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&ManagedSiteSetting{}).
+		Where("id = ?", st.ID).
+		Updates(map[string]any{
+			"auto_checkin_enabled":       cfg.GlobalEnabled,
+			"schedule_times":             strings.Join(cfg.ScheduleTimes, ","),
+			"window_start":               cfg.WindowStart,
+			"window_end":                 cfg.WindowEnd,
+			"schedule_mode":              mode,
+			"deterministic_time":         strings.TrimSpace(cfg.DeterministicTime),
+			"retry_enabled":              cfg.RetryStrategy.Enabled,
+			"retry_interval_minutes":     clampInt(cfg.RetryStrategy.IntervalMinutes, 1, 24*60),
+			"retry_max_attempts_per_day": clampInt(cfg.RetryStrategy.MaxAttemptsPerDay, 1, 10),
+			"updated_at":                 time.Now(),
+		}).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
 
-	s.publishAutoCheckinConfigUpdated()
+	s.NotifyScheduleConfigUpdated()
 
 	return s.GetAutoCheckinConfig(ctx)
 }
 
-func (s *SiteService) publishAutoCheckinConfigUpdated() {
+func (s *SiteService) GetAutoBalanceConfig(ctx context.Context) (*AutoBalanceConfig, error) {
+	st, err := s.ensureSettingsRow(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AutoBalanceConfig{
+		GlobalEnabled: st.AutoBalanceEnabled,
+		IntervalHours: normalizeAutoBalanceIntervalHours(st.BalanceRefreshIntervalHours),
+	}, nil
+}
+
+func (s *SiteService) UpdateAutoBalanceConfig(ctx context.Context, cfg AutoBalanceConfig) (*AutoBalanceConfig, error) {
+	if err := validateAutoBalanceConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	st, err := s.ensureSettingsRow(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.db.WithContext(ctx).Model(&ManagedSiteSetting{}).
+		Where("id = ?", st.ID).
+		Updates(map[string]any{
+			"auto_balance_enabled":           cfg.GlobalEnabled,
+			"balance_refresh_interval_hours": cfg.IntervalHours,
+			"updated_at":                     time.Now(),
+		}).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	s.NotifyScheduleConfigUpdated()
+	return s.GetAutoBalanceConfig(ctx)
+}
+
+func validateAutoBalanceConfig(cfg AutoBalanceConfig) error {
+	if cfg.IntervalHours < minAutoBalanceIntervalHours || cfg.IntervalHours > maxAutoBalanceIntervalHours {
+		return services.NewI18nError(
+			app_errors.ErrValidation,
+			"site_management.validation.invalid_balance_interval",
+			map[string]any{"min": minAutoBalanceIntervalHours, "max": maxAutoBalanceIntervalHours},
+		)
+	}
+	return nil
+}
+
+// NotifyScheduleConfigUpdated publishes a post-commit scheduler reload notification.
+func (s *SiteService) NotifyScheduleConfigUpdated() {
 	if s.store == nil {
 		return
 	}
-	if err := s.store.Publish(autoCheckinConfigUpdatedChannel, []byte("1")); err != nil {
-		logrus.WithError(err).Debug("managed site auto-checkin config publish failed")
+	if err := s.store.Publish(siteScheduleConfigUpdatedChannel, []byte("1")); err != nil {
+		logrus.WithError(err).Debug("managed site schedule config publish failed")
 	}
 }
 
@@ -1140,16 +1189,18 @@ func (s *SiteService) ensureSettingsRow(ctx context.Context) (*ManagedSiteSettin
 	// Default to "multiple" mode for consistency with UpdateAutoCheckinConfig and loadConfig.
 	// This ensures new installations use the same default as empty mode updates.
 	st = ManagedSiteSetting{
-		ID:                     1,
-		AutoCheckinEnabled:     false,
-		ScheduleTimes:          "09:00",
-		WindowStart:            "09:00",
-		WindowEnd:              "18:00",
-		ScheduleMode:           AutoCheckinScheduleModeMultiple,
-		DeterministicTime:      "",
-		RetryEnabled:           false,
-		RetryIntervalMinutes:   60,
-		RetryMaxAttemptsPerDay: 2,
+		ID:                          1,
+		AutoCheckinEnabled:          false,
+		AutoBalanceEnabled:          true,
+		BalanceRefreshIntervalHours: defaultAutoBalanceIntervalHours,
+		ScheduleTimes:               "09:00",
+		WindowStart:                 "09:00",
+		WindowEnd:                   "18:00",
+		ScheduleMode:                AutoCheckinScheduleModeMultiple,
+		DeterministicTime:           "",
+		RetryEnabled:                false,
+		RetryIntervalMinutes:        60,
+		RetryMaxAttemptsPerDay:      2,
 	}
 	if createErr := s.db.WithContext(ctx).Create(&st).Error; createErr != nil {
 		return nil, app_errors.ParseDBError(createErr)
@@ -1376,6 +1427,7 @@ type SiteExportData struct {
 	Version     string             `json:"version"`
 	ExportedAt  string             `json:"exported_at"`
 	AutoCheckin *AutoCheckinConfig `json:"auto_checkin,omitempty"`
+	AutoBalance *AutoBalanceConfig `json:"auto_balance,omitempty"`
 	Sites       []SiteExportInfo   `json:"sites"`
 }
 
@@ -1400,6 +1452,12 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 			logrus.WithError(err).Debug("Failed to get auto-checkin config for export")
 		} else {
 			exportData.AutoCheckin = cfg
+		}
+		balanceCfg, err := s.GetAutoBalanceConfig(ctx)
+		if err != nil {
+			logrus.WithError(err).Debug("Failed to get auto-balance config for export")
+		} else {
+			exportData.AutoBalance = balanceCfg
 		}
 	}
 
@@ -1464,8 +1522,13 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 // Note: Intentionally not using transaction wrapping - partial success is desired behavior
 // to import as many sites as possible even if some fail validation.
 func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, plainMode bool) (int, int, error) {
-	if data == nil || len(data.Sites) == 0 {
+	if data == nil {
 		return 0, 0, nil
+	}
+	if data.AutoBalance != nil {
+		if err := validateAutoBalanceConfig(*data.AutoBalance); err != nil {
+			return 0, 0, err
+		}
 	}
 
 	imported := 0
@@ -1605,6 +1668,11 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 	if data.AutoCheckin != nil {
 		if _, err := s.UpdateAutoCheckinConfig(ctx, *data.AutoCheckin); err != nil {
 			logrus.WithError(err).Warn("Failed to import auto-checkin config")
+		}
+	}
+	if data.AutoBalance != nil {
+		if _, err := s.UpdateAutoBalanceConfig(ctx, *data.AutoBalance); err != nil {
+			logrus.WithError(err).Warn("Failed to import auto-balance config")
 		}
 	}
 

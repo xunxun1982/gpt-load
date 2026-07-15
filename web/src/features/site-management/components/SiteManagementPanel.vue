@@ -8,8 +8,10 @@
  * to users, so local error handling is intentionally omitted to avoid duplicate messages.
  */
 import {
+  autoBalanceApi,
   autoCheckinApi,
   siteManagementApi,
+  type AutoBalanceConfig,
   type CheckinLogDTO,
   type CreateManagedSiteRequest,
   type ManagedSiteAuthType,
@@ -112,6 +114,11 @@ const siteProxyPoolLoading = ref(false);
 // Balance state
 const balances = ref<Record<number, string | null>>({});
 const balanceLoading = ref(false);
+
+// Automatic balance configuration state
+const autoBalanceConfig = ref<AutoBalanceConfig | null>(null);
+const autoBalanceLoading = ref(false);
+const showAutoBalanceConfig = ref(false);
 
 // Auto check-in configuration state
 const autoCheckinRunning = ref(false);
@@ -1435,7 +1442,7 @@ async function handleFileChange(event: Event) {
     message.success(
       t("siteManagement.importSuccess", { imported: result.imported, total: result.total })
     );
-    await loadSites();
+    await Promise.all([loadSites(), loadAutoCheckinConfig(), loadAutoBalanceConfig()]);
   } catch (e) {
     if (e instanceof SyntaxError) {
       message.error(t("siteManagement.importInvalidJSON"));
@@ -1604,6 +1611,32 @@ async function saveAutoCheckinConfig() {
   }
 }
 
+async function loadAutoBalanceConfig() {
+  autoBalanceLoading.value = true;
+  try {
+    autoBalanceConfig.value = await autoBalanceApi.getConfig();
+  } catch (_) {
+    /* handled by centralized error handler */
+  } finally {
+    autoBalanceLoading.value = false;
+  }
+}
+
+async function saveAutoBalanceConfig() {
+  if (!autoBalanceConfig.value) {
+    return;
+  }
+  autoBalanceLoading.value = true;
+  try {
+    autoBalanceConfig.value = await autoBalanceApi.updateConfig(autoBalanceConfig.value);
+    message.success(t("common.saveSuccess"));
+  } catch (_) {
+    /* handled by centralized error handler */
+  } finally {
+    autoBalanceLoading.value = false;
+  }
+}
+
 async function runAutoCheckinNow() {
   autoCheckinRunning.value = true;
   try {
@@ -1701,6 +1734,7 @@ onMounted(() => {
     loadSites();
   }
   loadAutoCheckinConfig();
+  loadAutoBalanceConfig();
   // Balance is loaded from database cache (last_balance field) via loadSites()
   // Manual refresh button is available for users to update balances on demand
 });
@@ -1796,6 +1830,20 @@ watch(
             </n-button>
           </template>
           {{ t("siteManagement.autoCheckinConfigTooltip") }}
+        </n-tooltip>
+        <!-- Auto balance config button -->
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button
+              size="small"
+              secondary
+              @click="showAutoBalanceConfig = !showAutoBalanceConfig"
+            >
+              <template #icon><n-icon :component="SettingsOutline" /></template>
+              {{ t("siteManagement.autoBalance") }}
+            </n-button>
+          </template>
+          {{ t("siteManagement.autoBalanceConfigTooltip") }}
         </n-tooltip>
         <!-- Refresh balance button -->
         <n-tooltip trigger="hover">
@@ -2029,6 +2077,63 @@ watch(
               })
             }}
           </n-tag>
+        </div>
+      </div>
+    </n-collapse-transition>
+
+    <!-- Automatic Balance Configuration Panel -->
+    <n-collapse-transition :show="showAutoBalanceConfig">
+      <div class="auto-checkin-panel">
+        <div class="auto-checkin-header">
+          <n-text strong style="font-size: 13px">
+            {{ t("siteManagement.autoBalanceConfig") }}
+          </n-text>
+          <n-button
+            size="tiny"
+            quaternary
+            :loading="autoBalanceLoading"
+            @click="loadAutoBalanceConfig"
+          >
+            <template #icon><n-icon :component="RefreshOutline" size="12" /></template>
+          </n-button>
+        </div>
+
+        <div v-if="autoBalanceConfig" class="auto-checkin-config-row">
+          <span class="config-inline-item">
+            <n-text depth="3" class="config-label">{{ t("siteManagement.globalEnabled") }}</n-text>
+            <n-switch v-model:value="autoBalanceConfig.global_enabled" size="small" />
+          </span>
+
+          <span class="config-inline-item">
+            <n-text depth="3" class="config-label">
+              {{ t("siteManagement.balanceRefreshInterval") }}
+            </n-text>
+            <n-input-number
+              v-model:value="autoBalanceConfig.interval_hours"
+              :min="1"
+              :max="24"
+              :precision="0"
+              size="tiny"
+              style="width: 70px"
+            />
+            <n-text depth="3" style="font-size: 11px; margin-left: 2px">
+              {{ t("siteManagement.hours") }}
+            </n-text>
+          </span>
+
+          <span class="config-inline-item config-save">
+            <n-text depth="3" style="font-size: 10px">
+              {{ t("siteManagement.serverTimezoneNote") }}
+            </n-text>
+            <n-button
+              size="tiny"
+              type="primary"
+              :loading="autoBalanceLoading"
+              @click="saveAutoBalanceConfig"
+            >
+              {{ t("common.save") }}
+            </n-button>
+          </span>
         </div>
       </div>
     </n-collapse-transition>

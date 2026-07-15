@@ -588,6 +588,176 @@ func TestSiteService_AutoCheckinConfig(t *testing.T) {
 	assert.Len(t, updated.ScheduleTimes, 2)
 }
 
+func TestSiteService_AutoBalanceConfig(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+
+	require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+	service := NewSiteService(db, memStore, encSvc)
+
+	cfg, err := service.GetAutoBalanceConfig(context.Background())
+	require.NoError(t, err)
+	assert.True(t, cfg.GlobalEnabled)
+	assert.Equal(t, 24, cfg.IntervalHours)
+
+	updated, err := service.UpdateAutoBalanceConfig(context.Background(), AutoBalanceConfig{
+		GlobalEnabled: false,
+		IntervalHours: 6,
+	})
+	require.NoError(t, err)
+	assert.False(t, updated.GlobalEnabled)
+	assert.Equal(t, 6, updated.IntervalHours)
+
+	_, err = service.UpdateAutoBalanceConfig(context.Background(), AutoBalanceConfig{IntervalHours: 0})
+	assert.Error(t, err)
+	_, err = service.UpdateAutoBalanceConfig(context.Background(), AutoBalanceConfig{IntervalHours: 25})
+	assert.Error(t, err)
+}
+
+func TestScheduleConfigUpdatesDoNotOverwriteOtherScheduleFields(t *testing.T) {
+	t.Run("auto check-in update preserves a concurrent balance update", func(t *testing.T) {
+		db := setupTestDB(t)
+		encSvc := setupTestEncryption(t)
+		require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+		memStore := store.NewMemoryStore()
+		t.Cleanup(func() { memStore.Close() })
+		service := NewSiteService(db, memStore, encSvc)
+		_, err := service.GetAutoBalanceConfig(context.Background())
+		require.NoError(t, err)
+
+		const hookName = "test:concurrent_balance_update"
+		require.NoError(t, db.Callback().Update().Before("gorm:update").Register(hookName, func(tx *gorm.DB) {
+			if tx.Statement.Table == "managed_site_settings" {
+				tx.Exec("UPDATE managed_site_settings SET auto_balance_enabled = ?, balance_refresh_interval_hours = ? WHERE id = ?", false, 6, 1)
+			}
+		}))
+		t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+		_, err = service.UpdateAutoCheckinConfig(context.Background(), AutoCheckinConfig{
+			GlobalEnabled: true,
+			ScheduleTimes: []string{"10:00"},
+			ScheduleMode:  AutoCheckinScheduleModeMultiple,
+		})
+		require.NoError(t, err)
+
+		var setting ManagedSiteSetting
+		require.NoError(t, db.First(&setting, 1).Error)
+		assert.False(t, setting.AutoBalanceEnabled)
+		assert.Equal(t, 6, setting.BalanceRefreshIntervalHours)
+	})
+
+	t.Run("auto balance update preserves a concurrent check-in update", func(t *testing.T) {
+		db := setupTestDB(t)
+		encSvc := setupTestEncryption(t)
+		require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+		memStore := store.NewMemoryStore()
+		t.Cleanup(func() { memStore.Close() })
+		service := NewSiteService(db, memStore, encSvc)
+		_, err := service.GetAutoCheckinConfig(context.Background())
+		require.NoError(t, err)
+
+		const hookName = "test:concurrent_checkin_update"
+		require.NoError(t, db.Callback().Update().Before("gorm:update").Register(hookName, func(tx *gorm.DB) {
+			if tx.Statement.Table == "managed_site_settings" {
+				tx.Exec("UPDATE managed_site_settings SET auto_checkin_enabled = ?, schedule_times = ? WHERE id = ?", true, "11:00", 1)
+			}
+		}))
+		t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+		_, err = service.UpdateAutoBalanceConfig(context.Background(), AutoBalanceConfig{
+			GlobalEnabled: false,
+			IntervalHours: 6,
+		})
+		require.NoError(t, err)
+
+		var setting ManagedSiteSetting
+		require.NoError(t, db.First(&setting, 1).Error)
+		assert.True(t, setting.AutoCheckinEnabled)
+		assert.Equal(t, "11:00", setting.ScheduleTimes)
+	})
+}
+
+func TestImportSitesRejectsInvalidAutoBalanceBeforeWritingSites(t *testing.T) {
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() { memStore.Close() })
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteSetting{}))
+	service := NewSiteService(db, memStore, encSvc)
+
+	imported, skipped, err := service.ImportSites(context.Background(), &SiteExportData{
+		AutoBalance: &AutoBalanceConfig{GlobalEnabled: true, IntervalHours: 0},
+		Sites: []SiteExportInfo{
+			{
+				Name:     "must not be imported",
+				BaseURL:  "https://example.com",
+				SiteType: SiteTypeNewAPI,
+				Enabled:  true,
+				AuthType: AuthTypeNone,
+			},
+		},
+	}, true)
+
+	require.Error(t, err)
+	assert.Zero(t, imported)
+	assert.Zero(t, skipped)
+	var count int64
+	require.NoError(t, db.Model(&ManagedSite{}).Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestImportSitesAppliesAutoBalanceWithoutSites(t *testing.T) {
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() { memStore.Close() })
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteSetting{}))
+	service := NewSiteService(db, memStore, encSvc)
+
+	imported, skipped, err := service.ImportSites(context.Background(), &SiteExportData{
+		AutoBalance: &AutoBalanceConfig{GlobalEnabled: false, IntervalHours: 6},
+		Sites:       []SiteExportInfo{},
+	}, true)
+
+	require.NoError(t, err)
+	assert.Zero(t, imported)
+	assert.Zero(t, skipped)
+	config, err := service.GetAutoBalanceConfig(context.Background())
+	require.NoError(t, err)
+	assert.False(t, config.GlobalEnabled)
+	assert.Equal(t, 6, config.IntervalHours)
+}
+
+func TestManagedSiteSettingAutoMigrateBackfillsAutoBalanceDefaults(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec(`CREATE TABLE managed_site_settings (
+		id integer primary key autoincrement,
+		auto_checkin_enabled numeric not null default false,
+		schedule_times text not null default '09:00',
+		window_start text not null default '09:00',
+		window_end text not null default '18:00',
+		schedule_mode text not null default 'multiple',
+		deterministic_time text not null default '',
+		retry_enabled numeric not null default false,
+		retry_interval_minutes integer not null default 60,
+		retry_max_attempts_per_day integer not null default 2,
+		created_at datetime,
+		updated_at datetime
+	)`).Error)
+	require.NoError(t, db.Exec("INSERT INTO managed_site_settings (id) VALUES (1)").Error)
+
+	require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+	var setting ManagedSiteSetting
+	require.NoError(t, db.First(&setting, 1).Error)
+	assert.True(t, setting.AutoBalanceEnabled)
+	assert.Equal(t, defaultAutoBalanceIntervalHours, setting.BalanceRefreshIntervalHours)
+}
+
 // TestSiteService_ExportImport tests export and import functionality
 func TestSiteService_ExportImport(t *testing.T) {
 	t.Parallel()
@@ -600,6 +770,11 @@ func TestSiteService_ExportImport(t *testing.T) {
 	require.NoError(t, err)
 
 	service := NewSiteService(db, memStore, encSvc)
+	_, err = service.UpdateAutoBalanceConfig(context.Background(), AutoBalanceConfig{
+		GlobalEnabled: false,
+		IntervalHours: 6,
+	})
+	require.NoError(t, err)
 
 	// Create sites
 	for i := 0; i < 3; i++ {
@@ -613,12 +788,20 @@ func TestSiteService_ExportImport(t *testing.T) {
 	}
 
 	// Export sites
-	exportData, err := service.ExportSites(context.Background(), false, true)
+	exportData, err := service.ExportSites(context.Background(), true, true)
 	require.NoError(t, err)
 	assert.Len(t, exportData.Sites, 3)
+	require.NotNil(t, exportData.AutoBalance)
+	assert.False(t, exportData.AutoBalance.GlobalEnabled)
+	assert.Equal(t, 6, exportData.AutoBalance.IntervalHours)
 
 	// Clear database
 	err = db.Exec("DELETE FROM managed_sites").Error
+	require.NoError(t, err)
+	_, err = service.UpdateAutoBalanceConfig(context.Background(), AutoBalanceConfig{
+		GlobalEnabled: true,
+		IntervalHours: 24,
+	})
 	require.NoError(t, err)
 
 	// Import sites
@@ -626,6 +809,10 @@ func TestSiteService_ExportImport(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 3, imported)
 	assert.Equal(t, 0, skipped)
+	restored, err := service.GetAutoBalanceConfig(context.Background())
+	require.NoError(t, err)
+	assert.False(t, restored.GlobalEnabled)
+	assert.Equal(t, 6, restored.IntervalHours)
 }
 
 // TestSiteService_CacheInvalidation tests cache invalidation

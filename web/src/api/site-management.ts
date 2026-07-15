@@ -90,7 +90,7 @@ export interface ManagedSiteDTO {
   last_site_opened_date: string;
   last_checkin_page_opened_date: string;
 
-  // Cached balance information, refreshed daily at midnight in the site-management timezone.
+  // Cached balance information, refreshed manually or by the automatic balance schedule.
   last_balance: string;
   last_balance_date: string;
 
@@ -325,6 +325,8 @@ export interface SiteExportInfo {
 
 export interface SiteImportData {
   version?: string;
+  auto_checkin?: AutoCheckinConfig;
+  auto_balance?: AutoBalanceConfig;
   sites: SiteExportInfo[];
 }
 
@@ -398,5 +400,22 @@ export const autoCheckinApi = {
   // Trigger auto check-in immediately
   async runNow(): Promise<void> {
     await http.post("/site-management/auto-checkin/run-now");
+  },
+};
+
+export interface AutoBalanceConfig {
+  global_enabled: boolean;
+  interval_hours: number;
+}
+
+export const autoBalanceApi = {
+  async getConfig(): Promise<AutoBalanceConfig> {
+    const res = await http.get("/site-management/auto-balance/config");
+    return res.data;
+  },
+
+  async updateConfig(config: AutoBalanceConfig): Promise<AutoBalanceConfig> {
+    const res = await http.put("/site-management/auto-balance/config", config);
+    return res.data;
   },
 };

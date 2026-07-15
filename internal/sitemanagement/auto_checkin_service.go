@@ -36,7 +36,7 @@ const (
 const (
 	autoCheckinStatusKey     = "managed_site:auto_checkin_status"
 	autoCheckinRunNowChannel = "managed_site:auto_checkin_run_now"
-	// Note: autoCheckinConfigUpdatedChannel is defined in site_service.go (same package)
+	// Note: siteScheduleConfigUpdatedChannel is defined in site_service.go (same package)
 
 	maxResponseBodySize = 2 << 20 // 2 MB limit for HTTP response body
 
@@ -138,7 +138,7 @@ func (s *AutoCheckinService) Start() {
 	go s.periodicCleanup()
 
 	// Best-effort subscriptions for multi-node setups.
-	if sub, err := s.store.Subscribe(autoCheckinConfigUpdatedChannel); err == nil {
+	if sub, err := s.store.Subscribe(siteScheduleConfigUpdatedChannel); err == nil {
 		s.subConfig = sub
 		s.wg.Add(1)
 		go s.listenSubscription(sub, s.rescheduleCh)
@@ -150,7 +150,7 @@ func (s *AutoCheckinService) Start() {
 	}
 
 	// Initial schedule.
-	s.requestReschedule()
+	s.RequestReschedule()
 	logrus.Debug("ManagedSite AutoCheckinService started")
 }
 
@@ -224,7 +224,7 @@ func (s *AutoCheckinService) TriggerRunNow() {
 	_ = s.store.Publish(autoCheckinRunNowChannel, []byte("1"))
 }
 
-func (s *AutoCheckinService) requestReschedule() {
+func (s *AutoCheckinService) RequestReschedule() {
 	select {
 	case s.rescheduleCh <- struct{}{}:
 	default:

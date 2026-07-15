@@ -268,6 +268,8 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		siteMgmt.PUT("/auto-checkin/config", serverHandler.UpdateAutoCheckinConfig)
 		siteMgmt.GET("/auto-checkin/status", serverHandler.GetAutoCheckinStatus)
 		siteMgmt.POST("/auto-checkin/run-now", serverHandler.RunAutoCheckinNow)
+		siteMgmt.GET("/auto-balance/config", serverHandler.GetAutoBalanceConfig)
+		siteMgmt.PUT("/auto-balance/config", serverHandler.UpdateAutoBalanceConfig)
 
 		// Import/Export
 		siteMgmt.GET("/export", serverHandler.ExportManagedSites)

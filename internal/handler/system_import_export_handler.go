@@ -36,7 +36,13 @@ type SystemExportData struct {
 // ManagedSitesExportData represents exported managed sites data for handler
 type ManagedSitesExportData struct {
 	AutoCheckin *ManagedSiteAutoCheckinConfig `json:"auto_checkin,omitempty"`
+	AutoBalance *ManagedSiteAutoBalanceConfig `json:"auto_balance,omitempty"`
 	Sites       []ManagedSiteExportInfo       `json:"sites"`
+}
+
+type ManagedSiteAutoBalanceConfig struct {
+	GlobalEnabled bool `json:"global_enabled"`
+	IntervalHours int  `json:"interval_hours"`
 }
 
 // ManagedSiteAutoCheckinConfig represents auto-checkin configuration
@@ -202,7 +208,7 @@ func (s *Server) ExportAll(c *gin.Context) {
 	}
 
 	// Convert managed sites if present
-	if systemData.ManagedSites != nil && len(systemData.ManagedSites.Sites) > 0 {
+	if systemData.ManagedSites != nil {
 		managedSites := &ManagedSitesExportData{
 			Sites: make([]ManagedSiteExportInfo, 0, len(systemData.ManagedSites.Sites)),
 		}
@@ -220,6 +226,12 @@ func (s *Server) ExportAll(c *gin.Context) {
 					IntervalMinutes:   systemData.ManagedSites.AutoCheckin.RetryStrategy.IntervalMinutes,
 					MaxAttemptsPerDay: systemData.ManagedSites.AutoCheckin.RetryStrategy.MaxAttemptsPerDay,
 				},
+			}
+		}
+		if systemData.ManagedSites.AutoBalance != nil {
+			managedSites.AutoBalance = &ManagedSiteAutoBalanceConfig{
+				GlobalEnabled: systemData.ManagedSites.AutoBalance.GlobalEnabled,
+				IntervalHours: systemData.ManagedSites.AutoBalance.IntervalHours,
 			}
 		}
 
@@ -375,7 +387,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 	}
 
 	// Convert managed sites if present
-	if importData.ManagedSites != nil && len(importData.ManagedSites.Sites) > 0 {
+	if importData.ManagedSites != nil {
 		managedSites := &services.ManagedSitesExportData{
 			Sites: make([]services.ManagedSiteExportInfo, 0, len(importData.ManagedSites.Sites)),
 		}
@@ -393,6 +405,12 @@ func (s *Server) ImportAll(c *gin.Context) {
 					IntervalMinutes:   importData.ManagedSites.AutoCheckin.RetryStrategy.IntervalMinutes,
 					MaxAttemptsPerDay: importData.ManagedSites.AutoCheckin.RetryStrategy.MaxAttemptsPerDay,
 				},
+			}
+		}
+		if importData.ManagedSites.AutoBalance != nil {
+			managedSites.AutoBalance = &services.ManagedSiteAutoBalanceConfig{
+				GlobalEnabled: importData.ManagedSites.AutoBalance.GlobalEnabled,
+				IntervalHours: importData.ManagedSites.AutoBalance.IntervalHours,
 			}
 		}
 
@@ -433,6 +451,12 @@ func (s *Server) ImportAll(c *gin.Context) {
 
 		serviceImportData.ManagedSites = managedSites
 	}
+	if serviceImportData.ManagedSites != nil {
+		if err := services.ValidateManagedSiteAutoBalanceConfig(serviceImportData.ManagedSites.AutoBalance); err != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, err.Error()))
+			return
+		}
+	}
 
 	// Use transaction to ensure data consistency
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
@@ -448,6 +472,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.import_failed")
 		return
 	}
+	s.notifyImportedManagedSiteSchedule(serviceImportData.ManagedSites)
 
 	// Force reload system settings from database after import
 	// This ensures all imported settings take effect immediately
@@ -521,6 +546,25 @@ func (s *Server) ImportAll(c *gin.Context) {
 
 	logrus.Info("System import completed successfully")
 	response.SuccessI18n(c, "success.system_imported", nil)
+}
+
+func (s *Server) notifyImportedManagedSiteSchedule(data *services.ManagedSitesExportData) {
+	if data == nil || (data.AutoCheckin == nil && data.AutoBalance == nil) {
+		return
+	}
+	if s.SiteService != nil {
+		s.SiteService.NotifyScheduleConfigUpdated()
+	}
+	s.requestLocalManagedSiteScheduleReschedule(data.AutoCheckin != nil, data.AutoBalance != nil)
+}
+
+func (s *Server) requestLocalManagedSiteScheduleReschedule(autoCheckin, autoBalance bool) {
+	if autoCheckin && s.AutoCheckinService != nil {
+		s.AutoCheckinService.RequestReschedule()
+	}
+	if autoBalance && s.BalanceService != nil {
+		s.BalanceService.RequestReschedule()
+	}
 }
 
 // SystemSettingsImportData represents the data structure for system settings import only.

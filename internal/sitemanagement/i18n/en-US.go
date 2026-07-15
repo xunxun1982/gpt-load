@@ -13,6 +13,7 @@ var MessagesEnUS = map[string]string{
 	"site_management.validation.deterministic_time_required":   "Deterministic time is required",
 	"site_management.validation.duplicate_time":                "Duplicate schedule time: {{.time}}",
 	"site_management.validation.schedule_times_required":       "At least one schedule time is required",
+	"site_management.validation.invalid_balance_interval":      "Balance refresh interval must be between {{.min}} and {{.max}} hours",
 
 	// Check-in messages
 	"site_management.checkin.failed":                             "Check-in failed",

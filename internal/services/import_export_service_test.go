@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,174 @@ import (
 type sqlCaptureLogger struct {
 	mu         sync.Mutex
 	statements []string
+}
+
+func TestExportImportSystemRestoresAutoBalanceConfig(t *testing.T) {
+	t.Parallel()
+
+	sourceDB := setupTestDB(t)
+	require.NoError(t, sourceDB.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+	require.NoError(t, sourceDB.Create(&managedSiteSettingModel{
+		ID:                          1,
+		AutoBalanceEnabled:          false,
+		BalanceRefreshIntervalHours: 6,
+	}).Error)
+
+	exported, err := NewImportExportService(sourceDB, nil, nil).ExportSystem()
+	require.NoError(t, err)
+	require.NotNil(t, exported.ManagedSites)
+	require.NotNil(t, exported.ManagedSites.AutoBalance)
+	assert.False(t, exported.ManagedSites.AutoBalance.GlobalEnabled)
+	assert.Equal(t, 6, exported.ManagedSites.AutoBalance.IntervalHours)
+
+	targetDB := setupTestDB(t)
+	require.NoError(t, targetDB.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+	require.NoError(t, NewImportExportService(targetDB, nil, nil).ImportSystem(targetDB, exported))
+
+	var restored managedSiteSettingModel
+	require.NoError(t, targetDB.First(&restored, 1).Error)
+	assert.False(t, restored.AutoBalanceEnabled)
+	assert.Equal(t, 6, restored.BalanceRefreshIntervalHours)
+}
+
+func TestImportSystemRejectsInvalidAutoBalanceInterval(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+	require.NoError(t, db.Create(&managedSiteSettingModel{
+		ID:                          1,
+		AutoBalanceEnabled:          true,
+		BalanceRefreshIntervalHours: 6,
+	}).Error)
+
+	data := &SystemExportData{
+		ManagedSites: &ManagedSitesExportData{
+			AutoBalance: &ManagedSiteAutoBalanceConfig{
+				GlobalEnabled: false,
+				IntervalHours: 0,
+			},
+			Sites: []ManagedSiteExportInfo{},
+		},
+	}
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		return NewImportExportService(db, nil, nil).ImportSystem(tx, data)
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "interval")
+
+	var setting managedSiteSettingModel
+	require.NoError(t, db.First(&setting, 1).Error)
+	assert.True(t, setting.AutoBalanceEnabled)
+	assert.Equal(t, 6, setting.BalanceRefreshIntervalHours)
+}
+
+func TestExportSystemNormalizesInvalidAutoBalanceInterval(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+	require.NoError(t, db.Create(&managedSiteSettingModel{
+		ID:                          1,
+		AutoBalanceEnabled:          true,
+		BalanceRefreshIntervalHours: 0,
+	}).Error)
+
+	exported, err := NewImportExportService(db, nil, nil).ExportSystem()
+	require.NoError(t, err)
+	require.NotNil(t, exported.ManagedSites)
+	require.NotNil(t, exported.ManagedSites.AutoBalance)
+	assert.Equal(t, 24, exported.ManagedSites.AutoBalance.IntervalHours)
+}
+
+func TestImportSystemAutoBalanceDoesNotOverwriteConcurrentAutoCheckinUpdate(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+	require.NoError(t, db.Create(&managedSiteSettingModel{
+		ID:                          1,
+		AutoCheckinEnabled:          false,
+		AutoBalanceEnabled:          true,
+		BalanceRefreshIntervalHours: 24,
+		WindowStart:                 "09:00",
+		WindowEnd:                   "18:00",
+		ScheduleMode:                "multiple",
+	}).Error)
+
+	const hookName = "test:import_concurrent_checkin_update"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_site_settings" {
+			tx.Exec("UPDATE managed_site_settings SET auto_checkin_enabled = ?, window_start = ? WHERE id = ?", true, "11:00", 1)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	err := NewImportExportService(db, nil, nil).ImportSystem(db, &SystemExportData{
+		ManagedSites: &ManagedSitesExportData{
+			AutoBalance: &ManagedSiteAutoBalanceConfig{GlobalEnabled: false, IntervalHours: 6},
+			Sites:       []ManagedSiteExportInfo{},
+		},
+	})
+	require.NoError(t, err)
+
+	var setting managedSiteSettingModel
+	require.NoError(t, db.First(&setting, 1).Error)
+	assert.True(t, setting.AutoCheckinEnabled)
+	assert.Equal(t, "11:00", setting.WindowStart)
+	assert.False(t, setting.AutoBalanceEnabled)
+	assert.Equal(t, 6, setting.BalanceRefreshIntervalHours)
+}
+
+func TestImportSystemReturnsManagedSiteScheduleWriteError(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+	require.NoError(t, db.Create(&managedSiteSettingModel{
+		ID:                          1,
+		AutoBalanceEnabled:          true,
+		BalanceRefreshIntervalHours: 24,
+	}).Error)
+
+	forcedErr := errors.New("forced managed-site schedule write failure")
+	const hookName = "test:import_schedule_write_error"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_site_settings" {
+			tx.AddError(forcedErr)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	err := NewImportExportService(db, nil, nil).ImportSystem(db, &SystemExportData{
+		ManagedSites: &ManagedSitesExportData{
+			AutoBalance: &ManagedSiteAutoBalanceConfig{GlobalEnabled: false, IntervalHours: 6},
+			Sites:       []ManagedSiteExportInfo{},
+		},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forcedErr)
 }
 
 func (l *sqlCaptureLogger) LogMode(logger.LogLevel) logger.Interface {

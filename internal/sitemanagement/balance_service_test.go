@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -430,7 +431,7 @@ func TestBalanceService_GetHTTPClient(t *testing.T) {
 		site := &ManagedSite{
 			UseProxy: false,
 		}
-		client := service.getHTTPClient(site)
+		client := service.getHTTPClient(context.Background(), site)
 		assert.Same(t, service.client, client)
 	})
 
@@ -439,11 +440,11 @@ func TestBalanceService_GetHTTPClient(t *testing.T) {
 			UseProxy: true,
 			ProxyURL: "http://proxy:8080",
 		}
-		client := service.getHTTPClient(site)
+		client := service.getHTTPClient(context.Background(), site)
 		assert.NotSame(t, service.client, client)
 
 		// Second call should return cached client
-		client2 := service.getHTTPClient(site)
+		client2 := service.getHTTPClient(context.Background(), site)
 		assert.Same(t, client, client2)
 	})
 
@@ -451,7 +452,7 @@ func TestBalanceService_GetHTTPClient(t *testing.T) {
 		site := &ManagedSite{
 			BypassMethod: BypassMethodStealth,
 		}
-		client := service.getHTTPClient(site)
+		client := service.getHTTPClient(context.Background(), site)
 		assert.NotSame(t, service.client, client)
 	})
 }
@@ -530,41 +531,120 @@ func TestBalanceService_UpdateBalancesInDB(t *testing.T) {
 	assert.Equal(t, 1, invalidations)
 }
 
-// TestBalanceService_RefreshScheduler tests the background refresh scheduler
-func TestBalanceService_RefreshScheduler(t *testing.T) {
+func TestNextBalanceRefreshTimeAtUsesTimezoneAnchoredIntervals(t *testing.T) {
 	t.Parallel()
+
+	shanghai := time.FixedZone("UTC+8", 8*60*60)
+	western := time.FixedZone("UTC-5", -5*60*60)
+
+	tests := []struct {
+		name          string
+		now           time.Time
+		intervalHours int
+		location      *time.Location
+		expected      time.Time
+	}{
+		{
+			name:          "six hour interval uses the next slot",
+			now:           time.Date(2026, 7, 15, 1, 30, 0, 0, shanghai),
+			intervalHours: 6,
+			location:      shanghai,
+			expected:      time.Date(2026, 7, 15, 6, 0, 0, 0, shanghai),
+		},
+		{
+			name:          "an exact slot advances instead of rerunning",
+			now:           time.Date(2026, 7, 15, 6, 0, 0, 0, shanghai),
+			intervalHours: 6,
+			location:      shanghai,
+			expected:      time.Date(2026, 7, 15, 12, 0, 0, 0, shanghai),
+		},
+		{
+			name:          "non divisor intervals reset at next local midnight",
+			now:           time.Date(2026, 7, 15, 20, 30, 0, 0, shanghai),
+			intervalHours: 5,
+			location:      shanghai,
+			expected:      time.Date(2026, 7, 16, 0, 0, 0, 0, shanghai),
+		},
+		{
+			name:          "twenty four hour interval advances to next local midnight",
+			now:           time.Date(2026, 7, 15, 23, 30, 0, 0, shanghai),
+			intervalHours: 24,
+			location:      shanghai,
+			expected:      time.Date(2026, 7, 16, 0, 0, 0, 0, shanghai),
+		},
+		{
+			name:          "an explicit western timezone does not use the host timezone",
+			now:           time.Date(2026, 1, 15, 1, 30, 0, 0, western),
+			intervalHours: 6,
+			location:      western,
+			expected:      time.Date(2026, 1, 15, 6, 0, 0, 0, western),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := nextBalanceRefreshTimeAt(tt.now, tt.intervalHours, tt.location)
+			assert.Equal(t, tt.expected, actual)
+		})
+	}
+}
+
+func TestNormalizeAutoBalanceIntervalHours(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, defaultAutoBalanceIntervalHours, normalizeAutoBalanceIntervalHours(0))
+	assert.Equal(t, defaultAutoBalanceIntervalHours, normalizeAutoBalanceIntervalHours(25))
+	assert.Equal(t, 6, normalizeAutoBalanceIntervalHours(6))
+}
+
+func TestBalanceServiceStopCancelsScheduledRefresh(t *testing.T) {
+	requestStarted := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	var startedOnce sync.Once
+	var canceledOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() { close(requestStarted) })
+		<-r.Context().Done()
+		canceledOnce.Do(func() { close(requestCanceled) })
+	}))
+	t.Cleanup(server.Close)
 
 	db := setupTestDB(t)
 	encSvc := setupTestEncryption(t)
-
-	err := db.AutoMigrate(&ManagedSite{})
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	authValue, err := encSvc.Encrypt("test-token")
 	require.NoError(t, err)
+	require.NoError(t, db.Create(&ManagedSite{
+		Name:      "blocking balance site",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeNewAPI,
+		Enabled:   true,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: authValue,
+	}).Error)
 
 	service := NewBalanceService(db, encSvc)
+	service.wg.Add(1)
+	go func() {
+		defer service.wg.Done()
+		service.refreshAllBalancesBackground(service.lifecycleCtx)
+	}()
 
-	// Test nextRefreshTime calculation
-	nextRefresh := service.nextRefreshTime()
-	assert.True(t, nextRefresh.After(time.Now()))
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("scheduled refresh did not start")
+	}
 
-	// Verify it's at local midnight.
-	localTime := nextRefresh.In(checkinLocation())
-	assert.Equal(t, 0, localTime.Hour())
-	assert.Equal(t, 0, localTime.Minute())
-}
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	service.Stop(stopCtx)
 
-func TestBalanceService_NextRefreshTimeKeepsMidnightAcrossDST(t *testing.T) {
-	loc, err := time.LoadLocation("America/New_York")
-	require.NoError(t, err)
-
-	now := time.Date(2026, 3, 8, 23, 0, 0, 0, loc)
-	nextRefresh := nextRefreshTimeAtLocation(now, loc)
-
-	localTime := nextRefresh.In(loc)
-	assert.Equal(t, 2026, localTime.Year())
-	assert.Equal(t, time.March, localTime.Month())
-	assert.Equal(t, 9, localTime.Day())
-	assert.Equal(t, 0, localTime.Hour())
-	assert.Equal(t, 0, localTime.Minute())
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("scheduled refresh request was not canceled during stop")
+	}
 }
 
 // TestBalanceService_SupportsBalance tests site type support check

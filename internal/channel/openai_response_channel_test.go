@@ -18,7 +18,7 @@ import (
 func TestCodexUserAgent(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "0.144.3", DefaultCodexVersion)
+	assert.Equal(t, "0.144.4", DefaultCodexVersion)
 	assert.NotEmpty(t, CodexUserAgent)
 	assert.Equal(t, BuildCodexUserAgent(DefaultCodexVersion), CodexUserAgent)
 	assert.Contains(t, CodexUserAgent, "codex-tui/"+DefaultCodexVersion)

@@ -112,6 +112,26 @@ type AutoCheckinConfig struct {
 	RetryStrategy     AutoCheckinRetryStrategy `json:"retry_strategy"`
 }
 
+const (
+	defaultAutoBalanceIntervalHours = 24
+	minAutoBalanceIntervalHours     = 1
+	maxAutoBalanceIntervalHours     = 24
+)
+
+func normalizeAutoBalanceIntervalHours(intervalHours int) int {
+	if intervalHours < minAutoBalanceIntervalHours || intervalHours > maxAutoBalanceIntervalHours {
+		return defaultAutoBalanceIntervalHours
+	}
+	return intervalHours
+}
+
+// AutoBalanceConfig holds the automatic balance refresh configuration.
+// Refresh slots are anchored to 00:00 in the site-management timezone.
+type AutoBalanceConfig struct {
+	GlobalEnabled bool `json:"global_enabled"`
+	IntervalHours int  `json:"interval_hours"`
+}
+
 // AutoCheckinAttemptsTracker tracks daily check-in attempts.
 type AutoCheckinAttemptsTracker struct {
 	// Date is in "YYYY-MM-DD" format (local time).
