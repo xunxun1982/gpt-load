@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -35,6 +37,30 @@ func TruncateString(s string, maxLength int) string {
 	}
 	runes := []rune(s)
 	return string(runes[:maxLength])
+}
+
+// IsCanonicalHourMinute reports whether value is a valid zero-padded HH:MM time.
+func IsCanonicalHourMinute(value string) bool {
+	normalized, ok := NormalizeHourMinute(value)
+	// Go's time parser accepts a single-digit hour for layout 15, so compare canonical width.
+	return ok && normalized == strings.TrimSpace(value)
+}
+
+// NormalizeHourMinute converts a valid one- or two-digit hour/minute pair to HH:MM.
+func NormalizeHourMinute(value string) (string, bool) {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) != 2 {
+		return "", false
+	}
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil || hour < 0 || hour > 23 {
+		return "", false
+	}
+	minute, err := strconv.Atoi(parts[1])
+	if err != nil || minute < 0 || minute > 59 {
+		return "", false
+	}
+	return time.Date(0, time.January, 1, hour, minute, 0, 0, time.UTC).Format("15:04"), true
 }
 
 // SplitAndTrim splits a string by a separator

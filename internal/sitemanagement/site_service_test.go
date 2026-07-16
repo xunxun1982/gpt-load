@@ -590,6 +590,38 @@ func TestSiteService_AutoCheckinConfig(t *testing.T) {
 	assert.Len(t, updated.ScheduleTimes, 2)
 }
 
+func TestGetAutoCheckinConfigCanonicalizesLegacyTimesWithoutWriting(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+	require.NoError(t, db.Create(&ManagedSiteSetting{
+		ID:                1,
+		ScheduleTimes:     "9:0,12:30",
+		WindowStart:       "8:5",
+		WindowEnd:         "18:0",
+		ScheduleMode:      AutoCheckinScheduleModeRandom,
+		DeterministicTime: "7:1",
+	}).Error)
+
+	service := NewSiteService(db, nil, encSvc)
+	cfg, err := service.GetAutoCheckinConfig(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"09:00", "12:30"}, cfg.ScheduleTimes)
+	assert.Equal(t, "08:05", cfg.WindowStart)
+	assert.Equal(t, "18:00", cfg.WindowEnd)
+	assert.Equal(t, "07:01", cfg.DeterministicTime)
+
+	var stored ManagedSiteSetting
+	require.NoError(t, db.First(&stored, 1).Error)
+	assert.Equal(t, "9:0,12:30", stored.ScheduleTimes)
+	assert.Equal(t, "8:5", stored.WindowStart)
+	assert.Equal(t, "18:0", stored.WindowEnd)
+	assert.Equal(t, "7:1", stored.DeterministicTime)
+}
+
 func TestSiteService_AutoBalanceConfig(t *testing.T) {
 	t.Parallel()
 
@@ -721,6 +753,54 @@ func TestValidateAutoCheckinConfigRejectsOversizedScheduleTimes(t *testing.T) {
 	})
 
 	require.Error(t, err)
+}
+
+func TestValidateAutoCheckinConfigRejectsNonCanonicalTimes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  AutoCheckinConfig
+	}{
+		{
+			name: "multiple schedule time",
+			cfg: AutoCheckinConfig{
+				ScheduleMode:  AutoCheckinScheduleModeMultiple,
+				ScheduleTimes: []string{"9:00"},
+			},
+		},
+		{
+			name: "random window start",
+			cfg: AutoCheckinConfig{
+				ScheduleMode: AutoCheckinScheduleModeRandom,
+				WindowStart:  "9:00",
+				WindowEnd:    "18:00",
+			},
+		},
+		{
+			name: "random window end",
+			cfg: AutoCheckinConfig{
+				ScheduleMode: AutoCheckinScheduleModeRandom,
+				WindowStart:  "09:00",
+				WindowEnd:    "18:0",
+			},
+		},
+		{
+			name: "deterministic time",
+			cfg: AutoCheckinConfig{
+				ScheduleMode:      AutoCheckinScheduleModeDeterministic,
+				DeterministicTime: "9:00",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := validateAutoCheckinConfig(tt.cfg)
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestEnsureSettingsRowHandlesConcurrentCreate(t *testing.T) {

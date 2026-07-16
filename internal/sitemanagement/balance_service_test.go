@@ -622,6 +622,84 @@ func TestBalanceService_FetchAllBalances(t *testing.T) {
 	}
 }
 
+func TestBalanceServiceRefreshAllBalancesReturnsFetchCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		cancel()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"quota":500000}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	authValue, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "cancel during balance fetch",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeNewAPI,
+		Enabled:   true,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: authValue,
+	}
+	require.NoError(t, db.Create(&site).Error)
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+
+	results, err := service.RefreshAllBalances(ctx)
+
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, results, site.ID)
+}
+
+func TestBalanceServiceRefreshAllBalancesReturnsUpdateCancellation(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"quota":500000}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	authValue, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "cancel during balance update",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeNewAPI,
+		Enabled:   true,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: authValue,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	const hookName = "test:cancel_after_balance_update"
+	require.NoError(t, db.Callback().Update().After("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_sites" {
+			cancel()
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	results, err := service.RefreshAllBalances(ctx)
+
+	assert.ErrorIs(t, err, context.Canceled)
+	require.NotNil(t, results[site.ID])
+	require.NotNil(t, results[site.ID].Balance)
+}
+
 // TestBalanceService_GetHTTPClient tests HTTP client selection
 func TestBalanceService_GetHTTPClient(t *testing.T) {
 	t.Parallel()

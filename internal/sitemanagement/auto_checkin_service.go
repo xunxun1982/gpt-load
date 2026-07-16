@@ -414,7 +414,7 @@ func (s *AutoCheckinService) loadConfig(ctx context.Context) (*AutoCheckinConfig
 	var scheduleTimes []string
 	if row.ScheduleTimes != "" {
 		for _, t := range strings.Split(row.ScheduleTimes, ",") {
-			t = strings.TrimSpace(t)
+			t = normalizeAutoCheckinTime(t)
 			if t != "" {
 				scheduleTimes = append(scheduleTimes, t)
 			}
@@ -427,10 +427,10 @@ func (s *AutoCheckinService) loadConfig(ctx context.Context) (*AutoCheckinConfig
 	return &AutoCheckinConfig{
 		GlobalEnabled:     row.AutoCheckinEnabled,
 		ScheduleTimes:     scheduleTimes,
-		WindowStart:       row.WindowStart,
-		WindowEnd:         row.WindowEnd,
+		WindowStart:       normalizeAutoCheckinTime(row.WindowStart),
+		WindowEnd:         normalizeAutoCheckinTime(row.WindowEnd),
 		ScheduleMode:      row.ScheduleMode,
-		DeterministicTime: row.DeterministicTime,
+		DeterministicTime: normalizeAutoCheckinTime(row.DeterministicTime),
 		RetryStrategy: AutoCheckinRetryStrategy{
 			Enabled:           row.RetryEnabled,
 			IntervalMinutes:   row.RetryIntervalMinutes,

@@ -141,6 +141,20 @@ test("does not penalize skipped or already-checked statuses", async () => {
   ]);
 });
 
+test("assigns one fixed weight to every valid subgroup", async () => {
+  const { createUniformSubGroupWeights } = await loadAutoWeightUtils();
+  assert.equal(typeof createUniformSubGroupWeights, "function");
+
+  const result = createUniformSubGroupWeights([1, 0, 2, -1, 3], 100);
+
+  assert.deepEqual(result.updates, [
+    { subGroupId: 1, weight: 100 },
+    { subGroupId: 2, weight: 100 },
+    { subGroupId: 3, weight: 100 },
+  ]);
+  assert.equal(result.skippedCount, 2);
+});
+
 test("places auto weight button after reset-all-health and mounts the modal", () => {
   const resetIndex = subGroupTable.indexOf('t("subGroups.resetAllHealth")');
   const autoIndex = subGroupTable.indexOf('t("subGroups.autoArrangeWeight")');
@@ -170,6 +184,24 @@ test("auto weight modal reads cached data and updates only initial weight serial
   assert.match(autoWeightModal, /weight:\s*update\.weight/);
   assert.match(autoWeightModal, /true\s*\)/);
   assert.doesNotMatch(autoWeightModal, /effective_weight/);
+});
+
+test("auto weight modal supports a fixed weight strategy defaulting to one hundred", () => {
+  assert.match(autoWeightModal, /type AutoWeightStrategy = "balance" \| "uniform"/);
+  assert.match(autoWeightModal, /const defaultUniformWeight = 100/);
+  assert.match(autoWeightModal, /const strategy = ref<AutoWeightStrategy>\("balance"\)/);
+  assert.match(autoWeightModal, /const uniformWeight = ref\(defaultUniformWeight\)/);
+  assert.match(autoWeightModal, /strategy\.value = "balance"/);
+  assert.match(autoWeightModal, /uniformWeight\.value = defaultUniformWeight/);
+  assert.match(autoWeightModal, /v-model:value="strategy"/);
+  assert.match(autoWeightModal, /value="uniform"/);
+  assert.match(autoWeightModal, /v-if="strategy === 'balance'"/);
+  assert.match(autoWeightModal, /v-model:value="uniformWeight"/);
+  assert.match(autoWeightModal, /createUniformSubGroupWeights/);
+  assert.match(autoWeightModal, /props\.subGroups\.map\(subGroup => subGroup\.group\.id \?\? 0\)/);
+  assert.match(zhLocale, /autoWeightStrategyUniform:\s*"全部设为相同权重"/);
+  assert.match(enLocale, /autoWeightStrategyUniform:\s*"Set All to Same Weight"/);
+  assert.match(jaLocale, /autoWeightStrategyUniform:/);
 });
 
 test("auto weight modal stays open when any update fails", () => {

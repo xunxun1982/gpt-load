@@ -697,7 +697,13 @@ func (s *BalanceService) RefreshAllBalances(ctx context.Context) (map[uint]*Bala
 	}
 
 	results := s.FetchAllBalances(ctx, sites)
+	if err := ctx.Err(); err != nil {
+		return results, err
+	}
 	s.updateBalancesInDB(ctx, results)
+	if err := ctx.Err(); err != nil {
+		return results, err
+	}
 
 	return results, nil
 }

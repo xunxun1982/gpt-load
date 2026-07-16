@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
+	"time"
 
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
-	"time"
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
@@ -1038,16 +1037,14 @@ func joinManagedSiteScheduleTimes(scheduleTimes []string) string {
 }
 
 func validManagedSiteScheduleTime(value string) bool {
-	parts := strings.Split(strings.TrimSpace(value), ":")
-	if len(parts) != 2 {
-		return false
+	return utils.IsCanonicalHourMinute(value)
+}
+
+func normalizeManagedSiteScheduleTime(value string) string {
+	if normalized, ok := utils.NormalizeHourMinute(value); ok {
+		return normalized
 	}
-	hour, err := strconv.Atoi(parts[0])
-	if err != nil || hour < 0 || hour > 23 {
-		return false
-	}
-	minute, err := strconv.Atoi(parts[1])
-	return err == nil && minute >= 0 && minute <= 59
+	return strings.TrimSpace(value)
 }
 
 func normalizeManagedSiteAutoBalanceIntervalHours(intervalHours int) int {
@@ -1086,17 +1083,17 @@ func (s *ImportExportService) exportManagedSites() (*ManagedSitesExportData, err
 			hasScheduleConfig = true
 			var scheduleTimes []string
 			for _, value := range strings.Split(setting.ScheduleTimes, ",") {
-				if value = strings.TrimSpace(value); value != "" {
+				if value = normalizeManagedSiteScheduleTime(value); value != "" {
 					scheduleTimes = append(scheduleTimes, value)
 				}
 			}
 			result.AutoCheckin = &ManagedSiteAutoCheckinConfig{
 				GlobalEnabled:     setting.AutoCheckinEnabled,
 				ScheduleTimes:     scheduleTimes,
-				WindowStart:       setting.WindowStart,
-				WindowEnd:         setting.WindowEnd,
+				WindowStart:       normalizeManagedSiteScheduleTime(setting.WindowStart),
+				WindowEnd:         normalizeManagedSiteScheduleTime(setting.WindowEnd),
 				ScheduleMode:      setting.ScheduleMode,
-				DeterministicTime: setting.DeterministicTime,
+				DeterministicTime: normalizeManagedSiteScheduleTime(setting.DeterministicTime),
 				RetryStrategy: ManagedSiteAutoCheckinRetryConfig{
 					Enabled:           setting.RetryEnabled,
 					IntervalMinutes:   setting.RetryIntervalMinutes,

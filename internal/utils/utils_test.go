@@ -60,6 +60,66 @@ func TestTruncateString(t *testing.T) {
 	}
 }
 
+func TestIsCanonicalHourMinute(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		value string
+		valid bool
+	}{
+		{value: "00:00", valid: true},
+		{value: "23:59", valid: true},
+		{value: " 09:05 ", valid: true},
+		{value: "9:00", valid: false},
+		{value: "09:0", valid: false},
+		{value: "24:00", valid: false},
+		{value: "09:60", valid: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Parallel()
+			if got := IsCanonicalHourMinute(tt.value); got != tt.valid {
+				t.Errorf("IsCanonicalHourMinute(%q) = %t, want %t", tt.value, got, tt.valid)
+			}
+		})
+	}
+}
+
+func TestNormalizeHourMinute(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		value      string
+		expected   string
+		expectedOK bool
+	}{
+		{value: "9:0", expected: "09:00", expectedOK: true},
+		{value: " 09:05 ", expected: "09:05", expectedOK: true},
+		{value: "23:59", expected: "23:59", expectedOK: true},
+		{value: "24:00", expectedOK: false},
+		{value: "09:60", expectedOK: false},
+		{value: "invalid", expectedOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Parallel()
+			actual, ok := NormalizeHourMinute(tt.value)
+			if actual != tt.expected || ok != tt.expectedOK {
+				t.Errorf(
+					"NormalizeHourMinute(%q) = (%q, %t), want (%q, %t)",
+					tt.value,
+					actual,
+					ok,
+					tt.expected,
+					tt.expectedOK,
+				)
+			}
+		})
+	}
+}
+
 // TestSplitAndTrim tests string splitting and trimming
 func TestSplitAndTrim(t *testing.T) {
 	t.Parallel()

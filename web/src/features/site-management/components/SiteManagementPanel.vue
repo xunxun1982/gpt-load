@@ -1423,13 +1423,30 @@ async function handleFileChange(event: Event) {
 
   try {
     const text = await file.text();
-    const data = JSON.parse(text) as SiteImportData;
-
-    if (!data.sites || !Array.isArray(data.sites)) {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
       message.error(t("siteManagement.importInvalidFormat"));
       input.value = "";
       return;
     }
+
+    const data = parsed as SiteImportData;
+    const hasSites = Array.isArray(data.sites);
+    const hasSiteRows = Array.isArray(data.sites) && data.sites.length > 0;
+    const hasScheduleConfig =
+      (data.auto_checkin !== undefined && data.auto_checkin !== null) ||
+      (data.auto_balance !== undefined && data.auto_balance !== null);
+
+    if ((data.sites !== undefined && !hasSites) || (!hasSiteRows && !hasScheduleConfig)) {
+      message.error(t("siteManagement.importInvalidFormat"));
+      input.value = "";
+      return;
+    }
+
+    const normalizedData: SiteImportData = {
+      ...data,
+      sites: data.sites ?? [],
+    };
 
     // Ask user for import mode
     const mode = await askImportMode(dialog, t);
@@ -1438,7 +1455,10 @@ async function handleFileChange(event: Event) {
     }
 
     importLoading.value = true;
-    const result = await siteManagementApi.importSites(data, mode === "auto" ? undefined : mode);
+    const result = await siteManagementApi.importSites(
+      normalizedData,
+      mode === "auto" ? undefined : mode
+    );
     message.success(
       t("siteManagement.importSuccess", { imported: result.imported, total: result.total })
     );

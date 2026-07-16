@@ -139,6 +139,20 @@ test("managed-site import reloads the imported schedule configuration", () => {
   );
 });
 
+test("managed-site import accepts schedule-only payloads without sites", () => {
+  assert.match(siteApi, /sites\?:\s*SiteExportInfo\[\]/);
+  assert.match(sitePanel, /const parsed: unknown = JSON\.parse\(text\)/);
+  assert.match(sitePanel, /const hasSites = Array\.isArray\(data\.sites\)/);
+  assert.match(
+    sitePanel,
+    /const hasScheduleConfig =[\s\S]*?data\.auto_checkin !== undefined[\s\S]*?data\.auto_checkin !== null[\s\S]*?data\.auto_balance !== undefined[\s\S]*?data\.auto_balance !== null/
+  );
+  assert.match(sitePanel, /data\.sites !== undefined && !hasSites/);
+  assert.match(sitePanel, /!hasSiteRows && !hasScheduleConfig/);
+  assert.match(sitePanel, /sites:\s*data\.sites \?\? \[\]/);
+  assert.match(sitePanel, /siteManagementApi\.importSites\(\s*normalizedData/);
+});
+
 test("key balance display removes upstream currency and unit text", async () => {
   const { formatBalanceValue, parseBalanceValue } = await loadDisplayUtils();
 

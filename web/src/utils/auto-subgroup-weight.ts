@@ -47,3 +47,14 @@ export function calculateAutoSubGroupWeights(
 
   return { updates, skippedCount: candidates.length - usable.length };
 }
+
+export function createUniformSubGroupWeights(
+  subGroupIds: number[],
+  weight: number
+): AutoSubGroupWeightResult {
+  const validIds = subGroupIds.filter(subGroupId => subGroupId > 0);
+  return {
+    updates: validIds.map(subGroupId => ({ subGroupId, weight })),
+    skippedCount: subGroupIds.length - validIds.length,
+  };
+}

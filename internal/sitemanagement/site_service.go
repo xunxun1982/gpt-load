@@ -1022,7 +1022,7 @@ func (s *SiteService) GetAutoCheckinConfig(ctx context.Context) (*AutoCheckinCon
 	var scheduleTimes []string
 	if st.ScheduleTimes != "" {
 		for _, t := range strings.Split(st.ScheduleTimes, ",") {
-			t = strings.TrimSpace(t)
+			t = normalizeAutoCheckinTime(t)
 			if t != "" {
 				scheduleTimes = append(scheduleTimes, t)
 			}
@@ -1036,10 +1036,10 @@ func (s *SiteService) GetAutoCheckinConfig(ctx context.Context) (*AutoCheckinCon
 	return &AutoCheckinConfig{
 		GlobalEnabled:     st.AutoCheckinEnabled,
 		ScheduleTimes:     scheduleTimes,
-		WindowStart:       st.WindowStart,
-		WindowEnd:         st.WindowEnd,
+		WindowStart:       normalizeAutoCheckinTime(st.WindowStart),
+		WindowEnd:         normalizeAutoCheckinTime(st.WindowEnd),
 		ScheduleMode:      st.ScheduleMode,
-		DeterministicTime: st.DeterministicTime,
+		DeterministicTime: normalizeAutoCheckinTime(st.DeterministicTime),
 		RetryStrategy: AutoCheckinRetryStrategy{
 			Enabled:           st.RetryEnabled,
 			IntervalMinutes:   st.RetryIntervalMinutes,
@@ -1090,7 +1090,7 @@ func validateAutoCheckinConfig(cfg AutoCheckinConfig) (string, error) {
 		seen := make(map[string]bool)
 		for i, t := range cfg.ScheduleTimes {
 			t = strings.TrimSpace(t)
-			if _, err := parseTimeToMinutes(t); err != nil {
+			if !utils.IsCanonicalHourMinute(t) {
 				return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "schedule_times", "index": i})
 			}
 			if seen[t] {
@@ -1102,17 +1102,17 @@ func validateAutoCheckinConfig(cfg AutoCheckinConfig) (string, error) {
 		if cfg.WindowStart == "" || cfg.WindowEnd == "" {
 			return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.time_window_required", nil)
 		}
-		if _, err := parseTimeToMinutes(cfg.WindowStart); err != nil {
+		if !utils.IsCanonicalHourMinute(cfg.WindowStart) {
 			return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "window_start"})
 		}
-		if _, err := parseTimeToMinutes(cfg.WindowEnd); err != nil {
+		if !utils.IsCanonicalHourMinute(cfg.WindowEnd) {
 			return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "window_end"})
 		}
 	case AutoCheckinScheduleModeDeterministic:
 		if cfg.DeterministicTime == "" {
 			return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.deterministic_time_required", nil)
 		}
-		if _, err := parseTimeToMinutes(cfg.DeterministicTime); err != nil {
+		if !utils.IsCanonicalHourMinute(cfg.DeterministicTime) {
 			return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "deterministic_time"})
 		}
 	default:
@@ -1138,17 +1138,24 @@ func joinAutoCheckinScheduleTimes(scheduleTimes []string) string {
 func normalizeAutoCheckinScheduleTimes(scheduleTimes []string) []string {
 	normalized := make([]string, len(scheduleTimes))
 	for i, value := range scheduleTimes {
-		normalized[i] = strings.TrimSpace(value)
+		normalized[i] = normalizeAutoCheckinTime(value)
 	}
 	return normalized
 }
 
+func normalizeAutoCheckinTime(value string) string {
+	if normalized, ok := utils.NormalizeHourMinute(value); ok {
+		return normalized
+	}
+	return strings.TrimSpace(value)
+}
+
 func normalizeAutoCheckinConfig(cfg AutoCheckinConfig, mode string) AutoCheckinConfig {
 	cfg.ScheduleTimes = normalizeAutoCheckinScheduleTimes(cfg.ScheduleTimes)
-	cfg.WindowStart = strings.TrimSpace(cfg.WindowStart)
-	cfg.WindowEnd = strings.TrimSpace(cfg.WindowEnd)
+	cfg.WindowStart = normalizeAutoCheckinTime(cfg.WindowStart)
+	cfg.WindowEnd = normalizeAutoCheckinTime(cfg.WindowEnd)
 	cfg.ScheduleMode = mode
-	cfg.DeterministicTime = strings.TrimSpace(cfg.DeterministicTime)
+	cfg.DeterministicTime = normalizeAutoCheckinTime(cfg.DeterministicTime)
 	cfg.RetryStrategy.IntervalMinutes = clampInt(cfg.RetryStrategy.IntervalMinutes, 1, 24*60)
 	cfg.RetryStrategy.MaxAttemptsPerDay = clampInt(cfg.RetryStrategy.MaxAttemptsPerDay, 1, 10)
 	return cfg

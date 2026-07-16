@@ -811,10 +811,17 @@ export default {
     autoArrangeWeight: "Auto Allocate Weights",
     autoArrangeWeightTip: "Calculate and allocate initial sub-group weights from cached balances",
     autoWeightTitle: "Auto Allocate Initial Weights",
+    autoWeightStrategy: "Allocation Strategy",
+    autoWeightStrategyBalance: "Allocate by Balance",
+    autoWeightStrategyUniform: "Set All to Same Weight",
     autoWeightMax: "Maximum Weight",
+    autoWeightUniform: "Uniform Weight",
     autoWeightHint:
       "Balances shown as - are unchanged; zero balances get weight 1; failed or missing check-ins multiply the calculated weight by 0.7.",
+    autoWeightUniformHint:
+      "Set the initial weight of every sub-group in this aggregate group to the specified value.",
     autoWeightNoEligible: "No cached balances are available for weight calculation",
+    autoWeightNoSubGroups: "No sub-groups are available to update",
     autoWeightSuccess: "Auto allocation completed: {success} updated, {skipped} skipped",
     autoWeightPartial:
       "Auto allocation partially completed: {success} updated, {failed} failed, {skipped} skipped",

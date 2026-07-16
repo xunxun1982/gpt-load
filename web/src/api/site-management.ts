@@ -327,7 +327,7 @@ export interface SiteImportData {
   version?: string;
   auto_checkin?: AutoCheckinConfig;
   auto_balance?: AutoBalanceConfig;
-  sites: SiteExportInfo[];
+  sites?: SiteExportInfo[];
 }
 
 // Auto check-in configuration types

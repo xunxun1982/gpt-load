@@ -113,6 +113,42 @@ func TestExportSystemReturnsManagedSiteScheduleReadErrors(t *testing.T) {
 	assert.ErrorIs(t, err, forcedErr)
 }
 
+func TestExportSystemCanonicalizesLegacyManagedSiteScheduleTimes(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+	require.NoError(t, db.Create(&managedSiteSettingModel{
+		ID:                1,
+		ScheduleTimes:     "9:0,12:30",
+		WindowStart:       "8:5",
+		WindowEnd:         "18:0",
+		ScheduleMode:      "random",
+		DeterministicTime: "7:1",
+	}).Error)
+
+	exported, err := NewImportExportService(db, nil, nil).ExportSystem()
+
+	require.NoError(t, err)
+	require.NotNil(t, exported.ManagedSites)
+	require.NotNil(t, exported.ManagedSites.AutoCheckin)
+	assert.Equal(t, []string{"09:00", "12:30"}, exported.ManagedSites.AutoCheckin.ScheduleTimes)
+	assert.Equal(t, "08:05", exported.ManagedSites.AutoCheckin.WindowStart)
+	assert.Equal(t, "18:00", exported.ManagedSites.AutoCheckin.WindowEnd)
+	assert.Equal(t, "07:01", exported.ManagedSites.AutoCheckin.DeterministicTime)
+
+	var stored managedSiteSettingModel
+	require.NoError(t, db.First(&stored, 1).Error)
+	assert.Equal(t, "9:0,12:30", stored.ScheduleTimes)
+	assert.Equal(t, "8:5", stored.WindowStart)
+	assert.Equal(t, "18:0", stored.WindowEnd)
+	assert.Equal(t, "7:1", stored.DeterministicTime)
+}
+
 func TestImportSystemReturnsManagedSiteCreateErrors(t *testing.T) {
 	db := setupTestDB(t)
 	require.NoError(t, db.AutoMigrate(
@@ -211,6 +247,33 @@ func TestImportSystemRejectsInvalidAutoCheckinScheduleBeforeWriting(t *testing.T
 	var scheduleCount int64
 	require.NoError(t, db.Model(&managedSiteSettingModel{}).Count(&scheduleCount).Error)
 	assert.Zero(t, scheduleCount)
+}
+
+func TestValidManagedSiteScheduleTimeRequiresCanonicalHHMM(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		value string
+		valid bool
+	}{
+		{value: "00:00", valid: true},
+		{value: "23:59", valid: true},
+		{value: " 09:05 ", valid: true},
+		{value: "9:00", valid: false},
+		{value: "09:0", valid: false},
+		{value: "009:00", valid: false},
+		{value: "09:000", valid: false},
+		{value: "24:00", valid: false},
+		{value: "09:60", valid: false},
+		{value: "aa:bb", valid: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.valid, validManagedSiteScheduleTime(tt.value))
+		})
+	}
 }
 
 func TestValidateManagedSiteAutoCheckinConfigRejectsOversizedScheduleTimes(t *testing.T) {

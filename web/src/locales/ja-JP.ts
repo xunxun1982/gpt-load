@@ -796,10 +796,17 @@ export default {
     autoArrangeWeight: "重みを自動割り当て",
     autoArrangeWeightTip: "キャッシュされた残高からサブグループの初期重みを計算して割り当てます",
     autoWeightTitle: "初期重みを自動割り当て",
+    autoWeightStrategy: "割り当て方法",
+    autoWeightStrategyBalance: "残高に基づいて自動割り当て",
+    autoWeightStrategyUniform: "すべて同じ重みに設定",
     autoWeightMax: "最大重み",
+    autoWeightUniform: "共通の重み",
     autoWeightHint:
       "残高が - の場合は変更せず、残高が 0 の場合は重みを 1 にします。直近のチェックインが失敗または未実施の場合、計算結果に 0.7 を掛けます。",
+    autoWeightUniformHint:
+      "この集約グループ内のすべてのサブグループの初期重みを指定した値に設定します。",
     autoWeightNoEligible: "重み計算に使用できるキャッシュ残高がありません",
+    autoWeightNoSubGroups: "更新可能なサブグループがありません",
     autoWeightSuccess: "自動割り当てが完了しました：成功 {success} 件、スキップ {skipped} 件",
     autoWeightPartial:
       "自動割り当てが一部完了しました：成功 {success} 件、失敗 {failed} 件、スキップ {skipped} 件",
