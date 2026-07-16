@@ -11,12 +11,25 @@ import (
 	"time"
 
 	"gpt-load/internal/encryption"
+	"gpt-load/internal/store"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+type subscribeHookStore struct {
+	store.Store
+	beforeSubscribe func()
+}
+
+func (s *subscribeHookStore) Subscribe(channel string) (store.Subscription, error) {
+	if s.beforeSubscribe != nil {
+		s.beforeSubscribe()
+	}
+	return s.Store.Subscribe(channel)
+}
 
 // TestBalanceService_FetchSiteBalance tests balance fetching for a single site
 func TestBalanceService_FetchSiteBalance(t *testing.T) {
@@ -536,6 +549,8 @@ func TestNextBalanceRefreshTimeAtUsesTimezoneAnchoredIntervals(t *testing.T) {
 
 	shanghai := time.FixedZone("UTC+8", 8*60*60)
 	western := time.FixedZone("UTC-5", -5*60*60)
+	newYork, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
 
 	tests := []struct {
 		name          string
@@ -579,6 +594,28 @@ func TestNextBalanceRefreshTimeAtUsesTimezoneAnchoredIntervals(t *testing.T) {
 			location:      western,
 			expected:      time.Date(2026, 1, 15, 6, 0, 0, 0, western),
 		},
+		// UTC construction disambiguates transition instants and keeps the test independent of host TZ.
+		{
+			name:          "spring forward skips the nonexistent local hour",
+			now:           time.Date(2026, 3, 8, 6, 30, 0, 0, time.UTC).In(newYork),
+			intervalHours: 1,
+			location:      newYork,
+			expected:      time.Date(2026, 3, 8, 7, 0, 0, 0, time.UTC).In(newYork),
+		},
+		{
+			name:          "fall back first repeated 01:30 advances to 02:00",
+			now:           time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC).In(newYork),
+			intervalHours: 2,
+			location:      newYork,
+			expected:      time.Date(2026, 11, 1, 7, 0, 0, 0, time.UTC).In(newYork),
+		},
+		{
+			name:          "fall back second repeated 01:30 advances to 02:00",
+			now:           time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC).In(newYork),
+			intervalHours: 2,
+			location:      newYork,
+			expected:      time.Date(2026, 11, 1, 7, 0, 0, 0, time.UTC).In(newYork),
+		},
 	}
 
 	for _, tt := range tests {
@@ -586,6 +623,70 @@ func TestNextBalanceRefreshTimeAtUsesTimezoneAnchoredIntervals(t *testing.T) {
 			actual := nextBalanceRefreshTimeAt(tt.now, tt.intervalHours, tt.location)
 			assert.Equal(t, tt.expected, actual)
 		})
+	}
+}
+
+func TestBalanceServiceStartReconcilesConfigAfterSubscriptionSetup(t *testing.T) {
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+	require.NoError(t, db.Create(&ManagedSiteSetting{
+		ID:                          1,
+		AutoBalanceEnabled:          true,
+		BalanceRefreshIntervalHours: 24,
+	}).Error)
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	// A single connection keeps SQLite :memory: state shared while the query/update hand-off is coordinated.
+	sqlDB.SetMaxOpenConns(1)
+
+	configQueries := make(chan struct{}, 2)
+	const hookName = "test:balance_startup_config_query"
+	require.NoError(t, db.Callback().Query().After("gorm:query").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table != "managed_site_settings" {
+			return
+		}
+		select {
+		case configQueries <- struct{}{}:
+		default:
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Query().Remove(hookName) })
+
+	memoryStore := store.NewMemoryStore()
+	t.Cleanup(func() { _ = memoryStore.Close() })
+	hookedStore := &subscribeHookStore{
+		Store: memoryStore,
+		beforeSubscribe: func() {
+			select {
+			case <-configQueries:
+			case <-time.After(time.Second):
+				t.Fatal("scheduler did not perform its initial configuration read")
+			}
+			// This update lands after the initial read but before the subscription becomes active.
+			require.NoError(t, db.Model(&ManagedSiteSetting{}).
+				Where("id = ?", 1).
+				Updates(map[string]any{
+					"auto_balance_enabled":           false,
+					"balance_refresh_interval_hours": 6,
+				}).Error)
+		},
+	}
+
+	service := NewBalanceService(db, encSvc)
+	service.SetStore(hookedStore)
+	service.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		service.Stop(ctx)
+	})
+
+	select {
+	case <-configQueries:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not reconcile configuration after subscription setup")
 	}
 }
 

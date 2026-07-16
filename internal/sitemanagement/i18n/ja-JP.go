@@ -13,6 +13,7 @@ var MessagesJaJP = map[string]string{
 	"site_management.validation.deterministic_time_required":   "確定モードでは固定時間が必要です",
 	"site_management.validation.duplicate_time":                "スケジュール時間「{{.time}}」が重複しています",
 	"site_management.validation.schedule_times_required":       "少なくとも1つのスケジュール時間が必要です",
+	"site_management.validation.schedule_times_too_long":       "スケジュール時間は合計 {{.max}} 文字以内で指定してください",
 	"site_management.validation.invalid_balance_interval":      "残高更新間隔は {{.min}}～{{.max}} 時間で指定してください",
 
 	// Check-in messages

@@ -121,10 +121,12 @@ test("auto balance uses an hourly interval anchored to the site-management timez
   assert.match(siteApi, /interval_hours:\s*number/);
   assert.match(siteApi, /autoBalanceApi/);
   assert.match(siteApi, /\/site-management\/auto-balance\/config/);
+  // Keep refreshBalance here: it is the toolbar action key; balanceRefreshInterval labels the form below.
   assert.match(
     sitePanel,
     /siteManagement\.autoCheckin[\s\S]*siteManagement\.autoBalance[\s\S]*siteManagement\.refreshBalance/
   );
+  assert.match(sitePanel, /siteManagement\.balanceRefreshInterval/);
   assert.match(sitePanel, /v-model:value="autoBalanceConfig\.interval_hours"/);
   assert.match(sitePanel, /:min="1"[\s\S]*:max="24"[\s\S]*:precision="0"/);
   assert.match(sitePanel, /siteManagement\.serverTimezoneNote/);

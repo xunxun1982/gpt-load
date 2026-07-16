@@ -157,6 +157,10 @@ test("places auto weight button after reset-all-health and mounts the modal", ()
 });
 
 test("auto weight modal reads cached data and updates only initial weight serially", () => {
+  assert.match(autoWeightModal, /const defaultAutoWeightMax = 1000/);
+  assert.match(autoWeightModal, /const maxWeight = ref\(defaultAutoWeightMax\)/);
+  assert.match(autoWeightModal, /maxWeight\.value = defaultAutoWeightMax/);
+  assert.match(autoWeightModal, /:max="5000"/);
   assert.match(autoWeightModal, /typeof group\.id === "number"/);
   assert.match(autoWeightModal, /resolveSubGroupSiteId\(subGroup, groupById\.value\)/);
   assert.match(autoWeightModal, /parseBalanceValue\(appState\.siteBalances\[siteId\]\)/);

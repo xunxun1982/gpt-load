@@ -288,6 +288,8 @@ func (s *Server) UpdateAutoCheckinConfig(c *gin.Context) {
 	if HandleServiceError(c, err) {
 		return
 	}
+	// Deliberately reschedule locally because pub/sub delivery is best-effort and may be unavailable.
+	s.requestLocalManagedSiteScheduleReschedule(true, false)
 	response.Success(c, updated)
 }
 
@@ -309,7 +311,8 @@ func (s *Server) UpdateAutoBalanceConfig(c *gin.Context) {
 	if HandleServiceError(c, err) {
 		return
 	}
-	s.BalanceService.RequestReschedule()
+	// Deliberately reschedule locally because pub/sub delivery is best-effort and may be unavailable.
+	s.requestLocalManagedSiteScheduleReschedule(false, true)
 	response.Success(c, updated)
 }
 
@@ -493,7 +496,7 @@ func (s *Server) ImportManagedSites(c *gin.Context) {
 	}
 
 	if len(importData.Sites) == 0 && importData.AutoCheckin == nil && importData.AutoBalance == nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "No sites provided"))
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "No sites or supported configuration provided"))
 		return
 	}
 

@@ -103,6 +103,7 @@ func TestValidationMessageKeys(t *testing.T) {
 		"site_management.validation.deterministic_time_required",
 		"site_management.validation.duplicate_time",
 		"site_management.validation.schedule_times_required",
+		"site_management.validation.schedule_times_too_long",
 		"site_management.validation.invalid_balance_interval",
 	}
 

@@ -129,6 +129,8 @@ func (s *BalanceService) Start() {
 			go s.listenScheduleConfigUpdates(sub)
 		}
 	}
+	// Reconcile any configuration change that raced with scheduler startup.
+	s.RequestReschedule()
 
 	logrus.Info("Balance refresh scheduler started")
 }

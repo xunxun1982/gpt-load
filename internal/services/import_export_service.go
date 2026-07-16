@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"gpt-load/internal/encryption"
@@ -877,11 +878,13 @@ const (
 	minManagedSiteAutoBalanceIntervalHours     = 1
 	maxManagedSiteAutoBalanceIntervalHours     = 24
 	defaultManagedSiteAutoBalanceIntervalHours = 24
+	maxManagedSiteScheduleTimesStorageLength   = 255
 )
 
 // ManagedSiteAutoCheckinConfig represents auto-checkin configuration for export
 type ManagedSiteAutoCheckinConfig struct {
 	GlobalEnabled     bool                              `json:"global_enabled"`
+	ScheduleTimes     []string                          `json:"schedule_times,omitempty"`
 	WindowStart       string                            `json:"window_start"`
 	WindowEnd         string                            `json:"window_end"`
 	ScheduleMode      string                            `json:"schedule_mode"`
@@ -949,6 +952,7 @@ type managedSiteSettingModel struct {
 	AutoCheckinEnabled          bool   `gorm:"column:auto_checkin_enabled"`
 	AutoBalanceEnabled          bool   `gorm:"column:auto_balance_enabled"`
 	BalanceRefreshIntervalHours int    `gorm:"column:balance_refresh_interval_hours"`
+	ScheduleTimes               string `gorm:"column:schedule_times"`
 	WindowStart                 string `gorm:"column:window_start"`
 	WindowEnd                   string `gorm:"column:window_end"`
 	ScheduleMode                string `gorm:"column:schedule_mode"`
@@ -977,6 +981,75 @@ func ValidateManagedSiteAutoBalanceConfig(config *ManagedSiteAutoBalanceConfig) 
 	return nil
 }
 
+// ValidateManagedSiteAutoCheckinConfig validates the full-system import contract.
+func ValidateManagedSiteAutoCheckinConfig(config *ManagedSiteAutoCheckinConfig) error {
+	if config == nil {
+		return nil
+	}
+
+	mode := strings.TrimSpace(config.ScheduleMode)
+	if mode == "" {
+		mode = "multiple"
+	}
+	// Reject oversized serialized values instead of truncating them and changing schedule semantics.
+	if len(joinManagedSiteScheduleTimes(config.ScheduleTimes)) > maxManagedSiteScheduleTimesStorageLength {
+		return fmt.Errorf("auto check-in schedule_times must not exceed %d characters", maxManagedSiteScheduleTimesStorageLength)
+	}
+	switch mode {
+	case "multiple":
+		// A nil slice identifies backups created before schedule_times was exported.
+		if config.ScheduleTimes == nil {
+			return nil
+		}
+		if len(config.ScheduleTimes) == 0 {
+			return errors.New("auto check-in schedule_times must not be empty")
+		}
+		seen := make(map[string]struct{}, len(config.ScheduleTimes))
+		for i, value := range config.ScheduleTimes {
+			value = strings.TrimSpace(value)
+			if !validManagedSiteScheduleTime(value) {
+				return fmt.Errorf("auto check-in schedule_times[%d] must be a valid time", i)
+			}
+			if _, ok := seen[value]; ok {
+				return fmt.Errorf("auto check-in schedule_times[%d] duplicates an earlier time", i)
+			}
+			seen[value] = struct{}{}
+		}
+	case "random":
+		if !validManagedSiteScheduleTime(config.WindowStart) || !validManagedSiteScheduleTime(config.WindowEnd) {
+			return errors.New("auto check-in random window must contain valid start and end times")
+		}
+	case "deterministic":
+		if !validManagedSiteScheduleTime(config.DeterministicTime) {
+			return errors.New("auto check-in deterministic_time must be a valid time")
+		}
+	default:
+		return errors.New("unsupported auto check-in schedule_mode")
+	}
+	return nil
+}
+
+func joinManagedSiteScheduleTimes(scheduleTimes []string) string {
+	normalized := make([]string, len(scheduleTimes))
+	for i, value := range scheduleTimes {
+		normalized[i] = strings.TrimSpace(value)
+	}
+	return strings.Join(normalized, ",")
+}
+
+func validManagedSiteScheduleTime(value string) bool {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) != 2 {
+		return false
+	}
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil || hour < 0 || hour > 23 {
+		return false
+	}
+	minute, err := strconv.Atoi(parts[1])
+	return err == nil && minute >= 0 && minute <= 59
+}
+
 func normalizeManagedSiteAutoBalanceIntervalHours(intervalHours int) int {
 	if intervalHours < minManagedSiteAutoBalanceIntervalHours || intervalHours > maxManagedSiteAutoBalanceIntervalHours {
 		return defaultManagedSiteAutoBalanceIntervalHours
@@ -984,19 +1057,18 @@ func normalizeManagedSiteAutoBalanceIntervalHours(intervalHours int) int {
 	return intervalHours
 }
 
-// exportManagedSites exports all managed sites and their configuration
-func (s *ImportExportService) exportManagedSites() *ManagedSitesExportData {
+// exportManagedSites exports all managed sites and their configuration.
+func (s *ImportExportService) exportManagedSites() (*ManagedSitesExportData, error) {
 	hasSitesTable := s.db.Migrator().HasTable(&managedSiteModel{})
 	hasSettingsTable := s.db.Migrator().HasTable(&managedSiteSettingModel{})
 	if !hasSitesTable && !hasSettingsTable {
-		return nil
+		return nil, nil
 	}
 
 	var sites []managedSiteModel
 	if hasSitesTable {
 		if err := s.db.Order("sort ASC, id ASC").Find(&sites).Error; err != nil {
-			logrus.WithError(err).Warn("Failed to export managed sites")
-			return nil
+			return nil, fmt.Errorf("failed to export managed sites: %w", err)
 		}
 	}
 
@@ -1008,27 +1080,39 @@ func (s *ImportExportService) exportManagedSites() *ManagedSitesExportData {
 	// Note: Settings row always has ID=1 (single-row config pattern used throughout the app)
 	var setting managedSiteSettingModel
 	hasScheduleConfig := false
-	if hasSettingsTable && s.db.First(&setting, 1).Error == nil {
-		hasScheduleConfig = true
-		result.AutoCheckin = &ManagedSiteAutoCheckinConfig{
-			GlobalEnabled:     setting.AutoCheckinEnabled,
-			WindowStart:       setting.WindowStart,
-			WindowEnd:         setting.WindowEnd,
-			ScheduleMode:      setting.ScheduleMode,
-			DeterministicTime: setting.DeterministicTime,
-			RetryStrategy: ManagedSiteAutoCheckinRetryConfig{
-				Enabled:           setting.RetryEnabled,
-				IntervalMinutes:   setting.RetryIntervalMinutes,
-				MaxAttemptsPerDay: setting.RetryMaxAttemptsPerDay,
-			},
-		}
-		result.AutoBalance = &ManagedSiteAutoBalanceConfig{
-			GlobalEnabled: setting.AutoBalanceEnabled,
-			IntervalHours: normalizeManagedSiteAutoBalanceIntervalHours(setting.BalanceRefreshIntervalHours),
+	if hasSettingsTable {
+		err := s.db.First(&setting, 1).Error
+		if err == nil {
+			hasScheduleConfig = true
+			var scheduleTimes []string
+			for _, value := range strings.Split(setting.ScheduleTimes, ",") {
+				if value = strings.TrimSpace(value); value != "" {
+					scheduleTimes = append(scheduleTimes, value)
+				}
+			}
+			result.AutoCheckin = &ManagedSiteAutoCheckinConfig{
+				GlobalEnabled:     setting.AutoCheckinEnabled,
+				ScheduleTimes:     scheduleTimes,
+				WindowStart:       setting.WindowStart,
+				WindowEnd:         setting.WindowEnd,
+				ScheduleMode:      setting.ScheduleMode,
+				DeterministicTime: setting.DeterministicTime,
+				RetryStrategy: ManagedSiteAutoCheckinRetryConfig{
+					Enabled:           setting.RetryEnabled,
+					IntervalMinutes:   setting.RetryIntervalMinutes,
+					MaxAttemptsPerDay: setting.RetryMaxAttemptsPerDay,
+				},
+			}
+			result.AutoBalance = &ManagedSiteAutoBalanceConfig{
+				GlobalEnabled: setting.AutoBalanceEnabled,
+				IntervalHours: normalizeManagedSiteAutoBalanceIntervalHours(setting.BalanceRefreshIntervalHours),
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("failed to export managed-site schedule config: %w", err)
 		}
 	}
 	if len(sites) == 0 && !hasScheduleConfig {
-		return nil
+		return nil, nil
 	}
 
 	// Export sites (keep auth_value encrypted)
@@ -1052,7 +1136,7 @@ func (s *ImportExportService) exportManagedSites() *ManagedSitesExportData {
 		})
 	}
 
-	return result
+	return result, nil
 }
 
 // ExportSystem exports the entire system configuration
@@ -1153,7 +1237,10 @@ func (s *ImportExportService) ExportSystem() (*SystemExportData, error) {
 	}
 
 	// Export managed sites
-	managedSitesData := s.exportManagedSites()
+	managedSitesData, err := s.exportManagedSites()
+	if err != nil {
+		return nil, err
+	}
 
 	// Export Hub access keys
 	hubAccessKeysData := s.exportHubAccessKeys()
@@ -1619,6 +1706,9 @@ func childGroupExportFromLegacyGroup(groupData GroupExportData) ChildGroupExport
 // ImportSystem imports the entire system configuration
 func (s *ImportExportService) ImportSystem(tx *gorm.DB, data *SystemExportData) error {
 	if data.ManagedSites != nil {
+		if err := ValidateManagedSiteAutoCheckinConfig(data.ManagedSites.AutoCheckin); err != nil {
+			return err
+		}
 		if err := ValidateManagedSiteAutoBalanceConfig(data.ManagedSites.AutoBalance); err != nil {
 			return err
 		}
@@ -1818,9 +1908,8 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 		}
 
 		if err := tx.Create(site).Error; err != nil {
-			logrus.WithError(err).Warnf("Failed to create site %s", uniqueName)
-			skipped++
-			continue
+			// Return database errors so the outer transaction rolls back consistently across drivers.
+			return imported, skipped, fmt.Errorf("failed to create managed site %q: %w", uniqueName, err)
 		}
 
 		if uniqueName != name {
@@ -1844,6 +1933,7 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 				ID:                          1,
 				AutoBalanceEnabled:          true,
 				BalanceRefreshIntervalHours: defaultManagedSiteAutoBalanceIntervalHours,
+				ScheduleTimes:               "09:00",
 				WindowStart:                 "09:00",
 				WindowEnd:                   "18:00",
 				ScheduleMode:                "multiple",
@@ -1856,13 +1946,19 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 
 		if data.AutoCheckin != nil {
 			setting.AutoCheckinEnabled = data.AutoCheckin.GlobalEnabled
+			if len(data.AutoCheckin.ScheduleTimes) > 0 {
+				setting.ScheduleTimes = joinManagedSiteScheduleTimes(data.AutoCheckin.ScheduleTimes)
+			}
 			setting.WindowStart = data.AutoCheckin.WindowStart
 			setting.WindowEnd = data.AutoCheckin.WindowEnd
-			setting.ScheduleMode = data.AutoCheckin.ScheduleMode
+			setting.ScheduleMode = strings.TrimSpace(data.AutoCheckin.ScheduleMode)
+			if setting.ScheduleMode == "" {
+				setting.ScheduleMode = "multiple"
+			}
 			setting.DeterministicTime = data.AutoCheckin.DeterministicTime
 			setting.RetryEnabled = data.AutoCheckin.RetryStrategy.Enabled
-			setting.RetryIntervalMinutes = data.AutoCheckin.RetryStrategy.IntervalMinutes
-			setting.RetryMaxAttemptsPerDay = data.AutoCheckin.RetryStrategy.MaxAttemptsPerDay
+			setting.RetryIntervalMinutes = min(max(data.AutoCheckin.RetryStrategy.IntervalMinutes, 1), 24*60)
+			setting.RetryMaxAttemptsPerDay = min(max(data.AutoCheckin.RetryStrategy.MaxAttemptsPerDay, 1), 10)
 		}
 		if data.AutoBalance != nil {
 			setting.AutoBalanceEnabled = data.AutoBalance.GlobalEnabled
@@ -1872,9 +1968,13 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 		if create {
 			err = tx.Create(&setting).Error
 		} else {
-			updates := make(map[string]any, 10)
+			updates := make(map[string]any, 11)
 			if data.AutoCheckin != nil {
 				updates["auto_checkin_enabled"] = setting.AutoCheckinEnabled
+				// Missing schedule_times identifies older backups and preserves the existing/default value.
+				if len(data.AutoCheckin.ScheduleTimes) > 0 {
+					updates["schedule_times"] = setting.ScheduleTimes
+				}
 				updates["window_start"] = setting.WindowStart
 				updates["window_end"] = setting.WindowEnd
 				updates["schedule_mode"] = setting.ScheduleMode

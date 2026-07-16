@@ -35,7 +35,9 @@ const emit = defineEmits<Emits>();
 const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
-const maxWeight = ref(100);
+// Only this modal starts at 1000; the existing input and backend limits stay at 5000.
+const defaultAutoWeightMax = 1000;
+const maxWeight = ref(defaultAutoWeightMax);
 const groupById = computed(() => {
   const groups = new Map<number, Group>();
   for (const group of props.groups) {
@@ -50,7 +52,7 @@ watch(
   () => props.show,
   show => {
     if (show) {
-      maxWeight.value = 100;
+      maxWeight.value = defaultAutoWeightMax;
     }
   }
 );

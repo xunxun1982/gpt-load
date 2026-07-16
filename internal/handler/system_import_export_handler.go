@@ -48,6 +48,7 @@ type ManagedSiteAutoBalanceConfig struct {
 // ManagedSiteAutoCheckinConfig represents auto-checkin configuration
 type ManagedSiteAutoCheckinConfig struct {
 	GlobalEnabled     bool                              `json:"global_enabled"`
+	ScheduleTimes     []string                          `json:"schedule_times,omitempty"`
 	WindowStart       string                            `json:"window_start"`
 	WindowEnd         string                            `json:"window_end"`
 	ScheduleMode      string                            `json:"schedule_mode"`
@@ -212,11 +213,22 @@ func (s *Server) ExportAll(c *gin.Context) {
 		managedSites := &ManagedSitesExportData{
 			Sites: make([]ManagedSiteExportInfo, 0, len(systemData.ManagedSites.Sites)),
 		}
+		decryptManagedSiteField := func(field, value string) (string, error) {
+			if exportMode != "plain" || value == "" {
+				return value, nil
+			}
+			decrypted, err := s.EncryptionSvc.Decrypt(value)
+			if err != nil {
+				return "", fmt.Errorf("failed to decrypt managed-site %s", field)
+			}
+			return decrypted, nil
+		}
 
 		// Copy auto-checkin config
 		if systemData.ManagedSites.AutoCheckin != nil {
 			managedSites.AutoCheckin = &ManagedSiteAutoCheckinConfig{
 				GlobalEnabled:     systemData.ManagedSites.AutoCheckin.GlobalEnabled,
+				ScheduleTimes:     append([]string(nil), systemData.ManagedSites.AutoCheckin.ScheduleTimes...),
 				WindowStart:       systemData.ManagedSites.AutoCheckin.WindowStart,
 				WindowEnd:         systemData.ManagedSites.AutoCheckin.WindowEnd,
 				ScheduleMode:      systemData.ManagedSites.AutoCheckin.ScheduleMode,
@@ -235,8 +247,19 @@ func (s *Server) ExportAll(c *gin.Context) {
 			}
 		}
 
-		// Convert sites; when plain mode, decrypt auth values
+		// Convert sites; when plain mode, decrypt sensitive fields.
 		for _, site := range systemData.ManagedSites.Sites {
+			userID, err := decryptManagedSiteField("user_id", site.UserID)
+			authValue := site.AuthValue
+			if err == nil {
+				authValue, err = decryptManagedSiteField("auth_value", authValue)
+			}
+			if err != nil {
+				// The error contains only the field name, never ciphertext or parser details.
+				logrus.WithError(err).Error("Failed to decrypt managed-site data during plain system export")
+				response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "database.export_failed")
+				return
+			}
 			siteInfo := ManagedSiteExportInfo{
 				Name:               site.Name,
 				Notes:              site.Notes,
@@ -245,26 +268,14 @@ func (s *Server) ExportAll(c *gin.Context) {
 				Enabled:            site.Enabled,
 				BaseURL:            site.BaseURL,
 				SiteType:           site.SiteType,
-				UserID:             site.UserID,
+				UserID:             userID,
 				CheckInPageURL:     site.CheckInPageURL,
 				CheckInAvailable:   site.CheckInAvailable,
 				CheckInEnabled:     site.CheckInEnabled,
 				AutoCheckInEnabled: site.AutoCheckInEnabled,
 				CustomCheckInURL:   site.CustomCheckInURL,
 				AuthType:           site.AuthType,
-			}
-
-			// Handle auth value based on export mode
-			if site.AuthValue != "" {
-				if exportMode == "plain" {
-					if dec, derr := s.EncryptionSvc.Decrypt(site.AuthValue); derr == nil {
-						siteInfo.AuthValue = dec
-					} else {
-						logrus.WithError(derr).Warnf("Failed to decrypt site auth value for %s during plain export, omitting auth", site.Name)
-					}
-				} else {
-					siteInfo.AuthValue = site.AuthValue
-				}
+				AuthValue:          authValue,
 			}
 
 			managedSites.Sites = append(managedSites.Sites, siteInfo)
@@ -391,11 +402,22 @@ func (s *Server) ImportAll(c *gin.Context) {
 		managedSites := &services.ManagedSitesExportData{
 			Sites: make([]services.ManagedSiteExportInfo, 0, len(importData.ManagedSites.Sites)),
 		}
+		encryptManagedSiteField := func(field, value string) (string, error) {
+			if !inputIsPlain || value == "" {
+				return value, nil
+			}
+			encrypted, err := s.EncryptionSvc.Encrypt(value)
+			if err != nil {
+				return "", fmt.Errorf("failed to encrypt managed-site %s", field)
+			}
+			return encrypted, nil
+		}
 
 		// Copy auto-checkin config
 		if importData.ManagedSites.AutoCheckin != nil {
 			managedSites.AutoCheckin = &services.ManagedSiteAutoCheckinConfig{
 				GlobalEnabled:     importData.ManagedSites.AutoCheckin.GlobalEnabled,
+				ScheduleTimes:     importData.ManagedSites.AutoCheckin.ScheduleTimes,
 				WindowStart:       importData.ManagedSites.AutoCheckin.WindowStart,
 				WindowEnd:         importData.ManagedSites.AutoCheckin.WindowEnd,
 				ScheduleMode:      importData.ManagedSites.AutoCheckin.ScheduleMode,
@@ -414,8 +436,19 @@ func (s *Server) ImportAll(c *gin.Context) {
 			}
 		}
 
-		// Convert sites; if input is plaintext, encrypt auth values
+		// Convert sites; if input is plaintext, encrypt sensitive fields before the transaction.
 		for _, site := range importData.ManagedSites.Sites {
+			userID, err := encryptManagedSiteField("user_id", site.UserID)
+			authValue := ""
+			if err == nil && site.AuthValue != "" && site.AuthType != "none" {
+				authValue, err = encryptManagedSiteField("auth_value", site.AuthValue)
+			}
+			if err != nil {
+				// The error contains only the field name, never plaintext or cipher details.
+				logrus.WithError(err).Error("Failed to encrypt managed-site data during plain system import")
+				response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "database.import_failed")
+				return
+			}
 			siteInfo := services.ManagedSiteExportInfo{
 				Name:               site.Name,
 				Notes:              site.Notes,
@@ -424,26 +457,14 @@ func (s *Server) ImportAll(c *gin.Context) {
 				Enabled:            site.Enabled,
 				BaseURL:            site.BaseURL,
 				SiteType:           site.SiteType,
-				UserID:             site.UserID,
+				UserID:             userID,
 				CheckInPageURL:     site.CheckInPageURL,
 				CheckInAvailable:   site.CheckInAvailable,
 				CheckInEnabled:     site.CheckInEnabled,
 				AutoCheckInEnabled: site.AutoCheckInEnabled,
 				CustomCheckInURL:   site.CustomCheckInURL,
 				AuthType:           site.AuthType,
-			}
-
-			// Handle auth value encryption
-			if site.AuthValue != "" && site.AuthType != "none" {
-				if inputIsPlain {
-					if enc, e := s.EncryptionSvc.Encrypt(site.AuthValue); e == nil {
-						siteInfo.AuthValue = enc
-					} else {
-						logrus.WithError(e).Warnf("Failed to encrypt site auth value for %s, skipping auth", site.Name)
-					}
-				} else {
-					siteInfo.AuthValue = site.AuthValue
-				}
+				AuthValue:          authValue,
 			}
 
 			managedSites.Sites = append(managedSites.Sites, siteInfo)
@@ -452,6 +473,10 @@ func (s *Server) ImportAll(c *gin.Context) {
 		serviceImportData.ManagedSites = managedSites
 	}
 	if serviceImportData.ManagedSites != nil {
+		if err := services.ValidateManagedSiteAutoCheckinConfig(serviceImportData.ManagedSites.AutoCheckin); err != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, err.Error()))
+			return
+		}
 		if err := services.ValidateManagedSiteAutoBalanceConfig(serviceImportData.ManagedSites.AutoBalance); err != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, err.Error()))
 			return

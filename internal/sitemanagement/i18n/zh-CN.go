@@ -13,6 +13,7 @@ var MessagesZhCN = map[string]string{
 	"site_management.validation.deterministic_time_required":   "确定性模式下需要设置固定时间",
 	"site_management.validation.duplicate_time":                "签到时间「{{.time}}」重复",
 	"site_management.validation.schedule_times_required":       "至少需要设置一个签到时间",
+	"site_management.validation.schedule_times_too_long":       "签到时间总长度不能超过 {{.max}} 个字符",
 	"site_management.validation.invalid_balance_interval":      "余额刷新间隔必须在 {{.min}} 到 {{.max}} 小时之间",
 
 	// Check-in messages

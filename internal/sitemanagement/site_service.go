@@ -1049,6 +1049,29 @@ func (s *SiteService) GetAutoCheckinConfig(ctx context.Context) (*AutoCheckinCon
 }
 
 func (s *SiteService) UpdateAutoCheckinConfig(ctx context.Context, cfg AutoCheckinConfig) (*AutoCheckinConfig, error) {
+	mode, err := validateAutoCheckinConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	st, err := s.ensureSettingsRow(ctx)
+	if err != nil {
+		return nil, err
+	}
+	updates := autoCheckinConfigUpdates(cfg, mode)
+	updates["updated_at"] = time.Now()
+	if err := s.db.WithContext(ctx).Model(&ManagedSiteSetting{}).
+		Where("id = ?", st.ID).
+		Updates(updates).Error; err != nil {
+		return nil, app_errors.ParseDBError(err)
+	}
+
+	s.NotifyScheduleConfigUpdated()
+
+	return s.GetAutoCheckinConfig(ctx)
+}
+
+func validateAutoCheckinConfig(cfg AutoCheckinConfig) (string, error) {
 	mode := strings.TrimSpace(cfg.ScheduleMode)
 	if mode == "" {
 		mode = AutoCheckinScheduleModeMultiple
@@ -1058,66 +1081,74 @@ func (s *SiteService) UpdateAutoCheckinConfig(ctx context.Context, cfg AutoCheck
 	switch mode {
 	case AutoCheckinScheduleModeMultiple:
 		if len(cfg.ScheduleTimes) == 0 {
-			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.schedule_times_required", nil)
+			return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.schedule_times_required", nil)
 		}
 		// Validate format and check for duplicates.
 		// Backend validation is essential since frontend validation can be bypassed via direct API calls.
 		seen := make(map[string]bool)
 		for i, t := range cfg.ScheduleTimes {
+			t = strings.TrimSpace(t)
 			if _, err := parseTimeToMinutes(t); err != nil {
-				return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "schedule_times", "index": i})
+				return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "schedule_times", "index": i})
 			}
 			if seen[t] {
-				return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.duplicate_time", map[string]any{"time": t})
+				return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.duplicate_time", map[string]any{"time": t})
 			}
 			seen[t] = true
 		}
 	case AutoCheckinScheduleModeRandom:
 		if cfg.WindowStart == "" || cfg.WindowEnd == "" {
-			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.time_window_required", nil)
+			return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.time_window_required", nil)
 		}
 		if _, err := parseTimeToMinutes(cfg.WindowStart); err != nil {
-			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "window_start"})
+			return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "window_start"})
 		}
 		if _, err := parseTimeToMinutes(cfg.WindowEnd); err != nil {
-			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "window_end"})
+			return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "window_end"})
 		}
 	case AutoCheckinScheduleModeDeterministic:
 		if cfg.DeterministicTime == "" {
-			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.deterministic_time_required", nil)
+			return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.deterministic_time_required", nil)
 		}
 		if _, err := parseTimeToMinutes(cfg.DeterministicTime); err != nil {
-			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "deterministic_time"})
+			return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_time", map[string]any{"field": "deterministic_time"})
 		}
 	default:
-		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_schedule_mode", nil)
+		return "", services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_schedule_mode", nil)
 	}
-
-	st, err := s.ensureSettingsRow(ctx)
-	if err != nil {
-		return nil, err
+	// Reject oversized serialized values instead of truncating them and changing schedule semantics.
+	if len(joinAutoCheckinScheduleTimes(cfg.ScheduleTimes)) > maxAutoCheckinScheduleTimesStorageLength {
+		return "", services.NewI18nError(
+			app_errors.ErrValidation,
+			"site_management.validation.schedule_times_too_long",
+			map[string]any{"max": maxAutoCheckinScheduleTimesStorageLength},
+		)
 	}
+	return mode, nil
+}
 
-	if err := s.db.WithContext(ctx).Model(&ManagedSiteSetting{}).
-		Where("id = ?", st.ID).
-		Updates(map[string]any{
-			"auto_checkin_enabled":       cfg.GlobalEnabled,
-			"schedule_times":             strings.Join(cfg.ScheduleTimes, ","),
-			"window_start":               cfg.WindowStart,
-			"window_end":                 cfg.WindowEnd,
-			"schedule_mode":              mode,
-			"deterministic_time":         strings.TrimSpace(cfg.DeterministicTime),
-			"retry_enabled":              cfg.RetryStrategy.Enabled,
-			"retry_interval_minutes":     clampInt(cfg.RetryStrategy.IntervalMinutes, 1, 24*60),
-			"retry_max_attempts_per_day": clampInt(cfg.RetryStrategy.MaxAttemptsPerDay, 1, 10),
-			"updated_at":                 time.Now(),
-		}).Error; err != nil {
-		return nil, app_errors.ParseDBError(err)
+const maxAutoCheckinScheduleTimesStorageLength = 255
+
+func joinAutoCheckinScheduleTimes(scheduleTimes []string) string {
+	normalized := make([]string, len(scheduleTimes))
+	for i, value := range scheduleTimes {
+		normalized[i] = strings.TrimSpace(value)
 	}
+	return strings.Join(normalized, ",")
+}
 
-	s.NotifyScheduleConfigUpdated()
-
-	return s.GetAutoCheckinConfig(ctx)
+func autoCheckinConfigUpdates(cfg AutoCheckinConfig, mode string) map[string]any {
+	return map[string]any{
+		"auto_checkin_enabled":       cfg.GlobalEnabled,
+		"schedule_times":             joinAutoCheckinScheduleTimes(cfg.ScheduleTimes),
+		"window_start":               cfg.WindowStart,
+		"window_end":                 cfg.WindowEnd,
+		"schedule_mode":              mode,
+		"deterministic_time":         strings.TrimSpace(cfg.DeterministicTime),
+		"retry_enabled":              cfg.RetryStrategy.Enabled,
+		"retry_interval_minutes":     clampInt(cfg.RetryStrategy.IntervalMinutes, 1, 24*60),
+		"retry_max_attempts_per_day": clampInt(cfg.RetryStrategy.MaxAttemptsPerDay, 1, 10),
+	}
 }
 
 func (s *SiteService) GetAutoBalanceConfig(ctx context.Context) (*AutoBalanceConfig, error) {
@@ -1141,18 +1172,23 @@ func (s *SiteService) UpdateAutoBalanceConfig(ctx context.Context, cfg AutoBalan
 	if err != nil {
 		return nil, err
 	}
+	updates := autoBalanceConfigUpdates(cfg)
+	updates["updated_at"] = time.Now()
 	if err := s.db.WithContext(ctx).Model(&ManagedSiteSetting{}).
 		Where("id = ?", st.ID).
-		Updates(map[string]any{
-			"auto_balance_enabled":           cfg.GlobalEnabled,
-			"balance_refresh_interval_hours": cfg.IntervalHours,
-			"updated_at":                     time.Now(),
-		}).Error; err != nil {
+		Updates(updates).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
 
 	s.NotifyScheduleConfigUpdated()
 	return s.GetAutoBalanceConfig(ctx)
+}
+
+func autoBalanceConfigUpdates(cfg AutoBalanceConfig) map[string]any {
+	return map[string]any{
+		"auto_balance_enabled":           cfg.GlobalEnabled,
+		"balance_refresh_interval_hours": cfg.IntervalHours,
+	}
 }
 
 func validateAutoBalanceConfig(cfg AutoBalanceConfig) error {
@@ -1177,8 +1213,12 @@ func (s *SiteService) NotifyScheduleConfigUpdated() {
 }
 
 func (s *SiteService) ensureSettingsRow(ctx context.Context) (*ManagedSiteSetting, error) {
+	return ensureSettingsRowInDB(s.db.WithContext(ctx))
+}
+
+func ensureSettingsRowInDB(db *gorm.DB) (*ManagedSiteSetting, error) {
 	var st ManagedSiteSetting
-	err := s.db.WithContext(ctx).First(&st, 1).Error
+	err := db.First(&st, 1).Error
 	if err == nil {
 		return &st, nil
 	}
@@ -1202,8 +1242,14 @@ func (s *SiteService) ensureSettingsRow(ctx context.Context) (*ManagedSiteSettin
 		RetryIntervalMinutes:        60,
 		RetryMaxAttemptsPerDay:      2,
 	}
-	if createErr := s.db.WithContext(ctx).Create(&st).Error; createErr != nil {
-		return nil, app_errors.ParseDBError(createErr)
+	result := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&st)
+	if result.Error != nil {
+		return nil, app_errors.ParseDBError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		if err := db.First(&st, 1).Error; err != nil {
+			return nil, app_errors.ParseDBError(err)
+		}
 	}
 	return &st, nil
 }
@@ -1431,7 +1477,7 @@ type SiteExportData struct {
 	Sites       []SiteExportInfo   `json:"sites"`
 }
 
-// ExportSites exports all managed sites with optional auto-checkin config
+// ExportSites exports all managed sites with optional schedule configuration.
 func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plainMode bool) (*SiteExportData, error) {
 	var sites []ManagedSite
 	if err := s.db.WithContext(ctx).Order("sort ASC, id ASC").Find(&sites).Error; err != nil {
@@ -1448,17 +1494,14 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 	if includeConfig {
 		cfg, err := s.GetAutoCheckinConfig(ctx)
 		if err != nil {
-			// Log error but continue export without config
-			logrus.WithError(err).Debug("Failed to get auto-checkin config for export")
-		} else {
-			exportData.AutoCheckin = cfg
+			return nil, err
 		}
+		exportData.AutoCheckin = cfg
 		balanceCfg, err := s.GetAutoBalanceConfig(ctx)
 		if err != nil {
-			logrus.WithError(err).Debug("Failed to get auto-balance config for export")
-		} else {
-			exportData.AutoBalance = balanceCfg
+			return nil, err
 		}
+		exportData.AutoBalance = balanceCfg
 	}
 
 	// Export sites
@@ -1486,11 +1529,11 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 		if site.UserID != "" {
 			if plainMode {
 				// Decrypt for plain export
-				if decrypted, err := s.encryptionSvc.Decrypt(site.UserID); err == nil {
-					siteInfo.UserID = decrypted
-				} else {
-					logrus.WithError(err).Warnf("Failed to decrypt user_id for site %s during export", site.Name)
+				decrypted, err := s.encryptionSvc.Decrypt(site.UserID)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decrypt user_id for managed site %d", site.ID)
 				}
+				siteInfo.UserID = decrypted
 			} else {
 				// Keep encrypted for encrypted export
 				siteInfo.UserID = site.UserID
@@ -1501,11 +1544,11 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 		if site.AuthValue != "" {
 			if plainMode {
 				// Decrypt for plain export
-				if decrypted, err := s.encryptionSvc.Decrypt(site.AuthValue); err == nil {
-					siteInfo.AuthValue = decrypted
-				} else {
-					logrus.WithError(err).Warnf("Failed to decrypt auth value for site %s during export", site.Name)
+				decrypted, err := s.encryptionSvc.Decrypt(site.AuthValue)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decrypt auth value for managed site %d", site.ID)
 				}
+				siteInfo.AuthValue = decrypted
 			} else {
 				// Keep encrypted for encrypted export
 				siteInfo.AuthValue = site.AuthValue
@@ -1519,16 +1562,55 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 }
 
 // ImportSites imports sites from export data.
-// Note: Intentionally not using transaction wrapping - partial success is desired behavior
-// to import as many sites as possible even if some fail validation.
+// Schedule settings use a short transaction; site rows remain independent so valid sites
+// can still be imported when another row fails validation.
 func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, plainMode bool) (int, int, error) {
 	if data == nil {
 		return 0, 0, nil
+	}
+	autoCheckinMode := ""
+	if data.AutoCheckin != nil {
+		mode, err := validateAutoCheckinConfig(*data.AutoCheckin)
+		if err != nil {
+			return 0, 0, err
+		}
+		autoCheckinMode = mode
 	}
 	if data.AutoBalance != nil {
 		if err := validateAutoBalanceConfig(*data.AutoBalance); err != nil {
 			return 0, 0, err
 		}
+	}
+	if data.AutoCheckin != nil || data.AutoBalance != nil {
+		// Keep schedule writes atomic and short; site rows intentionally retain partial-success semantics.
+		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			st, err := ensureSettingsRowInDB(tx)
+			if err != nil {
+				return err
+			}
+			updates := make(map[string]any, 12)
+			if data.AutoCheckin != nil {
+				for key, value := range autoCheckinConfigUpdates(*data.AutoCheckin, autoCheckinMode) {
+					updates[key] = value
+				}
+			}
+			if data.AutoBalance != nil {
+				for key, value := range autoBalanceConfigUpdates(*data.AutoBalance) {
+					updates[key] = value
+				}
+			}
+			updates["updated_at"] = time.Now()
+			if err := tx.Model(&ManagedSiteSetting{}).
+				Where("id = ?", st.ID).
+				Updates(updates).Error; err != nil {
+				return app_errors.ParseDBError(err)
+			}
+			return nil
+		})
+		if err != nil {
+			return 0, 0, err
+		}
+		s.NotifyScheduleConfigUpdated()
 	}
 
 	imported := 0
@@ -1662,18 +1744,6 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			logrus.Infof("Imported site %s (renamed from %s)", uniqueName, name)
 		}
 		imported++
-	}
-
-	// Import auto-checkin config if present
-	if data.AutoCheckin != nil {
-		if _, err := s.UpdateAutoCheckinConfig(ctx, *data.AutoCheckin); err != nil {
-			logrus.WithError(err).Warn("Failed to import auto-checkin config")
-		}
-	}
-	if data.AutoBalance != nil {
-		if _, err := s.UpdateAutoBalanceConfig(ctx, *data.AutoBalance); err != nil {
-			logrus.WithError(err).Warn("Failed to import auto-balance config")
-		}
 	}
 
 	// Invalidate cache after import

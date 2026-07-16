@@ -26,6 +26,15 @@ type sqlCaptureLogger struct {
 	statements []string
 }
 
+type managedSiteSettingScheduleTimesTestModel struct {
+	ID            uint   `gorm:"primaryKey"`
+	ScheduleTimes string `gorm:"column:schedule_times;not null;default:'09:00'"`
+}
+
+func (managedSiteSettingScheduleTimesTestModel) TableName() string {
+	return "managed_site_settings"
+}
+
 func TestExportImportSystemRestoresAutoBalanceConfig(t *testing.T) {
 	t.Parallel()
 
@@ -35,15 +44,25 @@ func TestExportImportSystemRestoresAutoBalanceConfig(t *testing.T) {
 		&managedSiteModel{},
 		&managedSiteSettingModel{},
 	))
+	require.NoError(t, sourceDB.AutoMigrate(&managedSiteSettingScheduleTimesTestModel{}))
 	require.NoError(t, sourceDB.Create(&managedSiteSettingModel{
 		ID:                          1,
+		AutoCheckinEnabled:          true,
 		AutoBalanceEnabled:          false,
 		BalanceRefreshIntervalHours: 6,
+		ScheduleMode:                "multiple",
 	}).Error)
+	require.NoError(t, sourceDB.Model(&managedSiteSettingScheduleTimesTestModel{}).
+		Where("id = ?", 1).
+		Update("schedule_times", "08:00,12:30").Error)
 
 	exported, err := NewImportExportService(sourceDB, nil, nil).ExportSystem()
 	require.NoError(t, err)
 	require.NotNil(t, exported.ManagedSites)
+	require.NotNil(t, exported.ManagedSites.AutoCheckin)
+	autoCheckinJSON, err := json.Marshal(exported.ManagedSites.AutoCheckin)
+	require.NoError(t, err)
+	assert.Contains(t, string(autoCheckinJSON), `"schedule_times":["08:00","12:30"]`)
 	require.NotNil(t, exported.ManagedSites.AutoBalance)
 	assert.False(t, exported.ManagedSites.AutoBalance.GlobalEnabled)
 	assert.Equal(t, 6, exported.ManagedSites.AutoBalance.IntervalHours)
@@ -54,12 +73,80 @@ func TestExportImportSystemRestoresAutoBalanceConfig(t *testing.T) {
 		&managedSiteModel{},
 		&managedSiteSettingModel{},
 	))
+	require.NoError(t, targetDB.AutoMigrate(&managedSiteSettingScheduleTimesTestModel{}))
 	require.NoError(t, NewImportExportService(targetDB, nil, nil).ImportSystem(targetDB, exported))
 
 	var restored managedSiteSettingModel
 	require.NoError(t, targetDB.First(&restored, 1).Error)
+	assert.True(t, restored.AutoCheckinEnabled)
+	assert.Equal(t, "multiple", restored.ScheduleMode)
 	assert.False(t, restored.AutoBalanceEnabled)
 	assert.Equal(t, 6, restored.BalanceRefreshIntervalHours)
+	var restoredSchedule managedSiteSettingScheduleTimesTestModel
+	require.NoError(t, targetDB.First(&restoredSchedule, 1).Error)
+	assert.Equal(t, "08:00,12:30", restoredSchedule.ScheduleTimes)
+}
+
+func TestExportSystemReturnsManagedSiteScheduleReadErrors(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&models.Group{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+	require.NoError(t, db.Create(&managedSiteSettingModel{ID: 1}).Error)
+
+	forcedErr := errors.New("forced managed-site schedule read failure")
+	const hookName = "test:export_schedule_read_error"
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_site_settings" {
+			tx.AddError(forcedErr)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Query().Remove(hookName) })
+
+	exported, err := NewImportExportService(db, nil, nil).ExportSystem()
+
+	require.Error(t, err)
+	assert.Nil(t, exported)
+	assert.ErrorIs(t, err, forcedErr)
+}
+
+func TestImportSystemReturnsManagedSiteCreateErrors(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+
+	forcedErr := errors.New("forced managed-site create failure")
+	const hookName = "test:import_managed_site_create_error"
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_sites" {
+			tx.AddError(forcedErr)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Create().Remove(hookName) })
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		return NewImportExportService(db, nil, nil).ImportSystem(tx, &SystemExportData{
+			ManagedSites: &ManagedSitesExportData{
+				Sites: []ManagedSiteExportInfo{
+					{
+						Name:     "site that must not be skipped",
+						BaseURL:  "https://example.com",
+						SiteType: "new-api",
+						AuthType: "none",
+					},
+				},
+			},
+		})
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forcedErr)
 }
 
 func TestImportSystemRejectsInvalidAutoBalanceInterval(t *testing.T) {
@@ -97,6 +184,77 @@ func TestImportSystemRejectsInvalidAutoBalanceInterval(t *testing.T) {
 	require.NoError(t, db.First(&setting, 1).Error)
 	assert.True(t, setting.AutoBalanceEnabled)
 	assert.Equal(t, 6, setting.BalanceRefreshIntervalHours)
+}
+
+func TestImportSystemRejectsInvalidAutoCheckinScheduleBeforeWriting(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+
+	err := NewImportExportService(db, nil, nil).ImportSystem(db, &SystemExportData{
+		SystemSettings: map[string]string{"must_not_persist": "value"},
+		ManagedSites: &ManagedSitesExportData{
+			AutoCheckin: &ManagedSiteAutoCheckinConfig{
+				ScheduleTimes: []string{"not-a-time"},
+				ScheduleMode:  "multiple",
+			},
+		},
+	})
+
+	require.Error(t, err)
+	var settingsCount int64
+	require.NoError(t, db.Model(&models.SystemSetting{}).Count(&settingsCount).Error)
+	assert.Zero(t, settingsCount)
+	var scheduleCount int64
+	require.NoError(t, db.Model(&managedSiteSettingModel{}).Count(&scheduleCount).Error)
+	assert.Zero(t, scheduleCount)
+}
+
+func TestValidateManagedSiteAutoCheckinConfigRejectsOversizedScheduleTimes(t *testing.T) {
+	scheduleTimes := make([]string, 44)
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := range scheduleTimes {
+		scheduleTimes[i] = base.Add(time.Duration(i) * time.Minute).Format("15:04")
+	}
+
+	err := ValidateManagedSiteAutoCheckinConfig(&ManagedSiteAutoCheckinConfig{
+		ScheduleMode:  "multiple",
+		ScheduleTimes: scheduleTimes,
+	})
+
+	require.Error(t, err)
+}
+
+func TestImportSystemNormalizesAutoCheckinRetryLimits(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+
+	err := NewImportExportService(db, nil, nil).ImportSystem(db, &SystemExportData{
+		ManagedSites: &ManagedSitesExportData{
+			AutoCheckin: &ManagedSiteAutoCheckinConfig{
+				ScheduleMode: "multiple",
+				RetryStrategy: ManagedSiteAutoCheckinRetryConfig{
+					Enabled:           true,
+					IntervalMinutes:   0,
+					MaxAttemptsPerDay: 1000,
+				},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	var setting managedSiteSettingModel
+	require.NoError(t, db.First(&setting, 1).Error)
+	assert.True(t, setting.RetryEnabled)
+	assert.Equal(t, 1, setting.RetryIntervalMinutes)
+	assert.Equal(t, 10, setting.RetryMaxAttemptsPerDay)
 }
 
 func TestExportSystemNormalizesInvalidAutoBalanceInterval(t *testing.T) {
@@ -221,7 +379,8 @@ func TestExportSystemIncludesStandardChildGroups(t *testing.T) {
 	t.Parallel()
 
 	db := setupTestDB(t)
-	require.NoError(t, db.AutoMigrate(&models.SystemSetting{}))
+	// This test owns its in-memory database; AutoMigrate only completes its skeletal managed_sites fixture.
+	require.NoError(t, db.AutoMigrate(&models.SystemSetting{}, &managedSiteModel{}))
 	service := NewImportExportService(db, nil, nil)
 
 	parent := models.Group{
@@ -739,7 +898,8 @@ func TestExportImportSystemRestoresDynamicWeightsByGroupName(t *testing.T) {
 	t.Parallel()
 
 	sourceDB := setupTestDB(t)
-	require.NoError(t, sourceDB.AutoMigrate(&models.SystemSetting{}))
+	// This isolated fixture needs the full managed_sites schema, including its sort column.
+	require.NoError(t, sourceDB.AutoMigrate(&models.SystemSetting{}, &managedSiteModel{}))
 	sourceService := NewImportExportService(sourceDB, nil, nil)
 
 	aggregate := models.Group{

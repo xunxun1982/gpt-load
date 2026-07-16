@@ -2,6 +2,7 @@ package sitemanagement
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -617,6 +618,136 @@ func TestSiteService_AutoBalanceConfig(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestValidateAutoCheckinConfigRejectsOversizedScheduleTimes(t *testing.T) {
+	scheduleTimes := make([]string, 44)
+	for i := range scheduleTimes {
+		scheduleTimes[i] = fmt.Sprintf("%02d:%02d", i/60, i%60)
+	}
+
+	_, err := validateAutoCheckinConfig(AutoCheckinConfig{
+		ScheduleMode:  AutoCheckinScheduleModeMultiple,
+		ScheduleTimes: scheduleTimes,
+	})
+
+	require.Error(t, err)
+}
+
+func TestEnsureSettingsRowHandlesConcurrentCreate(t *testing.T) {
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+	service := NewSiteService(db, nil, encSvc)
+
+	injected := false
+	const hookName = "test:concurrent_settings_create"
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register(hookName, func(tx *gorm.DB) {
+		if injected || tx.Statement.Table != "managed_site_settings" {
+			return
+		}
+		injected = true
+		// Simulate a competing writer inserting the singleton after our initial read.
+		if err := tx.Exec("INSERT INTO managed_site_settings (id) VALUES (?)", 1).Error; err != nil {
+			tx.AddError(err)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Create().Remove(hookName) })
+
+	cfg, err := service.GetAutoBalanceConfig(context.Background())
+
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.True(t, cfg.GlobalEnabled)
+	assert.Equal(t, defaultAutoBalanceIntervalHours, cfg.IntervalHours)
+}
+
+func TestExportSitesReturnsRequestedScheduleConfigErrors(t *testing.T) {
+	t.Run("auto check-in config", func(t *testing.T) {
+		db := setupTestDB(t)
+		encSvc := setupTestEncryption(t)
+		require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+		service := NewSiteService(db, nil, encSvc)
+
+		exported, err := service.ExportSites(context.Background(), true, true)
+
+		require.Error(t, err)
+		assert.Nil(t, exported)
+	})
+
+	t.Run("auto balance config", func(t *testing.T) {
+		db := setupTestDB(t)
+		encSvc := setupTestEncryption(t)
+		require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteSetting{}))
+		require.NoError(t, db.Create(&ManagedSiteSetting{ID: 1}).Error)
+		service := NewSiteService(db, nil, encSvc)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		settingsQueries := 0
+		// Cancel after auto-check-in loads so the next read tests the auto-balance error path portably.
+		const hookName = "test:cancel_before_auto_balance_export"
+		require.NoError(t, db.Callback().Query().After("gorm:query").Register(hookName, func(tx *gorm.DB) {
+			if tx.Statement.Table != "managed_site_settings" {
+				return
+			}
+			settingsQueries++
+			if settingsQueries == 1 {
+				cancel()
+			}
+		}))
+		t.Cleanup(func() { _ = db.Callback().Query().Remove(hookName) })
+
+		exported, err := service.ExportSites(ctx, true, true)
+
+		require.Error(t, err)
+		assert.Nil(t, exported)
+	})
+}
+
+func TestExportSitesReturnsPlainCredentialDecryptErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		userID    string
+		authType  string
+		authValue string
+	}{
+		{
+			name:     "user ID",
+			userID:   "sensitive-invalid-ciphertext",
+			authType: AuthTypeNone,
+		},
+		{
+			name:      "auth value",
+			authType:  AuthTypeAccessToken,
+			authValue: "sensitive-invalid-ciphertext",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			encSvc := setupTestEncryption(t)
+			require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+			require.NoError(t, db.Create(&ManagedSite{
+				Name:      "site with invalid encrypted data",
+				BaseURL:   "https://example.com",
+				SiteType:  SiteTypeNewAPI,
+				Enabled:   true,
+				UserID:    tt.userID,
+				AuthType:  tt.authType,
+				AuthValue: tt.authValue,
+			}).Error)
+			service := NewSiteService(db, nil, encSvc)
+
+			exported, err := service.ExportSites(context.Background(), false, true)
+
+			require.Error(t, err)
+			assert.Nil(t, exported)
+			assert.NotContains(t, err.Error(), "sensitive-invalid-ciphertext")
+			assert.NotContains(t, err.Error(), "encoding/hex")
+		})
+	}
+}
+
 func TestScheduleConfigUpdatesDoNotOverwriteOtherScheduleFields(t *testing.T) {
 	t.Run("auto check-in update preserves a concurrent balance update", func(t *testing.T) {
 		db := setupTestDB(t)
@@ -680,16 +811,79 @@ func TestScheduleConfigUpdatesDoNotOverwriteOtherScheduleFields(t *testing.T) {
 	})
 }
 
-func TestImportSitesRejectsInvalidAutoBalanceBeforeWritingSites(t *testing.T) {
+func TestImportSitesRejectsInvalidScheduleConfigBeforeWritingSites(t *testing.T) {
+	tests := []struct {
+		name string
+		data *SiteExportData
+	}{
+		{
+			name: "auto check-in config",
+			data: &SiteExportData{
+				AutoCheckin: &AutoCheckinConfig{ScheduleMode: AutoCheckinScheduleModeMultiple},
+			},
+		},
+		{
+			name: "auto balance config",
+			data: &SiteExportData{
+				AutoBalance: &AutoBalanceConfig{GlobalEnabled: true, IntervalHours: 0},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			encSvc := setupTestEncryption(t)
+			require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteSetting{}))
+			service := NewSiteService(db, nil, encSvc)
+			tt.data.Sites = []SiteExportInfo{
+				{
+					Name:     "must not be imported",
+					BaseURL:  "https://example.com",
+					SiteType: SiteTypeNewAPI,
+					Enabled:  true,
+					AuthType: AuthTypeNone,
+				},
+			}
+
+			imported, skipped, err := service.ImportSites(context.Background(), tt.data, true)
+
+			require.Error(t, err)
+			assert.Zero(t, imported)
+			assert.Zero(t, skipped)
+			var count int64
+			require.NoError(t, db.Model(&ManagedSite{}).Count(&count).Error)
+			assert.Zero(t, count)
+		})
+	}
+}
+
+func TestImportSitesRollsBackScheduleConfigBeforeWritingSites(t *testing.T) {
 	db := setupTestDB(t)
 	encSvc := setupTestEncryption(t)
-	memStore := store.NewMemoryStore()
-	t.Cleanup(func() { memStore.Close() })
 	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteSetting{}))
-	service := NewSiteService(db, memStore, encSvc)
+	service := NewSiteService(db, nil, encSvc)
+	_, err := service.GetAutoCheckinConfig(context.Background())
+	require.NoError(t, err)
+
+	var before ManagedSiteSetting
+	require.NoError(t, db.First(&before, 1).Error)
+	forcedErr := errors.New("forced schedule update failure")
+	const hookName = "test:import_schedule_update_error"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_site_settings" {
+			tx.AddError(forcedErr)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
 
 	imported, skipped, err := service.ImportSites(context.Background(), &SiteExportData{
-		AutoBalance: &AutoBalanceConfig{GlobalEnabled: true, IntervalHours: 0},
+		AutoCheckin: &AutoCheckinConfig{
+			GlobalEnabled: true,
+			ScheduleTimes: []string{"08:00", "12:30"},
+			ScheduleMode:  AutoCheckinScheduleModeMultiple,
+		},
+		AutoBalance: &AutoBalanceConfig{GlobalEnabled: false, IntervalHours: 6},
 		Sites: []SiteExportInfo{
 			{
 				Name:     "must not be imported",
@@ -704,9 +898,16 @@ func TestImportSitesRejectsInvalidAutoBalanceBeforeWritingSites(t *testing.T) {
 	require.Error(t, err)
 	assert.Zero(t, imported)
 	assert.Zero(t, skipped)
-	var count int64
-	require.NoError(t, db.Model(&ManagedSite{}).Count(&count).Error)
-	assert.Zero(t, count)
+	var siteCount int64
+	require.NoError(t, db.Model(&ManagedSite{}).Count(&siteCount).Error)
+	assert.Zero(t, siteCount)
+
+	var after ManagedSiteSetting
+	require.NoError(t, db.First(&after, 1).Error)
+	assert.Equal(t, before.AutoCheckinEnabled, after.AutoCheckinEnabled)
+	assert.Equal(t, before.ScheduleTimes, after.ScheduleTimes)
+	assert.Equal(t, before.AutoBalanceEnabled, after.AutoBalanceEnabled)
+	assert.Equal(t, before.BalanceRefreshIntervalHours, after.BalanceRefreshIntervalHours)
 }
 
 func TestImportSitesAppliesAutoBalanceWithoutSites(t *testing.T) {

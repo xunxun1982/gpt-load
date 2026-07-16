@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func init() {
@@ -270,6 +271,20 @@ func TestImportManagedSitesSuccessMessageInterpolatesCounts(t *testing.T) {
 	assert.Equal(t, 6, autoBalance.IntervalHours)
 }
 
+func TestImportManagedSitesRejectsEmptyPayloadWithSupportedConfigMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/site-management/import", strings.NewReader(`{}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	(&Server{}).ImportManagedSites(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "No sites or supported configuration provided")
+}
+
 func TestUpdateAutoBalanceConfigRejectsInvalidJSON(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -285,10 +300,69 @@ func TestUpdateAutoBalanceConfigRejectsInvalidJSON(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "INVALID_JSON")
 }
 
+func TestScheduleConfigUpdatesRequestLocalRescheduleWithoutStore(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("auto check-in", func(t *testing.T) {
+		db := setupTestDB(t)
+		require.NoError(t, db.AutoMigrate(&sitemanagement.ManagedSiteSetting{}))
+		encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+		require.NoError(t, err)
+		autoCheckinService := sitemanagement.NewAutoCheckinService(db, nil, encSvc)
+		server := &Server{
+			SiteService:        sitemanagement.NewSiteService(db, nil, encSvc),
+			AutoCheckinService: autoCheckinService,
+		}
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPut, "/site-management/auto-checkin/config", strings.NewReader(`{
+			"global_enabled":true,
+			"schedule_times":["09:00"],
+			"schedule_mode":"multiple"
+		}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		server.UpdateAutoCheckinConfig(c)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		rescheduleCh := reflect.ValueOf(autoCheckinService).Elem().FieldByName("rescheduleCh")
+		assert.Equal(t, 1, rescheduleCh.Len())
+	})
+
+	t.Run("auto balance", func(t *testing.T) {
+		db := setupTestDB(t)
+		require.NoError(t, db.AutoMigrate(&sitemanagement.ManagedSiteSetting{}))
+		encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+		require.NoError(t, err)
+		balanceService := sitemanagement.NewBalanceService(db, encSvc)
+		server := &Server{
+			SiteService:    sitemanagement.NewSiteService(db, nil, encSvc),
+			BalanceService: balanceService,
+		}
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPut, "/site-management/auto-balance/config", strings.NewReader(`{
+			"global_enabled":false,
+			"interval_hours":6
+		}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		server.UpdateAutoBalanceConfig(c)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		rescheduleCh := reflect.ValueOf(balanceService).Elem().FieldByName("rescheduleCh")
+		assert.Equal(t, 1, rescheduleCh.Len())
+	})
+}
+
 func TestImportAllPublishesManagedSiteScheduleUpdateAfterCommit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	db := setupTestDB(t)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	// SQLite :memory: is connection-local, while ImportAll starts a DB-reading goroutine after commit.
+	sqlDB.SetMaxOpenConns(1)
 	require.NoError(t, db.AutoMigrate(
 		&models.SystemSetting{},
 		&models.Group{},
@@ -316,6 +390,14 @@ func TestImportAllPublishesManagedSiteScheduleUpdateAfterCommit(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/system/import", strings.NewReader(`{
 		"version":"2.0",
 		"managed_sites":{
+			"auto_checkin":{
+				"global_enabled":true,
+				"schedule_times":["08:00","12:30"],
+				"window_start":"09:00",
+				"window_end":"18:00",
+				"schedule_mode":"multiple",
+				"retry_strategy":{"enabled":false,"interval_minutes":60,"max_attempts_per_day":2}
+			},
 			"auto_balance":{"global_enabled":false,"interval_hours":6},
 			"sites":[]
 		}
@@ -330,6 +412,49 @@ func TestImportAllPublishesManagedSiteScheduleUpdateAfterCommit(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("system import did not publish the managed-site schedule update")
 	}
+	var setting sitemanagement.ManagedSiteSetting
+	require.NoError(t, db.First(&setting, 1).Error)
+	assert.Equal(t, "08:00,12:30", setting.ScheduleTimes)
+}
+
+func TestImportAllRejectsExplicitlyEmptyAutoCheckinScheduleTimes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	// Keep the post-import goroutine on the same SQLite :memory: database if validation regresses.
+	sqlDB.SetMaxOpenConns(1)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&models.Group{},
+		&sitemanagement.ManagedSite{},
+		&sitemanagement.ManagedSiteSetting{},
+	))
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+	server := &Server{
+		DB:                  db,
+		EncryptionSvc:       encSvc,
+		ImportExportService: services.NewImportExportService(db, nil, encSvc),
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/system/import", strings.NewReader(`{
+		"version":"2.0",
+		"managed_sites":{
+			"auto_checkin":{"schedule_mode":"multiple","schedule_times":[]},
+			"sites":[]
+		}
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	server.ImportAll(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var count int64
+	require.NoError(t, db.Model(&sitemanagement.ManagedSiteSetting{}).Count(&count).Error)
+	assert.Zero(t, count)
 }
 
 func TestExportAllIncludesScheduleConfigWithoutManagedSites(t *testing.T) {
@@ -374,6 +499,145 @@ func TestExportAllIncludesScheduleConfigWithoutManagedSites(t *testing.T) {
 	assert.False(t, payload.Data.ManagedSites.AutoBalance.GlobalEnabled)
 	assert.Equal(t, 6, payload.Data.ManagedSites.AutoBalance.IntervalHours)
 	assert.Empty(t, payload.Data.ManagedSites.Sites)
+}
+
+func TestExportAllReturnsPlainManagedSiteCredentialDecryptErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		userID    string
+		authType  string
+		authValue string
+	}{
+		{
+			name:     "user ID",
+			userID:   "sensitive-invalid-ciphertext",
+			authType: sitemanagement.AuthTypeNone,
+		},
+		{
+			name:      "auth value",
+			authType:  sitemanagement.AuthTypeAccessToken,
+			authValue: "sensitive-invalid-ciphertext",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			require.NoError(t, db.AutoMigrate(
+				&models.SystemSetting{},
+				&models.Group{},
+				&models.DynamicWeightMetric{},
+				&sitemanagement.ManagedSite{},
+				&sitemanagement.ManagedSiteSetting{},
+			))
+			require.NoError(t, db.Create(&sitemanagement.ManagedSite{
+				Name:      "site with invalid encrypted data",
+				BaseURL:   "https://example.com",
+				SiteType:  sitemanagement.SiteTypeNewAPI,
+				Enabled:   true,
+				UserID:    tt.userID,
+				AuthType:  tt.authType,
+				AuthValue: tt.authValue,
+			}).Error)
+			encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+			require.NoError(t, err)
+			server := &Server{
+				ImportExportService: services.NewImportExportService(db, nil, encSvc),
+				EncryptionSvc:       encSvc,
+			}
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/system/export?mode=plain", nil)
+
+			server.ExportAll(c)
+
+			assert.Equal(t, http.StatusInternalServerError, w.Code)
+			assert.NotContains(t, w.Body.String(), "sensitive-invalid-ciphertext")
+			assert.Empty(t, w.Header().Get("Content-Disposition"))
+		})
+	}
+}
+
+func TestSystemPlainExportImportRoundTripsManagedSiteCredentials(t *testing.T) {
+	openDB := func(t *testing.T) *gorm.DB {
+		t.Helper()
+		db := setupTestDB(t)
+		require.NoError(t, db.AutoMigrate(
+			&models.SystemSetting{},
+			&models.Group{},
+			&models.DynamicWeightMetric{},
+			&sitemanagement.ManagedSite{},
+			&sitemanagement.ManagedSiteSetting{},
+		))
+		return db
+	}
+
+	sourceDB := openDB(t)
+	sourceEncryption, err := encryption.NewService("source-test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+	encryptedUserID, err := sourceEncryption.Encrypt("plain-user-id")
+	require.NoError(t, err)
+	encryptedAuth, err := sourceEncryption.Encrypt("plain-auth-value")
+	require.NoError(t, err)
+	require.NoError(t, sourceDB.Create(&sitemanagement.ManagedSite{
+		Name:      "round-trip site",
+		BaseURL:   "https://example.com",
+		SiteType:  sitemanagement.SiteTypeNewAPI,
+		Enabled:   true,
+		UserID:    encryptedUserID,
+		AuthType:  sitemanagement.AuthTypeAccessToken,
+		AuthValue: encryptedAuth,
+	}).Error)
+	sourceServer := &Server{
+		ImportExportService: services.NewImportExportService(sourceDB, nil, sourceEncryption),
+		EncryptionSvc:       sourceEncryption,
+	}
+	exportRecorder := httptest.NewRecorder()
+	exportContext, _ := gin.CreateTestContext(exportRecorder)
+	exportContext.Request = httptest.NewRequest(http.MethodGet, "/system/export?mode=plain", nil)
+
+	sourceServer.ExportAll(exportContext)
+
+	require.Equal(t, http.StatusOK, exportRecorder.Code)
+	var exported struct {
+		Data SystemExportData `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(exportRecorder.Body.Bytes(), &exported))
+	require.NotNil(t, exported.Data.ManagedSites)
+	require.Len(t, exported.Data.ManagedSites.Sites, 1)
+	assert.Equal(t, "plain-user-id", exported.Data.ManagedSites.Sites[0].UserID)
+	assert.Equal(t, "plain-auth-value", exported.Data.ManagedSites.Sites[0].AuthValue)
+
+	importBody, err := json.Marshal(exported.Data)
+	require.NoError(t, err)
+	targetDB := openDB(t)
+	targetSQLDB, err := targetDB.DB()
+	require.NoError(t, err)
+	// ImportAll reads the SQLite :memory: database from a post-commit goroutine.
+	targetSQLDB.SetMaxOpenConns(1)
+	targetEncryption, err := encryption.NewService("target-test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+	targetServer := &Server{
+		DB:                  targetDB,
+		EncryptionSvc:       targetEncryption,
+		ImportExportService: services.NewImportExportService(targetDB, nil, targetEncryption),
+	}
+	importRecorder := httptest.NewRecorder()
+	importContext, _ := gin.CreateTestContext(importRecorder)
+	importContext.Request = httptest.NewRequest(http.MethodPost, "/system/import?mode=plain", bytes.NewReader(importBody))
+	importContext.Request.Header.Set("Content-Type", "application/json")
+
+	targetServer.ImportAll(importContext)
+
+	require.Equal(t, http.StatusOK, importRecorder.Code)
+	var imported sitemanagement.ManagedSite
+	require.NoError(t, targetDB.Where("name = ?", "round-trip site").First(&imported).Error)
+	userID, err := targetEncryption.Decrypt(imported.UserID)
+	require.NoError(t, err)
+	authValue, err := targetEncryption.Decrypt(imported.AuthValue)
+	require.NoError(t, err)
+	assert.Equal(t, "plain-user-id", userID)
+	assert.Equal(t, "plain-auth-value", authValue)
 }
 
 func TestImportManagedSitesRequestsLocalBalanceReschedule(t *testing.T) {
