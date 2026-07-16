@@ -429,6 +429,7 @@ func (s *BalanceService) fetchBalanceWithParser(
 		cookieSession = authConfig.GetAuthValue(AuthTypeCookie)
 	}
 
+	// Only configured, non-empty credentials create attempts; single-auth sites never send placeholder headers.
 	for _, authType := range []string{AuthTypeAccessToken, AuthTypeCookie} {
 		if !authConfig.HasAuthType(authType) {
 			continue
@@ -437,24 +438,40 @@ func (s *BalanceService) fetchBalanceWithParser(
 		if authValue == "" {
 			continue
 		}
-		headers := buildBalanceHeaders(authType, authValue, userID, cookieSession)
-		if headers == nil {
-			continue
-		}
 
-		var data []byte
-		var err error
-		if shouldUseStealthRequest(*site) {
-			data, _, err = doStealthJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
-		} else {
-			data, _, err = doJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+		attempts := 1
+		if authType == AuthTypeAccessToken && cookieSession != "" {
+			// Keep the combined WAF-compatible request first, then isolate bearer auth so a bad cookie cannot mask a valid token.
+			attempts = 2
 		}
-		if err != nil {
-			logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch balance from site API")
-			continue
-		}
-		if balance := parse(data); balance != nil {
-			return balance
+		for attempt := 0; attempt < attempts; attempt++ {
+			// In-flight requests already use ctx; stop before constructing or logging any later fallback request.
+			if ctx.Err() != nil {
+				return nil
+			}
+			requestCookie := cookieSession
+			if attempt > 0 {
+				requestCookie = ""
+			}
+			headers := buildBalanceHeaders(authType, authValue, userID, requestCookie)
+			if headers == nil {
+				continue
+			}
+
+			var data []byte
+			var err error
+			if shouldUseStealthRequest(*site) {
+				data, _, err = doStealthJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+			} else {
+				data, _, err = doJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+			}
+			if err != nil {
+				logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch balance from site API")
+				continue
+			}
+			if balance := parse(data); balance != nil {
+				return balance
+			}
 		}
 	}
 

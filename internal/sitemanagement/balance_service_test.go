@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,12 @@ import (
 type subscribeHookStore struct {
 	store.Store
 	beforeSubscribe func()
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func (s *subscribeHookStore) Subscribe(channel string) (store.Subscription, error) {
@@ -186,7 +193,9 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			var requestCount atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestCount.Add(1)
 				assert.Equal(t, "/api/v1/user/profile", r.URL.Path)
 				assert.Equal(t, tt.expectedAuthHeader, r.Header.Get("Authorization"))
 				assert.Equal(t, tt.cookieSession, r.Header.Get("Cookie"))
@@ -201,6 +210,7 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 			require.NoError(t, db.AutoMigrate(&ManagedSite{}))
 
 			service := NewBalanceService(db, encSvc)
+			t.Cleanup(service.closeIdleConnections)
 
 			authType := AuthTypeAccessToken
 			authPlainValue := tt.authToken
@@ -221,6 +231,7 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 
 			result := service.FetchSiteBalance(context.Background(), site)
 			require.NotNil(t, result)
+			assert.Equal(t, int32(1), requestCount.Load())
 			if tt.expectedBalance == nil {
 				assert.Nil(t, result.Balance)
 				return
@@ -229,6 +240,170 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 			assert.Equal(t, *tt.expectedBalance, *result.Balance)
 		})
 	}
+}
+
+func TestBalanceService_FetchSiteBalanceIsolatesConfiguredCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		siteType         string
+		acceptedAuthType string
+		response         string
+		expectedBalance  string
+		expectedRequests int32
+	}{
+		{
+			name:             "new api token succeeds when cookie fails",
+			siteType:         SiteTypeNewAPI,
+			acceptedAuthType: AuthTypeAccessToken,
+			response:         `{"success":true,"data":{"quota":500000}}`,
+			expectedBalance:  "$1.00",
+			expectedRequests: 2,
+		},
+		{
+			name:             "new api cookie succeeds when token fails",
+			siteType:         SiteTypeNewAPI,
+			acceptedAuthType: AuthTypeCookie,
+			response:         `{"success":true,"data":{"quota":500000}}`,
+			expectedBalance:  "$1.00",
+			expectedRequests: 3,
+		},
+		{
+			name:             "sub2api token succeeds when cookie fails",
+			siteType:         SiteTypeSub2API,
+			acceptedAuthType: AuthTypeAccessToken,
+			response:         `{"code":0,"data":{"balance":12.5}}`,
+			expectedBalance:  "$12.50",
+			expectedRequests: 2,
+		},
+		{
+			name:             "sub2api cookie succeeds when token fails",
+			siteType:         SiteTypeSub2API,
+			acceptedAuthType: AuthTypeCookie,
+			response:         `{"code":0,"data":{"balance":12.5}}`,
+			expectedBalance:  "$12.50",
+			expectedRequests: 3,
+		},
+		{
+			name:             "all credentials fail and cached balance remains",
+			siteType:         SiteTypeNewAPI,
+			expectedRequests: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var requestCount atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestCount.Add(1)
+				assert.Equal(t, resolveSiteCapabilities(tt.siteType).BalanceEndpoint, r.URL.Path)
+
+				// Accept only an isolated credential so an invalid companion credential cannot be ignored by the test server.
+				tokenOnly := r.Header.Get("Authorization") == "Bearer valid-token" && r.Header.Get("Cookie") == ""
+				cookieOnly := r.Header.Get("Authorization") == "" && r.Header.Get("Cookie") == "session=valid"
+				authorized := (tt.acceptedAuthType == AuthTypeAccessToken && tokenOnly) ||
+					(tt.acceptedAuthType == AuthTypeCookie && cookieOnly)
+				if !authorized {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			t.Cleanup(server.Close)
+
+			db := setupTestDB(t)
+			encSvc := setupTestEncryption(t)
+			require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+			token := "invalid-token"
+			cookie := "session=invalid"
+			switch tt.acceptedAuthType {
+			case AuthTypeAccessToken:
+				token = "valid-token"
+			case AuthTypeCookie:
+				cookie = "session=valid"
+			}
+			plainAuth, err := json.Marshal(map[string]string{
+				AuthTypeAccessToken: token,
+				AuthTypeCookie:      cookie,
+			})
+			require.NoError(t, err)
+			encryptedAuth, err := encSvc.Encrypt(string(plainAuth))
+			require.NoError(t, err)
+
+			site := &ManagedSite{
+				Name:            tt.name,
+				BaseURL:         server.URL,
+				SiteType:        tt.siteType,
+				AuthType:        AuthTypeAccessToken + "," + AuthTypeCookie,
+				AuthValue:       encryptedAuth,
+				LastBalance:     "$9.99",
+				LastBalanceDate: "2026-01-01",
+			}
+			require.NoError(t, db.Create(site).Error)
+
+			service := NewBalanceService(db, encSvc)
+			t.Cleanup(service.closeIdleConnections)
+			result := service.FetchSiteBalance(context.Background(), site)
+
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expectedRequests, requestCount.Load())
+			if tt.expectedBalance == "" {
+				assert.Nil(t, result.Balance)
+				var stored ManagedSite
+				require.NoError(t, db.First(&stored, site.ID).Error)
+				assert.Equal(t, "$9.99", stored.LastBalance)
+				assert.Equal(t, "2026-01-01", stored.LastBalanceDate)
+				return
+			}
+			require.NotNil(t, result.Balance)
+			assert.Equal(t, tt.expectedBalance, *result.Balance)
+		})
+	}
+}
+
+func TestBalanceService_FetchBalanceStopsAuthFallbackAfterContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var requestCount atomic.Int32
+
+	service := NewBalanceService(setupTestDB(t), setupTestEncryption(t))
+	t.Cleanup(service.closeIdleConnections)
+	service.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount.Add(1)
+		cancel()
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Status:     "401 Unauthorized",
+			Header:     make(http.Header),
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	})}
+
+	authConfig := AuthConfig{
+		AuthTypes: []string{AuthTypeAccessToken, AuthTypeCookie},
+		AuthValues: map[string]string{
+			AuthTypeAccessToken: "test-token",
+			AuthTypeCookie:      "session=test",
+		},
+	}
+	site := &ManagedSite{
+		BaseURL:  "https://example.test",
+		SiteType: SiteTypeNewAPI,
+	}
+
+	balance := service.fetchBalanceFromAPI(ctx, site, authConfig, "")
+
+	assert.Nil(t, balance)
+	assert.Equal(t, int32(1), requestCount.Load())
 }
 
 // TestBalanceService_FetchSiteBalance_NoAuth tests balance fetch without auth

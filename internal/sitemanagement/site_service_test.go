@@ -642,6 +642,7 @@ func TestScheduleConfigUpdatesReturnCommittedValuesWithoutReadBack(t *testing.T)
 		}))
 		t.Cleanup(func() { _ = db.Callback().Query().Remove(hookName) })
 
+		// Keep the store nil to verify committed config updates do not depend on pub/sub availability.
 		return NewSiteService(db, nil, encSvc), db, &queryCount, func() {
 			rejectPostCommitRead = false
 		}
