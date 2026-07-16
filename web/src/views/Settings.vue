@@ -9,6 +9,7 @@ import { proxyPoolApi } from "@/api/proxy-pool";
 import ProxyKeysInput from "@/components/common/ProxyKeysInput.vue";
 import { buildSettingsUpdatePayload, type SettingFormValue } from "@/views/settings-payload";
 import http from "@/utils/http";
+import { hasImpreciseManagedSiteBalanceMultiplier } from "@/utils/managed-site-import";
 import { HelpCircle, Save, CloudDownloadOutline, CloudUploadOutline } from "@vicons/ionicons5";
 import {
   NButton,
@@ -248,6 +249,13 @@ async function handleSystemFileChange(event: Event) {
       data = wrappedData.data as ImportData;
     } else {
       data = parsedData as ImportData;
+    }
+    if (hasImpreciseManagedSiteBalanceMultiplier(data.managed_sites)) {
+      message.error(
+        `${t("settings.invalidImportFile")}: ${t("siteManagement.balanceMultiplierInvalid")}`
+      );
+      target.value = "";
+      return;
     }
 
     // Debug information (only output in development environment)

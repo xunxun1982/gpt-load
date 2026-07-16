@@ -1114,6 +1114,11 @@ export default {
     name: "名前",
     notes: "メモ",
     sort: "並び順",
+    balanceMultiplier: "倍率",
+    balanceMultiplierPlaceholder: "空欄の場合は 1",
+    balanceMultiplierHint:
+      "サイト残高は取得した残高を倍率で割って表示します。空欄の場合は 1 です。",
+    balanceMultiplierInvalid: "倍率は 1 以上で正確に保持できる整数を指定してください",
     baseUrl: "サイトURL",
     siteType: "サイトタイプ",
     enabled: "有効",

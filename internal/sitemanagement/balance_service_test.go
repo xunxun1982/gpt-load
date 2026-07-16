@@ -87,11 +87,12 @@ func TestBalanceService_FetchSiteBalance(t *testing.T) {
 	// Create test site
 	authValue, _ := encSvc.Encrypt("test-token")
 	site := &ManagedSite{
-		Name:      "Test Site",
-		BaseURL:   server.URL,
-		SiteType:  SiteTypeNewAPI,
-		AuthType:  AuthTypeAccessToken,
-		AuthValue: authValue,
+		Name:              "Test Site",
+		BaseURL:           server.URL,
+		SiteType:          SiteTypeNewAPI,
+		AuthType:          AuthTypeAccessToken,
+		AuthValue:         authValue,
+		BalanceMultiplier: 4,
 	}
 	err = db.Create(site).Error
 	require.NoError(t, err)
@@ -100,12 +101,51 @@ func TestBalanceService_FetchSiteBalance(t *testing.T) {
 	result := service.FetchSiteBalance(context.Background(), site)
 	require.NotNil(t, result)
 	require.NotNil(t, result.Balance)
-	assert.Equal(t, "$1.00", *result.Balance)
+	assert.Equal(t, "$0.25", *result.Balance)
 
 	var updated ManagedSite
 	require.NoError(t, db.First(&updated, site.ID).Error)
 	assert.Equal(t, "$1.00", updated.LastBalance)
 	assert.Equal(t, 1, invalidations)
+}
+
+func TestBalanceServiceRefreshAllBalancesReturnsScaledValuesAfterRawPersistence(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(userSelfResponse{
+			Success: true,
+			Data: struct {
+				Quota int64 `json:"quota"`
+			}{Quota: 5_000_000}, // $10.00 upstream balance
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	authValue, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:              "Batch scaled balance",
+		BaseURL:           server.URL,
+		SiteType:          SiteTypeNewAPI,
+		Enabled:           true,
+		AuthType:          AuthTypeAccessToken,
+		AuthValue:         authValue,
+		BalanceMultiplier: 4,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	results, err := NewBalanceService(db, encSvc).RefreshAllBalances(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, results[site.ID].Balance)
+	assert.Equal(t, "$2.50", *results[site.ID].Balance)
+
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, "$10.00", stored.LastBalance)
 }
 
 func TestBalanceService_FetchSiteBalanceKeepsCachedBalanceOnFetchFailure(t *testing.T) {

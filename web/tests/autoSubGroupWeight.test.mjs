@@ -204,6 +204,32 @@ test("auto weight modal supports a fixed weight strategy defaulting to one hundr
   assert.match(jaLocale, /autoWeightStrategyUniform:/);
 });
 
+test("auto weight modal uses a responsive full-width strategy layout", () => {
+  assert.match(autoWeightModal, /class="strategy-selector"/);
+  assert.match(autoWeightModal, /class="weight-settings"/);
+  assert.match(autoWeightModal, /\.auto-weight-card\s*:deep\(\.n-card-content\)/);
+  assert.doesNotMatch(autoWeightModal, /\.auto-weight-card\s*:deep\(\.n-card__content\)/);
+  assert.match(
+    autoWeightModal,
+    /\.auto-weight-modal\s*\{\s*width:\s*min\(520px, calc\(100vw - 32px\)\)/s
+  );
+  assert.match(autoWeightModal, /\.strategy-selector\s*\{[^}]*display:\s*flex[^}]*width:\s*100%/s);
+  assert.match(
+    autoWeightModal,
+    /\.strategy-selector\s*:deep\(\.n-radio-button\)\s*\{[^}]*flex:\s*1/s
+  );
+  assert.match(autoWeightModal, /\.weight-settings\s*\{[^}]*border:/s);
+  assert.match(autoWeightModal, /@media \(max-width:\s*480px\)/);
+  assert.match(
+    autoWeightModal,
+    /@media \(max-width:\s*480px\)[\s\S]*?\.strategy-selector\s*\{[^}]*height:\s*auto/s
+  );
+  assert.match(
+    autoWeightModal,
+    /@media \(max-width:\s*480px\)[\s\S]*?\.strategy-selector\s*:deep\(\.n-radio-group__splitor\)\s*\{[^}]*display:\s*none/s
+  );
+});
+
 test("auto weight modal stays open when any update fails", () => {
   assert.match(autoWeightModal, /if \(successCount > 0\)/);
   assert.match(

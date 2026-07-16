@@ -335,6 +335,7 @@ func (s *BalanceService) FetchSiteBalance(ctx context.Context, site *ManagedSite
 
 	if result.Balance != nil {
 		s.updateSiteBalance(ctx, site.ID, *result.Balance)
+		scaleManagedSiteBalanceInfo(result, site.BalanceMultiplier)
 	}
 
 	return result
@@ -697,6 +698,8 @@ func (s *BalanceService) RefreshAllBalances(ctx context.Context) (map[uint]*Bala
 	}
 
 	results := s.FetchAllBalances(ctx, sites)
+	// Keep database writes raw; every return path exposes the same scaled response contract.
+	defer scaleManagedSiteBalanceResults(results, sites)
 	if err := ctx.Err(); err != nil {
 		return results, err
 	}

@@ -56,8 +56,9 @@ type ManagedSiteDTO struct {
 	LastCheckinPageOpenedDate string `json:"last_checkin_page_opened_date"`
 
 	// Cached balance information, refreshed daily at midnight in the site-management timezone.
-	LastBalance     string `json:"last_balance"`
-	LastBalanceDate string `json:"last_balance_date"`
+	BalanceMultiplier int64  `json:"balance_multiplier"`
+	LastBalance       string `json:"last_balance"`
+	LastBalanceDate   string `json:"last_balance_date"`
 
 	BoundGroupID   *uint  `json:"bound_group_id,omitempty"`   // Deprecated: kept for backward compatibility, use BoundGroups instead
 	BoundGroupName string `json:"bound_group_name,omitempty"` // Deprecated: kept for backward compatibility, use BoundGroups instead

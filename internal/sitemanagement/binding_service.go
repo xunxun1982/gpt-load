@@ -422,7 +422,8 @@ func (s *BindingService) ListSitesForBinding(ctx context.Context) ([]ManagedSite
 			Name:              site.Name,
 			Sort:              site.Sort,
 			Enabled:           site.Enabled,
-			LastBalance:       site.LastBalance,
+			BalanceMultiplier: normalizeManagedSiteBalanceMultiplier(site.BalanceMultiplier),
+			LastBalance:       scaledManagedSiteBalance(site.LastBalance, site.BalanceMultiplier),
 			LastCheckInStatus: site.LastCheckInStatus,
 			BoundGroupCount:   boundCount,
 		})

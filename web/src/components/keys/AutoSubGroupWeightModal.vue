@@ -179,7 +179,7 @@ async function handleSubmit() {
       </template>
 
       <n-form-item :label="t('subGroups.autoWeightStrategy')" :show-feedback="false">
-        <n-radio-group v-model:value="strategy">
+        <n-radio-group v-model:value="strategy" class="strategy-selector">
           <n-radio-button value="balance">
             {{ t("subGroups.autoWeightStrategyBalance") }}
           </n-radio-button>
@@ -189,28 +189,30 @@ async function handleSubmit() {
         </n-radio-group>
       </n-form-item>
 
-      <n-form-item
-        v-if="strategy === 'balance'"
-        :label="t('subGroups.autoWeightMax')"
-        :show-feedback="false"
-      >
-        <n-input-number
-          v-model:value="maxWeight"
-          :min="1"
-          :max="5000"
-          :precision="0"
-          style="width: 100%"
-        />
-      </n-form-item>
-      <n-form-item v-else :label="t('subGroups.autoWeightUniform')" :show-feedback="false">
-        <n-input-number
-          v-model:value="uniformWeight"
-          :min="1"
-          :max="5000"
-          :precision="0"
-          style="width: 100%"
-        />
-      </n-form-item>
+      <div class="weight-settings">
+        <n-form-item
+          v-if="strategy === 'balance'"
+          :label="t('subGroups.autoWeightMax')"
+          :show-feedback="false"
+        >
+          <n-input-number
+            v-model:value="maxWeight"
+            :min="1"
+            :max="5000"
+            :precision="0"
+            style="width: 100%"
+          />
+        </n-form-item>
+        <n-form-item v-else :label="t('subGroups.autoWeightUniform')" :show-feedback="false">
+          <n-input-number
+            v-model:value="uniformWeight"
+            :min="1"
+            :max="5000"
+            :precision="0"
+            style="width: 100%"
+          />
+        </n-form-item>
+      </div>
       <n-alert type="info" :show-icon="false">
         {{
           t(strategy === "balance" ? "subGroups.autoWeightHint" : "subGroups.autoWeightUniformHint")
@@ -231,18 +233,62 @@ async function handleSubmit() {
 
 <style scoped>
 .auto-weight-modal {
-  width: 460px;
+  width: min(520px, calc(100vw - 32px));
 }
 
-.auto-weight-card :deep(.n-card__content) {
+.auto-weight-card :deep(.n-card-content) {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.strategy-selector {
+  display: flex;
+  width: 100%;
+}
+
+.strategy-selector :deep(.n-radio-button) {
+  flex: 1;
+  text-align: center;
+}
+
+.weight-settings {
+  padding: 12px 14px;
+  border: 1px solid var(--n-border-color);
+  border-radius: 8px;
+  background: var(--n-color-embedded, transparent);
+}
+
+.weight-settings :deep(.n-form-item) {
+  margin-bottom: 0;
 }
 
 .footer-actions {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+}
+
+@media (max-width: 480px) {
+  .strategy-selector {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .strategy-selector :deep(.n-radio-button) {
+    width: 100%;
+  }
+
+  .strategy-selector :deep(.n-radio-button:first-child) {
+    border-radius: var(--n-button-border-radius) var(--n-button-border-radius) 0 0;
+  }
+
+  .strategy-selector :deep(.n-radio-button:last-child) {
+    border-radius: 0 0 var(--n-button-border-radius) var(--n-button-border-radius);
+  }
+
+  .strategy-selector :deep(.n-radio-group__splitor) {
+    display: none;
+  }
 }
 </style>

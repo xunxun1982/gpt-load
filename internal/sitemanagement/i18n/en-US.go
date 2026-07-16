@@ -6,6 +6,7 @@ var MessagesEnUS = map[string]string{
 	"site_management.validation.name_duplicate":                "Site name \"{{.name}}\" already exists",
 	"site_management.validation.invalid_base_url":              "Invalid base URL: {{.error}}",
 	"site_management.validation.invalid_auth_type":             "Invalid auth type",
+	"site_management.validation.balance_multiplier_min":        "Balance multiplier must be an integer of at least 1",
 	"site_management.validation.auth_value_requires_auth_type": "Auth value requires a non-none auth type",
 	"site_management.validation.time_window_required":          "Time window is required",
 	"site_management.validation.invalid_time":                  "Invalid time for {{.field}}",

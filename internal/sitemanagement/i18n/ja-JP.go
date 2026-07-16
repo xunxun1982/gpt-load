@@ -6,6 +6,7 @@ var MessagesJaJP = map[string]string{
 	"site_management.validation.name_duplicate":                "サイト名「{{.name}}」は既に存在します",
 	"site_management.validation.invalid_base_url":              "無効なベースURL: {{.error}}",
 	"site_management.validation.invalid_auth_type":             "無効な認証タイプ",
+	"site_management.validation.balance_multiplier_min":        "残高倍率は 1 以上の整数で指定してください",
 	"site_management.validation.auth_value_requires_auth_type": "認証情報を設定するには認証タイプが必要です",
 	"site_management.validation.time_window_required":          "時間ウィンドウが必要です",
 	"site_management.validation.invalid_time":                  "無効な時間: {{.field}}",

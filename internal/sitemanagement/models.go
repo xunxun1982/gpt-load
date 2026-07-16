@@ -86,9 +86,11 @@ type ManagedSite struct {
 	LastCheckinPageOpenedDate string `gorm:"column:last_checkin_page_opened_date;type:char(10);not null;default:''" json:"last_checkin_page_opened_date"`
 
 	// Cached balance information, refreshed daily at midnight in the site-management timezone.
-	// Balance is stored as display string (e.g., "$10.50") or empty if not available.
-	LastBalance     string `gorm:"column:last_balance;type:varchar(32);not null;default:''" json:"last_balance"`
-	LastBalanceDate string `gorm:"column:last_balance_date;type:char(10);not null;default:''" json:"last_balance_date"`
+	// LastBalance keeps the raw upstream value; scaling happens only at response boundaries.
+	// The constant database default covers existing rows without an application-level backfill.
+	BalanceMultiplier int64  `gorm:"column:balance_multiplier;not null;default:1" json:"balance_multiplier"`
+	LastBalance       string `gorm:"column:last_balance;type:varchar(32);not null;default:''" json:"last_balance"`
+	LastBalanceDate   string `gorm:"column:last_balance_date;type:char(10);not null;default:''" json:"last_balance_date"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

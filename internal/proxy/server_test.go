@@ -1194,13 +1194,13 @@ func TestCodexAggregateAffinityKeyReadsOfficialCodexHeaders(t *testing.T) {
 		want    string
 	}{
 		{
-			name: "session id takes priority",
+			name: "thread id isolates concurrent projects in one session",
 			headers: map[string]string{
 				"session-id":          "official-session",
 				"thread-id":           "official-thread",
 				"x-client-request-id": "official-request",
 			},
-			want: "official-session",
+			want: "official-thread",
 		},
 		{
 			name: "thread id is the fallback",
@@ -1360,6 +1360,27 @@ func TestCodexAggregateAffinityKeyPrefersStableThreadMetadata(t *testing.T) {
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
 
 	assert.Equal(t, "stable-thread", codexAggregateAffinityKey(c, group, body))
+}
+
+func TestCodexAggregateAffinityKeyBodyThreadOverridesSharedSessionHeader(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	group := &models.Group{
+		Name:        "codex-aggregate",
+		GroupType:   "aggregate",
+		ChannelType: "openai-response",
+		Config: map[string]any{
+			"codex_affinity_enabled": true,
+		},
+	}
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	body := []byte(`{"model":"gpt-5.4","client_metadata":{"thread_id":"new-project-thread"}}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Session-Id", "shared-session")
+
+	assert.Equal(t, "new-project-thread", codexAggregateAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyUsesSessionMetadataWhenThreadMissing(t *testing.T) {
@@ -1681,7 +1702,7 @@ func TestRetryContextCodexRequestModelReusesParsedPayload(t *testing.T) {
 	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel(nil))
 }
 
-func TestCodexAggregateAffinityHeaderKeyAvoidsBodyPayloadParsing(t *testing.T) {
+func TestCodexAggregateAffinityThreadHeaderAvoidsBodyPayloadParsing(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
@@ -1698,18 +1719,18 @@ func TestCodexAggregateAffinityHeaderKeyAvoidsBodyPayloadParsing(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", nil)
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
-	c.Request.Header.Set("Session_ID", "header-session")
+	c.Request.Header.Set("Thread-Id", "header-thread")
 
 	retryCtx := &retryContext{
 		originalBodyBytes: []byte(`{"model":"gpt-5","client_metadata":{"thread_id":"stable-thread"}}`),
 	}
-	affinityKey := codexAggregateAffinityHeaderKey(c, group)
+	affinityKey := codexAggregateAffinityThreadHeaderKey(c, group)
 	if affinityKey == "" {
 		payload, payloadOK := retryCtx.codexRequestPayload(nil)
 		affinityKey = codexAggregateAffinityKeyFromPayload(c, group, payload, payloadOK)
 	}
 
-	assert.Equal(t, "header-session", affinityKey)
+	assert.Equal(t, "header-thread", affinityKey)
 	assert.False(t, retryCtx.codexParsedPayloadSet)
 	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel(nil))
 	assert.False(t, retryCtx.codexParsedPayloadSet)

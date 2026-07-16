@@ -1127,6 +1127,11 @@ export default {
     name: "Name",
     notes: "Notes",
     sort: "Sort",
+    balanceMultiplier: "Multiplier",
+    balanceMultiplierPlaceholder: "Defaults to 1 when empty",
+    balanceMultiplierHint:
+      "The displayed site balance is the fetched balance divided by this value; empty means 1.",
+    balanceMultiplierInvalid: "Multiplier must be an exactly representable integer of at least 1",
     baseUrl: "Base URL",
     siteType: "Site Type",
     enabled: "Enabled",

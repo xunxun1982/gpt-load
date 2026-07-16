@@ -31,6 +31,7 @@ import {
 } from "@/utils/app-state";
 import { formatBalanceValue } from "@/utils/display";
 import { askExportMode, askImportMode } from "@/utils/export-import";
+import { hasImpreciseManagedSiteBalanceMultiplier } from "@/utils/managed-site-import";
 import {
   Close,
   CloudDownloadOutline,
@@ -151,6 +152,7 @@ const siteForm = reactive({
   notes: "",
   description: "",
   sort: 0,
+  balance_multiplier: null as number | null,
   enabled: true,
   base_url: "",
   site_type: "new-api" as ManagedSiteType,
@@ -451,6 +453,7 @@ function resetSiteForm() {
     notes: "",
     description: "",
     sort: 0,
+    balance_multiplier: null,
     enabled: true,
     base_url: "",
     site_type: "new-api",
@@ -492,6 +495,7 @@ function openEditSite(site: ManagedSiteDTO) {
     notes: site.notes,
     description: site.description,
     sort: site.sort,
+    balance_multiplier: site.balance_multiplier || 1,
     enabled: site.enabled,
     base_url: site.base_url,
     site_type: site.site_type,
@@ -572,6 +576,13 @@ async function submitSite() {
   }
   if (!siteForm.base_url.trim()) {
     message.warning(t("siteManagement.baseUrlRequired"));
+    return;
+  }
+
+  // Keep the UI free of an arbitrary business maximum, but reject values JSON cannot preserve exactly.
+  const balanceMultiplier = siteForm.balance_multiplier ?? 1;
+  if (!Number.isSafeInteger(balanceMultiplier) || balanceMultiplier < 1) {
+    message.warning(t("siteManagement.balanceMultiplierInvalid"));
     return;
   }
 
@@ -664,6 +675,7 @@ async function submitSite() {
   const proxyURL = siteForm.proxy_url.trim();
   const payload = {
     ...siteForm,
+    balance_multiplier: balanceMultiplier,
     use_proxy: proxyURL !== "",
     proxy_url: proxyURL,
     auth_type: authTypeStr,
@@ -1439,6 +1451,11 @@ async function handleFileChange(event: Event) {
 
     if ((data.sites !== undefined && !hasSites) || (!hasSiteRows && !hasScheduleConfig)) {
       message.error(t("siteManagement.importInvalidFormat"));
+      input.value = "";
+      return;
+    }
+    if (hasImpreciseManagedSiteBalanceMultiplier(data)) {
+      message.error(t("siteManagement.balanceMultiplierInvalid"));
       input.value = "";
       return;
     }
@@ -2274,11 +2291,37 @@ watch(
             <n-form-item :label="t('siteManagement.baseUrl')" required>
               <n-input v-model:value="siteForm.base_url" placeholder="https://example.com" />
             </n-form-item>
-            <div class="form-row">
-              <n-form-item :label="t('siteManagement.sort')" class="form-item-sort">
-                <n-input-number v-model:value="siteForm.sort" :min="0" style="width: 100px" />
+            <div class="form-row form-row-compact">
+              <n-form-item
+                :label="t('siteManagement.sort')"
+                label-width="auto"
+                class="form-item-sort"
+              >
+                <n-input-number v-model:value="siteForm.sort" :min="0" style="width: 150px" />
               </n-form-item>
-              <n-form-item :label="t('siteManagement.enabled')" class="form-item-switch">
+              <n-form-item
+                :label="t('siteManagement.balanceMultiplier')"
+                label-width="auto"
+                class="form-item-multiplier"
+              >
+                <div class="multiplier-field">
+                  <n-input-number
+                    v-model:value="siteForm.balance_multiplier"
+                    :min="1"
+                    :precision="0"
+                    clearable
+                    :placeholder="t('siteManagement.balanceMultiplierPlaceholder')"
+                  />
+                  <n-text depth="3" class="field-hint">
+                    {{ t("siteManagement.balanceMultiplierHint") }}
+                  </n-text>
+                </div>
+              </n-form-item>
+              <n-form-item
+                :label="t('siteManagement.enabled')"
+                label-width="auto"
+                class="form-item-switch"
+              >
                 <n-switch v-model:value="siteForm.enabled" />
               </n-form-item>
             </div>
@@ -2462,15 +2505,17 @@ watch(
               {{ t("siteManagement.stealthCookieHint") }}
             </n-text>
           </div>
-          <n-space justify="end" size="small" style="margin-top: 12px">
+        </n-form>
+        <template #footer>
+          <div class="site-form-footer">
             <n-button size="small" secondary @click="showSiteModal = false">
               {{ t("common.cancel") }}
             </n-button>
             <n-button size="small" type="primary" @click="submitSite">
               {{ t("common.save") }}
             </n-button>
-          </n-space>
-        </n-form>
+          </div>
+        </template>
       </n-card>
     </n-modal>
 
@@ -2723,33 +2768,49 @@ watch(
   cursor: pointer;
   color: var(--n-text-color);
 }
-.site-form-modal,
+.site-form-modal {
+  width: min(760px, calc(100vw - 24px));
+}
 .logs-modal {
   width: 720px;
 }
 .site-form-card,
 .logs-card {
-  max-height: 85vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
-.site-form-card :deep(.n-card__content),
-.logs-card :deep(.n-card__content) {
+.site-form-card {
+  max-height: calc(100vh - 24px);
+}
+.logs-card {
+  max-height: 85vh;
+}
+.site-form-card :deep(.n-card-header),
+.site-form-card :deep(.n-card__footer) {
+  flex: 0 0 auto;
+}
+.site-form-card :deep(.n-card-content),
+.logs-card :deep(.n-card-content) {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  max-height: calc(85vh - 60px);
   padding-right: 16px;
 }
-.site-form-card :deep(.n-card__content)::-webkit-scrollbar {
+.site-form-card :deep(.n-card-content)::-webkit-scrollbar {
   width: 5px;
 }
-.site-form-card :deep(.n-card__content)::-webkit-scrollbar-thumb {
+.site-form-card :deep(.n-card-content)::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.15);
   border-radius: 3px;
 }
 .form-section {
   margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--n-border-color, var(--border-color));
+  border-radius: 8px;
+  background: var(--n-color-embedded, transparent);
 }
 .form-section:last-of-type {
   margin-bottom: 0;
@@ -2796,8 +2857,30 @@ watch(
 .form-item-sort {
   flex: 0 0 auto;
 }
+.form-item-multiplier {
+  flex: 1;
+  min-width: 250px;
+}
 .form-item-switch {
   flex: 0 0 auto;
+}
+.multiplier-field {
+  flex: 1;
+  min-width: 0;
+}
+.multiplier-field :deep(.n-input-number) {
+  width: 100%;
+}
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.site-form-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 .form-row-switches {
   gap: 24px;
@@ -2879,11 +2962,23 @@ watch(
   .form-item-quarter,
   .form-item-two-thirds,
   .form-item-sort,
+  .form-item-multiplier,
   .form-item-switch,
   .form-item-auth-type,
   .form-item-auth-value {
     width: 100%;
     flex: none;
+  }
+  .site-form :deep(.n-form-item-label) {
+    width: 104px !important;
+    height: auto;
+    min-height: 28px;
+    line-height: 1.35;
+    white-space: normal;
+  }
+  .form-row-compact :deep(.n-form-item-label) {
+    width: auto !important;
+    margin-right: 10px;
   }
   .form-item-auth-type :deep(.n-form-item-label),
   .form-item-auth-value :deep(.n-form-item-label) {

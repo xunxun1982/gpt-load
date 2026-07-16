@@ -80,6 +80,7 @@ type ManagedSiteExportInfo struct {
 	CustomCheckInURL   string `json:"custom_checkin_url"`
 	AuthType           string `json:"auth_type"`
 	AuthValue          string `json:"auth_value,omitempty"`
+	BalanceMultiplier  int64  `json:"balance_multiplier,omitempty"`
 }
 
 // ExportAll exports all system data (system settings and all groups).
@@ -276,6 +277,7 @@ func (s *Server) ExportAll(c *gin.Context) {
 				CustomCheckInURL:   site.CustomCheckInURL,
 				AuthType:           site.AuthType,
 				AuthValue:          authValue,
+				BalanceMultiplier:  site.BalanceMultiplier,
 			}
 
 			managedSites.Sites = append(managedSites.Sites, siteInfo)
@@ -465,6 +467,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 				CustomCheckInURL:   site.CustomCheckInURL,
 				AuthType:           site.AuthType,
 				AuthValue:          authValue,
+				BalanceMultiplier:  site.BalanceMultiplier,
 			}
 
 			managedSites.Sites = append(managedSites.Sites, siteInfo)
@@ -497,7 +500,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 		response.ErrorI18nFromAPIError(c, app_errors.ErrDatabase, "database.import_failed")
 		return
 	}
-	s.notifyImportedManagedSiteSchedule(serviceImportData.ManagedSites)
+	s.refreshImportedManagedSiteState(serviceImportData.ManagedSites)
 
 	// Force reload system settings from database after import
 	// This ensures all imported settings take effect immediately
@@ -573,8 +576,15 @@ func (s *Server) ImportAll(c *gin.Context) {
 	response.SuccessI18n(c, "success.system_imported", nil)
 }
 
-func (s *Server) notifyImportedManagedSiteSchedule(data *services.ManagedSitesExportData) {
-	if data == nil || (data.AutoCheckin == nil && data.AutoBalance == nil) {
+func (s *Server) refreshImportedManagedSiteState(data *services.ManagedSitesExportData) {
+	if data == nil {
+		return
+	}
+	if len(data.Sites) > 0 && s.SiteService != nil {
+		// System import writes site rows directly, so invalidate both site DTO and binding snapshots after commit.
+		s.SiteService.InvalidateSiteListCache()
+	}
+	if data.AutoCheckin == nil && data.AutoBalance == nil {
 		return
 	}
 	if s.SiteService != nil {

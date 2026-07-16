@@ -87,6 +87,109 @@ func TestSiteService_CreateSite(t *testing.T) {
 	assert.Equal(t, "https://example.com", dto.BaseURL)
 	assert.Equal(t, "user123", dto.UserID) // Should be decrypted in DTO
 	assert.True(t, dto.HasAuth)
+	assert.Equal(t, int64(1), dto.BalanceMultiplier)
+}
+
+func TestSiteServiceRejectsInvalidBalanceMultiplier(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+	service := NewSiteService(db, nil, encSvc)
+
+	zero := int64(0)
+	_, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:              "Invalid multiplier",
+		BaseURL:           "https://example.com",
+		AuthType:          AuthTypeNone,
+		BalanceMultiplier: &zero,
+	})
+	require.Error(t, err)
+
+	site, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Valid multiplier",
+		BaseURL:  "https://example.com",
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+
+	negative := int64(-1)
+	_, err = service.UpdateSite(context.Background(), site.ID, UpdateSiteParams{
+		BalanceMultiplier: &negative,
+	})
+	require.Error(t, err)
+
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, int64(1), stored.BalanceMultiplier)
+}
+
+func TestSiteServiceBalanceMultiplierUsesScaledCachedOutputs(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+
+	bindingService := NewBindingService(db, services.ReadOnlyDB{DB: db}, nil)
+	service := NewSiteService(db, nil, encSvc)
+	service.SetCacheInvalidationCallback(bindingService.InvalidateSitesForBindingCache)
+
+	site, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:     "Scaled balance",
+		BaseURL:  "https://example.com",
+		AuthType: AuthTypeNone,
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&ManagedSite{}).Where("id = ?", site.ID).
+		Update("last_balance", "$120.00").Error)
+
+	before, err := bindingService.ListSitesForBinding(context.Background())
+	require.NoError(t, err)
+	require.Len(t, before, 1)
+	assert.Equal(t, "$120.00", before[0].LastBalance)
+
+	multiplier := int64(3)
+	updated, err := service.UpdateSite(context.Background(), site.ID, UpdateSiteParams{
+		BalanceMultiplier: &multiplier,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, multiplier, updated.BalanceMultiplier)
+	assert.Equal(t, "$40.00", updated.LastBalance)
+
+	after, err := bindingService.ListSitesForBinding(context.Background())
+	require.NoError(t, err)
+	require.Len(t, after, 1)
+	assert.Equal(t, multiplier, after[0].BalanceMultiplier)
+	assert.Equal(t, "$40.00", after[0].LastBalance)
+
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, "$120.00", stored.LastBalance)
+	assert.Equal(t, multiplier, stored.BalanceMultiplier)
+}
+
+func TestSiteServiceCopyPreservesBalanceMultiplier(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+	service := NewSiteService(db, nil, encSvc)
+	multiplier := int64(7)
+
+	source, err := service.CreateSite(context.Background(), CreateSiteParams{
+		Name:              "Multiplier source",
+		BaseURL:           "https://example.com",
+		AuthType:          AuthTypeNone,
+		BalanceMultiplier: &multiplier,
+	})
+	require.NoError(t, err)
+
+	copied, err := service.CopySite(context.Background(), source.ID)
+	require.NoError(t, err)
+	assert.Equal(t, multiplier, copied.BalanceMultiplier)
 }
 
 // TestSiteService_CreateSite_DuplicateName tests duplicate name validation
@@ -872,6 +975,96 @@ func TestExportSitesReturnsRequestedScheduleConfigErrors(t *testing.T) {
 		require.Error(t, err)
 		assert.Nil(t, exported)
 	})
+}
+
+func TestManagedSiteBalanceMultiplierDatabaseDefault(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	site := ManagedSite{Name: "Database default", BaseURL: "https://example.com"}
+	require.NoError(t, db.Create(&site).Error)
+	assert.Equal(t, int64(1), site.BalanceMultiplier)
+}
+
+func TestManagedSiteBalanceMultiplierAutoMigrationDefaultsExistingRows(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec(`CREATE TABLE managed_sites (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		base_url TEXT NOT NULL
+	)`).Error)
+	require.NoError(t, db.Exec(
+		"INSERT INTO managed_sites (name, base_url) VALUES (?, ?)",
+		"Existing site",
+		"https://example.com",
+	).Error)
+
+	// AutoMigrate must apply the constant default to rows created before the column existed.
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	var site ManagedSite
+	require.NoError(t, db.Where("name = ?", "Existing site").First(&site).Error)
+	assert.Equal(t, int64(1), site.BalanceMultiplier)
+}
+
+func TestExportImportSitesPreservesBalanceMultiplier(t *testing.T) {
+	t.Parallel()
+
+	sourceDB := setupTestDB(t)
+	require.NoError(t, sourceDB.AutoMigrate(&ManagedSite{}))
+	require.NoError(t, sourceDB.Create(&ManagedSite{
+		Name:              "Exported multiplier",
+		BaseURL:           "https://example.com",
+		SiteType:          SiteTypeNewAPI,
+		AuthType:          AuthTypeNone,
+		BalanceMultiplier: 7,
+	}).Error)
+	sourceService := NewSiteService(sourceDB, nil, setupTestEncryption(t))
+
+	exported, err := sourceService.ExportSites(context.Background(), false, false)
+	require.NoError(t, err)
+	require.Len(t, exported.Sites, 1)
+	assert.Equal(t, int64(7), exported.Sites[0].BalanceMultiplier)
+
+	targetDB := setupTestDB(t)
+	require.NoError(t, targetDB.AutoMigrate(&ManagedSite{}))
+	targetService := NewSiteService(targetDB, nil, setupTestEncryption(t))
+	imported, skipped, err := targetService.ImportSites(context.Background(), exported, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, imported)
+	assert.Zero(t, skipped)
+
+	legacy := &SiteExportData{Sites: []SiteExportInfo{{
+		Name:     "Legacy multiplier",
+		BaseURL:  "https://legacy.example.com",
+		SiteType: SiteTypeNewAPI,
+		AuthType: AuthTypeNone,
+	}}}
+	imported, skipped, err = targetService.ImportSites(context.Background(), legacy, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, imported)
+	assert.Zero(t, skipped)
+
+	invalid := &SiteExportData{Sites: []SiteExportInfo{{
+		Name:              "Invalid multiplier",
+		BaseURL:           "https://invalid.example.com",
+		SiteType:          SiteTypeNewAPI,
+		AuthType:          AuthTypeNone,
+		BalanceMultiplier: -1,
+	}}}
+	imported, skipped, err = targetService.ImportSites(context.Background(), invalid, false)
+	require.NoError(t, err)
+	assert.Zero(t, imported)
+	assert.Equal(t, 1, skipped)
+
+	var sites []ManagedSite
+	require.NoError(t, targetDB.Order("id ASC").Find(&sites).Error)
+	require.Len(t, sites, 2)
+	assert.Equal(t, int64(7), sites[0].BalanceMultiplier)
+	assert.Equal(t, int64(1), sites[1].BalanceMultiplier)
 }
 
 func TestExportSitesReturnsPlainCredentialDecryptErrors(t *testing.T) {

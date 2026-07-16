@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -417,6 +418,72 @@ func TestImportAllPublishesManagedSiteScheduleUpdateAfterCommit(t *testing.T) {
 	assert.Equal(t, "08:00,12:30", setting.ScheduleTimes)
 }
 
+func TestImportAllInvalidatesManagedSiteCachesAfterCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	// ImportAll starts a database-reading goroutine after the transaction commits.
+	sqlDB.SetMaxOpenConns(1)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&models.Group{},
+		&sitemanagement.ManagedSite{},
+		&sitemanagement.ManagedSiteSetting{},
+	))
+	require.NoError(t, db.Create(&sitemanagement.ManagedSite{
+		Name:     "Existing site",
+		BaseURL:  "https://existing.example.com",
+		SiteType: sitemanagement.SiteTypeNewAPI,
+		AuthType: sitemanagement.AuthTypeNone,
+	}).Error)
+
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+	bindingService := sitemanagement.NewBindingService(db, services.ReadOnlyDB{DB: db}, nil)
+	siteService := sitemanagement.NewSiteService(db, nil, encSvc)
+	siteService.SetCacheInvalidationCallback(bindingService.InvalidateSitesForBindingCache)
+
+	beforeSites, err := siteService.ListSites(context.Background())
+	require.NoError(t, err)
+	require.Len(t, beforeSites, 1)
+	beforeBindings, err := bindingService.ListSitesForBinding(context.Background())
+	require.NoError(t, err)
+	require.Len(t, beforeBindings, 1)
+
+	server := &Server{
+		DB:                  db,
+		EncryptionSvc:       encSvc,
+		ImportExportService: services.NewImportExportService(db, nil, encSvc),
+		SiteService:         siteService,
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/system/import", strings.NewReader(`{
+		"version":"2.0",
+		"managed_sites":{"sites":[{
+			"name":"Imported site",
+			"base_url":"https://imported.example.com",
+			"site_type":"new-api",
+			"auth_type":"none",
+			"balance_multiplier":3
+		}]}
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	server.ImportAll(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	afterSites, err := siteService.ListSites(context.Background())
+	require.NoError(t, err)
+	require.Len(t, afterSites, 2)
+	assert.Equal(t, int64(3), afterSites[1].BalanceMultiplier)
+	afterBindings, err := bindingService.ListSitesForBinding(context.Background())
+	require.NoError(t, err)
+	require.Len(t, afterBindings, 2)
+}
+
 func TestImportAllRejectsExplicitlyEmptyAutoCheckinScheduleTimes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -580,13 +647,14 @@ func TestSystemPlainExportImportRoundTripsManagedSiteCredentials(t *testing.T) {
 	encryptedAuth, err := sourceEncryption.Encrypt("plain-auth-value")
 	require.NoError(t, err)
 	require.NoError(t, sourceDB.Create(&sitemanagement.ManagedSite{
-		Name:      "round-trip site",
-		BaseURL:   "https://example.com",
-		SiteType:  sitemanagement.SiteTypeNewAPI,
-		Enabled:   true,
-		UserID:    encryptedUserID,
-		AuthType:  sitemanagement.AuthTypeAccessToken,
-		AuthValue: encryptedAuth,
+		Name:              "round-trip site",
+		BaseURL:           "https://example.com",
+		SiteType:          sitemanagement.SiteTypeNewAPI,
+		Enabled:           true,
+		UserID:            encryptedUserID,
+		AuthType:          sitemanagement.AuthTypeAccessToken,
+		AuthValue:         encryptedAuth,
+		BalanceMultiplier: 7,
 	}).Error)
 	sourceServer := &Server{
 		ImportExportService: services.NewImportExportService(sourceDB, nil, sourceEncryption),
@@ -607,6 +675,7 @@ func TestSystemPlainExportImportRoundTripsManagedSiteCredentials(t *testing.T) {
 	require.Len(t, exported.Data.ManagedSites.Sites, 1)
 	assert.Equal(t, "plain-user-id", exported.Data.ManagedSites.Sites[0].UserID)
 	assert.Equal(t, "plain-auth-value", exported.Data.ManagedSites.Sites[0].AuthValue)
+	assert.Equal(t, int64(7), exported.Data.ManagedSites.Sites[0].BalanceMultiplier)
 
 	importBody, err := json.Marshal(exported.Data)
 	require.NoError(t, err)
@@ -638,6 +707,7 @@ func TestSystemPlainExportImportRoundTripsManagedSiteCredentials(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "plain-user-id", userID)
 	assert.Equal(t, "plain-auth-value", authValue)
+	assert.Equal(t, int64(7), imported.BalanceMultiplier)
 }
 
 func TestImportManagedSitesRequestsLocalBalanceReschedule(t *testing.T) {

@@ -82,6 +82,8 @@ type CreateSiteParams struct {
 
 	AuthType  string
 	AuthValue string
+
+	BalanceMultiplier *int64
 }
 
 type UpdateSiteParams struct {
@@ -105,6 +107,8 @@ type UpdateSiteParams struct {
 
 	AuthType  *string
 	AuthValue *string
+
+	BalanceMultiplier *int64
 }
 
 type SiteReorderItem struct {
@@ -320,12 +324,11 @@ func (s *SiteService) siteToDTO(site *ManagedSite, boundGroupsMap map[uint][]Bou
 		}
 	}
 
-	boundGroups := boundGroupsMap[site.ID]
-	var boundGroupCount int64
-	if boundGroups != nil {
-		boundGroupCount = int64(len(boundGroups))
-	}
+	return buildManagedSiteDTO(site, userID, boundGroupsMap[site.ID])
+}
 
+func buildManagedSiteDTO(site *ManagedSite, userID string, boundGroups []BoundGroupInfo) ManagedSiteDTO {
+	multiplier := normalizeManagedSiteBalanceMultiplier(site.BalanceMultiplier)
 	return ManagedSiteDTO{
 		ID:                        site.ID,
 		Name:                      site.Name,
@@ -351,10 +354,11 @@ func (s *SiteService) siteToDTO(site *ManagedSite, boundGroupsMap map[uint][]Bou
 		LastCheckInMessage:        site.LastCheckInMessage,
 		LastSiteOpenedDate:        site.LastSiteOpenedDate,
 		LastCheckinPageOpenedDate: site.LastCheckinPageOpenedDate,
-		LastBalance:               site.LastBalance,
+		BalanceMultiplier:         multiplier,
+		LastBalance:               scaledManagedSiteBalance(site.LastBalance, multiplier),
 		LastBalanceDate:           site.LastBalanceDate,
 		BoundGroups:               boundGroups,
-		BoundGroupCount:           boundGroupCount,
+		BoundGroupCount:           int64(len(boundGroups)),
 		CreatedAt:                 site.CreatedAt,
 		UpdatedAt:                 site.UpdatedAt,
 	}
@@ -570,6 +574,13 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 	if name == "" {
 		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.name_required", nil)
 	}
+	balanceMultiplier := defaultManagedSiteBalanceMultiplier
+	if params.BalanceMultiplier != nil {
+		if *params.BalanceMultiplier < defaultManagedSiteBalanceMultiplier {
+			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.balance_multiplier_min", nil)
+		}
+		balanceMultiplier = *params.BalanceMultiplier
+	}
 
 	// Check for duplicate name
 	var count int64
@@ -616,23 +627,24 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 	}
 
 	site := &ManagedSite{
-		Name:             name,
-		Notes:            strings.TrimSpace(params.Notes),
-		Description:      strings.TrimSpace(params.Description),
-		Sort:             params.Sort,
-		Enabled:          params.Enabled,
-		BaseURL:          baseURL,
-		SiteType:         siteType,
-		UserID:           encryptedUserID,
-		CheckInPageURL:   strings.TrimSpace(params.CheckInPageURL),
-		CheckInAvailable: params.CheckInAvailable,
-		CheckInEnabled:   params.CheckInEnabled,
-		CustomCheckInURL: strings.TrimSpace(params.CustomCheckInURL),
-		UseProxy:         params.UseProxy,
-		ProxyURL:         strings.TrimSpace(params.ProxyURL),
-		BypassMethod:     normalizeBypassMethod(params.BypassMethod),
-		AuthType:         authType,
-		AuthValue:        encryptedAuth,
+		Name:              name,
+		Notes:             strings.TrimSpace(params.Notes),
+		Description:       strings.TrimSpace(params.Description),
+		Sort:              params.Sort,
+		Enabled:           params.Enabled,
+		BaseURL:           baseURL,
+		SiteType:          siteType,
+		UserID:            encryptedUserID,
+		CheckInPageURL:    strings.TrimSpace(params.CheckInPageURL),
+		CheckInAvailable:  params.CheckInAvailable,
+		CheckInEnabled:    params.CheckInEnabled,
+		CustomCheckInURL:  strings.TrimSpace(params.CustomCheckInURL),
+		UseProxy:          params.UseProxy,
+		ProxyURL:          strings.TrimSpace(params.ProxyURL),
+		BypassMethod:      normalizeBypassMethod(params.BypassMethod),
+		AuthType:          authType,
+		AuthValue:         encryptedAuth,
+		BalanceMultiplier: balanceMultiplier,
 	}
 
 	if err := s.db.WithContext(ctx).Create(site).Error; err != nil {
@@ -654,6 +666,9 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 	var site ManagedSite
 	if err := s.db.WithContext(ctx).First(&site, siteID).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
+	}
+	if params.BalanceMultiplier != nil && *params.BalanceMultiplier < defaultManagedSiteBalanceMultiplier {
+		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.balance_multiplier_min", nil)
 	}
 
 	// Track original enabled status for sync callback
@@ -685,6 +700,9 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 	}
 	if params.Sort != nil {
 		site.Sort = *params.Sort
+	}
+	if params.BalanceMultiplier != nil {
+		site.BalanceMultiplier = *params.BalanceMultiplier
 	}
 	if params.Enabled != nil {
 		site.Enabled = *params.Enabled
@@ -976,23 +994,24 @@ func (s *SiteService) CopySite(ctx context.Context, siteID uint) (*ManagedSiteDT
 	// Create the copy (without binding, checkin status, and timestamps)
 	// Merge auto_checkin_enabled into checkin_enabled for backward compatibility with legacy data
 	newSite := &ManagedSite{
-		Name:             uniqueName,
-		Notes:            source.Notes,
-		Description:      source.Description,
-		Sort:             source.Sort,
-		Enabled:          source.Enabled,
-		BaseURL:          source.BaseURL,
-		SiteType:         source.SiteType,
-		UserID:           source.UserID,
-		CheckInPageURL:   source.CheckInPageURL,
-		CheckInAvailable: source.CheckInAvailable,
-		CheckInEnabled:   source.CheckInEnabled || source.AutoCheckInEnabled,
-		CustomCheckInURL: source.CustomCheckInURL,
-		UseProxy:         source.UseProxy,
-		ProxyURL:         source.ProxyURL,
-		BypassMethod:     source.BypassMethod,
-		AuthType:         source.AuthType,
-		AuthValue:        source.AuthValue,
+		Name:              uniqueName,
+		Notes:             source.Notes,
+		Description:       source.Description,
+		Sort:              source.Sort,
+		Enabled:           source.Enabled,
+		BaseURL:           source.BaseURL,
+		SiteType:          source.SiteType,
+		UserID:            source.UserID,
+		CheckInPageURL:    source.CheckInPageURL,
+		CheckInAvailable:  source.CheckInAvailable,
+		CheckInEnabled:    source.CheckInEnabled || source.AutoCheckInEnabled,
+		CustomCheckInURL:  source.CustomCheckInURL,
+		UseProxy:          source.UseProxy,
+		ProxyURL:          source.ProxyURL,
+		BypassMethod:      source.BypassMethod,
+		AuthType:          source.AuthType,
+		AuthValue:         source.AuthValue,
+		BalanceMultiplier: normalizeManagedSiteBalanceMultiplier(source.BalanceMultiplier),
 		// BoundGroupID is intentionally not copied
 		// LastCheckIn* fields are intentionally not copied
 	}
@@ -1313,38 +1332,8 @@ func (s *SiteService) toDTO(ctx context.Context, site *ManagedSite) *ManagedSite
 		}
 	}
 
-	return &ManagedSiteDTO{
-		ID:                        site.ID,
-		Name:                      site.Name,
-		Notes:                     site.Notes,
-		Description:               site.Description,
-		Sort:                      site.Sort,
-		Enabled:                   site.Enabled,
-		BaseURL:                   site.BaseURL,
-		SiteType:                  site.SiteType,
-		UserID:                    userID,
-		CheckInPageURL:            site.CheckInPageURL,
-		CheckInAvailable:          site.CheckInAvailable,
-		CheckInEnabled:            site.CheckInEnabled || site.AutoCheckInEnabled, // Merge legacy field for UI consistency
-		CustomCheckInURL:          site.CustomCheckInURL,
-		UseProxy:                  site.UseProxy,
-		ProxyURL:                  site.ProxyURL,
-		BypassMethod:              site.BypassMethod,
-		AuthType:                  site.AuthType,
-		HasAuth:                   strings.TrimSpace(site.AuthValue) != "",
-		LastCheckInAt:             site.LastCheckInAt,
-		LastCheckInDate:           site.LastCheckInDate,
-		LastCheckInStatus:         site.LastCheckInStatus,
-		LastCheckInMessage:        site.LastCheckInMessage,
-		LastSiteOpenedDate:        site.LastSiteOpenedDate,
-		LastCheckinPageOpenedDate: site.LastCheckinPageOpenedDate,
-		LastBalance:               site.LastBalance,
-		LastBalanceDate:           site.LastBalanceDate,
-		BoundGroups:               boundGroups,
-		BoundGroupCount:           int64(len(boundGroups)),
-		CreatedAt:                 site.CreatedAt,
-		UpdatedAt:                 site.UpdatedAt,
-	}
+	dto := buildManagedSiteDTO(site, userID, boundGroups)
+	return &dto
 }
 
 // normalizeAuthType normalizes auth type string, supporting both single and comma-separated multi-auth values.
@@ -1492,6 +1481,7 @@ type SiteExportInfo struct {
 	BypassMethod       string `json:"bypass_method"`
 	AuthType           string `json:"auth_type"`
 	AuthValue          string `json:"auth_value,omitempty"` // Encrypted or plain based on export mode
+	BalanceMultiplier  int64  `json:"balance_multiplier,omitempty"`
 }
 
 // SiteExportData represents the complete export data structure
@@ -1549,6 +1539,7 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 			ProxyURL:           site.ProxyURL,
 			BypassMethod:       site.BypassMethod,
 			AuthType:           site.AuthType,
+			BalanceMultiplier:  normalizeManagedSiteBalanceMultiplier(site.BalanceMultiplier),
 		}
 
 		// Handle user_id based on export mode (stored encrypted in DB)
@@ -1649,6 +1640,11 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			skipped++
 			continue
 		}
+		// Zero is the JSON zero value for legacy exports that predate this field.
+		if siteInfo.BalanceMultiplier < 0 {
+			skipped++
+			continue
+		}
 
 		baseURL, err := normalizeBaseURL(siteInfo.BaseURL)
 		if err != nil {
@@ -1741,23 +1737,24 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 		}
 
 		site := &ManagedSite{
-			Name:             uniqueName,
-			Notes:            strings.TrimSpace(siteInfo.Notes),
-			Description:      strings.TrimSpace(siteInfo.Description),
-			Sort:             siteInfo.Sort,
-			Enabled:          siteInfo.Enabled,
-			BaseURL:          baseURL,
-			SiteType:         siteType,
-			UserID:           encryptedUserID,
-			CheckInPageURL:   strings.TrimSpace(siteInfo.CheckInPageURL),
-			CheckInAvailable: siteInfo.CheckInAvailable,
-			CheckInEnabled:   checkInEnabled,
-			CustomCheckInURL: strings.TrimSpace(siteInfo.CustomCheckInURL),
-			UseProxy:         siteInfo.UseProxy,
-			ProxyURL:         strings.TrimSpace(siteInfo.ProxyURL),
-			BypassMethod:     normalizeBypassMethod(siteInfo.BypassMethod),
-			AuthType:         authType,
-			AuthValue:        encryptedAuth,
+			Name:              uniqueName,
+			Notes:             strings.TrimSpace(siteInfo.Notes),
+			Description:       strings.TrimSpace(siteInfo.Description),
+			Sort:              siteInfo.Sort,
+			Enabled:           siteInfo.Enabled,
+			BaseURL:           baseURL,
+			SiteType:          siteType,
+			UserID:            encryptedUserID,
+			CheckInPageURL:    strings.TrimSpace(siteInfo.CheckInPageURL),
+			CheckInAvailable:  siteInfo.CheckInAvailable,
+			CheckInEnabled:    checkInEnabled,
+			CustomCheckInURL:  strings.TrimSpace(siteInfo.CustomCheckInURL),
+			UseProxy:          siteInfo.UseProxy,
+			ProxyURL:          strings.TrimSpace(siteInfo.ProxyURL),
+			BypassMethod:      normalizeBypassMethod(siteInfo.BypassMethod),
+			AuthType:          authType,
+			AuthValue:         encryptedAuth,
+			BalanceMultiplier: normalizeManagedSiteBalanceMultiplier(siteInfo.BalanceMultiplier),
 		}
 
 		if err := s.db.WithContext(ctx).Create(site).Error; err != nil {

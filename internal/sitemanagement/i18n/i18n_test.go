@@ -96,6 +96,7 @@ func TestValidationMessageKeys(t *testing.T) {
 		"site_management.validation.name_duplicate",
 		"site_management.validation.invalid_base_url",
 		"site_management.validation.invalid_auth_type",
+		"site_management.validation.balance_multiplier_min",
 		"site_management.validation.auth_value_requires_auth_type",
 		"site_management.validation.time_window_required",
 		"site_management.validation.invalid_time",

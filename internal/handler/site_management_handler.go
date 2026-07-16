@@ -33,6 +33,8 @@ type CreateManagedSiteRequest struct {
 
 	AuthType  string `json:"auth_type"`
 	AuthValue string `json:"auth_value"`
+
+	BalanceMultiplier *int64 `json:"balance_multiplier"`
 }
 
 type UpdateManagedSiteRequest struct {
@@ -56,6 +58,8 @@ type UpdateManagedSiteRequest struct {
 
 	AuthType  *string `json:"auth_type"`
 	AuthValue *string `json:"auth_value"`
+
+	BalanceMultiplier *int64 `json:"balance_multiplier"`
 }
 
 type SiteReorderRequest struct {
@@ -146,23 +150,24 @@ func (s *Server) CreateManagedSite(c *gin.Context) {
 	}
 
 	site, err := s.SiteService.CreateSite(c.Request.Context(), sitemanagement.CreateSiteParams{
-		Name:             req.Name,
-		Notes:            req.Notes,
-		Description:      req.Description,
-		Sort:             req.Sort,
-		Enabled:          req.Enabled,
-		BaseURL:          req.BaseURL,
-		SiteType:         req.SiteType,
-		UserID:           req.UserID,
-		CheckInPageURL:   req.CheckInPageURL,
-		CheckInAvailable: req.CheckInAvailable,
-		CheckInEnabled:   req.CheckInEnabled,
-		CustomCheckInURL: req.CustomCheckInURL,
-		UseProxy:         req.UseProxy,
-		ProxyURL:         req.ProxyURL,
-		BypassMethod:     req.BypassMethod,
-		AuthType:         req.AuthType,
-		AuthValue:        req.AuthValue,
+		Name:              req.Name,
+		Notes:             req.Notes,
+		Description:       req.Description,
+		Sort:              req.Sort,
+		Enabled:           req.Enabled,
+		BaseURL:           req.BaseURL,
+		SiteType:          req.SiteType,
+		UserID:            req.UserID,
+		CheckInPageURL:    req.CheckInPageURL,
+		CheckInAvailable:  req.CheckInAvailable,
+		CheckInEnabled:    req.CheckInEnabled,
+		CustomCheckInURL:  req.CustomCheckInURL,
+		UseProxy:          req.UseProxy,
+		ProxyURL:          req.ProxyURL,
+		BypassMethod:      req.BypassMethod,
+		AuthType:          req.AuthType,
+		AuthValue:         req.AuthValue,
+		BalanceMultiplier: req.BalanceMultiplier,
 	})
 	if HandleServiceError(c, err) {
 		return
@@ -184,23 +189,24 @@ func (s *Server) UpdateManagedSite(c *gin.Context) {
 	}
 
 	site, err := s.SiteService.UpdateSite(c.Request.Context(), uint(id), sitemanagement.UpdateSiteParams{
-		Name:             req.Name,
-		Notes:            req.Notes,
-		Description:      req.Description,
-		Sort:             req.Sort,
-		Enabled:          req.Enabled,
-		BaseURL:          req.BaseURL,
-		SiteType:         req.SiteType,
-		UserID:           req.UserID,
-		CheckInPageURL:   req.CheckInPageURL,
-		CheckInAvailable: req.CheckInAvailable,
-		CheckInEnabled:   req.CheckInEnabled,
-		CustomCheckInURL: req.CustomCheckInURL,
-		UseProxy:         req.UseProxy,
-		ProxyURL:         req.ProxyURL,
-		BypassMethod:     req.BypassMethod,
-		AuthType:         req.AuthType,
-		AuthValue:        req.AuthValue,
+		Name:              req.Name,
+		Notes:             req.Notes,
+		Description:       req.Description,
+		Sort:              req.Sort,
+		Enabled:           req.Enabled,
+		BaseURL:           req.BaseURL,
+		SiteType:          req.SiteType,
+		UserID:            req.UserID,
+		CheckInPageURL:    req.CheckInPageURL,
+		CheckInAvailable:  req.CheckInAvailable,
+		CheckInEnabled:    req.CheckInEnabled,
+		CustomCheckInURL:  req.CustomCheckInURL,
+		UseProxy:          req.UseProxy,
+		ProxyURL:          req.ProxyURL,
+		BypassMethod:      req.BypassMethod,
+		AuthType:          req.AuthType,
+		AuthValue:         req.AuthValue,
+		BalanceMultiplier: req.BalanceMultiplier,
 	})
 	if HandleServiceError(c, err) {
 		return

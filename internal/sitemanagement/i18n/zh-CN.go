@@ -6,6 +6,7 @@ var MessagesZhCN = map[string]string{
 	"site_management.validation.name_duplicate":                "站点名称「{{.name}}」已存在",
 	"site_management.validation.invalid_base_url":              "无效的站点链接：{{.error}}",
 	"site_management.validation.invalid_auth_type":             "无效的认证类型",
+	"site_management.validation.balance_multiplier_min":        "余额倍率必须为不小于 1 的整数",
 	"site_management.validation.auth_value_requires_auth_type": "填写认证信息时必须选择认证类型",
 	"site_management.validation.time_window_required":          "需要设置时间窗口",
 	"site_management.validation.invalid_time":                  "无效的时间字段：{{.field}}",

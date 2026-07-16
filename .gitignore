@@ -154,6 +154,7 @@ implementation-notes.md
 .codex/skills/
 skills/gpt-load-code-review/
 .playwright-mcp/
+/.playwright-cli/
 .kiro/
 .specstory/
 .vscode/

@@ -185,6 +185,34 @@ func TestImportSystemReturnsManagedSiteCreateErrors(t *testing.T) {
 	assert.ErrorIs(t, err, forcedErr)
 }
 
+func TestImportSystemSkipsNegativeManagedSiteBalanceMultiplier(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		return NewImportExportService(db, nil, nil).ImportSystem(tx, &SystemExportData{
+			ManagedSites: &ManagedSitesExportData{Sites: []ManagedSiteExportInfo{{
+				Name:              "Invalid multiplier",
+				BaseURL:           "https://example.com",
+				SiteType:          "new-api",
+				AuthType:          "none",
+				BalanceMultiplier: -1,
+			}}},
+		})
+	})
+	require.NoError(t, err)
+
+	var count int64
+	require.NoError(t, db.Model(&managedSiteModel{}).Count(&count).Error)
+	assert.Zero(t, count)
+}
+
 func TestImportSystemRejectsInvalidAutoBalanceInterval(t *testing.T) {
 	t.Parallel()
 

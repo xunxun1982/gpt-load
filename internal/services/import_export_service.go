@@ -915,6 +915,7 @@ type ManagedSiteExportInfo struct {
 	CustomCheckInURL   string `json:"custom_checkin_url"`
 	AuthType           string `json:"auth_type"`
 	AuthValue          string `json:"auth_value,omitempty"`
+	BalanceMultiplier  int64  `json:"balance_multiplier,omitempty"`
 }
 
 // managedSiteModel represents the database model for managed sites (minimal for export/import).
@@ -939,6 +940,7 @@ type managedSiteModel struct {
 	CustomCheckInURL   string `gorm:"column:custom_checkin_url"`
 	AuthType           string `gorm:"column:auth_type"`
 	AuthValue          string `gorm:"column:auth_value"`
+	BalanceMultiplier  int64  `gorm:"column:balance_multiplier;not null;default:1"`
 }
 
 func (managedSiteModel) TableName() string {
@@ -1130,6 +1132,7 @@ func (s *ImportExportService) exportManagedSites() (*ManagedSitesExportData, err
 			CustomCheckInURL:   site.CustomCheckInURL,
 			AuthType:           site.AuthType,
 			AuthValue:          site.AuthValue, // Keep encrypted
+			BalanceMultiplier:  max(site.BalanceMultiplier, int64(1)),
 		})
 	}
 
@@ -1840,6 +1843,11 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 			skipped++
 			continue
 		}
+		// Zero is the JSON zero value for legacy exports that predate this field.
+		if siteInfo.BalanceMultiplier < 0 {
+			skipped++
+			continue
+		}
 
 		baseURL := strings.TrimSpace(siteInfo.BaseURL)
 		if baseURL == "" {
@@ -1902,6 +1910,7 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 			CustomCheckInURL:   strings.TrimSpace(siteInfo.CustomCheckInURL),
 			AuthType:           authType,
 			AuthValue:          authValue,
+			BalanceMultiplier:  max(siteInfo.BalanceMultiplier, int64(1)),
 		}
 
 		if err := tx.Create(site).Error; err != nil {

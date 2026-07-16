@@ -52,6 +52,7 @@ export interface SiteBindingOption {
   name: string;
   sort: number;
   enabled: boolean;
+  balance_multiplier: number;
   last_balance: string | null;
   last_checkin_status: ManagedSiteCheckinStatus;
   bound_group_count?: number;
@@ -91,6 +92,7 @@ export interface ManagedSiteDTO {
   last_checkin_page_opened_date: string;
 
   // Cached balance information, refreshed manually or by the automatic balance schedule.
+  balance_multiplier: number;
   last_balance: string;
   last_balance_date: string;
 
@@ -142,6 +144,7 @@ export interface CreateManagedSiteRequest {
 
   auth_type: ManagedSiteAuthType;
   auth_value: string;
+  balance_multiplier?: number;
 }
 
 export type UpdateManagedSiteRequest = Partial<CreateManagedSiteRequest>;
@@ -321,6 +324,7 @@ export interface SiteExportInfo {
   bypass_method?: ManagedSiteBypassMethod;
   auth_type: ManagedSiteAuthType;
   auth_value?: string;
+  balance_multiplier?: number;
 }
 
 export interface SiteImportData {
