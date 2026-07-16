@@ -1058,7 +1058,8 @@ func (s *SiteService) UpdateAutoCheckinConfig(ctx context.Context, cfg AutoCheck
 	if err != nil {
 		return nil, err
 	}
-	updates := autoCheckinConfigUpdates(cfg, mode)
+	normalized := normalizeAutoCheckinConfig(cfg, mode)
+	updates := autoCheckinConfigUpdates(normalized)
 	updates["updated_at"] = time.Now()
 	if err := s.db.WithContext(ctx).Model(&ManagedSiteSetting{}).
 		Where("id = ?", st.ID).
@@ -1067,8 +1068,9 @@ func (s *SiteService) UpdateAutoCheckinConfig(ctx context.Context, cfg AutoCheck
 	}
 
 	s.NotifyScheduleConfigUpdated()
-
-	return s.GetAutoCheckinConfig(ctx)
+	// Every response field comes from the same explicit update map; no config field is database-generated.
+	// Avoid a post-commit read that could prevent the handler's guaranteed local reschedule.
+	return &normalized, nil
 }
 
 func validateAutoCheckinConfig(cfg AutoCheckinConfig) (string, error) {
@@ -1130,24 +1132,39 @@ func validateAutoCheckinConfig(cfg AutoCheckinConfig) (string, error) {
 const maxAutoCheckinScheduleTimesStorageLength = 255
 
 func joinAutoCheckinScheduleTimes(scheduleTimes []string) string {
+	return strings.Join(normalizeAutoCheckinScheduleTimes(scheduleTimes), ",")
+}
+
+func normalizeAutoCheckinScheduleTimes(scheduleTimes []string) []string {
 	normalized := make([]string, len(scheduleTimes))
 	for i, value := range scheduleTimes {
 		normalized[i] = strings.TrimSpace(value)
 	}
-	return strings.Join(normalized, ",")
+	return normalized
 }
 
-func autoCheckinConfigUpdates(cfg AutoCheckinConfig, mode string) map[string]any {
+func normalizeAutoCheckinConfig(cfg AutoCheckinConfig, mode string) AutoCheckinConfig {
+	cfg.ScheduleTimes = normalizeAutoCheckinScheduleTimes(cfg.ScheduleTimes)
+	cfg.WindowStart = strings.TrimSpace(cfg.WindowStart)
+	cfg.WindowEnd = strings.TrimSpace(cfg.WindowEnd)
+	cfg.ScheduleMode = mode
+	cfg.DeterministicTime = strings.TrimSpace(cfg.DeterministicTime)
+	cfg.RetryStrategy.IntervalMinutes = clampInt(cfg.RetryStrategy.IntervalMinutes, 1, 24*60)
+	cfg.RetryStrategy.MaxAttemptsPerDay = clampInt(cfg.RetryStrategy.MaxAttemptsPerDay, 1, 10)
+	return cfg
+}
+
+func autoCheckinConfigUpdates(cfg AutoCheckinConfig) map[string]any {
 	return map[string]any{
 		"auto_checkin_enabled":       cfg.GlobalEnabled,
-		"schedule_times":             joinAutoCheckinScheduleTimes(cfg.ScheduleTimes),
+		"schedule_times":             strings.Join(cfg.ScheduleTimes, ","),
 		"window_start":               cfg.WindowStart,
 		"window_end":                 cfg.WindowEnd,
-		"schedule_mode":              mode,
-		"deterministic_time":         strings.TrimSpace(cfg.DeterministicTime),
+		"schedule_mode":              cfg.ScheduleMode,
+		"deterministic_time":         cfg.DeterministicTime,
 		"retry_enabled":              cfg.RetryStrategy.Enabled,
-		"retry_interval_minutes":     clampInt(cfg.RetryStrategy.IntervalMinutes, 1, 24*60),
-		"retry_max_attempts_per_day": clampInt(cfg.RetryStrategy.MaxAttemptsPerDay, 1, 10),
+		"retry_interval_minutes":     cfg.RetryStrategy.IntervalMinutes,
+		"retry_max_attempts_per_day": cfg.RetryStrategy.MaxAttemptsPerDay,
 	}
 }
 
@@ -1181,7 +1198,9 @@ func (s *SiteService) UpdateAutoBalanceConfig(ctx context.Context, cfg AutoBalan
 	}
 
 	s.NotifyScheduleConfigUpdated()
-	return s.GetAutoBalanceConfig(ctx)
+	// Every response field comes from the same explicit update map; no config field is database-generated.
+	// Avoid a post-commit read that could prevent the handler's guaranteed local reschedule.
+	return &cfg, nil
 }
 
 func autoBalanceConfigUpdates(cfg AutoBalanceConfig) map[string]any {
@@ -1568,13 +1587,13 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 	if data == nil {
 		return 0, 0, nil
 	}
-	autoCheckinMode := ""
+	var normalizedAutoCheckin AutoCheckinConfig
 	if data.AutoCheckin != nil {
 		mode, err := validateAutoCheckinConfig(*data.AutoCheckin)
 		if err != nil {
 			return 0, 0, err
 		}
-		autoCheckinMode = mode
+		normalizedAutoCheckin = normalizeAutoCheckinConfig(*data.AutoCheckin, mode)
 	}
 	if data.AutoBalance != nil {
 		if err := validateAutoBalanceConfig(*data.AutoBalance); err != nil {
@@ -1590,7 +1609,7 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			}
 			updates := make(map[string]any, 12)
 			if data.AutoCheckin != nil {
-				for key, value := range autoCheckinConfigUpdates(*data.AutoCheckin, autoCheckinMode) {
+				for key, value := range autoCheckinConfigUpdates(normalizedAutoCheckin) {
 					updates[key] = value
 				}
 			}

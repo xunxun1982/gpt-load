@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -616,6 +617,95 @@ func TestSiteService_AutoBalanceConfig(t *testing.T) {
 	assert.Error(t, err)
 	_, err = service.UpdateAutoBalanceConfig(context.Background(), AutoBalanceConfig{IntervalHours: 25})
 	assert.Error(t, err)
+}
+
+func TestScheduleConfigUpdatesReturnCommittedValuesWithoutReadBack(t *testing.T) {
+	setup := func(t *testing.T) (*SiteService, *gorm.DB, *int, func()) {
+		t.Helper()
+		db := setupTestDB(t)
+		encSvc := setupTestEncryption(t)
+		require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+		require.NoError(t, db.Create(&ManagedSiteSetting{ID: 1}).Error)
+
+		queryCount := 0
+		rejectPostCommitRead := true
+		forcedErr := errors.New("forced post-commit config read failure")
+		const hookName = "test:reject_post_commit_config_read"
+		require.NoError(t, db.Callback().Query().Before("gorm:query").Register(hookName, func(tx *gorm.DB) {
+			if tx.Statement.Table != "managed_site_settings" {
+				return
+			}
+			queryCount++
+			if rejectPostCommitRead && queryCount == 2 {
+				tx.AddError(forcedErr)
+			}
+		}))
+		t.Cleanup(func() { _ = db.Callback().Query().Remove(hookName) })
+
+		return NewSiteService(db, nil, encSvc), db, &queryCount, func() {
+			rejectPostCommitRead = false
+		}
+	}
+
+	t.Run("auto check-in", func(t *testing.T) {
+		service, db, queryCount, allowReads := setup(t)
+
+		updated, err := service.UpdateAutoCheckinConfig(context.Background(), AutoCheckinConfig{
+			GlobalEnabled:     true,
+			ScheduleTimes:     []string{" 08:00 ", "12:30 "},
+			WindowStart:       " 09:00 ",
+			WindowEnd:         "18:00 ",
+			ScheduleMode:      " random ",
+			DeterministicTime: " 07:15 ",
+			RetryStrategy: AutoCheckinRetryStrategy{
+				Enabled:           true,
+				IntervalMinutes:   0,
+				MaxAttemptsPerDay: 100,
+			},
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, *queryCount)
+		assert.Equal(t, []string{"08:00", "12:30"}, updated.ScheduleTimes)
+		assert.Equal(t, "09:00", updated.WindowStart)
+		assert.Equal(t, "18:00", updated.WindowEnd)
+		assert.Equal(t, AutoCheckinScheduleModeRandom, updated.ScheduleMode)
+		assert.Equal(t, "07:15", updated.DeterministicTime)
+		assert.Equal(t, 1, updated.RetryStrategy.IntervalMinutes)
+		assert.Equal(t, 10, updated.RetryStrategy.MaxAttemptsPerDay)
+
+		allowReads()
+		var stored ManagedSiteSetting
+		require.NoError(t, db.First(&stored, 1).Error)
+		assert.Equal(t, updated.GlobalEnabled, stored.AutoCheckinEnabled)
+		assert.Equal(t, strings.Join(updated.ScheduleTimes, ","), stored.ScheduleTimes)
+		assert.Equal(t, updated.WindowStart, stored.WindowStart)
+		assert.Equal(t, updated.WindowEnd, stored.WindowEnd)
+		assert.Equal(t, updated.ScheduleMode, stored.ScheduleMode)
+		assert.Equal(t, updated.DeterministicTime, stored.DeterministicTime)
+		assert.Equal(t, updated.RetryStrategy.Enabled, stored.RetryEnabled)
+		assert.Equal(t, updated.RetryStrategy.IntervalMinutes, stored.RetryIntervalMinutes)
+		assert.Equal(t, updated.RetryStrategy.MaxAttemptsPerDay, stored.RetryMaxAttemptsPerDay)
+	})
+
+	t.Run("auto balance", func(t *testing.T) {
+		service, db, queryCount, allowReads := setup(t)
+
+		updated, err := service.UpdateAutoBalanceConfig(context.Background(), AutoBalanceConfig{
+			GlobalEnabled: false,
+			IntervalHours: 6,
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, *queryCount)
+		assert.Equal(t, &AutoBalanceConfig{GlobalEnabled: false, IntervalHours: 6}, updated)
+
+		allowReads()
+		var stored ManagedSiteSetting
+		require.NoError(t, db.First(&stored, 1).Error)
+		assert.Equal(t, updated.GlobalEnabled, stored.AutoBalanceEnabled)
+		assert.Equal(t, updated.IntervalHours, stored.BalanceRefreshIntervalHours)
+	})
 }
 
 func TestValidateAutoCheckinConfigRejectsOversizedScheduleTimes(t *testing.T) {
