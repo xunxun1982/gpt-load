@@ -160,6 +160,13 @@ func (s *AutoCheckinService) Stop(ctx context.Context) {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 		close(s.cleanupCh) // Stop periodic cleanup goroutine
+		// Subscription cleanup belongs to the one-time shutdown contract.
+		if s.subConfig != nil {
+			_ = s.subConfig.Close()
+		}
+		if s.subRunNow != nil {
+			_ = s.subRunNow.Close()
+		}
 	})
 
 	// Clean up proxy client cache
@@ -175,13 +182,6 @@ func (s *AutoCheckinService) Stop(ctx context.Context) {
 
 	// Clean up stealth client cache
 	s.stealthClientMgr.Cleanup()
-
-	if s.subConfig != nil {
-		_ = s.subConfig.Close()
-	}
-	if s.subRunNow != nil {
-		_ = s.subRunNow.Close()
-	}
 
 	done := make(chan struct{})
 	go func() {

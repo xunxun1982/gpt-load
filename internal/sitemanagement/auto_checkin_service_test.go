@@ -1523,6 +1523,22 @@ func sameDayFutureScheduleMinute(t *testing.T, now time.Time) time.Time {
 	return future.In(beijingLocation)
 }
 
+func TestAutoCheckinServiceStopClosesSubscriptionsOnce(t *testing.T) {
+	t.Parallel()
+
+	configSubscription := &countingSubscription{channel: make(chan *store.Message)}
+	runNowSubscription := &countingSubscription{channel: make(chan *store.Message)}
+	service := NewAutoCheckinService(setupTestDB(t), nil, setupTestEncryption(t))
+	service.subConfig = configSubscription
+	service.subRunNow = runNowSubscription
+
+	service.Stop(context.Background())
+	service.Stop(context.Background())
+
+	assert.Equal(t, int32(1), configSubscription.closeCount.Load())
+	assert.Equal(t, int32(1), runNowSubscription.closeCount.Load())
+}
+
 func storeSuccessfulAutoCheckinStatus(memStore store.Store, now time.Time) error {
 	successStatus := AutoCheckinStatus{
 		LastRunAt:     now.UTC().Format(time.RFC3339),

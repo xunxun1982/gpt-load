@@ -143,10 +143,11 @@ func (s *BalanceService) Stop(ctx context.Context) {
 		s.cancelLifecycle()
 		close(s.stopCh)
 		close(s.cleanupCh) // Stop periodic cleanup goroutine
+		// Subscription cleanup belongs to the one-time shutdown contract.
+		if s.subConfig != nil {
+			_ = s.subConfig.Close()
+		}
 	})
-	if s.subConfig != nil {
-		_ = s.subConfig.Close()
-	}
 
 	done := make(chan struct{})
 	go func() {

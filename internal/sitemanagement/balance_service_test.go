@@ -31,6 +31,21 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+type countingSubscription struct {
+	channel    chan *store.Message
+	closeCount atomic.Int32
+}
+
+func (s *countingSubscription) Channel() <-chan *store.Message {
+	return s.channel
+}
+
+func (s *countingSubscription) Close() error {
+	// Record every call so the test verifies that the owning service provides close idempotence.
+	s.closeCount.Add(1)
+	return nil
+}
+
 func (s *subscribeHookStore) Subscribe(channel string) (store.Subscription, error) {
 	if s.beforeSubscribe != nil {
 		s.beforeSubscribe()
@@ -871,6 +886,19 @@ func TestNormalizeAutoBalanceIntervalHours(t *testing.T) {
 	assert.Equal(t, defaultAutoBalanceIntervalHours, normalizeAutoBalanceIntervalHours(0))
 	assert.Equal(t, defaultAutoBalanceIntervalHours, normalizeAutoBalanceIntervalHours(25))
 	assert.Equal(t, 6, normalizeAutoBalanceIntervalHours(6))
+}
+
+func TestBalanceServiceStopClosesSubscriptionOnce(t *testing.T) {
+	t.Parallel()
+
+	subscription := &countingSubscription{channel: make(chan *store.Message)}
+	service := NewBalanceService(setupTestDB(t), setupTestEncryption(t))
+	service.subConfig = subscription
+
+	service.Stop(context.Background())
+	service.Stop(context.Background())
+
+	assert.Equal(t, int32(1), subscription.closeCount.Load())
 }
 
 func TestBalanceServiceStopCancelsScheduledRefresh(t *testing.T) {
