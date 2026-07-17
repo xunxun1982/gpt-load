@@ -172,13 +172,11 @@ func (s *Server) ExportGroup(c *gin.Context) {
 
 	// Convert keys to export format. Decrypt to plaintext only when explicitly requested.
 	for _, key := range groupData.Keys {
-		kv := key.KeyValue
-		if exportMode == "plain" {
-			if decrypted, derr := s.EncryptionSvc.Decrypt(kv); derr == nil {
-				kv = decrypted
-			} else {
-				logrus.WithError(derr).Debug("Failed to decrypt key during plain export, keeping original value")
-			}
+		kv, err := exportKeyValue(key.KeyValue, exportMode, s.EncryptionSvc.Decrypt)
+		if err != nil {
+			logrus.WithError(err).Error("Failed to decrypt group key during plain export")
+			response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "database.export_failed")
+			return
 		}
 		exportData.Keys = append(exportData.Keys, KeyExportInfo{
 			KeyValue: kv,
@@ -195,7 +193,13 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		})
 	}
 
-	if childGroups := ConvertChildGroupsForExport(groupData.ChildGroups, exportMode, s.EncryptionSvc.Decrypt); len(childGroups) > 0 {
+	childGroups, err := ConvertChildGroupsForExport(groupData.ChildGroups, exportMode, s.EncryptionSvc.Decrypt)
+	if err != nil {
+		logrus.WithError(err).Error("Failed to decrypt child group key during plain export")
+		response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "database.export_failed")
+		return
+	}
+	if len(childGroups) > 0 {
 		exportData.ChildGroups = childGroups
 		logrus.Debugf("Export via new service: Total %d child groups exported for group %s",
 			len(exportData.ChildGroups), groupData.Group.Name)

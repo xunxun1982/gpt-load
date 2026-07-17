@@ -2293,12 +2293,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				}
 				if subGroupID == 0 {
 					subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetry(originalGroup, retryCtx.excludedSubGroups)
-					// A cache miss uses the aggregate group's normal effective-weight
-					// selector. Keep the first selected sub-group as this request's
-					// primary, but bind the session only after a successful response.
-					if subGroupID != 0 && retryCtx.codexAffinityPrimarySubGroupID == 0 {
-						retryCtx.codexAffinityPrimarySubGroupID = subGroupID
-					}
 				}
 			} else {
 				subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetry(originalGroup, retryCtx.excludedSubGroups)
@@ -2317,6 +2311,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			ps.logEarlyError(c, originalGroup, startTime, http.StatusServiceUnavailable, fmt.Errorf("no available sub-groups: %v", err))
 			return
 		}
+	}
+	if codexAggregateAffinityEnabled(c, originalGroup) &&
+		subGroupID != 0 && retryCtx.codexAffinityPrimarySubGroupID == 0 {
+		// Simulated Codex identity is generated after routing, so track the first
+		// actual target even when the inbound request has no affinity identifier.
+		retryCtx.codexAffinityPrimarySubGroupID = subGroupID
 	}
 
 	// Get the selected sub-group

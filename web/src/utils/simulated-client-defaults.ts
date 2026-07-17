@@ -1,2 +1,2 @@
-export const DEFAULT_CODEX_VERSION = "0.144.4";
-export const DEFAULT_CLAUDE_CODE_VERSION = "2.1.210";
+export const DEFAULT_CODEX_VERSION = "0.144.5";
+export const DEFAULT_CLAUDE_CODE_VERSION = "2.1.212";

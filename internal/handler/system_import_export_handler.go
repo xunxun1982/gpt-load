@@ -146,13 +146,11 @@ func (s *Server) ExportAll(c *gin.Context) {
 
 		// Convert keys; when plain mode, decrypt for output
 		for _, key := range groupData.Keys {
-			kv := key.KeyValue
-			if exportMode == "plain" {
-				if dec, derr := s.EncryptionSvc.Decrypt(kv); derr == nil {
-					kv = dec
-				} else {
-					logrus.WithError(derr).Debug("Failed to decrypt key during plain system export, keeping original value")
-				}
+			kv, err := exportKeyValue(key.KeyValue, exportMode, s.EncryptionSvc.Decrypt)
+			if err != nil {
+				logrus.WithError(err).Error("Failed to decrypt group key during plain system export")
+				response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "database.export_failed")
+				return
 			}
 			groupExport.Keys = append(groupExport.Keys, KeyExportInfo{
 				KeyValue: kv,
@@ -169,7 +167,13 @@ func (s *Server) ExportAll(c *gin.Context) {
 			})
 		}
 
-		if childGroups := ConvertChildGroupsForExport(groupData.ChildGroups, exportMode, s.EncryptionSvc.Decrypt); len(childGroups) > 0 {
+		childGroups, err := ConvertChildGroupsForExport(groupData.ChildGroups, exportMode, s.EncryptionSvc.Decrypt)
+		if err != nil {
+			logrus.WithError(err).Error("Failed to decrypt child group key during plain system export")
+			response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "database.export_failed")
+			return
+		}
+		if len(childGroups) > 0 {
 			groupExport.ChildGroups = childGroups
 		}
 
@@ -184,11 +188,11 @@ func (s *Server) ExportAll(c *gin.Context) {
 	if exportMode == "plain" && len(hubAccessKeys) > 0 {
 		decryptedKeys := make([]services.HubAccessKeyExportInfo, 0, len(hubAccessKeys))
 		for _, key := range hubAccessKeys {
-			kv := key.KeyValue
-			if dec, derr := s.EncryptionSvc.Decrypt(kv); derr == nil {
-				kv = dec
-			} else {
-				logrus.WithError(derr).Debugf("Failed to decrypt hub access key %s during plain export, keeping original value", key.Name)
+			kv, err := exportKeyValue(key.KeyValue, exportMode, s.EncryptionSvc.Decrypt)
+			if err != nil {
+				logrus.WithError(err).Error("Failed to decrypt Hub access key during plain system export")
+				response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "database.export_failed")
+				return
 			}
 			decryptedKeys = append(decryptedKeys, services.HubAccessKeyExportInfo{
 				Name:          key.Name,
@@ -250,9 +254,12 @@ func (s *Server) ExportAll(c *gin.Context) {
 
 		// Convert sites; when plain mode, decrypt sensitive fields.
 		for _, site := range systemData.ManagedSites.Sites {
+			// user_id remains an independent sensitive field even when auth_type is none.
 			userID, err := decryptManagedSiteField("user_id", site.UserID)
-			authValue := site.AuthValue
-			if err == nil {
+			authType := services.NormalizeManagedSiteAuthType(site.AuthType)
+			authValue := ""
+			if err == nil && services.ManagedSiteAuthTypeRequiresCredential(authType) {
+				authValue = site.AuthValue
 				authValue, err = decryptManagedSiteField("auth_value", authValue)
 			}
 			if err != nil {
@@ -275,7 +282,7 @@ func (s *Server) ExportAll(c *gin.Context) {
 				CheckInEnabled:     site.CheckInEnabled,
 				AutoCheckInEnabled: site.AutoCheckInEnabled,
 				CustomCheckInURL:   site.CustomCheckInURL,
-				AuthType:           site.AuthType,
+				AuthType:           authType,
 				AuthValue:          authValue,
 				BalanceMultiplier:  site.BalanceMultiplier,
 			}
@@ -309,6 +316,28 @@ type SystemImportData struct {
 	DynamicWeights []services.DynamicWeightMetricExportInfo `json:"dynamic_weights,omitempty"`
 }
 
+func collectSystemImportSampleKeys(data SystemImportData) []string {
+	sample := CollectGroupImportSampleKeys(data.Groups)
+	if len(sample) >= importModeSampleLimit {
+		return sample
+	}
+	for _, key := range data.HubAccessKeys {
+		sample = appendImportModeSample(sample, key.KeyValue)
+		if len(sample) >= importModeSampleLimit {
+			return sample
+		}
+	}
+	if data.ManagedSites != nil {
+		for _, site := range data.ManagedSites.Sites {
+			sample = appendManagedSiteImportSamples(sample, site.UserID, site.AuthType, site.AuthValue)
+			if len(sample) >= importModeSampleLimit {
+				return sample
+			}
+		}
+	}
+	return sample
+}
+
 // ImportAll imports all system data (system settings and all groups).
 func (s *Server) ImportAll(c *gin.Context) {
 	var importData SystemImportData
@@ -318,7 +347,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 	}
 
 	// Determine import mode from query, filename or content
-	sample := CollectGroupImportSampleKeys(importData.Groups)
+	sample := collectSystemImportSampleKeys(importData)
 	importMode := GetImportMode(c, sample)
 	inputIsPlain := importMode == "plain"
 
@@ -441,8 +470,9 @@ func (s *Server) ImportAll(c *gin.Context) {
 		// Convert sites; if input is plaintext, encrypt sensitive fields before the transaction.
 		for _, site := range importData.ManagedSites.Sites {
 			userID, err := encryptManagedSiteField("user_id", site.UserID)
+			authType := services.NormalizeManagedSiteAuthType(site.AuthType)
 			authValue := ""
-			if err == nil && site.AuthValue != "" && site.AuthType != "none" {
+			if err == nil && site.AuthValue != "" && services.ManagedSiteAuthTypeRequiresCredential(authType) {
 				authValue, err = encryptManagedSiteField("auth_value", site.AuthValue)
 			}
 			if err != nil {
@@ -465,7 +495,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 				CheckInEnabled:     site.CheckInEnabled,
 				AutoCheckInEnabled: site.AutoCheckInEnabled,
 				CustomCheckInURL:   site.CustomCheckInURL,
-				AuthType:           site.AuthType,
+				AuthType:           authType,
 				AuthValue:          authValue,
 				BalanceMultiplier:  site.BalanceMultiplier,
 			}

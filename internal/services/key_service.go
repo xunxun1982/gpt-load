@@ -587,6 +587,8 @@ func (s *KeyService) StreamKeysToWriter(groupID uint, statusFilter string, write
 		for _, key := range keys {
 			decryptedKey, err := s.EncryptionSvc.Decrypt(key.KeyValue)
 			if err != nil {
+				// TXT export is a best-effort bounded stream, not a round-trip backup. A preflight
+				// would double-scan every key, while a started HTTP stream cannot retract prior rows.
 				logrus.WithError(err).WithField("key_id", key.ID).Error("Failed to decrypt key for streaming, skipping")
 				continue
 			}

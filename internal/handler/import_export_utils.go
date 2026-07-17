@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"gpt-load/internal/models"
@@ -13,6 +14,23 @@ import (
 	"github.com/sirupsen/logrus"
 	"gorm.io/datatypes"
 )
+
+var errPlainExportKeyDecrypt = errors.New("failed to decrypt key for plain export")
+
+func exportKeyValue(value, exportMode string, decrypt func(string) (string, error)) (string, error) {
+	if exportMode != "plain" {
+		return value, nil
+	}
+	if decrypt == nil {
+		return "", errPlainExportKeyDecrypt
+	}
+	decrypted, err := decrypt(value)
+	if err != nil {
+		// Never include the key value, ciphertext, or provider error in logs or returned errors.
+		return "", errPlainExportKeyDecrypt
+	}
+	return decrypted, nil
+}
 
 // ConvertModelRedirectRulesToExport converts datatypes.JSONMap to map[string]string for export
 // This ensures the ModelRedirectRules field is properly serialized in export files
@@ -101,9 +119,9 @@ func ConvertHeaderRulesToJSON(headerRules []models.HeaderRule) []byte {
 }
 
 // ConvertChildGroupsForExport converts service child groups to the handler JSON format.
-func ConvertChildGroupsForExport(childGroups []services.ChildGroupExport, exportMode string, decrypt func(string) (string, error)) []ChildGroupExportInfo {
+func ConvertChildGroupsForExport(childGroups []services.ChildGroupExport, exportMode string, decrypt func(string) (string, error)) ([]ChildGroupExportInfo, error) {
 	if len(childGroups) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	result := make([]ChildGroupExportInfo, 0, len(childGroups))
@@ -130,13 +148,9 @@ func ConvertChildGroupsForExport(childGroups []services.ChildGroupExport, export
 		}
 
 		for _, key := range cg.Keys {
-			kv := key.KeyValue
-			if exportMode == "plain" && decrypt != nil {
-				if decrypted, err := decrypt(kv); err == nil {
-					kv = decrypted
-				} else {
-					logrus.WithError(err).WithField("child_group", cg.Name).Debug("Failed to decrypt child group key during plain export, keeping original value")
-				}
+			kv, err := exportKeyValue(key.KeyValue, exportMode, decrypt)
+			if err != nil {
+				return nil, err
 			}
 			childExport.Keys = append(childExport.Keys, KeyExportInfo{
 				KeyValue: kv,
@@ -147,7 +161,7 @@ func ConvertChildGroupsForExport(childGroups []services.ChildGroupExport, export
 		result = append(result, childExport)
 	}
 
-	return result
+	return result, nil
 }
 
 // ConvertChildGroupsForImport converts handler child groups to the service import format.
@@ -222,25 +236,43 @@ func countServiceGroupExportKeys(group services.GroupExportData) int {
 	return total
 }
 
+const importModeSampleLimit = 5
+
+// AES-GCM ciphertext contains a 12-byte nonce and 16-byte tag before any plaintext bytes.
+const minimumEncryptedValueHexLength = (12 + 16) * 2
+
+func appendImportModeSample(sample []string, value string) []string {
+	if value == "" || len(sample) >= importModeSampleLimit {
+		return sample
+	}
+	return append(sample, value)
+}
+
+func appendManagedSiteImportSamples(sample []string, userID, authType, authValue string) []string {
+	sample = appendImportModeSample(sample, userID)
+	if len(sample) >= importModeSampleLimit {
+		return sample
+	}
+	authType = services.NormalizeManagedSiteAuthType(authType)
+	if services.ManagedSiteAuthTypeRequiresCredential(authType) {
+		sample = appendImportModeSample(sample, authValue)
+	}
+	return sample
+}
+
 func CollectGroupImportSampleKeys(groups []GroupExportData) []string {
-	sample := make([]string, 0, 5)
+	sample := make([]string, 0, importModeSampleLimit)
 	for _, group := range groups {
 		for _, key := range group.Keys {
-			if key.KeyValue == "" {
-				continue
-			}
-			sample = append(sample, key.KeyValue)
-			if len(sample) >= 5 {
+			sample = appendImportModeSample(sample, key.KeyValue)
+			if len(sample) >= importModeSampleLimit {
 				return sample
 			}
 		}
 		for _, child := range group.ChildGroups {
 			for _, key := range child.Keys {
-				if key.KeyValue == "" {
-					continue
-				}
-				sample = append(sample, key.KeyValue)
-				if len(sample) >= 5 {
+				sample = appendImportModeSample(sample, key.KeyValue)
+				if len(sample) >= importModeSampleLimit {
 					return sample
 				}
 			}
@@ -446,19 +478,21 @@ func GetImportMode(c *gin.Context, sampleKeys []string) string {
 		if looksLikeHex(k) {
 			hexLike++
 		}
-		if limit >= 5 { // only check first few keys
+		if limit >= importModeSampleLimit { // only check first few keys
 			break
 		}
 	}
-	if limit > 0 && hexLike*2 >= limit { // majority hex-like
+	if limit > 0 && hexLike*2 > limit { // strict majority avoids treating a 1:1 tie as encrypted
 		return "encrypted"
 	}
+	// With no sensitive samples, mode cannot transform any credential; preserve the legacy default.
 	return "plain"
 }
 
 // looksLikeHex checks if a string appears to be hex-encoded (even length and valid hex chars)
 func looksLikeHex(s string) bool {
-	if len(s) < 16 || len(s)%2 != 0 { // quick rejects
+	// Short hex-looking plaintext (for example, numeric user IDs) must remain plain.
+	if len(s) < minimumEncryptedValueHexLength || len(s)%2 != 0 { // quick rejects
 		return false
 	}
 	_, err := hex.DecodeString(s)

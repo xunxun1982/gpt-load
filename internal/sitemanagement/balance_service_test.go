@@ -3,6 +3,7 @@ package sitemanagement
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -738,6 +739,179 @@ func TestBalanceServiceRefreshAllBalancesReturnsUpdateCancellation(t *testing.T)
 	assert.ErrorIs(t, err, context.Canceled)
 	require.NotNil(t, results[site.ID])
 	require.NotNil(t, results[site.ID].Balance)
+}
+
+func TestBalanceServiceRefreshAllBalancesReturnsPersistenceErrors(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"quota":500000}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	authValue, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "balance persistence failure",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeNewAPI,
+		Enabled:   true,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: authValue,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	forcedErr := errors.New("forced balance persistence failure")
+	const hookName = "test:balance_persistence_failure"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_sites" {
+			tx.AddError(forcedErr)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	results, err := service.RefreshAllBalances(context.Background())
+
+	assert.ErrorIs(t, err, forcedErr)
+	require.NotNil(t, results[site.ID])
+	require.NotNil(t, results[site.ID].Balance)
+}
+
+func TestBalanceServiceUpdateBalancesInDBStopsAfterContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	sites := make([]ManagedSite, 3)
+	for i := range sites {
+		sites[i] = ManagedSite{
+			Name:     fmt.Sprintf("cancel update site %d", i),
+			BaseURL:  fmt.Sprintf("https://cancel-%d.example.com", i),
+			SiteType: SiteTypeNewAPI,
+		}
+		require.NoError(t, db.Create(&sites[i]).Error)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	updateCalls := 0
+	const hookName = "test:cancel_during_balance_updates"
+	require.NoError(t, db.Callback().Update().After("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_sites" {
+			updateCalls++
+			if updateCalls == 1 {
+				cancel()
+			}
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	balance := "$5.00"
+	results := make(map[uint]*BalanceInfo, len(sites))
+	for i := range sites {
+		results[sites[i].ID] = &BalanceInfo{SiteID: sites[i].ID, Balance: &balance}
+	}
+	service := NewBalanceService(db, setupTestEncryption(t))
+	invalidations := 0
+	service.SetCacheInvalidationCallback(func() { invalidations++ })
+
+	err := service.updateBalancesInDB(ctx, results)
+
+	require.NoError(t, err)
+	assert.ErrorIs(t, ctx.Err(), context.Canceled)
+	assert.Equal(t, 1, updateCalls)
+	assert.Equal(t, 1, invalidations)
+}
+
+func TestBalanceServiceUpdateBalancesInDBPreservesPartialWrites(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	sites := []ManagedSite{
+		{Name: "partial update site A", BaseURL: "https://partial-a.example.com", SiteType: SiteTypeNewAPI},
+		{Name: "partial update site B", BaseURL: "https://partial-b.example.com", SiteType: SiteTypeNewAPI},
+	}
+	for i := range sites {
+		require.NoError(t, db.Create(&sites[i]).Error)
+	}
+
+	forcedErr := errors.New("forced single balance update failure")
+	updateCalls := 0
+	const hookName = "test:single_balance_update_failure"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_sites" {
+			updateCalls++
+			if updateCalls == 1 {
+				tx.AddError(forcedErr)
+			}
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	balance := "$5.00"
+	results := map[uint]*BalanceInfo{
+		sites[0].ID: {SiteID: sites[0].ID, Balance: &balance},
+		sites[1].ID: {SiteID: sites[1].ID, Balance: &balance},
+	}
+	service := NewBalanceService(db, setupTestEncryption(t))
+	invalidations := 0
+	service.SetCacheInvalidationCallback(func() { invalidations++ })
+
+	err := service.updateBalancesInDB(context.Background(), results)
+
+	assert.ErrorIs(t, err, forcedErr)
+	assert.Equal(t, 2, updateCalls)
+	var updated int64
+	require.NoError(t, db.Model(&ManagedSite{}).Where("last_balance = ?", balance).Count(&updated).Error)
+	assert.Equal(t, int64(1), updated)
+	assert.Equal(t, 1, invalidations)
+}
+
+func TestBalanceServiceUpdateBalancesInDBSummarizesMultipleFailures(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	sites := make([]ManagedSite, 3)
+	for i := range sites {
+		sites[i] = ManagedSite{
+			Name:     fmt.Sprintf("failed update site %d", i),
+			BaseURL:  fmt.Sprintf("https://failed-update-%d.example.com", i),
+			SiteType: SiteTypeNewAPI,
+		}
+		require.NoError(t, db.Create(&sites[i]).Error)
+	}
+
+	forcedErr := errors.New("forced repeated balance update failure")
+	const hookName = "test:repeated_balance_update_failure"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_sites" {
+			tx.AddError(forcedErr)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	balance := "$5.00"
+	results := make(map[uint]*BalanceInfo, len(sites))
+	for i := range sites {
+		results[sites[i].ID] = &BalanceInfo{SiteID: sites[i].ID, Balance: &balance}
+	}
+	service := NewBalanceService(db, setupTestEncryption(t))
+	invalidations := 0
+	service.SetCacheInvalidationCallback(func() { invalidations++ })
+
+	err := service.updateBalancesInDB(context.Background(), results)
+
+	assert.ErrorIs(t, err, forcedErr)
+	assert.Contains(t, err.Error(), "2 additional balance cache updates failed")
+	assert.Zero(t, invalidations)
 }
 
 // TestBalanceService_GetHTTPClient tests HTTP client selection

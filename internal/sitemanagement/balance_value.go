@@ -16,11 +16,21 @@ func normalizeManagedSiteBalanceMultiplier(multiplier int64) int64 {
 	return multiplier
 }
 
+func normalizeManagedSiteBalanceNegativeZero(balance string) string {
+	if balance == "$-0.00" {
+		return "$0.00"
+	}
+	return balance
+}
+
 // scaledManagedSiteBalance is the single display boundary for cached upstream balances.
 func scaledManagedSiteBalance(balance string, multiplier int64) string {
 	multiplier = normalizeManagedSiteBalanceMultiplier(multiplier)
-	if balance == "" || multiplier == defaultManagedSiteBalanceMultiplier {
+	if balance == "" {
 		return balance
+	}
+	if multiplier == defaultManagedSiteBalanceMultiplier {
+		return normalizeManagedSiteBalanceNegativeZero(balance)
 	}
 
 	value := strings.TrimSpace(balance)
@@ -33,10 +43,9 @@ func scaledManagedSiteBalance(balance string, multiplier int64) string {
 		return balance
 	}
 	scaled := amount / float64(multiplier)
-	if scaled == 0 {
-		scaled = 0 // Avoid rendering a negative zero after dividing a small negative balance.
-	}
-	return fmt.Sprintf("$%.2f", scaled)
+	formatted := fmt.Sprintf("$%.2f", scaled)
+	// Normalize after display rounding because a small negative value is still non-zero beforehand.
+	return normalizeManagedSiteBalanceNegativeZero(formatted)
 }
 
 func scaleManagedSiteBalanceInfo(info *BalanceInfo, multiplier int64) {

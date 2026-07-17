@@ -298,34 +298,53 @@ func (s *BalanceService) refreshAllBalancesBackground(parent context.Context) {
 	logrus.WithField("count", len(results)).Info("Scheduled balance refresh completed")
 }
 
-// updateBalancesInDB updates balance cache in database
-func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uint]*BalanceInfo) {
+// updateBalancesInDB updates balance cache in database and aggregates partial-write failures.
+func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uint]*BalanceInfo) error {
 	today := GetBeijingCheckinDay()
 	updated := false
+	var firstUpdateErr error
+	failedUpdates := 0
 
 	for siteID, info := range results {
+		if ctx.Err() != nil {
+			break
+		}
 		if info.Balance == nil {
 			continue
 		}
 		balance := *info.Balance
 
 		// Update only balance fields to avoid touching other columns
-		if err := s.db.WithContext(ctx).Model(&ManagedSite{}).
+		updateResult := s.db.WithContext(ctx).Model(&ManagedSite{}).
 			Where("id = ?", siteID).
 			Updates(map[string]interface{}{
 				"last_balance":      balance,
 				"last_balance_date": today,
-			}).Error; err != nil {
+			})
+		if err := updateResult.Error; err != nil {
+			if ctx.Err() != nil {
+				updated = updated || updateResult.RowsAffected > 0
+				break
+			}
 			logrus.WithError(err).WithField("site_id", siteID).
 				Debug("Failed to update balance cache")
+			failedUpdates++
+			if firstUpdateErr == nil {
+				firstUpdateErr = fmt.Errorf("failed to update balance cache for site %d: %w", siteID, err)
+			}
 			continue
 		}
 		updated = true
 	}
 
 	if updated {
+		// Invalidators expose no error channel; partial successful writes still invalidate once.
 		s.invalidateBalanceConsumers()
 	}
+	if failedUpdates > 1 {
+		return fmt.Errorf("%w; %d additional balance cache updates failed", firstUpdateErr, failedUpdates-1)
+	}
+	return firstUpdateErr
 }
 
 // FetchSiteBalance fetches balance for a single site and updates cache in database.
@@ -703,9 +722,13 @@ func (s *BalanceService) RefreshAllBalances(ctx context.Context) (map[uint]*Bala
 	if err := ctx.Err(); err != nil {
 		return results, err
 	}
-	s.updateBalancesInDB(ctx, results)
+	updateErr := s.updateBalancesInDB(ctx, results)
 	if err := ctx.Err(); err != nil {
+		// Cancellation remains the primary caller contract even when a persistence attempt also failed.
 		return results, err
+	}
+	if updateErr != nil {
+		return results, updateErr
 	}
 
 	return results, nil

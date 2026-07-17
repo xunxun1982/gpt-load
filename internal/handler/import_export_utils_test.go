@@ -2,8 +2,10 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"gpt-load/internal/models"
@@ -292,9 +294,10 @@ func TestConvertChildGroupsForExportAndImport(t *testing.T) {
 		},
 	}
 
-	exported := ConvertChildGroupsForExport(source, "plain", func(value string) (string, error) {
+	exported, err := ConvertChildGroupsForExport(source, "plain", func(value string) (string, error) {
 		return "plain-" + value, nil
 	})
+	require.NoError(t, err)
 	assert.Len(t, exported, 1)
 	assert.Equal(t, "child-group", exported[0].Name)
 	assert.Equal(t, "plain-encrypted-key", exported[0].Keys[0].KeyValue)
@@ -309,6 +312,25 @@ func TestConvertChildGroupsForExportAndImport(t *testing.T) {
 	assert.JSONEq(t, `{"base_url":"https://child.example.com"}`, string(imported[0].Config))
 	assert.JSONEq(t, `{"gpt-4":"gpt-4o"}`, string(imported[0].ModelRedirectRules))
 	assert.Equal(t, "encrypted-plain-encrypted-key", imported[0].Keys[0].KeyValue)
+}
+
+func TestConvertChildGroupsForExportDoesNotReturnCiphertextOnDecryptFailure(t *testing.T) {
+	t.Parallel()
+
+	exported, err := ConvertChildGroupsForExport([]services.ChildGroupExport{{
+		Name: "child-group",
+		Keys: []services.KeyExportInfo{{
+			KeyValue: "sensitive-invalid-ciphertext",
+			Status:   models.KeyStatusActive,
+		}},
+	}}, "plain", func(string) (string, error) {
+		return "", errors.New("forced decrypt failure")
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, exported)
+	assert.NotContains(t, err.Error(), "sensitive-invalid-ciphertext")
+	assert.NotContains(t, err.Error(), "forced decrypt failure")
 }
 
 func TestConvertGroupForImportPreservesChildGroups(t *testing.T) {
@@ -415,7 +437,7 @@ func TestGetImportModeUsesChildOnlyEncryptedKeys(t *testing.T) {
 				{
 					Name: "child",
 					Keys: []KeyExportInfo{
-						{KeyValue: "00112233445566778899aabbccddeeff"},
+						{KeyValue: strings.Repeat("ab", 28)},
 					},
 				},
 			},
@@ -528,8 +550,14 @@ func TestGetImportMode(t *testing.T) {
 		{
 			name:       "heuristic_encrypted",
 			query:      "",
-			sampleKeys: []string{"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4", "1234567890abcdef1234567890abcdef"},
+			sampleKeys: []string{strings.Repeat("ab", 28), strings.Repeat("cd", 29)},
 			expected:   "encrypted",
+		},
+		{
+			name:       "heuristic_tie_stays_plain",
+			query:      "",
+			sampleKeys: []string{strings.Repeat("ab", 28), "plain-auth-value"},
+			expected:   "plain",
 		},
 		{
 			name:       "empty_samples_default_plain",
@@ -577,9 +605,9 @@ func TestLooksLikeHex(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "valid_hex",
-			input:    "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
-			expected: true,
+			name:     "hex_below_ciphertext_length",
+			input:    "1234567890123456",
+			expected: false,
 		},
 		{
 			name:     "invalid_chars",
@@ -587,8 +615,8 @@ func TestLooksLikeHex(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "valid_long_hex",
-			input:    "1234567890abcdef1234567890abcdef1234567890abcdef",
+			name:     "minimum_ciphertext_length",
+			input:    strings.Repeat("ab", 28),
 			expected: true,
 		},
 	}
@@ -619,7 +647,7 @@ func BenchmarkConvertModelRedirectRulesToExport(b *testing.B) {
 }
 
 func BenchmarkLooksLikeHex(b *testing.B) {
-	testStr := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+	testStr := strings.Repeat("ab", 28)
 
 	b.ResetTimer()
 	b.ReportAllocs()

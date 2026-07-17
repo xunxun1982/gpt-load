@@ -507,10 +507,12 @@ func (s *Server) ImportManagedSites(c *gin.Context) {
 	}
 
 	// Determine import mode from query, filename or content heuristic
-	sample := make([]string, 0, 5)
-	for i := 0; i < len(importData.Sites) && i < 5; i++ {
-		if importData.Sites[i].AuthValue != "" {
-			sample = append(sample, importData.Sites[i].AuthValue)
+	sample := make([]string, 0, importModeSampleLimit)
+	for i := range importData.Sites {
+		site := &importData.Sites[i]
+		sample = appendManagedSiteImportSamples(sample, site.UserID, site.AuthType, site.AuthValue)
+		if len(sample) >= importModeSampleLimit {
+			break
 		}
 	}
 	importMode := GetImportMode(c, sample)

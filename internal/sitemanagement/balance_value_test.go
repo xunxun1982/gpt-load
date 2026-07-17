@@ -13,10 +13,12 @@ func TestScaledManagedSiteBalance(t *testing.T) {
 	}{
 		{name: "empty", balance: "", multiplier: 3, want: ""},
 		{name: "default multiplier", balance: "$120.00", multiplier: 1, want: "$120.00"},
+		{name: "existing negative zero", balance: "$-0.00", multiplier: 1, want: "$0.00"},
 		{name: "legacy zero multiplier", balance: "$120.00", multiplier: 0, want: "$120.00"},
 		{name: "exact division", balance: "$120.00", multiplier: 3, want: "$40.00"},
 		{name: "rounded division", balance: "$1.00", multiplier: 3, want: "$0.33"},
 		{name: "negative balance", balance: "$-1.00", multiplier: 2, want: "$-0.50"},
+		{name: "negative rounds to zero", balance: "$-0.01", multiplier: 100, want: "$0.00"},
 		{name: "unknown legacy value", balance: "unknown", multiplier: 5, want: "unknown"},
 	}
 

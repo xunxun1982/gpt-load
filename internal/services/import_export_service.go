@@ -39,6 +39,30 @@ type importGroupOptions struct {
 	ImportAggregateSubGroups bool
 }
 
+const managedSiteAuthTypeNone = "none"
+
+// NormalizeManagedSiteAuthType canonicalizes system import/export auth types without validating provider-specific values.
+func NormalizeManagedSiteAuthType(raw string) string {
+	parts := strings.Split(strings.ToLower(raw), ",")
+	normalized := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || part == managedSiteAuthTypeNone {
+			continue
+		}
+		normalized = append(normalized, part)
+	}
+	if len(normalized) == 0 {
+		return managedSiteAuthTypeNone
+	}
+	return strings.Join(normalized, ",")
+}
+
+// ManagedSiteAuthTypeRequiresCredential reports whether an auth value may be retained or exported.
+func ManagedSiteAuthTypeRequiresCredential(authType string) bool {
+	return NormalizeManagedSiteAuthType(authType) != managedSiteAuthTypeNone
+}
+
 // NewImportExportService creates a new import/export service
 func NewImportExportService(db *gorm.DB, bulkImport *BulkImportService, encryptionSvc encryption.Service) *ImportExportService {
 	return &ImportExportService{
@@ -1116,22 +1140,28 @@ func (s *ImportExportService) exportManagedSites() (*ManagedSitesExportData, err
 
 	// Export sites (keep auth_value encrypted)
 	for _, site := range sites {
+		authType := NormalizeManagedSiteAuthType(site.AuthType)
+		authValue := ""
+		if ManagedSiteAuthTypeRequiresCredential(authType) {
+			authValue = site.AuthValue
+		}
 		result.Sites = append(result.Sites, ManagedSiteExportInfo{
-			Name:               site.Name,
-			Notes:              site.Notes,
-			Description:        site.Description,
-			Sort:               site.Sort,
-			Enabled:            site.Enabled,
-			BaseURL:            site.BaseURL,
-			SiteType:           site.SiteType,
+			Name:        site.Name,
+			Notes:       site.Notes,
+			Description: site.Description,
+			Sort:        site.Sort,
+			Enabled:     site.Enabled,
+			BaseURL:     site.BaseURL,
+			SiteType:    site.SiteType,
+			// Encrypted backups preserve user_id without a read pass; import validates it before persistence.
 			UserID:             site.UserID,
 			CheckInPageURL:     site.CheckInPageURL,
 			CheckInAvailable:   site.CheckInAvailable,
 			CheckInEnabled:     site.CheckInEnabled,
 			AutoCheckInEnabled: site.AutoCheckInEnabled,
 			CustomCheckInURL:   site.CustomCheckInURL,
-			AuthType:           site.AuthType,
-			AuthValue:          site.AuthValue, // Keep encrypted
+			AuthType:           authType,
+			AuthValue:          authValue, // Keep encrypted only when authentication is configured.
 			BalanceMultiplier:  max(site.BalanceMultiplier, int64(1)),
 		})
 	}
@@ -1860,16 +1890,23 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 			siteType = "unknown"
 		}
 
-		authType := strings.TrimSpace(siteInfo.AuthType)
-		if authType == "" {
-			authType = "none"
+		authType := NormalizeManagedSiteAuthType(siteInfo.AuthType)
+
+		userID := strings.TrimSpace(siteInfo.UserID)
+		// Encrypted system imports are same-key backups. Cross-key migrations must use plain mode,
+		// whose handler re-encrypts before this method; preserving validated ciphertext avoids churn.
+		// The site-specific importer intentionally supports mixed plaintext user IDs.
+		if err := s.validateManagedSiteCiphertext(userID); err != nil {
+			logrus.WithError(err).Warnf("Failed to decrypt user ID for site %s, skipping", name)
+			skipped++
+			continue
 		}
 
-		// Validate encrypted auth value if present
-		authValue := siteInfo.AuthValue
-		if authValue != "" && authType != "none" {
-			// Verify it can be decrypted
-			if _, err := s.encryptionService.Decrypt(authValue); err != nil {
+		// Credentials attached to no-auth sites are stale and must never reach storage or plain exports.
+		authValue := ""
+		if ManagedSiteAuthTypeRequiresCredential(authType) {
+			authValue = siteInfo.AuthValue
+			if err := s.validateManagedSiteCiphertext(authValue); err != nil {
 				logrus.WithError(err).Warnf("Failed to decrypt auth value for site %s, skipping", name)
 				skipped++
 				continue
@@ -1902,7 +1939,7 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 			Enabled:            siteInfo.Enabled,
 			BaseURL:            baseURL,
 			SiteType:           siteType,
-			UserID:             strings.TrimSpace(siteInfo.UserID),
+			UserID:             userID,
 			CheckInPageURL:     strings.TrimSpace(siteInfo.CheckInPageURL),
 			CheckInAvailable:   siteInfo.CheckInAvailable,
 			CheckInEnabled:     checkInEnabled,
@@ -2001,6 +2038,18 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 	}
 
 	return imported, skipped, nil
+}
+
+func (s *ImportExportService) validateManagedSiteCiphertext(value string) error {
+	if value == "" {
+		return nil
+	}
+	if s.encryptionService == nil {
+		// Fail closed: production imports must never persist unvalidated ciphertext.
+		return errors.New("managed-site encryption service is unavailable")
+	}
+	_, err := s.encryptionService.Decrypt(value)
+	return err
 }
 
 // generateUniqueSiteName generates a unique site name by appending a random suffix if needed.

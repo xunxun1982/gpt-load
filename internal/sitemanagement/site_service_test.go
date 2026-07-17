@@ -1112,6 +1112,56 @@ func TestExportSitesReturnsPlainCredentialDecryptErrors(t *testing.T) {
 	}
 }
 
+func TestExportSitesNormalizesNoAuthAndOmitsCredential(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	require.NoError(t, db.Create(&ManagedSite{
+		Name:      "site without authentication",
+		BaseURL:   "https://example.com",
+		SiteType:  SiteTypeNewAPI,
+		Enabled:   true,
+		AuthType:  " \t ",
+		AuthValue: "sensitive-stale-ciphertext",
+	}).Error)
+	service := NewSiteService(db, nil, encSvc)
+
+	exported, err := service.ExportSites(context.Background(), false, true)
+
+	require.NoError(t, err)
+	require.Len(t, exported.Sites, 1)
+	assert.Equal(t, AuthTypeNone, exported.Sites[0].AuthType)
+	assert.Empty(t, exported.Sites[0].AuthValue)
+}
+
+func TestExportSitesPreservesUnknownAuthTypeForForwardCompatibleBackup(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	encryptedAuth, err := encSvc.Encrypt("future-auth-value")
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&ManagedSite{
+		Name:      "site with future authentication",
+		BaseURL:   "https://example.com",
+		SiteType:  SiteTypeNewAPI,
+		Enabled:   true,
+		AuthType:  "future_auth",
+		AuthValue: encryptedAuth,
+	}).Error)
+	service := NewSiteService(db, nil, encSvc)
+
+	exported, err := service.ExportSites(context.Background(), false, false)
+
+	require.NoError(t, err)
+	require.Len(t, exported.Sites, 1)
+	assert.Equal(t, "future_auth", exported.Sites[0].AuthType)
+	assert.Equal(t, encryptedAuth, exported.Sites[0].AuthValue)
+}
+
 func TestScheduleConfigUpdatesDoNotOverwriteOtherScheduleFields(t *testing.T) {
 	t.Run("auto check-in update preserves a concurrent balance update", func(t *testing.T) {
 		db := setupTestDB(t)

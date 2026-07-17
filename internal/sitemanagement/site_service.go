@@ -1522,6 +1522,8 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 
 	// Export sites
 	for _, site := range sites {
+		// Backup exports preserve unknown future auth types; only normalized no-auth values drop credentials.
+		authType := services.NormalizeManagedSiteAuthType(site.AuthType)
 		siteInfo := SiteExportInfo{
 			Name:               site.Name,
 			Notes:              site.Notes,
@@ -1538,11 +1540,11 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 			UseProxy:           site.UseProxy,
 			ProxyURL:           site.ProxyURL,
 			BypassMethod:       site.BypassMethod,
-			AuthType:           site.AuthType,
+			AuthType:           authType,
 			BalanceMultiplier:  normalizeManagedSiteBalanceMultiplier(site.BalanceMultiplier),
 		}
 
-		// Handle user_id based on export mode (stored encrypted in DB)
+		// user_id is an independent sensitive field and remains exportable even when auth_type is none.
 		if site.UserID != "" {
 			if plainMode {
 				// Decrypt for plain export
@@ -1558,7 +1560,7 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 		}
 
 		// Handle auth value based on export mode
-		if site.AuthValue != "" {
+		if services.ManagedSiteAuthTypeRequiresCredential(authType) && site.AuthValue != "" {
 			if plainMode {
 				// Decrypt for plain export
 				decrypted, err := s.encryptionSvc.Decrypt(site.AuthValue)
@@ -1658,6 +1660,7 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			siteType = SiteTypeUnknown
 		}
 
+		// Site imports activate only auth methods supported by this binary; unknown future types stay disabled.
 		authType := normalizeAuthType(siteInfo.AuthType)
 		if authType == "" {
 			authType = AuthTypeNone

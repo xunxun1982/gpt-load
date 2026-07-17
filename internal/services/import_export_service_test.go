@@ -87,6 +87,32 @@ func TestExportImportSystemRestoresAutoBalanceConfig(t *testing.T) {
 	assert.Equal(t, "08:00,12:30", restoredSchedule.ScheduleTimes)
 }
 
+func TestExportSystemNormalizesNoAuthAndOmitsCredential(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+	require.NoError(t, db.Create(&managedSiteModel{
+		Name:      "site without authentication",
+		BaseURL:   "https://example.com",
+		SiteType:  "new-api",
+		AuthType:  " \t ",
+		AuthValue: "sensitive-stale-ciphertext",
+	}).Error)
+
+	exported, err := NewImportExportService(db, nil, nil).ExportSystem()
+
+	require.NoError(t, err)
+	require.NotNil(t, exported.ManagedSites)
+	require.Len(t, exported.ManagedSites.Sites, 1)
+	assert.Equal(t, managedSiteAuthTypeNone, exported.ManagedSites.Sites[0].AuthType)
+	assert.Empty(t, exported.ManagedSites.Sites[0].AuthValue)
+}
+
 func TestExportSystemReturnsManagedSiteScheduleReadErrors(t *testing.T) {
 	db := setupTestDB(t)
 	require.NoError(t, db.AutoMigrate(
@@ -211,6 +237,49 @@ func TestImportSystemSkipsNegativeManagedSiteBalanceMultiplier(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Model(&managedSiteModel{}).Count(&count).Error)
 	assert.Zero(t, count)
+}
+
+func TestImportSystemSkipsInvalidManagedSiteUserIDCiphertext(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+	encSvc, err := encryption.NewService("test-encryption-key-32-bytes!!")
+	require.NoError(t, err)
+	validUserID, err := encSvc.Encrypt("valid-user-id")
+	require.NoError(t, err)
+
+	err = db.Transaction(func(tx *gorm.DB) error {
+		return NewImportExportService(db, nil, encSvc).ImportSystem(tx, &SystemExportData{
+			ManagedSites: &ManagedSitesExportData{Sites: []ManagedSiteExportInfo{
+				{
+					Name:     "invalid user ID ciphertext",
+					BaseURL:  "https://invalid.example.com",
+					SiteType: "new-api",
+					UserID:   "invalid-ciphertext",
+					AuthType: "none",
+				},
+				{
+					Name:     "valid user ID ciphertext",
+					BaseURL:  "https://valid.example.com",
+					SiteType: "new-api",
+					UserID:   validUserID,
+					AuthType: "none",
+				},
+			}},
+		})
+	})
+	require.NoError(t, err)
+
+	var sites []managedSiteModel
+	require.NoError(t, db.Order("name ASC").Find(&sites).Error)
+	require.Len(t, sites, 1)
+	assert.Equal(t, "valid user ID ciphertext", sites[0].Name)
+	assert.Equal(t, validUserID, sites[0].UserID)
 }
 
 func TestImportSystemRejectsInvalidAutoBalanceInterval(t *testing.T) {
