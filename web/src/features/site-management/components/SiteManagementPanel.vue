@@ -2806,8 +2806,8 @@ watch(
   border-radius: 3px;
 }
 .form-section {
-  margin-bottom: 12px;
-  padding: 12px 14px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
   border: 1px solid var(--n-border-color, var(--border-color));
   border-radius: 8px;
   background: var(--n-color-embedded, transparent);
@@ -2819,7 +2819,7 @@ watch(
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
-  margin: 0 0 8px 0;
+  margin: 0 0 4px 0;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border-color);
 }
@@ -2869,7 +2869,8 @@ watch(
   min-width: 0;
 }
 .multiplier-field :deep(.n-input-number) {
-  width: 100%;
+  width: 180px;
+  max-width: 100%;
 }
 .field-hint {
   display: block;
@@ -2904,7 +2905,7 @@ watch(
   flex-shrink: 0;
 }
 .site-form :deep(.n-form-item) {
-  margin-bottom: 6px !important;
+  margin-bottom: 4px !important;
   --n-feedback-height: 0 !important;
 }
 .site-form :deep(.n-form-item-label) {
