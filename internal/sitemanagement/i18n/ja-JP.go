@@ -6,6 +6,7 @@ var MessagesJaJP = map[string]string{
 	"site_management.validation.name_duplicate":                "サイト名「{{.name}}」は既に存在します",
 	"site_management.validation.invalid_base_url":              "無効なベースURL: {{.error}}",
 	"site_management.validation.invalid_auth_type":             "無効な認証タイプ",
+	"site_management.validation.balance_multiplier_min":        "残高倍率は 1 以上の整数で指定してください",
 	"site_management.validation.auth_value_requires_auth_type": "認証情報を設定するには認証タイプが必要です",
 	"site_management.validation.time_window_required":          "時間ウィンドウが必要です",
 	"site_management.validation.invalid_time":                  "無効な時間: {{.field}}",
@@ -13,6 +14,8 @@ var MessagesJaJP = map[string]string{
 	"site_management.validation.deterministic_time_required":   "確定モードでは固定時間が必要です",
 	"site_management.validation.duplicate_time":                "スケジュール時間「{{.time}}」が重複しています",
 	"site_management.validation.schedule_times_required":       "少なくとも1つのスケジュール時間が必要です",
+	"site_management.validation.schedule_times_too_long":       "スケジュール時間は合計 {{.max}} 文字以内で指定してください",
+	"site_management.validation.invalid_balance_interval":      "残高更新間隔は {{.min}}～{{.max}} 時間で指定してください",
 
 	// Check-in messages
 	"site_management.checkin.failed":                             "チェックイン失敗",

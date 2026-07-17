@@ -96,6 +96,7 @@ func TestValidationMessageKeys(t *testing.T) {
 		"site_management.validation.name_duplicate",
 		"site_management.validation.invalid_base_url",
 		"site_management.validation.invalid_auth_type",
+		"site_management.validation.balance_multiplier_min",
 		"site_management.validation.auth_value_requires_auth_type",
 		"site_management.validation.time_window_required",
 		"site_management.validation.invalid_time",
@@ -103,6 +104,8 @@ func TestValidationMessageKeys(t *testing.T) {
 		"site_management.validation.deterministic_time_required",
 		"site_management.validation.duplicate_time",
 		"site_management.validation.schedule_times_required",
+		"site_management.validation.schedule_times_too_long",
+		"site_management.validation.invalid_balance_interval",
 	}
 
 	for _, key := range validationKeys {

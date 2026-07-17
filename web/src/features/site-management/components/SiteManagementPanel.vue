@@ -8,8 +8,10 @@
  * to users, so local error handling is intentionally omitted to avoid duplicate messages.
  */
 import {
+  autoBalanceApi,
   autoCheckinApi,
   siteManagementApi,
+  type AutoBalanceConfig,
   type CheckinLogDTO,
   type CreateManagedSiteRequest,
   type ManagedSiteAuthType,
@@ -29,6 +31,7 @@ import {
 } from "@/utils/app-state";
 import { formatBalanceValue } from "@/utils/display";
 import { askExportMode, askImportMode } from "@/utils/export-import";
+import { hasImpreciseManagedSiteBalanceMultiplier } from "@/utils/managed-site-import";
 import {
   Close,
   CloudDownloadOutline,
@@ -113,6 +116,11 @@ const siteProxyPoolLoading = ref(false);
 const balances = ref<Record<number, string | null>>({});
 const balanceLoading = ref(false);
 
+// Automatic balance configuration state
+const autoBalanceConfig = ref<AutoBalanceConfig | null>(null);
+const autoBalanceLoading = ref(false);
+const showAutoBalanceConfig = ref(false);
+
 // Auto check-in configuration state
 const autoCheckinRunning = ref(false);
 const showAutoCheckinConfig = ref(false);
@@ -144,6 +152,7 @@ const siteForm = reactive({
   notes: "",
   description: "",
   sort: 0,
+  balance_multiplier: null as number | null,
   enabled: true,
   base_url: "",
   site_type: "new-api" as ManagedSiteType,
@@ -444,6 +453,7 @@ function resetSiteForm() {
     notes: "",
     description: "",
     sort: 0,
+    balance_multiplier: null,
     enabled: true,
     base_url: "",
     site_type: "new-api",
@@ -485,6 +495,7 @@ function openEditSite(site: ManagedSiteDTO) {
     notes: site.notes,
     description: site.description,
     sort: site.sort,
+    balance_multiplier: site.balance_multiplier || 1,
     enabled: site.enabled,
     base_url: site.base_url,
     site_type: site.site_type,
@@ -565,6 +576,13 @@ async function submitSite() {
   }
   if (!siteForm.base_url.trim()) {
     message.warning(t("siteManagement.baseUrlRequired"));
+    return;
+  }
+
+  // Keep the UI free of an arbitrary business maximum, but reject values JSON cannot preserve exactly.
+  const balanceMultiplier = siteForm.balance_multiplier ?? 1;
+  if (!Number.isSafeInteger(balanceMultiplier) || balanceMultiplier < 1) {
+    message.warning(t("siteManagement.balanceMultiplierInvalid"));
     return;
   }
 
@@ -657,6 +675,7 @@ async function submitSite() {
   const proxyURL = siteForm.proxy_url.trim();
   const payload = {
     ...siteForm,
+    balance_multiplier: balanceMultiplier,
     use_proxy: proxyURL !== "",
     proxy_url: proxyURL,
     auth_type: authTypeStr,
@@ -1416,13 +1435,35 @@ async function handleFileChange(event: Event) {
 
   try {
     const text = await file.text();
-    const data = JSON.parse(text) as SiteImportData;
-
-    if (!data.sites || !Array.isArray(data.sites)) {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
       message.error(t("siteManagement.importInvalidFormat"));
       input.value = "";
       return;
     }
+
+    const data = parsed as SiteImportData;
+    const hasSites = Array.isArray(data.sites);
+    const hasSiteRows = Array.isArray(data.sites) && data.sites.length > 0;
+    const hasScheduleConfig =
+      (data.auto_checkin !== undefined && data.auto_checkin !== null) ||
+      (data.auto_balance !== undefined && data.auto_balance !== null);
+
+    if ((data.sites !== undefined && !hasSites) || (!hasSiteRows && !hasScheduleConfig)) {
+      message.error(t("siteManagement.importInvalidFormat"));
+      input.value = "";
+      return;
+    }
+    if (hasImpreciseManagedSiteBalanceMultiplier(data)) {
+      message.error(t("siteManagement.balanceMultiplierInvalid"));
+      input.value = "";
+      return;
+    }
+
+    const normalizedData: SiteImportData = {
+      ...data,
+      sites: data.sites ?? [],
+    };
 
     // Ask user for import mode
     const mode = await askImportMode(dialog, t);
@@ -1431,11 +1472,14 @@ async function handleFileChange(event: Event) {
     }
 
     importLoading.value = true;
-    const result = await siteManagementApi.importSites(data, mode === "auto" ? undefined : mode);
+    const result = await siteManagementApi.importSites(
+      normalizedData,
+      mode === "auto" ? undefined : mode
+    );
     message.success(
       t("siteManagement.importSuccess", { imported: result.imported, total: result.total })
     );
-    await loadSites();
+    await Promise.all([loadSites(), loadAutoCheckinConfig(), loadAutoBalanceConfig()]);
   } catch (e) {
     if (e instanceof SyntaxError) {
       message.error(t("siteManagement.importInvalidJSON"));
@@ -1604,6 +1648,32 @@ async function saveAutoCheckinConfig() {
   }
 }
 
+async function loadAutoBalanceConfig() {
+  autoBalanceLoading.value = true;
+  try {
+    autoBalanceConfig.value = await autoBalanceApi.getConfig();
+  } catch (_) {
+    /* handled by centralized error handler */
+  } finally {
+    autoBalanceLoading.value = false;
+  }
+}
+
+async function saveAutoBalanceConfig() {
+  if (!autoBalanceConfig.value) {
+    return;
+  }
+  autoBalanceLoading.value = true;
+  try {
+    autoBalanceConfig.value = await autoBalanceApi.updateConfig(autoBalanceConfig.value);
+    message.success(t("common.saveSuccess"));
+  } catch (_) {
+    /* handled by centralized error handler */
+  } finally {
+    autoBalanceLoading.value = false;
+  }
+}
+
 async function runAutoCheckinNow() {
   autoCheckinRunning.value = true;
   try {
@@ -1701,6 +1771,7 @@ onMounted(() => {
     loadSites();
   }
   loadAutoCheckinConfig();
+  loadAutoBalanceConfig();
   // Balance is loaded from database cache (last_balance field) via loadSites()
   // Manual refresh button is available for users to update balances on demand
 });
@@ -1796,6 +1867,20 @@ watch(
             </n-button>
           </template>
           {{ t("siteManagement.autoCheckinConfigTooltip") }}
+        </n-tooltip>
+        <!-- Auto balance config button -->
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button
+              size="small"
+              secondary
+              @click="showAutoBalanceConfig = !showAutoBalanceConfig"
+            >
+              <template #icon><n-icon :component="SettingsOutline" /></template>
+              {{ t("siteManagement.autoBalance") }}
+            </n-button>
+          </template>
+          {{ t("siteManagement.autoBalanceConfigTooltip") }}
         </n-tooltip>
         <!-- Refresh balance button -->
         <n-tooltip trigger="hover">
@@ -2032,6 +2117,63 @@ watch(
         </div>
       </div>
     </n-collapse-transition>
+
+    <!-- Automatic Balance Configuration Panel -->
+    <n-collapse-transition :show="showAutoBalanceConfig">
+      <div class="auto-checkin-panel">
+        <div class="auto-checkin-header">
+          <n-text strong style="font-size: 13px">
+            {{ t("siteManagement.autoBalanceConfig") }}
+          </n-text>
+          <n-button
+            size="tiny"
+            quaternary
+            :loading="autoBalanceLoading"
+            @click="loadAutoBalanceConfig"
+          >
+            <template #icon><n-icon :component="RefreshOutline" size="12" /></template>
+          </n-button>
+        </div>
+
+        <div v-if="autoBalanceConfig" class="auto-checkin-config-row">
+          <span class="config-inline-item">
+            <n-text depth="3" class="config-label">{{ t("siteManagement.globalEnabled") }}</n-text>
+            <n-switch v-model:value="autoBalanceConfig.global_enabled" size="small" />
+          </span>
+
+          <span class="config-inline-item">
+            <n-text depth="3" class="config-label">
+              {{ t("siteManagement.balanceRefreshInterval") }}
+            </n-text>
+            <n-input-number
+              v-model:value="autoBalanceConfig.interval_hours"
+              :min="1"
+              :max="24"
+              :precision="0"
+              size="tiny"
+              style="width: 70px"
+            />
+            <n-text depth="3" style="font-size: 11px; margin-left: 2px">
+              {{ t("siteManagement.hours") }}
+            </n-text>
+          </span>
+
+          <span class="config-inline-item config-save">
+            <n-text depth="3" style="font-size: 10px">
+              {{ t("siteManagement.serverTimezoneNote") }}
+            </n-text>
+            <n-button
+              size="tiny"
+              type="primary"
+              :loading="autoBalanceLoading"
+              @click="saveAutoBalanceConfig"
+            >
+              {{ t("common.save") }}
+            </n-button>
+          </span>
+        </div>
+      </div>
+    </n-collapse-transition>
     <!-- Filter row with search, filters and stats -->
     <div class="filter-row">
       <n-space align="center" :size="6" class="filter-left">
@@ -2149,11 +2291,37 @@ watch(
             <n-form-item :label="t('siteManagement.baseUrl')" required>
               <n-input v-model:value="siteForm.base_url" placeholder="https://example.com" />
             </n-form-item>
-            <div class="form-row">
-              <n-form-item :label="t('siteManagement.sort')" class="form-item-sort">
-                <n-input-number v-model:value="siteForm.sort" :min="0" style="width: 100px" />
+            <div class="form-row form-row-compact">
+              <n-form-item
+                :label="t('siteManagement.sort')"
+                label-width="auto"
+                class="form-item-sort"
+              >
+                <n-input-number v-model:value="siteForm.sort" :min="0" style="width: 150px" />
               </n-form-item>
-              <n-form-item :label="t('siteManagement.enabled')" class="form-item-switch">
+              <n-form-item
+                :label="t('siteManagement.balanceMultiplier')"
+                label-width="auto"
+                class="form-item-multiplier"
+              >
+                <div class="multiplier-field">
+                  <n-input-number
+                    v-model:value="siteForm.balance_multiplier"
+                    :min="1"
+                    :precision="0"
+                    clearable
+                    :placeholder="t('siteManagement.balanceMultiplierPlaceholder')"
+                  />
+                  <n-text depth="3" class="field-hint">
+                    {{ t("siteManagement.balanceMultiplierHint") }}
+                  </n-text>
+                </div>
+              </n-form-item>
+              <n-form-item
+                :label="t('siteManagement.enabled')"
+                label-width="auto"
+                class="form-item-switch"
+              >
                 <n-switch v-model:value="siteForm.enabled" />
               </n-form-item>
             </div>
@@ -2337,15 +2505,17 @@ watch(
               {{ t("siteManagement.stealthCookieHint") }}
             </n-text>
           </div>
-          <n-space justify="end" size="small" style="margin-top: 12px">
+        </n-form>
+        <template #footer>
+          <div class="site-form-footer">
             <n-button size="small" secondary @click="showSiteModal = false">
               {{ t("common.cancel") }}
             </n-button>
             <n-button size="small" type="primary" @click="submitSite">
               {{ t("common.save") }}
             </n-button>
-          </n-space>
-        </n-form>
+          </div>
+        </template>
       </n-card>
     </n-modal>
 
@@ -2598,33 +2768,49 @@ watch(
   cursor: pointer;
   color: var(--n-text-color);
 }
-.site-form-modal,
+.site-form-modal {
+  width: min(760px, calc(100vw - 24px));
+}
 .logs-modal {
   width: 720px;
 }
 .site-form-card,
 .logs-card {
-  max-height: 85vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
-.site-form-card :deep(.n-card__content),
-.logs-card :deep(.n-card__content) {
+.site-form-card {
+  max-height: calc(100vh - 24px);
+}
+.logs-card {
+  max-height: 85vh;
+}
+.site-form-card :deep(.n-card-header),
+.site-form-card :deep(.n-card__footer) {
+  flex: 0 0 auto;
+}
+.site-form-card :deep(.n-card-content),
+.logs-card :deep(.n-card-content) {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  max-height: calc(85vh - 60px);
   padding-right: 16px;
 }
-.site-form-card :deep(.n-card__content)::-webkit-scrollbar {
+.site-form-card :deep(.n-card-content)::-webkit-scrollbar {
   width: 5px;
 }
-.site-form-card :deep(.n-card__content)::-webkit-scrollbar-thumb {
+.site-form-card :deep(.n-card-content)::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.15);
   border-radius: 3px;
 }
 .form-section {
   margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--n-border-color, var(--border-color));
+  border-radius: 8px;
+  background: var(--n-color-embedded, transparent);
 }
 .form-section:last-of-type {
   margin-bottom: 0;
@@ -2671,8 +2857,30 @@ watch(
 .form-item-sort {
   flex: 0 0 auto;
 }
+.form-item-multiplier {
+  flex: 1;
+  min-width: 250px;
+}
 .form-item-switch {
   flex: 0 0 auto;
+}
+.multiplier-field {
+  flex: 1;
+  min-width: 0;
+}
+.multiplier-field :deep(.n-input-number) {
+  width: 100%;
+}
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.site-form-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 .form-row-switches {
   gap: 24px;
@@ -2754,11 +2962,23 @@ watch(
   .form-item-quarter,
   .form-item-two-thirds,
   .form-item-sort,
+  .form-item-multiplier,
   .form-item-switch,
   .form-item-auth-type,
   .form-item-auth-value {
     width: 100%;
     flex: none;
+  }
+  .site-form :deep(.n-form-item-label) {
+    width: 104px !important;
+    height: auto;
+    min-height: 28px;
+    line-height: 1.35;
+    white-space: normal;
+  }
+  .form-row-compact :deep(.n-form-item-label) {
+    width: auto !important;
+    margin-right: 10px;
   }
   .form-item-auth-type :deep(.n-form-item-label),
   .form-item-auth-value :deep(.n-form-item-label) {

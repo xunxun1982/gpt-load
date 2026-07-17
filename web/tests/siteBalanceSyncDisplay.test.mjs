@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { URL } from "node:url";
 import ts from "typescript";
@@ -9,21 +9,7 @@ function readSource(path) {
   return readFileSync(new URL(path, import.meta.url), "utf8");
 }
 
-async function loadDisplayUtils() {
-  const { outputText } = ts.transpileModule(readSource("../src/utils/display.ts"), {
-    compilerOptions: {
-      module: ts.ModuleKind.ES2022,
-      target: ts.ScriptTarget.ES2022,
-    },
-  });
-  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
-}
-
-async function loadAppStateUtils() {
-  const source = readSource("../src/utils/app-state.ts").replace(
-    'import { reactive } from "vue";',
-    "const reactive = value => value;"
-  );
+async function loadTypeScriptModule(source) {
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: {
       module: ts.ModuleKind.ES2022,
@@ -33,10 +19,27 @@ async function loadAppStateUtils() {
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 }
 
+async function loadDisplayUtils() {
+  return loadTypeScriptModule(readSource("../src/utils/display.ts"));
+}
+
+async function loadAppStateUtils() {
+  const source = readSource("../src/utils/app-state.ts").replace(
+    'import { reactive } from "vue";',
+    "const reactive = value => value;"
+  );
+  return loadTypeScriptModule(source);
+}
+
 const siteApi = readSource("../src/api/site-management.ts");
 const appState = readSource("../src/utils/app-state.ts");
 const keysView = readSource("../src/views/Keys.vue");
 const sitePanel = readSource("../src/features/site-management/components/SiteManagementPanel.vue");
+const settingsView = readSource("../src/views/Settings.vue");
+const managedSiteImportUtilsURL = new URL("../src/utils/managed-site-import.ts", import.meta.url);
+const siteManagementEnLocale = readSource("../src/locales/site-management/en-US.ts");
+const siteManagementZhLocale = readSource("../src/locales/site-management/zh-CN.ts");
+const siteManagementJaLocale = readSource("../src/locales/site-management/ja-JP.ts");
 const bindingSelector = readSource("../src/components/keys/SiteBindingSelector.vue");
 const subGroupTable = readSource("../src/components/keys/SubGroupTable.vue");
 const groupInfoCard = readSource("../src/components/keys/GroupInfoCard.vue");
@@ -113,6 +116,114 @@ test("site management only pushes authoritative refresh results into shared bala
   assert.match(sitePanel, /updateSiteBalance\(siteId, result\.balance\)/);
   assert.match(sitePanel, /updateSiteBalance\(siteId, info\.balance\)/);
   assert.match(sitePanel, /Object\.prototype\.hasOwnProperty\.call\(balances\.value, site\.id\)/);
+});
+
+test("auto balance uses an hourly interval anchored to the site-management timezone", () => {
+  assert.match(siteApi, /export interface AutoBalanceConfig/);
+  assert.match(siteApi, /global_enabled:\s*boolean/);
+  assert.match(siteApi, /interval_hours:\s*number/);
+  assert.match(siteApi, /autoBalanceApi/);
+  assert.match(siteApi, /\/site-management\/auto-balance\/config/);
+  // The modular locale files are merged into siteManagement at runtime; this is the toolbar action key.
+  assert.match(
+    sitePanel,
+    /siteManagement\.autoCheckin[\s\S]*siteManagement\.autoBalance[\s\S]*siteManagement\.refreshBalance/
+  );
+  for (const locale of [siteManagementEnLocale, siteManagementZhLocale, siteManagementJaLocale]) {
+    assert.match(locale, /refreshBalance:\s*/);
+    assert.match(locale, /refreshBalanceTooltip:\s*/);
+  }
+  // balanceRefreshInterval is a separate form label and must not replace the toolbar action assertion.
+  assert.match(sitePanel, /siteManagement\.balanceRefreshInterval/);
+  assert.match(sitePanel, /v-model:value="autoBalanceConfig\.interval_hours"/);
+  assert.match(sitePanel, /:min="1"[\s\S]*:max="24"[\s\S]*:precision="0"/);
+  assert.match(sitePanel, /siteManagement\.serverTimezoneNote/);
+});
+
+test("managed-site import reloads the imported schedule configuration", () => {
+  assert.match(
+    sitePanel,
+    /siteManagementApi\.importSites\([\s\S]*?Promise\.all\(\[[\s\S]*?loadSites\(\)[\s\S]*?loadAutoCheckinConfig\(\)[\s\S]*?loadAutoBalanceConfig\(\)[\s\S]*?\]\)/
+  );
+});
+
+test("managed-site import accepts schedule-only payloads without sites", () => {
+  assert.match(siteApi, /sites\?:\s*SiteExportInfo\[\]/);
+  assert.match(sitePanel, /const parsed: unknown = JSON\.parse\(text\)/);
+  assert.match(sitePanel, /const hasSites = Array\.isArray\(data\.sites\)/);
+  assert.match(
+    sitePanel,
+    /const hasScheduleConfig =[\s\S]*?data\.auto_checkin !== undefined[\s\S]*?data\.auto_checkin !== null[\s\S]*?data\.auto_balance !== undefined[\s\S]*?data\.auto_balance !== null/
+  );
+  assert.match(sitePanel, /data\.sites !== undefined && !hasSites/);
+  assert.match(sitePanel, /!hasSiteRows && !hasScheduleConfig/);
+  assert.match(sitePanel, /sites:\s*data\.sites \?\? \[\]/);
+  assert.match(sitePanel, /siteManagementApi\.importSites\(\s*normalizedData/);
+});
+
+test("managed-site balance multiplier is optional in create and import payloads", () => {
+  assert.match(siteApi, /balance_multiplier:\s*number/);
+  assert.match(siteApi, /balance_multiplier\?:\s*number/);
+  const createRequest = /export interface CreateManagedSiteRequest\s*\{([\s\S]*?)\n\}/.exec(
+    siteApi
+  );
+  assert.ok(createRequest);
+  assert.match(createRequest[1], /balance_multiplier\?:\s*number;/);
+  assert.doesNotMatch(createRequest[1], /balance_multiplier:\s*number;/);
+  assert.match(sitePanel, /balance_multiplier:\s*null as number \| null/);
+  assert.match(sitePanel, /site\.balance_multiplier \|\| 1/);
+  assert.match(sitePanel, /siteForm\.balance_multiplier \?\? 1/);
+  assert.match(sitePanel, /Number\.isSafeInteger\(balanceMultiplier\)/);
+  assert.doesNotMatch(sitePanel, /Number\.isInteger\(balanceMultiplier\)/);
+  assert.match(sitePanel, /v-model:value="siteForm\.balance_multiplier"/);
+  assert.match(sitePanel, /:min="1"/);
+  assert.match(sitePanel, /:precision="0"/);
+  assert.doesNotMatch(sitePanel, /v-model:value="siteForm\.balance_multiplier"[\s\S]{0,160}:max=/);
+});
+
+test("managed-site imports reject positive multipliers that JSON cannot preserve", async () => {
+  assert.ok(existsSync(managedSiteImportUtilsURL), "shared import precision guard must exist");
+  const { hasImpreciseManagedSiteBalanceMultiplier } = await loadTypeScriptModule(
+    readFileSync(managedSiteImportUtilsURL, "utf8")
+  );
+
+  const imprecise = JSON.parse('{"sites":[{"balance_multiplier":9007199254740993}]}');
+  assert.equal(hasImpreciseManagedSiteBalanceMultiplier(imprecise), true);
+  assert.equal(
+    hasImpreciseManagedSiteBalanceMultiplier({
+      sites: [{ balance_multiplier: Number.MAX_SAFE_INTEGER }],
+    }),
+    false
+  );
+  assert.equal(
+    hasImpreciseManagedSiteBalanceMultiplier({ sites: [{ balance_multiplier: 0 }] }),
+    false
+  );
+  assert.equal(
+    hasImpreciseManagedSiteBalanceMultiplier({ sites: [{ balance_multiplier: -1 }] }),
+    false
+  );
+  assert.equal(hasImpreciseManagedSiteBalanceMultiplier({ sites: [{}] }), false);
+
+  assert.match(sitePanel, /hasImpreciseManagedSiteBalanceMultiplier\(data\)/);
+  assert.match(settingsView, /hasImpreciseManagedSiteBalanceMultiplier\(data\.managed_sites\)/);
+});
+
+test("managed-site modal keeps actions outside the scroll area with responsive sections", () => {
+  const formEnd = sitePanel.indexOf("</n-form>", sitePanel.indexOf('class="site-form"'));
+  const footer = sitePanel.indexOf("<template #footer>", formEnd);
+  assert.ok(formEnd > 0);
+  assert.ok(footer > formEnd);
+  assert.match(sitePanel, /\.site-form-modal\s*\{\s*width:\s*min\(760px, calc\(100vw - 24px\)\)/s);
+  assert.match(sitePanel, /\.form-section\s*\{[^}]*border:/s);
+  assert.match(sitePanel, /\.form-section\s*\{[^}]*border-radius:/s);
+  assert.match(
+    sitePanel,
+    /\.site-form-card :deep\(\.n-card-content\)[\s\S]*?\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0/s
+  );
+  assert.doesNotMatch(sitePanel, /\.site-form-card :deep\(\.n-card__content\)/);
+  assert.match(sitePanel, /v-model:value="siteForm\.sort"[\s\S]{0,100}style="width:\s*150px"/);
+  assert.match(sitePanel, /siteManagement\.balanceMultiplier[\s\S]{0,120}label-width="auto"/);
 });
 
 test("key balance display removes upstream currency and unit text", async () => {

@@ -6,6 +6,7 @@ var MessagesEnUS = map[string]string{
 	"site_management.validation.name_duplicate":                "Site name \"{{.name}}\" already exists",
 	"site_management.validation.invalid_base_url":              "Invalid base URL: {{.error}}",
 	"site_management.validation.invalid_auth_type":             "Invalid auth type",
+	"site_management.validation.balance_multiplier_min":        "Balance multiplier must be an integer of at least 1",
 	"site_management.validation.auth_value_requires_auth_type": "Auth value requires a non-none auth type",
 	"site_management.validation.time_window_required":          "Time window is required",
 	"site_management.validation.invalid_time":                  "Invalid time for {{.field}}",
@@ -13,6 +14,8 @@ var MessagesEnUS = map[string]string{
 	"site_management.validation.deterministic_time_required":   "Deterministic time is required",
 	"site_management.validation.duplicate_time":                "Duplicate schedule time: {{.time}}",
 	"site_management.validation.schedule_times_required":       "At least one schedule time is required",
+	"site_management.validation.schedule_times_too_long":       "Schedule times must not exceed {{.max}} characters",
+	"site_management.validation.invalid_balance_interval":      "Balance refresh interval must be between {{.min}} and {{.max}} hours",
 
 	// Check-in messages
 	"site_management.checkin.failed":                             "Check-in failed",

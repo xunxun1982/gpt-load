@@ -210,22 +210,28 @@ func isAggregateSubGroupFinal(c *gin.Context) bool {
 }
 
 func codexAggregateAffinityKey(c *gin.Context, group *models.Group, bodyBytes []byte) string {
-	if value := codexAggregateAffinityHeaderKey(c, group); value != "" {
+	if value := codexAggregateAffinityThreadHeaderKey(c, group); value != "" {
 		return value
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-		return ""
-	}
-	return codexAggregateAffinityKeyFromPayload(c, group, payload, true)
+	err := json.Unmarshal(bodyBytes, &payload)
+	return codexAggregateAffinityKeyFromPayload(c, group, payload, err == nil)
 }
 
-func codexAggregateAffinityHeaderKey(c *gin.Context, group *models.Group) string {
+func codexAggregateAffinityThreadHeaderKey(c *gin.Context, group *models.Group) string {
 	if !codexAggregateAffinityEnabled(c, group) {
 		return ""
 	}
-	if value := firstNonEmptyHeader(c, "Session-Id", "Thread-Id", "X-Client-Request-Id"); value != "" {
+	// A Codex session can contain multiple project threads, so prefer the per-thread identity.
+	return firstNonEmptyHeader(c, "Thread-Id")
+}
+
+func codexAggregateAffinityFallbackHeaderKey(c *gin.Context, group *models.Group) string {
+	if !codexAggregateAffinityEnabled(c, group) {
+		return ""
+	}
+	if value := firstNonEmptyHeader(c, "Session-Id", "X-Client-Request-Id"); value != "" {
 		return value
 	}
 	if value := firstNonEmptyHeader(c, "Session_ID", "session_id"); value != "" {
@@ -250,17 +256,23 @@ func codexAggregateAffinityKeyFromPayload(c *gin.Context, group *models.Group, p
 	if !codexAggregateAffinityEnabled(c, group) {
 		return ""
 	}
-	if value := codexAggregateAffinityHeaderKey(c, group); value != "" {
+	if value := codexAggregateAffinityThreadHeaderKey(c, group); value != "" {
 		return value
 	}
 
-	if !payloadOK {
-		return ""
-	}
-	if metadata, ok := payload["client_metadata"].(map[string]any); ok {
+	metadata, hasMetadata := payload["client_metadata"].(map[string]any)
+	if payloadOK && hasMetadata {
 		if value := stringFromJSONMap(metadata, "thread_id"); value != "" {
 			return value
 		}
+	}
+	if value := codexAggregateAffinityFallbackHeaderKey(c, group); value != "" {
+		return value
+	}
+	if !payloadOK {
+		return ""
+	}
+	if hasMetadata {
 		if value := stringFromJSONMap(metadata, "session_id"); value != "" {
 			return value
 		}
@@ -504,6 +516,7 @@ func codexAggregateAffinityCacheKey(groupID uint, affinityKey string, model stri
 		return ""
 	}
 
+	// Client identifiers are routing hints only; group and model keep every binding within its route scope.
 	h := sha256.New()
 	var numberBuffer [20]byte
 	_, _ = h.Write(strconv.AppendUint(numberBuffer[:0], uint64(groupID), 10))
@@ -2246,7 +2259,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		retryCtx.forcedSubGroupID = 0
 		var err error
 		if codexAggregateAffinityEnabled(c, originalGroup) {
-			affinityKey := codexAggregateAffinityHeaderKey(c, originalGroup)
+			affinityKey := codexAggregateAffinityThreadHeaderKey(c, originalGroup)
 			if affinityKey == "" {
 				payload, payloadOK := retryCtx.codexRequestPayload(bodyBytes)
 				affinityKey = codexAggregateAffinityKeyFromPayload(c, originalGroup, payload, payloadOK)
@@ -2280,12 +2293,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				}
 				if subGroupID == 0 {
 					subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetry(originalGroup, retryCtx.excludedSubGroups)
-					// A cache miss uses the aggregate group's normal effective-weight
-					// selector. Keep the first selected sub-group as this request's
-					// primary, but bind the session only after a successful response.
-					if subGroupID != 0 && retryCtx.codexAffinityPrimarySubGroupID == 0 {
-						retryCtx.codexAffinityPrimarySubGroupID = subGroupID
-					}
 				}
 			} else {
 				subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetry(originalGroup, retryCtx.excludedSubGroups)
@@ -2304,6 +2311,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			ps.logEarlyError(c, originalGroup, startTime, http.StatusServiceUnavailable, fmt.Errorf("no available sub-groups: %v", err))
 			return
 		}
+	}
+	if codexAggregateAffinityEnabled(c, originalGroup) &&
+		subGroupID != 0 && retryCtx.codexAffinityPrimarySubGroupID == 0 {
+		// Simulated Codex identity is generated after routing, so track the first
+		// actual target even when the inbound request has no affinity identifier.
+		retryCtx.codexAffinityPrimarySubGroupID = subGroupID
 	}
 
 	// Get the selected sub-group

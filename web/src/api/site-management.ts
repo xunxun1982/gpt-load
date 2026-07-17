@@ -52,6 +52,7 @@ export interface SiteBindingOption {
   name: string;
   sort: number;
   enabled: boolean;
+  balance_multiplier: number;
   last_balance: string | null;
   last_checkin_status: ManagedSiteCheckinStatus;
   bound_group_count?: number;
@@ -90,7 +91,8 @@ export interface ManagedSiteDTO {
   last_site_opened_date: string;
   last_checkin_page_opened_date: string;
 
-  // Cached balance information, refreshed daily at midnight in the site-management timezone.
+  // Cached balance information, refreshed manually or by the automatic balance schedule.
+  balance_multiplier: number;
   last_balance: string;
   last_balance_date: string;
 
@@ -142,6 +144,7 @@ export interface CreateManagedSiteRequest {
 
   auth_type: ManagedSiteAuthType;
   auth_value: string;
+  balance_multiplier?: number;
 }
 
 export type UpdateManagedSiteRequest = Partial<CreateManagedSiteRequest>;
@@ -321,11 +324,14 @@ export interface SiteExportInfo {
   bypass_method?: ManagedSiteBypassMethod;
   auth_type: ManagedSiteAuthType;
   auth_value?: string;
+  balance_multiplier?: number;
 }
 
 export interface SiteImportData {
   version?: string;
-  sites: SiteExportInfo[];
+  auto_checkin?: AutoCheckinConfig;
+  auto_balance?: AutoBalanceConfig;
+  sites?: SiteExportInfo[];
 }
 
 // Auto check-in configuration types
@@ -398,5 +404,22 @@ export const autoCheckinApi = {
   // Trigger auto check-in immediately
   async runNow(): Promise<void> {
     await http.post("/site-management/auto-checkin/run-now");
+  },
+};
+
+export interface AutoBalanceConfig {
+  global_enabled: boolean;
+  interval_hours: number;
+}
+
+export const autoBalanceApi = {
+  async getConfig(): Promise<AutoBalanceConfig> {
+    const res = await http.get("/site-management/auto-balance/config");
+    return res.data;
+  },
+
+  async updateConfig(config: AutoBalanceConfig): Promise<AutoBalanceConfig> {
+    const res = await http.put("/site-management/auto-balance/config", config);
+    return res.data;
   },
 };

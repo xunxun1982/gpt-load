@@ -56,8 +56,9 @@ type ManagedSiteDTO struct {
 	LastCheckinPageOpenedDate string `json:"last_checkin_page_opened_date"`
 
 	// Cached balance information, refreshed daily at midnight in the site-management timezone.
-	LastBalance     string `json:"last_balance"`
-	LastBalanceDate string `json:"last_balance_date"`
+	BalanceMultiplier int64  `json:"balance_multiplier"`
+	LastBalance       string `json:"last_balance"`
+	LastBalanceDate   string `json:"last_balance_date"`
 
 	BoundGroupID   *uint  `json:"bound_group_id,omitempty"`   // Deprecated: kept for backward compatibility, use BoundGroups instead
 	BoundGroupName string `json:"bound_group_name,omitempty"` // Deprecated: kept for backward compatibility, use BoundGroups instead
@@ -110,6 +111,26 @@ type AutoCheckinConfig struct {
 	// Used when ScheduleMode is "deterministic".
 	DeterministicTime string                   `json:"deterministic_time,omitempty"`
 	RetryStrategy     AutoCheckinRetryStrategy `json:"retry_strategy"`
+}
+
+const (
+	defaultAutoBalanceIntervalHours = 24
+	minAutoBalanceIntervalHours     = 1
+	maxAutoBalanceIntervalHours     = 24
+)
+
+func normalizeAutoBalanceIntervalHours(intervalHours int) int {
+	if intervalHours < minAutoBalanceIntervalHours || intervalHours > maxAutoBalanceIntervalHours {
+		return defaultAutoBalanceIntervalHours
+	}
+	return intervalHours
+}
+
+// AutoBalanceConfig holds the automatic balance refresh configuration.
+// Refresh slots are anchored to 00:00 in the site-management timezone.
+type AutoBalanceConfig struct {
+	GlobalEnabled bool `json:"global_enabled"`
+	IntervalHours int  `json:"interval_hours"`
 }
 
 // AutoCheckinAttemptsTracker tracks daily check-in attempts.

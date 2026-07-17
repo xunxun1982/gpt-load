@@ -3,6 +3,7 @@ package sitemanagement
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"gpt-load/internal/encryption"
+	"gpt-load/internal/store"
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
@@ -55,11 +57,16 @@ type BalanceService struct {
 	proxyClients     sync.Map // Cache for proxy-enabled HTTP clients
 	proxyResolver    managedSiteProxyURLResolver
 	cacheInvalidator func()
+	store            store.Store
+	subConfig        store.Subscription
 
 	// Background refresh control
-	stopCh    chan struct{}
-	cleanupCh chan struct{} // Channel for periodic cleanup ticker
-	wg        sync.WaitGroup
+	stopCh          chan struct{}
+	rescheduleCh    chan struct{}
+	cleanupCh       chan struct{} // Channel for periodic cleanup ticker
+	lifecycleCtx    context.Context
+	cancelLifecycle context.CancelFunc
+	wg              sync.WaitGroup
 
 	// Protect against double-close panics when Stop() is called multiple times
 	stopOnce sync.Once
@@ -67,6 +74,7 @@ type BalanceService struct {
 
 // NewBalanceService creates a new balance service
 func NewBalanceService(db *gorm.DB, encryptionSvc encryption.Service) *BalanceService {
+	lifecycleCtx, cancel := context.WithCancel(context.Background())
 	transport := &http.Transport{
 		MaxIdleConns:        50,              // Reduced for aggressive memory release (site management is non-critical)
 		MaxIdleConnsPerHost: 10,              // Reduced for aggressive memory release
@@ -79,12 +87,19 @@ func NewBalanceService(db *gorm.DB, encryptionSvc encryption.Service) *BalanceSe
 		client:           &http.Client{Transport: transport, Timeout: balanceRequestTimeout},
 		stealthClientMgr: NewStealthClientManager(balanceRequestTimeout),
 		stopCh:           make(chan struct{}),
+		rescheduleCh:     make(chan struct{}, 1),
 		cleanupCh:        make(chan struct{}),
+		lifecycleCtx:     lifecycleCtx,
+		cancelLifecycle:  cancel,
 	}
 }
 
 func (s *BalanceService) SetProxyURLResolver(resolver managedSiteProxyURLResolver) {
 	s.proxyResolver = resolver
+}
+
+func (s *BalanceService) SetStore(store store.Store) {
+	s.store = store
 }
 
 // SetCacheInvalidationCallback registers a callback for cached balance consumers.
@@ -107,17 +122,51 @@ func (s *BalanceService) Start() {
 	s.wg.Add(1)
 	go s.periodicCleanup()
 
+	if s.store != nil {
+		if sub, err := s.store.Subscribe(siteScheduleConfigUpdatedChannel); err == nil {
+			s.subConfig = sub
+			s.wg.Add(1)
+			go s.listenScheduleConfigUpdates(sub)
+		}
+	}
+	// Reconcile any configuration change that raced with scheduler startup.
+	s.RequestReschedule()
+
 	logrus.Info("Balance refresh scheduler started")
 }
 
-// Stop gracefully stops the background scheduler
-func (s *BalanceService) Stop(_ context.Context) {
+// Stop gracefully stops the background scheduler.
+func (s *BalanceService) Stop(ctx context.Context) {
 	// Use sync.Once to prevent double-close panics if Stop() is called multiple times
 	// This is important for error recovery scenarios where Stop() might be called repeatedly
 	s.stopOnce.Do(func() {
+		s.cancelLifecycle()
 		close(s.stopCh)
 		close(s.cleanupCh) // Stop periodic cleanup goroutine
+		// Subscription cleanup belongs to the one-time shutdown contract.
+		if s.subConfig != nil {
+			_ = s.subConfig.Close()
+		}
 	})
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	stopped := false
+	select {
+	case <-done:
+		stopped = true
+	default:
+		select {
+		case <-done:
+			stopped = true
+		case <-ctx.Done():
+			logrus.WithError(ctx.Err()).Warn("Balance refresh scheduler stop timed out")
+		}
+	}
 
 	// Clean up proxy client cache
 	s.proxyClients.Range(func(key, value interface{}) bool {
@@ -133,94 +182,169 @@ func (s *BalanceService) Stop(_ context.Context) {
 	// Clean up stealth client cache
 	s.stealthClientMgr.Cleanup()
 
-	s.wg.Wait()
-	logrus.Info("Balance refresh scheduler stopped")
+	if stopped {
+		logrus.Info("Balance refresh scheduler stopped")
+	}
 }
 
-// runScheduler runs the daily balance refresh at local midnight.
-func (s *BalanceService) runScheduler() {
+// RequestReschedule asks the scheduler to reload its persisted configuration.
+func (s *BalanceService) RequestReschedule() {
+	select {
+	case s.rescheduleCh <- struct{}{}:
+	default:
+	}
+}
+
+func (s *BalanceService) listenScheduleConfigUpdates(sub store.Subscription) {
 	defer s.wg.Done()
-
 	for {
-		// Calculate next local midnight.
-		nextRefresh := s.nextRefreshTime()
-		waitDuration := time.Until(nextRefresh)
-
-		logrus.WithField("next_refresh", nextRefresh.Format(time.RFC3339)).
-			Debug("Balance refresh scheduled")
-
 		select {
 		case <-s.stopCh:
 			return
-		case <-time.After(waitDuration):
-			s.refreshAllBalancesBackground()
+		case _, ok := <-sub.Channel():
+			if !ok {
+				return
+			}
+			s.RequestReschedule()
 		}
 	}
 }
 
-// nextRefreshTime calculates the next local midnight.
-func (s *BalanceService) nextRefreshTime() time.Time {
-	return nextRefreshTimeAt(time.Now())
+// runScheduler runs balance refreshes at configured local-time slots.
+func (s *BalanceService) runScheduler() {
+	defer s.wg.Done()
+
+	for {
+		nextRefresh, enabled, err := s.nextRefreshTime(s.lifecycleCtx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			logrus.WithError(err).Warn("Failed to load automatic balance schedule")
+			nextRefresh = time.Now().Add(5 * time.Minute)
+			enabled = false
+		}
+		waitDuration := time.Until(nextRefresh)
+		if waitDuration < 0 {
+			waitDuration = 0
+		}
+
+		if enabled {
+			logrus.WithField("next_refresh", nextRefresh.Format(time.RFC3339)).
+				Debug("Balance refresh scheduled")
+		}
+		timer := time.NewTimer(waitDuration)
+
+		select {
+		case <-s.stopCh:
+			timer.Stop()
+			return
+		case <-s.rescheduleCh:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			continue
+		case <-timer.C:
+			if enabled {
+				s.refreshAllBalancesBackground(s.lifecycleCtx)
+			}
+		}
+	}
 }
 
-func nextRefreshTimeAt(base time.Time) time.Time {
-	return nextRefreshTimeAtLocation(base, checkinLocation())
+func (s *BalanceService) nextRefreshTime(ctx context.Context) (time.Time, bool, error) {
+	config := AutoBalanceConfig{GlobalEnabled: true, IntervalHours: defaultAutoBalanceIntervalHours}
+	var setting ManagedSiteSetting
+	if err := s.db.WithContext(ctx).First(&setting, 1).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return time.Time{}, false, err
+		}
+	} else {
+		config.GlobalEnabled = setting.AutoBalanceEnabled
+		config.IntervalHours = setting.BalanceRefreshIntervalHours
+	}
+	config.IntervalHours = normalizeAutoBalanceIntervalHours(config.IntervalHours)
+	return nextBalanceRefreshTimeAt(time.Now(), config.IntervalHours, checkinLocation()), config.GlobalEnabled, nil
 }
 
-func nextRefreshTimeAtLocation(base time.Time, loc *time.Location) time.Time {
-	return nextCheckinResetAtLocation(base, loc)
+func nextBalanceRefreshTimeAt(base time.Time, intervalHours int, loc *time.Location) time.Time {
+	intervalHours = normalizeAutoBalanceIntervalHours(intervalHours)
+	localBase := base.In(loc)
+	for hour := intervalHours; hour < 24; hour += intervalHours {
+		candidate := time.Date(localBase.Year(), localBase.Month(), localBase.Day(), hour, 0, 0, 0, loc)
+		if candidate.After(localBase) {
+			return candidate
+		}
+	}
+	nextDay := localBase.AddDate(0, 0, 1)
+	return time.Date(nextDay.Year(), nextDay.Month(), nextDay.Day(), 0, 0, 0, 0, loc)
 }
 
 // refreshAllBalancesBackground refreshes balances for all enabled sites in background
-func (s *BalanceService) refreshAllBalancesBackground() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+func (s *BalanceService) refreshAllBalancesBackground(parent context.Context) {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 	defer cancel()
 
-	logrus.Info("Starting daily balance refresh")
+	logrus.Info("Starting scheduled balance refresh")
 
-	var sites []ManagedSite
-	if err := s.db.WithContext(ctx).Where("enabled = ?", true).Find(&sites).Error; err != nil {
-		logrus.WithError(err).Error("Failed to load sites for balance refresh")
+	results, err := s.RefreshAllBalances(ctx)
+	if err != nil {
+		logrus.WithError(err).Error("Scheduled balance refresh failed")
 		return
 	}
-
-	results := s.FetchAllBalances(ctx, sites)
-	s.updateBalancesInDB(ctx, results)
-
-	// Close idle connections after batch refresh to free resources immediately
-	s.closeIdleConnections()
-
-	logrus.WithField("count", len(results)).Info("Daily balance refresh completed")
+	logrus.WithField("count", len(results)).Info("Scheduled balance refresh completed")
 }
 
-// updateBalancesInDB updates balance cache in database
-func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uint]*BalanceInfo) {
+// updateBalancesInDB updates balance cache in database and aggregates partial-write failures.
+func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uint]*BalanceInfo) error {
 	today := GetBeijingCheckinDay()
 	updated := false
+	var firstUpdateErr error
+	failedUpdates := 0
 
 	for siteID, info := range results {
+		if ctx.Err() != nil {
+			break
+		}
 		if info.Balance == nil {
 			continue
 		}
 		balance := *info.Balance
 
 		// Update only balance fields to avoid touching other columns
-		if err := s.db.WithContext(ctx).Model(&ManagedSite{}).
+		updateResult := s.db.WithContext(ctx).Model(&ManagedSite{}).
 			Where("id = ?", siteID).
 			Updates(map[string]interface{}{
 				"last_balance":      balance,
 				"last_balance_date": today,
-			}).Error; err != nil {
+			})
+		if err := updateResult.Error; err != nil {
+			if ctx.Err() != nil {
+				updated = updated || updateResult.RowsAffected > 0
+				break
+			}
 			logrus.WithError(err).WithField("site_id", siteID).
 				Debug("Failed to update balance cache")
+			failedUpdates++
+			if firstUpdateErr == nil {
+				firstUpdateErr = fmt.Errorf("failed to update balance cache for site %d: %w", siteID, err)
+			}
 			continue
 		}
 		updated = true
 	}
 
 	if updated {
+		// Invalidators expose no error channel; partial successful writes still invalidate once.
 		s.invalidateBalanceConsumers()
 	}
+	if failedUpdates > 1 {
+		return fmt.Errorf("%w; %d additional balance cache updates failed", firstUpdateErr, failedUpdates-1)
+	}
+	return firstUpdateErr
 }
 
 // FetchSiteBalance fetches balance for a single site and updates cache in database.
@@ -230,6 +354,7 @@ func (s *BalanceService) FetchSiteBalance(ctx context.Context, site *ManagedSite
 
 	if result.Balance != nil {
 		s.updateSiteBalance(ctx, site.ID, *result.Balance)
+		scaleManagedSiteBalanceInfo(result, site.BalanceMultiplier)
 	}
 
 	return result
@@ -319,12 +444,13 @@ func (s *BalanceService) fetchBalanceWithParser(
 	parse func([]byte) *string,
 ) *string {
 	apiURL := extractBaseURL(site.BaseURL) + urlSuffix
-	client := s.getHTTPClient(site)
+	client := s.getHTTPClient(ctx, site)
 	cookieSession := ""
 	if authConfig.HasAuthType(AuthTypeCookie) {
 		cookieSession = authConfig.GetAuthValue(AuthTypeCookie)
 	}
 
+	// Only configured, non-empty credentials create attempts; single-auth sites never send placeholder headers.
 	for _, authType := range []string{AuthTypeAccessToken, AuthTypeCookie} {
 		if !authConfig.HasAuthType(authType) {
 			continue
@@ -333,24 +459,40 @@ func (s *BalanceService) fetchBalanceWithParser(
 		if authValue == "" {
 			continue
 		}
-		headers := buildBalanceHeaders(authType, authValue, userID, cookieSession)
-		if headers == nil {
-			continue
-		}
 
-		var data []byte
-		var err error
-		if shouldUseStealthRequest(*site) {
-			data, _, err = doStealthJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
-		} else {
-			data, _, err = doJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+		attempts := 1
+		if authType == AuthTypeAccessToken && cookieSession != "" {
+			// Keep the combined WAF-compatible request first, then isolate bearer auth so a bad cookie cannot mask a valid token.
+			attempts = 2
 		}
-		if err != nil {
-			logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch balance from site API")
-			continue
-		}
-		if balance := parse(data); balance != nil {
-			return balance
+		for attempt := 0; attempt < attempts; attempt++ {
+			// In-flight requests already use ctx; stop before constructing or logging any later fallback request.
+			if ctx.Err() != nil {
+				return nil
+			}
+			requestCookie := cookieSession
+			if attempt > 0 {
+				requestCookie = ""
+			}
+			headers := buildBalanceHeaders(authType, authValue, userID, requestCookie)
+			if headers == nil {
+				continue
+			}
+
+			var data []byte
+			var err error
+			if shouldUseStealthRequest(*site) {
+				data, _, err = doStealthJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+			} else {
+				data, _, err = doJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+			}
+			if err != nil {
+				logrus.WithError(err).WithField("site_id", site.ID).Debug("Failed to fetch balance from site API")
+				continue
+			}
+			if balance := parse(data); balance != nil {
+				return balance
+			}
 		}
 	}
 
@@ -436,12 +578,12 @@ func (s *BalanceService) parseSub2APIBalanceResponse(data []byte) *string {
 // getHTTPClient returns appropriate HTTP client based on site settings.
 // Uses stealth client for TLS fingerprint spoofing when bypass method is stealth.
 // Uses proxy client when proxy is enabled. Clients are cached for connection reuse.
-func (s *BalanceService) getHTTPClient(site *ManagedSite) *http.Client {
+func (s *BalanceService) getHTTPClient(ctx context.Context, site *ManagedSite) *http.Client {
 	// Use stealth client for TLS fingerprint spoofing
 	if isStealthBypassMethod(site.BypassMethod) {
 		proxyURL := ""
 		if site.UseProxy {
-			proxyURL = resolveManagedSiteProxyURL(context.Background(), s.proxyResolver, site.ProxyURL)
+			proxyURL = resolveManagedSiteProxyURL(ctx, s.proxyResolver, site.ProxyURL)
 		}
 		return s.stealthClientMgr.GetClient(proxyURL)
 	}
@@ -452,7 +594,7 @@ func (s *BalanceService) getHTTPClient(site *ManagedSite) *http.Client {
 	}
 
 	// Check proxy client cache
-	proxyURL := resolveManagedSiteProxyURL(context.Background(), s.proxyResolver, site.ProxyURL)
+	proxyURL := resolveManagedSiteProxyURL(ctx, s.proxyResolver, site.ProxyURL)
 	if proxyURL == "" {
 		return s.client
 	}
@@ -565,19 +707,29 @@ func (s *BalanceService) periodicCleanup() {
 	}
 }
 
-// RefreshAllBalancesManual is called by the manual refresh button.
-// It fetches balances for all enabled sites and updates the cache.
-func (s *BalanceService) RefreshAllBalancesManual(ctx context.Context) (map[uint]*BalanceInfo, error) {
+// RefreshAllBalances is the shared automatic and manual refresh path.
+func (s *BalanceService) RefreshAllBalances(ctx context.Context) (map[uint]*BalanceInfo, error) {
+	defer s.closeIdleConnections()
+
 	var sites []ManagedSite
 	if err := s.db.WithContext(ctx).Where("enabled = ?", true).Find(&sites).Error; err != nil {
 		return nil, err
 	}
 
 	results := s.FetchAllBalances(ctx, sites)
-	s.updateBalancesInDB(ctx, results)
-
-	// Close idle connections after manual refresh to free resources immediately
-	s.closeIdleConnections()
+	// Keep database writes raw; every return path exposes the same scaled response contract.
+	defer scaleManagedSiteBalanceResults(results, sites)
+	if err := ctx.Err(); err != nil {
+		return results, err
+	}
+	updateErr := s.updateBalancesInDB(ctx, results)
+	if err := ctx.Err(); err != nil {
+		// Cancellation remains the primary caller contract even when a persistence attempt also failed.
+		return results, err
+	}
+	if updateErr != nil {
+		return results, updateErr
+	}
 
 	return results, nil
 }

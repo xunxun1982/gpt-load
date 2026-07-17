@@ -36,7 +36,7 @@ const (
 const (
 	autoCheckinStatusKey     = "managed_site:auto_checkin_status"
 	autoCheckinRunNowChannel = "managed_site:auto_checkin_run_now"
-	// Note: autoCheckinConfigUpdatedChannel is defined in site_service.go (same package)
+	// Note: siteScheduleConfigUpdatedChannel is defined in site_service.go (same package)
 
 	maxResponseBodySize = 2 << 20 // 2 MB limit for HTTP response body
 
@@ -138,7 +138,7 @@ func (s *AutoCheckinService) Start() {
 	go s.periodicCleanup()
 
 	// Best-effort subscriptions for multi-node setups.
-	if sub, err := s.store.Subscribe(autoCheckinConfigUpdatedChannel); err == nil {
+	if sub, err := s.store.Subscribe(siteScheduleConfigUpdatedChannel); err == nil {
 		s.subConfig = sub
 		s.wg.Add(1)
 		go s.listenSubscription(sub, s.rescheduleCh)
@@ -150,7 +150,7 @@ func (s *AutoCheckinService) Start() {
 	}
 
 	// Initial schedule.
-	s.requestReschedule()
+	s.RequestReschedule()
 	logrus.Debug("ManagedSite AutoCheckinService started")
 }
 
@@ -160,6 +160,13 @@ func (s *AutoCheckinService) Stop(ctx context.Context) {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 		close(s.cleanupCh) // Stop periodic cleanup goroutine
+		// Subscription cleanup belongs to the one-time shutdown contract.
+		if s.subConfig != nil {
+			_ = s.subConfig.Close()
+		}
+		if s.subRunNow != nil {
+			_ = s.subRunNow.Close()
+		}
 	})
 
 	// Clean up proxy client cache
@@ -175,13 +182,6 @@ func (s *AutoCheckinService) Stop(ctx context.Context) {
 
 	// Clean up stealth client cache
 	s.stealthClientMgr.Cleanup()
-
-	if s.subConfig != nil {
-		_ = s.subConfig.Close()
-	}
-	if s.subRunNow != nil {
-		_ = s.subRunNow.Close()
-	}
 
 	done := make(chan struct{})
 	go func() {
@@ -224,7 +224,7 @@ func (s *AutoCheckinService) TriggerRunNow() {
 	_ = s.store.Publish(autoCheckinRunNowChannel, []byte("1"))
 }
 
-func (s *AutoCheckinService) requestReschedule() {
+func (s *AutoCheckinService) RequestReschedule() {
 	select {
 	case s.rescheduleCh <- struct{}{}:
 	default:
@@ -414,7 +414,7 @@ func (s *AutoCheckinService) loadConfig(ctx context.Context) (*AutoCheckinConfig
 	var scheduleTimes []string
 	if row.ScheduleTimes != "" {
 		for _, t := range strings.Split(row.ScheduleTimes, ",") {
-			t = strings.TrimSpace(t)
+			t = normalizeAutoCheckinTime(t)
 			if t != "" {
 				scheduleTimes = append(scheduleTimes, t)
 			}
@@ -427,10 +427,10 @@ func (s *AutoCheckinService) loadConfig(ctx context.Context) (*AutoCheckinConfig
 	return &AutoCheckinConfig{
 		GlobalEnabled:     row.AutoCheckinEnabled,
 		ScheduleTimes:     scheduleTimes,
-		WindowStart:       row.WindowStart,
-		WindowEnd:         row.WindowEnd,
+		WindowStart:       normalizeAutoCheckinTime(row.WindowStart),
+		WindowEnd:         normalizeAutoCheckinTime(row.WindowEnd),
 		ScheduleMode:      row.ScheduleMode,
-		DeterministicTime: row.DeterministicTime,
+		DeterministicTime: normalizeAutoCheckinTime(row.DeterministicTime),
 		RetryStrategy: AutoCheckinRetryStrategy{
 			Enabled:           row.RetryEnabled,
 			IntervalMinutes:   row.RetryIntervalMinutes,

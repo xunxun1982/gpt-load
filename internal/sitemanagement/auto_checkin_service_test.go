@@ -1523,6 +1523,54 @@ func sameDayFutureScheduleMinute(t *testing.T, now time.Time) time.Time {
 	return future.In(beijingLocation)
 }
 
+func TestAutoCheckinServiceLoadConfigCanonicalizesLegacyTimesWithoutWriting(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+	require.NoError(t, db.Create(&ManagedSiteSetting{
+		ID:                1,
+		ScheduleTimes:     "9:0,12:30",
+		WindowStart:       "8:5",
+		WindowEnd:         "18:0",
+		ScheduleMode:      AutoCheckinScheduleModeRandom,
+		DeterministicTime: "7:1",
+	}).Error)
+
+	service := NewAutoCheckinService(db, nil, encSvc)
+	cfg, err := service.loadConfig(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"09:00", "12:30"}, cfg.ScheduleTimes)
+	assert.Equal(t, "08:05", cfg.WindowStart)
+	assert.Equal(t, "18:00", cfg.WindowEnd)
+	assert.Equal(t, "07:01", cfg.DeterministicTime)
+
+	var stored ManagedSiteSetting
+	require.NoError(t, db.First(&stored, 1).Error)
+	assert.Equal(t, "9:0,12:30", stored.ScheduleTimes)
+	assert.Equal(t, "8:5", stored.WindowStart)
+	assert.Equal(t, "18:0", stored.WindowEnd)
+	assert.Equal(t, "7:1", stored.DeterministicTime)
+}
+
+func TestAutoCheckinServiceStopClosesSubscriptionsOnce(t *testing.T) {
+	t.Parallel()
+
+	configSubscription := &countingSubscription{channel: make(chan *store.Message)}
+	runNowSubscription := &countingSubscription{channel: make(chan *store.Message)}
+	service := NewAutoCheckinService(setupTestDB(t), nil, setupTestEncryption(t))
+	service.subConfig = configSubscription
+	service.subRunNow = runNowSubscription
+
+	service.Stop(context.Background())
+	service.Stop(context.Background())
+
+	assert.Equal(t, int32(1), configSubscription.closeCount.Load())
+	assert.Equal(t, int32(1), runNowSubscription.closeCount.Load())
+}
+
 func storeSuccessfulAutoCheckinStatus(memStore store.Store, now time.Time) error {
 	successStatus := AutoCheckinStatus{
 		LastRunAt:     now.UTC().Format(time.RFC3339),

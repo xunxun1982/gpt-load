@@ -3,19 +3,56 @@ package sitemanagement
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"gpt-load/internal/encryption"
+	"gpt-load/internal/store"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+type subscribeHookStore struct {
+	store.Store
+	beforeSubscribe func()
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type countingSubscription struct {
+	channel    chan *store.Message
+	closeCount atomic.Int32
+}
+
+func (s *countingSubscription) Channel() <-chan *store.Message {
+	return s.channel
+}
+
+func (s *countingSubscription) Close() error {
+	// Record every call so the test verifies that the owning service provides close idempotence.
+	s.closeCount.Add(1)
+	return nil
+}
+
+func (s *subscribeHookStore) Subscribe(channel string) (store.Subscription, error) {
+	if s.beforeSubscribe != nil {
+		s.beforeSubscribe()
+	}
+	return s.Store.Subscribe(channel)
+}
 
 // TestBalanceService_FetchSiteBalance tests balance fetching for a single site
 func TestBalanceService_FetchSiteBalance(t *testing.T) {
@@ -51,11 +88,12 @@ func TestBalanceService_FetchSiteBalance(t *testing.T) {
 	// Create test site
 	authValue, _ := encSvc.Encrypt("test-token")
 	site := &ManagedSite{
-		Name:      "Test Site",
-		BaseURL:   server.URL,
-		SiteType:  SiteTypeNewAPI,
-		AuthType:  AuthTypeAccessToken,
-		AuthValue: authValue,
+		Name:              "Test Site",
+		BaseURL:           server.URL,
+		SiteType:          SiteTypeNewAPI,
+		AuthType:          AuthTypeAccessToken,
+		AuthValue:         authValue,
+		BalanceMultiplier: 4,
 	}
 	err = db.Create(site).Error
 	require.NoError(t, err)
@@ -64,12 +102,51 @@ func TestBalanceService_FetchSiteBalance(t *testing.T) {
 	result := service.FetchSiteBalance(context.Background(), site)
 	require.NotNil(t, result)
 	require.NotNil(t, result.Balance)
-	assert.Equal(t, "$1.00", *result.Balance)
+	assert.Equal(t, "$0.25", *result.Balance)
 
 	var updated ManagedSite
 	require.NoError(t, db.First(&updated, site.ID).Error)
 	assert.Equal(t, "$1.00", updated.LastBalance)
 	assert.Equal(t, 1, invalidations)
+}
+
+func TestBalanceServiceRefreshAllBalancesReturnsScaledValuesAfterRawPersistence(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(userSelfResponse{
+			Success: true,
+			Data: struct {
+				Quota int64 `json:"quota"`
+			}{Quota: 5_000_000}, // $10.00 upstream balance
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	authValue, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:              "Batch scaled balance",
+		BaseURL:           server.URL,
+		SiteType:          SiteTypeNewAPI,
+		Enabled:           true,
+		AuthType:          AuthTypeAccessToken,
+		AuthValue:         authValue,
+		BalanceMultiplier: 4,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	results, err := NewBalanceService(db, encSvc).RefreshAllBalances(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, results[site.ID].Balance)
+	assert.Equal(t, "$2.50", *results[site.ID].Balance)
+
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, "$10.00", stored.LastBalance)
 }
 
 func TestBalanceService_FetchSiteBalanceKeepsCachedBalanceOnFetchFailure(t *testing.T) {
@@ -172,7 +249,9 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			var requestCount atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestCount.Add(1)
 				assert.Equal(t, "/api/v1/user/profile", r.URL.Path)
 				assert.Equal(t, tt.expectedAuthHeader, r.Header.Get("Authorization"))
 				assert.Equal(t, tt.cookieSession, r.Header.Get("Cookie"))
@@ -187,6 +266,7 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 			require.NoError(t, db.AutoMigrate(&ManagedSite{}))
 
 			service := NewBalanceService(db, encSvc)
+			t.Cleanup(service.closeIdleConnections)
 
 			authType := AuthTypeAccessToken
 			authPlainValue := tt.authToken
@@ -207,6 +287,7 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 
 			result := service.FetchSiteBalance(context.Background(), site)
 			require.NotNil(t, result)
+			assert.Equal(t, int32(1), requestCount.Load())
 			if tt.expectedBalance == nil {
 				assert.Nil(t, result.Balance)
 				return
@@ -215,6 +296,170 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 			assert.Equal(t, *tt.expectedBalance, *result.Balance)
 		})
 	}
+}
+
+func TestBalanceService_FetchSiteBalanceIsolatesConfiguredCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		siteType         string
+		acceptedAuthType string
+		response         string
+		expectedBalance  string
+		expectedRequests int32
+	}{
+		{
+			name:             "new api token succeeds when cookie fails",
+			siteType:         SiteTypeNewAPI,
+			acceptedAuthType: AuthTypeAccessToken,
+			response:         `{"success":true,"data":{"quota":500000}}`,
+			expectedBalance:  "$1.00",
+			expectedRequests: 2,
+		},
+		{
+			name:             "new api cookie succeeds when token fails",
+			siteType:         SiteTypeNewAPI,
+			acceptedAuthType: AuthTypeCookie,
+			response:         `{"success":true,"data":{"quota":500000}}`,
+			expectedBalance:  "$1.00",
+			expectedRequests: 3,
+		},
+		{
+			name:             "sub2api token succeeds when cookie fails",
+			siteType:         SiteTypeSub2API,
+			acceptedAuthType: AuthTypeAccessToken,
+			response:         `{"code":0,"data":{"balance":12.5}}`,
+			expectedBalance:  "$12.50",
+			expectedRequests: 2,
+		},
+		{
+			name:             "sub2api cookie succeeds when token fails",
+			siteType:         SiteTypeSub2API,
+			acceptedAuthType: AuthTypeCookie,
+			response:         `{"code":0,"data":{"balance":12.5}}`,
+			expectedBalance:  "$12.50",
+			expectedRequests: 3,
+		},
+		{
+			name:             "all credentials fail and cached balance remains",
+			siteType:         SiteTypeNewAPI,
+			expectedRequests: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var requestCount atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestCount.Add(1)
+				assert.Equal(t, resolveSiteCapabilities(tt.siteType).BalanceEndpoint, r.URL.Path)
+
+				// Accept only an isolated credential so an invalid companion credential cannot be ignored by the test server.
+				tokenOnly := r.Header.Get("Authorization") == "Bearer valid-token" && r.Header.Get("Cookie") == ""
+				cookieOnly := r.Header.Get("Authorization") == "" && r.Header.Get("Cookie") == "session=valid"
+				authorized := (tt.acceptedAuthType == AuthTypeAccessToken && tokenOnly) ||
+					(tt.acceptedAuthType == AuthTypeCookie && cookieOnly)
+				if !authorized {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			t.Cleanup(server.Close)
+
+			db := setupTestDB(t)
+			encSvc := setupTestEncryption(t)
+			require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+			token := "invalid-token"
+			cookie := "session=invalid"
+			switch tt.acceptedAuthType {
+			case AuthTypeAccessToken:
+				token = "valid-token"
+			case AuthTypeCookie:
+				cookie = "session=valid"
+			}
+			plainAuth, err := json.Marshal(map[string]string{
+				AuthTypeAccessToken: token,
+				AuthTypeCookie:      cookie,
+			})
+			require.NoError(t, err)
+			encryptedAuth, err := encSvc.Encrypt(string(plainAuth))
+			require.NoError(t, err)
+
+			site := &ManagedSite{
+				Name:            tt.name,
+				BaseURL:         server.URL,
+				SiteType:        tt.siteType,
+				AuthType:        AuthTypeAccessToken + "," + AuthTypeCookie,
+				AuthValue:       encryptedAuth,
+				LastBalance:     "$9.99",
+				LastBalanceDate: "2026-01-01",
+			}
+			require.NoError(t, db.Create(site).Error)
+
+			service := NewBalanceService(db, encSvc)
+			t.Cleanup(service.closeIdleConnections)
+			result := service.FetchSiteBalance(context.Background(), site)
+
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expectedRequests, requestCount.Load())
+			if tt.expectedBalance == "" {
+				assert.Nil(t, result.Balance)
+				var stored ManagedSite
+				require.NoError(t, db.First(&stored, site.ID).Error)
+				assert.Equal(t, "$9.99", stored.LastBalance)
+				assert.Equal(t, "2026-01-01", stored.LastBalanceDate)
+				return
+			}
+			require.NotNil(t, result.Balance)
+			assert.Equal(t, tt.expectedBalance, *result.Balance)
+		})
+	}
+}
+
+func TestBalanceService_FetchBalanceStopsAuthFallbackAfterContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var requestCount atomic.Int32
+
+	service := NewBalanceService(setupTestDB(t), setupTestEncryption(t))
+	t.Cleanup(service.closeIdleConnections)
+	service.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount.Add(1)
+		cancel()
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Status:     "401 Unauthorized",
+			Header:     make(http.Header),
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	})}
+
+	authConfig := AuthConfig{
+		AuthTypes: []string{AuthTypeAccessToken, AuthTypeCookie},
+		AuthValues: map[string]string{
+			AuthTypeAccessToken: "test-token",
+			AuthTypeCookie:      "session=test",
+		},
+	}
+	site := &ManagedSite{
+		BaseURL:  "https://example.test",
+		SiteType: SiteTypeNewAPI,
+	}
+
+	balance := service.fetchBalanceFromAPI(ctx, site, authConfig, "")
+
+	assert.Nil(t, balance)
+	assert.Equal(t, int32(1), requestCount.Load())
 }
 
 // TestBalanceService_FetchSiteBalance_NoAuth tests balance fetch without auth
@@ -418,6 +663,257 @@ func TestBalanceService_FetchAllBalances(t *testing.T) {
 	}
 }
 
+func TestBalanceServiceRefreshAllBalancesReturnsFetchCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		cancel()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"quota":500000}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	authValue, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "cancel during balance fetch",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeNewAPI,
+		Enabled:   true,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: authValue,
+	}
+	require.NoError(t, db.Create(&site).Error)
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+
+	results, err := service.RefreshAllBalances(ctx)
+
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, results, site.ID)
+}
+
+func TestBalanceServiceRefreshAllBalancesReturnsUpdateCancellation(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"quota":500000}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	authValue, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "cancel during balance update",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeNewAPI,
+		Enabled:   true,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: authValue,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	const hookName = "test:cancel_after_balance_update"
+	require.NoError(t, db.Callback().Update().After("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_sites" {
+			cancel()
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	results, err := service.RefreshAllBalances(ctx)
+
+	assert.ErrorIs(t, err, context.Canceled)
+	require.NotNil(t, results[site.ID])
+	require.NotNil(t, results[site.ID].Balance)
+}
+
+func TestBalanceServiceRefreshAllBalancesReturnsPersistenceErrors(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"quota":500000}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	authValue, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "balance persistence failure",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeNewAPI,
+		Enabled:   true,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: authValue,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	forcedErr := errors.New("forced balance persistence failure")
+	const hookName = "test:balance_persistence_failure"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_sites" {
+			tx.AddError(forcedErr)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	results, err := service.RefreshAllBalances(context.Background())
+
+	assert.ErrorIs(t, err, forcedErr)
+	require.NotNil(t, results[site.ID])
+	require.NotNil(t, results[site.ID].Balance)
+}
+
+func TestBalanceServiceUpdateBalancesInDBStopsAfterContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	sites := make([]ManagedSite, 3)
+	for i := range sites {
+		sites[i] = ManagedSite{
+			Name:     fmt.Sprintf("cancel update site %d", i),
+			BaseURL:  fmt.Sprintf("https://cancel-%d.example.com", i),
+			SiteType: SiteTypeNewAPI,
+		}
+		require.NoError(t, db.Create(&sites[i]).Error)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	updateCalls := 0
+	const hookName = "test:cancel_during_balance_updates"
+	require.NoError(t, db.Callback().Update().After("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_sites" {
+			updateCalls++
+			if updateCalls == 1 {
+				cancel()
+			}
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	balance := "$5.00"
+	results := make(map[uint]*BalanceInfo, len(sites))
+	for i := range sites {
+		results[sites[i].ID] = &BalanceInfo{SiteID: sites[i].ID, Balance: &balance}
+	}
+	service := NewBalanceService(db, setupTestEncryption(t))
+	invalidations := 0
+	service.SetCacheInvalidationCallback(func() { invalidations++ })
+
+	err := service.updateBalancesInDB(ctx, results)
+
+	require.NoError(t, err)
+	assert.ErrorIs(t, ctx.Err(), context.Canceled)
+	assert.Equal(t, 1, updateCalls)
+	assert.Equal(t, 1, invalidations)
+}
+
+func TestBalanceServiceUpdateBalancesInDBPreservesPartialWrites(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	sites := []ManagedSite{
+		{Name: "partial update site A", BaseURL: "https://partial-a.example.com", SiteType: SiteTypeNewAPI},
+		{Name: "partial update site B", BaseURL: "https://partial-b.example.com", SiteType: SiteTypeNewAPI},
+	}
+	for i := range sites {
+		require.NoError(t, db.Create(&sites[i]).Error)
+	}
+
+	forcedErr := errors.New("forced single balance update failure")
+	updateCalls := 0
+	const hookName = "test:single_balance_update_failure"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_sites" {
+			updateCalls++
+			if updateCalls == 1 {
+				tx.AddError(forcedErr)
+			}
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	balance := "$5.00"
+	results := map[uint]*BalanceInfo{
+		sites[0].ID: {SiteID: sites[0].ID, Balance: &balance},
+		sites[1].ID: {SiteID: sites[1].ID, Balance: &balance},
+	}
+	service := NewBalanceService(db, setupTestEncryption(t))
+	invalidations := 0
+	service.SetCacheInvalidationCallback(func() { invalidations++ })
+
+	err := service.updateBalancesInDB(context.Background(), results)
+
+	assert.ErrorIs(t, err, forcedErr)
+	assert.Equal(t, 2, updateCalls)
+	var updated int64
+	require.NoError(t, db.Model(&ManagedSite{}).Where("last_balance = ?", balance).Count(&updated).Error)
+	assert.Equal(t, int64(1), updated)
+	assert.Equal(t, 1, invalidations)
+}
+
+func TestBalanceServiceUpdateBalancesInDBSummarizesMultipleFailures(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	sites := make([]ManagedSite, 3)
+	for i := range sites {
+		sites[i] = ManagedSite{
+			Name:     fmt.Sprintf("failed update site %d", i),
+			BaseURL:  fmt.Sprintf("https://failed-update-%d.example.com", i),
+			SiteType: SiteTypeNewAPI,
+		}
+		require.NoError(t, db.Create(&sites[i]).Error)
+	}
+
+	forcedErr := errors.New("forced repeated balance update failure")
+	const hookName = "test:repeated_balance_update_failure"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "managed_sites" {
+			tx.AddError(forcedErr)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(hookName) })
+
+	balance := "$5.00"
+	results := make(map[uint]*BalanceInfo, len(sites))
+	for i := range sites {
+		results[sites[i].ID] = &BalanceInfo{SiteID: sites[i].ID, Balance: &balance}
+	}
+	service := NewBalanceService(db, setupTestEncryption(t))
+	invalidations := 0
+	service.SetCacheInvalidationCallback(func() { invalidations++ })
+
+	err := service.updateBalancesInDB(context.Background(), results)
+
+	assert.ErrorIs(t, err, forcedErr)
+	assert.Contains(t, err.Error(), "2 additional balance cache updates failed")
+	assert.Zero(t, invalidations)
+}
+
 // TestBalanceService_GetHTTPClient tests HTTP client selection
 func TestBalanceService_GetHTTPClient(t *testing.T) {
 	t.Parallel()
@@ -430,7 +926,7 @@ func TestBalanceService_GetHTTPClient(t *testing.T) {
 		site := &ManagedSite{
 			UseProxy: false,
 		}
-		client := service.getHTTPClient(site)
+		client := service.getHTTPClient(context.Background(), site)
 		assert.Same(t, service.client, client)
 	})
 
@@ -439,11 +935,11 @@ func TestBalanceService_GetHTTPClient(t *testing.T) {
 			UseProxy: true,
 			ProxyURL: "http://proxy:8080",
 		}
-		client := service.getHTTPClient(site)
+		client := service.getHTTPClient(context.Background(), site)
 		assert.NotSame(t, service.client, client)
 
 		// Second call should return cached client
-		client2 := service.getHTTPClient(site)
+		client2 := service.getHTTPClient(context.Background(), site)
 		assert.Same(t, client, client2)
 	})
 
@@ -451,7 +947,7 @@ func TestBalanceService_GetHTTPClient(t *testing.T) {
 		site := &ManagedSite{
 			BypassMethod: BypassMethodStealth,
 		}
-		client := service.getHTTPClient(site)
+		client := service.getHTTPClient(context.Background(), site)
 		assert.NotSame(t, service.client, client)
 	})
 }
@@ -530,41 +1026,221 @@ func TestBalanceService_UpdateBalancesInDB(t *testing.T) {
 	assert.Equal(t, 1, invalidations)
 }
 
-// TestBalanceService_RefreshScheduler tests the background refresh scheduler
-func TestBalanceService_RefreshScheduler(t *testing.T) {
+func TestNextBalanceRefreshTimeAtUsesTimezoneAnchoredIntervals(t *testing.T) {
 	t.Parallel()
+
+	shanghai := time.FixedZone("UTC+8", 8*60*60)
+	western := time.FixedZone("UTC-5", -5*60*60)
+	newYork, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	tests := []struct {
+		name          string
+		now           time.Time
+		intervalHours int
+		location      *time.Location
+		expected      time.Time
+	}{
+		{
+			name:          "six hour interval uses the next slot",
+			now:           time.Date(2026, 7, 15, 1, 30, 0, 0, shanghai),
+			intervalHours: 6,
+			location:      shanghai,
+			expected:      time.Date(2026, 7, 15, 6, 0, 0, 0, shanghai),
+		},
+		{
+			name:          "an exact slot advances instead of rerunning",
+			now:           time.Date(2026, 7, 15, 6, 0, 0, 0, shanghai),
+			intervalHours: 6,
+			location:      shanghai,
+			expected:      time.Date(2026, 7, 15, 12, 0, 0, 0, shanghai),
+		},
+		{
+			name:          "non divisor intervals reset at next local midnight",
+			now:           time.Date(2026, 7, 15, 20, 30, 0, 0, shanghai),
+			intervalHours: 5,
+			location:      shanghai,
+			expected:      time.Date(2026, 7, 16, 0, 0, 0, 0, shanghai),
+		},
+		{
+			name:          "twenty four hour interval advances to next local midnight",
+			now:           time.Date(2026, 7, 15, 23, 30, 0, 0, shanghai),
+			intervalHours: 24,
+			location:      shanghai,
+			expected:      time.Date(2026, 7, 16, 0, 0, 0, 0, shanghai),
+		},
+		{
+			name:          "an explicit western timezone does not use the host timezone",
+			now:           time.Date(2026, 1, 15, 1, 30, 0, 0, western),
+			intervalHours: 6,
+			location:      western,
+			expected:      time.Date(2026, 1, 15, 6, 0, 0, 0, western),
+		},
+		// UTC construction disambiguates transition instants and keeps the test independent of host TZ.
+		{
+			name:          "spring forward skips the nonexistent local hour",
+			now:           time.Date(2026, 3, 8, 6, 30, 0, 0, time.UTC).In(newYork),
+			intervalHours: 1,
+			location:      newYork,
+			expected:      time.Date(2026, 3, 8, 7, 0, 0, 0, time.UTC).In(newYork),
+		},
+		{
+			name:          "fall back first repeated 01:30 advances to 02:00",
+			now:           time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC).In(newYork),
+			intervalHours: 2,
+			location:      newYork,
+			expected:      time.Date(2026, 11, 1, 7, 0, 0, 0, time.UTC).In(newYork),
+		},
+		{
+			name:          "fall back second repeated 01:30 advances to 02:00",
+			now:           time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC).In(newYork),
+			intervalHours: 2,
+			location:      newYork,
+			expected:      time.Date(2026, 11, 1, 7, 0, 0, 0, time.UTC).In(newYork),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := nextBalanceRefreshTimeAt(tt.now, tt.intervalHours, tt.location)
+			assert.Equal(t, tt.expected, actual)
+		})
+	}
+}
+
+func TestBalanceServiceStartReconcilesConfigAfterSubscriptionSetup(t *testing.T) {
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSiteSetting{}))
+	require.NoError(t, db.Create(&ManagedSiteSetting{
+		ID:                          1,
+		AutoBalanceEnabled:          true,
+		BalanceRefreshIntervalHours: 24,
+	}).Error)
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	// A single connection keeps SQLite :memory: state shared while the query/update hand-off is coordinated.
+	sqlDB.SetMaxOpenConns(1)
+
+	configQueries := make(chan struct{}, 2)
+	const hookName = "test:balance_startup_config_query"
+	require.NoError(t, db.Callback().Query().After("gorm:query").Register(hookName, func(tx *gorm.DB) {
+		if tx.Statement.Table != "managed_site_settings" {
+			return
+		}
+		select {
+		case configQueries <- struct{}{}:
+		default:
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Query().Remove(hookName) })
+
+	memoryStore := store.NewMemoryStore()
+	t.Cleanup(func() { _ = memoryStore.Close() })
+	hookedStore := &subscribeHookStore{
+		Store: memoryStore,
+		beforeSubscribe: func() {
+			select {
+			case <-configQueries:
+			case <-time.After(time.Second):
+				t.Fatal("scheduler did not perform its initial configuration read")
+			}
+			// This update lands after the initial read but before the subscription becomes active.
+			require.NoError(t, db.Model(&ManagedSiteSetting{}).
+				Where("id = ?", 1).
+				Updates(map[string]any{
+					"auto_balance_enabled":           false,
+					"balance_refresh_interval_hours": 6,
+				}).Error)
+		},
+	}
+
+	service := NewBalanceService(db, encSvc)
+	service.SetStore(hookedStore)
+	service.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		service.Stop(ctx)
+	})
+
+	select {
+	case <-configQueries:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not reconcile configuration after subscription setup")
+	}
+}
+
+func TestNormalizeAutoBalanceIntervalHours(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, defaultAutoBalanceIntervalHours, normalizeAutoBalanceIntervalHours(0))
+	assert.Equal(t, defaultAutoBalanceIntervalHours, normalizeAutoBalanceIntervalHours(25))
+	assert.Equal(t, 6, normalizeAutoBalanceIntervalHours(6))
+}
+
+func TestBalanceServiceStopClosesSubscriptionOnce(t *testing.T) {
+	t.Parallel()
+
+	subscription := &countingSubscription{channel: make(chan *store.Message)}
+	service := NewBalanceService(setupTestDB(t), setupTestEncryption(t))
+	service.subConfig = subscription
+
+	service.Stop(context.Background())
+	service.Stop(context.Background())
+
+	assert.Equal(t, int32(1), subscription.closeCount.Load())
+}
+
+func TestBalanceServiceStopCancelsScheduledRefresh(t *testing.T) {
+	requestStarted := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	var startedOnce sync.Once
+	var canceledOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() { close(requestStarted) })
+		<-r.Context().Done()
+		canceledOnce.Do(func() { close(requestCanceled) })
+	}))
+	t.Cleanup(server.Close)
 
 	db := setupTestDB(t)
 	encSvc := setupTestEncryption(t)
-
-	err := db.AutoMigrate(&ManagedSite{})
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	authValue, err := encSvc.Encrypt("test-token")
 	require.NoError(t, err)
+	require.NoError(t, db.Create(&ManagedSite{
+		Name:      "blocking balance site",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeNewAPI,
+		Enabled:   true,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: authValue,
+	}).Error)
 
 	service := NewBalanceService(db, encSvc)
+	service.wg.Add(1)
+	go func() {
+		defer service.wg.Done()
+		service.refreshAllBalancesBackground(service.lifecycleCtx)
+	}()
 
-	// Test nextRefreshTime calculation
-	nextRefresh := service.nextRefreshTime()
-	assert.True(t, nextRefresh.After(time.Now()))
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("scheduled refresh did not start")
+	}
 
-	// Verify it's at local midnight.
-	localTime := nextRefresh.In(checkinLocation())
-	assert.Equal(t, 0, localTime.Hour())
-	assert.Equal(t, 0, localTime.Minute())
-}
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	service.Stop(stopCtx)
 
-func TestBalanceService_NextRefreshTimeKeepsMidnightAcrossDST(t *testing.T) {
-	loc, err := time.LoadLocation("America/New_York")
-	require.NoError(t, err)
-
-	now := time.Date(2026, 3, 8, 23, 0, 0, 0, loc)
-	nextRefresh := nextRefreshTimeAtLocation(now, loc)
-
-	localTime := nextRefresh.In(loc)
-	assert.Equal(t, 2026, localTime.Year())
-	assert.Equal(t, time.March, localTime.Month())
-	assert.Equal(t, 9, localTime.Day())
-	assert.Equal(t, 0, localTime.Hour())
-	assert.Equal(t, 0, localTime.Minute())
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("scheduled refresh request was not canceled during stop")
+	}
 }
 
 // TestBalanceService_SupportsBalance tests site type support check

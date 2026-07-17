@@ -13,10 +13,14 @@ import (
 type siteProxyResolverStub struct {
 	resolved string
 	calls    []string
+	contexts []context.Context
 }
 
-func (s *siteProxyResolverStub) ResolveProxyURL(_ context.Context, raw string) (string, error) {
+type proxyResolverContextKey struct{}
+
+func (s *siteProxyResolverStub) ResolveProxyURL(ctx context.Context, raw string) (string, error) {
 	s.calls = append(s.calls, raw)
+	s.contexts = append(s.contexts, ctx)
 	return s.resolved, nil
 }
 
@@ -76,7 +80,8 @@ func TestBalanceServiceResolvesProxyPoolReferenceForStandardClient(t *testing.T)
 	service.SetProxyURLResolver(resolver)
 
 	ref := utils.BuildProxyPoolItemRef(14)
-	client := service.getHTTPClient(&ManagedSite{
+	ctx := context.WithValue(context.Background(), proxyResolverContextKey{}, "request-context")
+	client := service.getHTTPClient(ctx, &ManagedSite{
 		UseProxy: true,
 		ProxyURL: ref,
 	})
@@ -84,6 +89,8 @@ func TestBalanceServiceResolvesProxyPoolReferenceForStandardClient(t *testing.T)
 	require.NotNil(t, client)
 	assert.NotSame(t, service.client, client)
 	assert.Equal(t, []string{ref}, resolver.calls)
+	require.Len(t, resolver.contexts, 1)
+	assert.Equal(t, ctx, resolver.contexts[0])
 	_, ok := service.proxyClients.Load(resolver.resolved)
 	assert.True(t, ok)
 	_, ok = service.proxyClients.Load(ref)

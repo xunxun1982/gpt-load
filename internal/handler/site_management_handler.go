@@ -33,6 +33,8 @@ type CreateManagedSiteRequest struct {
 
 	AuthType  string `json:"auth_type"`
 	AuthValue string `json:"auth_value"`
+
+	BalanceMultiplier *int64 `json:"balance_multiplier"`
 }
 
 type UpdateManagedSiteRequest struct {
@@ -56,6 +58,8 @@ type UpdateManagedSiteRequest struct {
 
 	AuthType  *string `json:"auth_type"`
 	AuthValue *string `json:"auth_value"`
+
+	BalanceMultiplier *int64 `json:"balance_multiplier"`
 }
 
 type SiteReorderRequest struct {
@@ -146,23 +150,24 @@ func (s *Server) CreateManagedSite(c *gin.Context) {
 	}
 
 	site, err := s.SiteService.CreateSite(c.Request.Context(), sitemanagement.CreateSiteParams{
-		Name:             req.Name,
-		Notes:            req.Notes,
-		Description:      req.Description,
-		Sort:             req.Sort,
-		Enabled:          req.Enabled,
-		BaseURL:          req.BaseURL,
-		SiteType:         req.SiteType,
-		UserID:           req.UserID,
-		CheckInPageURL:   req.CheckInPageURL,
-		CheckInAvailable: req.CheckInAvailable,
-		CheckInEnabled:   req.CheckInEnabled,
-		CustomCheckInURL: req.CustomCheckInURL,
-		UseProxy:         req.UseProxy,
-		ProxyURL:         req.ProxyURL,
-		BypassMethod:     req.BypassMethod,
-		AuthType:         req.AuthType,
-		AuthValue:        req.AuthValue,
+		Name:              req.Name,
+		Notes:             req.Notes,
+		Description:       req.Description,
+		Sort:              req.Sort,
+		Enabled:           req.Enabled,
+		BaseURL:           req.BaseURL,
+		SiteType:          req.SiteType,
+		UserID:            req.UserID,
+		CheckInPageURL:    req.CheckInPageURL,
+		CheckInAvailable:  req.CheckInAvailable,
+		CheckInEnabled:    req.CheckInEnabled,
+		CustomCheckInURL:  req.CustomCheckInURL,
+		UseProxy:          req.UseProxy,
+		ProxyURL:          req.ProxyURL,
+		BypassMethod:      req.BypassMethod,
+		AuthType:          req.AuthType,
+		AuthValue:         req.AuthValue,
+		BalanceMultiplier: req.BalanceMultiplier,
 	})
 	if HandleServiceError(c, err) {
 		return
@@ -184,23 +189,24 @@ func (s *Server) UpdateManagedSite(c *gin.Context) {
 	}
 
 	site, err := s.SiteService.UpdateSite(c.Request.Context(), uint(id), sitemanagement.UpdateSiteParams{
-		Name:             req.Name,
-		Notes:            req.Notes,
-		Description:      req.Description,
-		Sort:             req.Sort,
-		Enabled:          req.Enabled,
-		BaseURL:          req.BaseURL,
-		SiteType:         req.SiteType,
-		UserID:           req.UserID,
-		CheckInPageURL:   req.CheckInPageURL,
-		CheckInAvailable: req.CheckInAvailable,
-		CheckInEnabled:   req.CheckInEnabled,
-		CustomCheckInURL: req.CustomCheckInURL,
-		UseProxy:         req.UseProxy,
-		ProxyURL:         req.ProxyURL,
-		BypassMethod:     req.BypassMethod,
-		AuthType:         req.AuthType,
-		AuthValue:        req.AuthValue,
+		Name:              req.Name,
+		Notes:             req.Notes,
+		Description:       req.Description,
+		Sort:              req.Sort,
+		Enabled:           req.Enabled,
+		BaseURL:           req.BaseURL,
+		SiteType:          req.SiteType,
+		UserID:            req.UserID,
+		CheckInPageURL:    req.CheckInPageURL,
+		CheckInAvailable:  req.CheckInAvailable,
+		CheckInEnabled:    req.CheckInEnabled,
+		CustomCheckInURL:  req.CustomCheckInURL,
+		UseProxy:          req.UseProxy,
+		ProxyURL:          req.ProxyURL,
+		BypassMethod:      req.BypassMethod,
+		AuthType:          req.AuthType,
+		AuthValue:         req.AuthValue,
+		BalanceMultiplier: req.BalanceMultiplier,
 	})
 	if HandleServiceError(c, err) {
 		return
@@ -288,6 +294,31 @@ func (s *Server) UpdateAutoCheckinConfig(c *gin.Context) {
 	if HandleServiceError(c, err) {
 		return
 	}
+	// Deliberately reschedule locally because pub/sub delivery is best-effort and may be unavailable.
+	s.requestLocalManagedSiteScheduleReschedule(true, false)
+	response.Success(c, updated)
+}
+
+func (s *Server) GetAutoBalanceConfig(c *gin.Context) {
+	cfg, err := s.SiteService.GetAutoBalanceConfig(c.Request.Context())
+	if HandleServiceError(c, err) {
+		return
+	}
+	response.Success(c, cfg)
+}
+
+func (s *Server) UpdateAutoBalanceConfig(c *gin.Context) {
+	var cfg sitemanagement.AutoBalanceConfig
+	if err := c.ShouldBindJSON(&cfg); err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, err.Error()))
+		return
+	}
+	updated, err := s.SiteService.UpdateAutoBalanceConfig(c.Request.Context(), cfg)
+	if HandleServiceError(c, err) {
+		return
+	}
+	// Deliberately reschedule locally because pub/sub delivery is best-effort and may be unavailable.
+	s.requestLocalManagedSiteScheduleReschedule(false, true)
 	response.Success(c, updated)
 }
 
@@ -458,6 +489,7 @@ func (s *Server) ExportManagedSites(c *gin.Context) {
 type SiteImportRequest struct {
 	Version     string                            `json:"version"`
 	AutoCheckin *sitemanagement.AutoCheckinConfig `json:"auto_checkin,omitempty"`
+	AutoBalance *sitemanagement.AutoBalanceConfig `json:"auto_balance,omitempty"`
 	Sites       []sitemanagement.SiteExportInfo   `json:"sites"`
 }
 
@@ -469,16 +501,18 @@ func (s *Server) ImportManagedSites(c *gin.Context) {
 		return
 	}
 
-	if len(importData.Sites) == 0 {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "No sites provided"))
+	if len(importData.Sites) == 0 && importData.AutoCheckin == nil && importData.AutoBalance == nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "No sites or supported configuration provided"))
 		return
 	}
 
 	// Determine import mode from query, filename or content heuristic
-	sample := make([]string, 0, 5)
-	for i := 0; i < len(importData.Sites) && i < 5; i++ {
-		if importData.Sites[i].AuthValue != "" {
-			sample = append(sample, importData.Sites[i].AuthValue)
+	sample := make([]string, 0, importModeSampleLimit)
+	for i := range importData.Sites {
+		site := &importData.Sites[i]
+		sample = appendManagedSiteImportSamples(sample, site.UserID, site.AuthType, site.AuthValue)
+		if len(sample) >= importModeSampleLimit {
+			break
 		}
 	}
 	importMode := GetImportMode(c, sample)
@@ -488,6 +522,7 @@ func (s *Server) ImportManagedSites(c *gin.Context) {
 	serviceData := &sitemanagement.SiteExportData{
 		Version:     importData.Version,
 		AutoCheckin: importData.AutoCheckin,
+		AutoBalance: importData.AutoBalance,
 		Sites:       importData.Sites,
 	}
 
@@ -495,6 +530,7 @@ func (s *Server) ImportManagedSites(c *gin.Context) {
 	if HandleServiceError(c, err) {
 		return
 	}
+	s.requestLocalManagedSiteScheduleReschedule(importData.AutoCheckin != nil, importData.AutoBalance != nil)
 
 	data := map[string]any{
 		"imported": imported,
@@ -526,7 +562,7 @@ func (s *Server) FetchSiteBalance(c *gin.Context) {
 
 // RefreshAllBalances fetches balances for all enabled sites that support balance fetching
 func (s *Server) RefreshAllBalances(c *gin.Context) {
-	results, err := s.BalanceService.RefreshAllBalancesManual(c.Request.Context())
+	results, err := s.BalanceService.RefreshAllBalances(c.Request.Context())
 	if HandleServiceError(c, err) {
 		return
 	}

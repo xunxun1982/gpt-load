@@ -2,7 +2,10 @@
 import { keysApi } from "@/api/keys";
 import type { Group, SubGroupInfo } from "@/types/models";
 import { appState } from "@/utils/app-state";
-import { calculateAutoSubGroupWeights } from "@/utils/auto-subgroup-weight";
+import {
+  calculateAutoSubGroupWeights,
+  createUniformSubGroupWeights,
+} from "@/utils/auto-subgroup-weight";
 import { parseBalanceValue, resolveSubGroupSiteId } from "@/utils/display";
 import { Close } from "@vicons/ionicons5";
 import {
@@ -13,6 +16,8 @@ import {
   NIcon,
   NInputNumber,
   NModal,
+  NRadioButton,
+  NRadioGroup,
   useMessage,
 } from "naive-ui";
 import { computed, ref, watch } from "vue";
@@ -30,12 +35,19 @@ interface Emits {
   (e: "success"): void;
 }
 
+type AutoWeightStrategy = "balance" | "uniform";
+
 const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
 const { t } = useI18n();
 const message = useMessage();
 const loading = ref(false);
-const maxWeight = ref(100);
+// Only this modal starts at 1000; the existing input and backend limits stay at 5000.
+const defaultAutoWeightMax = 1000;
+const defaultUniformWeight = 100;
+const strategy = ref<AutoWeightStrategy>("balance");
+const maxWeight = ref(defaultAutoWeightMax);
+const uniformWeight = ref(defaultUniformWeight);
 const groupById = computed(() => {
   const groups = new Map<number, Group>();
   for (const group of props.groups) {
@@ -50,7 +62,9 @@ watch(
   () => props.show,
   show => {
     if (show) {
-      maxWeight.value = 100;
+      strategy.value = "balance";
+      maxWeight.value = defaultAutoWeightMax;
+      uniformWeight.value = defaultUniformWeight;
     }
   }
 );
@@ -61,16 +75,13 @@ function handleClose() {
   }
 }
 
-async function handleSubmit() {
-  const aggregateGroupId = props.aggregateGroup?.id;
-  if (
-    !aggregateGroupId ||
-    loading.value ||
-    !Number.isInteger(maxWeight.value) ||
-    maxWeight.value < 1 ||
-    maxWeight.value > 5000
-  ) {
-    return;
+function buildWeightResult() {
+  if (strategy.value === "uniform") {
+    // Uniform mode intentionally includes disabled, unbound, and uncached sub-groups.
+    return createUniformSubGroupWeights(
+      props.subGroups.map(subGroup => subGroup.group.id ?? 0),
+      uniformWeight.value
+    );
   }
 
   const candidates = props.subGroups.map(subGroup => {
@@ -82,9 +93,31 @@ async function handleSubmit() {
       checkinStatus: hasSite ? appState.siteCheckinStatuses[siteId] : "",
     };
   });
-  const result = calculateAutoSubGroupWeights(candidates, maxWeight.value);
+  return calculateAutoSubGroupWeights(candidates, maxWeight.value);
+}
+
+async function handleSubmit() {
+  const aggregateGroupId = props.aggregateGroup?.id;
+  const selectedWeight = strategy.value === "uniform" ? uniformWeight.value : maxWeight.value;
+  if (
+    !aggregateGroupId ||
+    loading.value ||
+    !Number.isInteger(selectedWeight) ||
+    selectedWeight < 1 ||
+    selectedWeight > 5000
+  ) {
+    return;
+  }
+
+  const result = buildWeightResult();
   if (result.updates.length === 0) {
-    message.warning(t("subGroups.autoWeightNoEligible"));
+    message.warning(
+      t(
+        strategy.value === "uniform"
+          ? "subGroups.autoWeightNoSubGroups"
+          : "subGroups.autoWeightNoEligible"
+      )
+    );
     return;
   }
 
@@ -145,17 +178,45 @@ async function handleSubmit() {
         </n-button>
       </template>
 
-      <n-form-item :label="t('subGroups.autoWeightMax')" :show-feedback="false">
-        <n-input-number
-          v-model:value="maxWeight"
-          :min="1"
-          :max="5000"
-          :precision="0"
-          style="width: 100%"
-        />
+      <n-form-item :label="t('subGroups.autoWeightStrategy')" :show-feedback="false">
+        <n-radio-group v-model:value="strategy" class="strategy-selector">
+          <n-radio-button value="balance">
+            {{ t("subGroups.autoWeightStrategyBalance") }}
+          </n-radio-button>
+          <n-radio-button value="uniform">
+            {{ t("subGroups.autoWeightStrategyUniform") }}
+          </n-radio-button>
+        </n-radio-group>
       </n-form-item>
+
+      <div class="weight-settings">
+        <n-form-item
+          v-if="strategy === 'balance'"
+          :label="t('subGroups.autoWeightMax')"
+          :show-feedback="false"
+        >
+          <n-input-number
+            v-model:value="maxWeight"
+            :min="1"
+            :max="5000"
+            :precision="0"
+            style="width: 100%"
+          />
+        </n-form-item>
+        <n-form-item v-else :label="t('subGroups.autoWeightUniform')" :show-feedback="false">
+          <n-input-number
+            v-model:value="uniformWeight"
+            :min="1"
+            :max="5000"
+            :precision="0"
+            style="width: 100%"
+          />
+        </n-form-item>
+      </div>
       <n-alert type="info" :show-icon="false">
-        {{ t("subGroups.autoWeightHint") }}
+        {{
+          t(strategy === "balance" ? "subGroups.autoWeightHint" : "subGroups.autoWeightUniformHint")
+        }}
       </n-alert>
 
       <template #footer>
@@ -172,18 +233,62 @@ async function handleSubmit() {
 
 <style scoped>
 .auto-weight-modal {
-  width: 460px;
+  width: min(520px, calc(100vw - 32px));
 }
 
-.auto-weight-card :deep(.n-card__content) {
+.auto-weight-card :deep(.n-card-content) {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.strategy-selector {
+  display: flex;
+  width: 100%;
+}
+
+.strategy-selector :deep(.n-radio-button) {
+  flex: 1;
+  text-align: center;
+}
+
+.weight-settings {
+  padding: 12px 14px;
+  border: 1px solid var(--n-border-color);
+  border-radius: 8px;
+  background: var(--n-color-embedded, transparent);
+}
+
+.weight-settings :deep(.n-form-item) {
+  margin-bottom: 0;
 }
 
 .footer-actions {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+}
+
+@media (max-width: 480px) {
+  .strategy-selector {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .strategy-selector :deep(.n-radio-button) {
+    width: 100%;
+  }
+
+  .strategy-selector :deep(.n-radio-button:first-child) {
+    border-radius: var(--n-button-border-radius) var(--n-button-border-radius) 0 0;
+  }
+
+  .strategy-selector :deep(.n-radio-button:last-child) {
+    border-radius: 0 0 var(--n-button-border-radius) var(--n-button-border-radius);
+  }
+
+  .strategy-selector :deep(.n-radio-group__splitor) {
+    display: none;
+  }
 }
 </style>

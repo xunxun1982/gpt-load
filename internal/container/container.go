@@ -132,8 +132,9 @@ func BuildContainer() (*dig.Container, error) {
 	if err := container.Provide(sitemanagement.NewSiteService); err != nil {
 		return nil, err
 	}
-	if err := container.Provide(func(db *gorm.DB, encryptionSvc encryption.Service, proxyPoolSvc *services.ProxyPoolService) *sitemanagement.BalanceService {
+	if err := container.Provide(func(db *gorm.DB, encryptionSvc encryption.Service, kvStore store.Store, proxyPoolSvc *services.ProxyPoolService) *sitemanagement.BalanceService {
 		balanceSvc := sitemanagement.NewBalanceService(db, encryptionSvc)
+		balanceSvc.SetStore(kvStore)
 		balanceSvc.SetProxyURLResolver(proxyPoolSvc)
 		return balanceSvc
 	}); err != nil {
