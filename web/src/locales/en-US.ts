@@ -814,10 +814,11 @@ export default {
     autoWeightStrategy: "Allocation Strategy",
     autoWeightStrategyBalance: "Allocate by Balance",
     autoWeightStrategyUniform: "Set All to Same Weight",
+    autoWeightMin: "Minimum Weight",
     autoWeightMax: "Maximum Weight",
     autoWeightUniform: "Uniform Weight",
     autoWeightHint:
-      "Balances shown as - are unchanged; zero balances get weight 1; failed or missing check-ins multiply the calculated weight by 0.7.",
+      "Balances shown as - are unchanged; zero balances and calculated weights below the minimum use the minimum weight; failed or missing check-ins multiply the calculated weight by 0.7.",
     autoWeightUniformHint:
       "Set the initial weight of every sub-group in this aggregate group to the specified value.",
     autoWeightNoEligible: "No cached balances are available for weight calculation",

@@ -69,6 +69,25 @@ test("calculates proportional initial weights with check-in penalty", async () =
   assert.equal(result.skippedCount, 0);
 });
 
+test("clamps balance-based weights to the configured minimum", async () => {
+  const { calculateAutoSubGroupWeights } = await loadAutoWeightUtils();
+  const result = calculateAutoSubGroupWeights(
+    [
+      { subGroupId: 1, balance: 100, checkinStatus: "success" },
+      { subGroupId: 2, balance: 10, checkinStatus: "success" },
+      { subGroupId: 3, balance: 0, checkinStatus: "failed" },
+    ],
+    100,
+    20
+  );
+
+  assert.deepEqual(result.updates, [
+    { subGroupId: 1, weight: 100 },
+    { subGroupId: 2, weight: 20 },
+    { subGroupId: 3, weight: 20 },
+  ]);
+});
+
 test("resolves subgroup site binding from canonical group and parent group", async () => {
   const { resolveSubGroupSiteId } = await loadDisplayUtils();
   assert.equal(typeof resolveSubGroupSiteId, "function");
@@ -172,8 +191,17 @@ test("places auto weight button after reset-all-health and mounts the modal", ()
 
 test("auto weight modal reads cached data and updates only initial weight serially", () => {
   assert.match(autoWeightModal, /const defaultAutoWeightMax = 1000/);
+  assert.match(autoWeightModal, /const defaultAutoWeightMin = 1/);
   assert.match(autoWeightModal, /const maxWeight = ref\(defaultAutoWeightMax\)/);
+  assert.match(autoWeightModal, /const minWeight = ref\(defaultAutoWeightMin\)/);
   assert.match(autoWeightModal, /maxWeight\.value = defaultAutoWeightMax/);
+  assert.match(autoWeightModal, /minWeight\.value = defaultAutoWeightMin/);
+  assert.match(
+    autoWeightModal,
+    /calculateAutoSubGroupWeights\(candidates, maxWeight\.value, minWeight\.value\)/
+  );
+  assert.match(autoWeightModal, /minWeight\.value > maxWeight\.value/);
+  assert.match(autoWeightModal, /v-model:value="minWeight"/);
   assert.match(autoWeightModal, /:max="5000"/);
   assert.match(autoWeightModal, /typeof group\.id === "number"/);
   assert.match(autoWeightModal, /resolveSubGroupSiteId\(subGroup, groupById\.value\)/);
@@ -184,6 +212,9 @@ test("auto weight modal reads cached data and updates only initial weight serial
   assert.match(autoWeightModal, /weight:\s*update\.weight/);
   assert.match(autoWeightModal, /true\s*\)/);
   assert.doesNotMatch(autoWeightModal, /effective_weight/);
+  assert.match(zhLocale, /autoWeightMin:\s*"最低权重"/);
+  assert.match(enLocale, /autoWeightMin:\s*"Minimum Weight"/);
+  assert.match(jaLocale, /autoWeightMin:/);
 });
 
 test("auto weight modal supports a fixed weight strategy defaulting to one hundred", () => {

@@ -799,10 +799,11 @@ export default {
     autoWeightStrategy: "割り当て方法",
     autoWeightStrategyBalance: "残高に基づいて自動割り当て",
     autoWeightStrategyUniform: "すべて同じ重みに設定",
+    autoWeightMin: "最小重み",
     autoWeightMax: "最大重み",
     autoWeightUniform: "共通の重み",
     autoWeightHint:
-      "残高が - の場合は変更せず、残高が 0 の場合は重みを 1 にします。直近のチェックインが失敗または未実施の場合、計算結果に 0.7 を掛けます。",
+      "残高が - の場合は変更せず、残高が 0 または計算結果が最小重みを下回る場合は最小重みにします。直近のチェックインが失敗または未実施の場合、計算結果に 0.7 を掛けます。",
     autoWeightUniformHint:
       "この集約グループ内のすべてのサブグループの初期重みを指定した値に設定します。",
     autoWeightNoEligible: "重み計算に使用できるキャッシュ残高がありません",

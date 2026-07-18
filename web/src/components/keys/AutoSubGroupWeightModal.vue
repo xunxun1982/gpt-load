@@ -44,9 +44,11 @@ const message = useMessage();
 const loading = ref(false);
 // Only this modal starts at 1000; the existing input and backend limits stay at 5000.
 const defaultAutoWeightMax = 1000;
+const defaultAutoWeightMin = 1;
 const defaultUniformWeight = 100;
 const strategy = ref<AutoWeightStrategy>("balance");
 const maxWeight = ref(defaultAutoWeightMax);
+const minWeight = ref(defaultAutoWeightMin);
 const uniformWeight = ref(defaultUniformWeight);
 const groupById = computed(() => {
   const groups = new Map<number, Group>();
@@ -64,6 +66,7 @@ watch(
     if (show) {
       strategy.value = "balance";
       maxWeight.value = defaultAutoWeightMax;
+      minWeight.value = defaultAutoWeightMin;
       uniformWeight.value = defaultUniformWeight;
     }
   }
@@ -93,7 +96,7 @@ function buildWeightResult() {
       checkinStatus: hasSite ? appState.siteCheckinStatuses[siteId] : "",
     };
   });
-  return calculateAutoSubGroupWeights(candidates, maxWeight.value);
+  return calculateAutoSubGroupWeights(candidates, maxWeight.value, minWeight.value);
 }
 
 async function handleSubmit() {
@@ -104,7 +107,11 @@ async function handleSubmit() {
     loading.value ||
     !Number.isInteger(selectedWeight) ||
     selectedWeight < 1 ||
-    selectedWeight > 5000
+    selectedWeight > 5000 ||
+    (strategy.value === "balance" &&
+      (!Number.isInteger(minWeight.value) ||
+        minWeight.value < 1 ||
+        minWeight.value > maxWeight.value))
   ) {
     return;
   }
@@ -190,19 +197,26 @@ async function handleSubmit() {
       </n-form-item>
 
       <div class="weight-settings">
-        <n-form-item
-          v-if="strategy === 'balance'"
-          :label="t('subGroups.autoWeightMax')"
-          :show-feedback="false"
-        >
-          <n-input-number
-            v-model:value="maxWeight"
-            :min="1"
-            :max="5000"
-            :precision="0"
-            style="width: 100%"
-          />
-        </n-form-item>
+        <div v-if="strategy === 'balance'" class="weight-range-settings">
+          <n-form-item :label="t('subGroups.autoWeightMin')" :show-feedback="false">
+            <n-input-number
+              v-model:value="minWeight"
+              :min="1"
+              :max="maxWeight"
+              :precision="0"
+              style="width: 100%"
+            />
+          </n-form-item>
+          <n-form-item :label="t('subGroups.autoWeightMax')" :show-feedback="false">
+            <n-input-number
+              v-model:value="maxWeight"
+              :min="minWeight"
+              :max="5000"
+              :precision="0"
+              style="width: 100%"
+            />
+          </n-form-item>
+        </div>
         <n-form-item v-else :label="t('subGroups.autoWeightUniform')" :show-feedback="false">
           <n-input-number
             v-model:value="uniformWeight"
@@ -263,6 +277,12 @@ async function handleSubmit() {
   margin-bottom: 0;
 }
 
+.weight-range-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .footer-actions {
   display: flex;
   justify-content: flex-end;
@@ -270,6 +290,10 @@ async function handleSubmit() {
 }
 
 @media (max-width: 480px) {
+  .weight-range-settings {
+    grid-template-columns: 1fr;
+  }
+
   .strategy-selector {
     flex-direction: column;
     height: auto;
