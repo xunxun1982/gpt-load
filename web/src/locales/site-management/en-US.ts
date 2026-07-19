@@ -63,7 +63,8 @@ export default {
   bypassMethodNone: "None",
   bypassMethodStealth: "Stealth (TLS Fingerprint)",
   stealthBypassHint: "⚠️ Stealth bypass requires Cookie auth type",
-  bypassNoneHint: "Default direct API mode. Prefer this when the site has no browser protection.",
+  bypassNoneHint:
+    "Uses standard API requests without browser emulation. Try Stealth mode only if the site returns 403 or requires browser verification.",
   bypassStealthHint:
     "Simulates Chrome TLS and request headers. Enable only when ordinary Cookie requests are rejected; it cannot create or renew WAF cookies.",
   anyrouterStealthHint:

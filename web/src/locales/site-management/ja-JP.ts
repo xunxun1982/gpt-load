@@ -63,7 +63,8 @@ export default {
   bypassMethodNone: "なし",
   bypassMethodStealth: "ステルス (TLS指紋)",
   stealthBypassHint: "⚠️ ステルスバイパスにはCookie認証が必要です",
-  bypassNoneHint: "ブラウザ保護がないAPI向けの標準方式です。通常はこちらを優先します。",
+  bypassNoneHint:
+    "ブラウザを模倣せず、通常の API リクエストを使用します。403 エラーやブラウザ検証が発生した場合のみ、ステルスモードを試してください。",
   bypassStealthHint:
     "ChromeのTLS指紋とリクエストヘッダーを模倣します。通常のCookieリクエストが拒否される場合のみ有効化し、WAF Cookieの生成や更新はできません。",
   anyrouterStealthHint:

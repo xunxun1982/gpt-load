@@ -63,7 +63,7 @@ export default {
   bypassMethodNone: "无",
   bypassMethodStealth: "隐身模式 (TLS指纹)",
   stealthBypassHint: "⚠️ 隐身绕过需要使用 Cookie 认证方式",
-  bypassNoneHint: "默认直连方式，适合无浏览器防护的 API；优先使用此项。",
+  bypassNoneHint: "默认使用普通 API 请求，不模拟浏览器；遇到 403 或浏览器验证时，再尝试隐身模式。",
   bypassStealthHint:
     "模拟 Chrome TLS 指纹和请求头，仅在站点拒绝普通 Cookie 请求时启用；不会生成或续期防护 Cookie。",
   anyrouterStealthHint:
