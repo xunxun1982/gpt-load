@@ -59,6 +59,15 @@ func NormalizeProxyURL(raw string) (string, error) {
 	return parsed.String(), nil
 }
 
+// ProxyURLForExport preserves raw proxy configuration only for explicit plain exports.
+// Encrypted exports omit it because URL userinfo may contain proxy credentials.
+func ProxyURLForExport(raw string, plainMode bool) string {
+	if plainMode {
+		return raw
+	}
+	return ""
+}
+
 // ParseProxyURL trims and validates a supported outbound proxy URL for callers needing *url.URL.
 func ParseProxyURL(raw string) (*url.URL, error) {
 	trimmed := strings.TrimSpace(raw)

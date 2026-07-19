@@ -583,6 +583,143 @@ func TestExportAllIncludesScheduleConfigWithoutManagedSites(t *testing.T) {
 	assert.Empty(t, payload.Data.ManagedSites.Sites)
 }
 
+func TestExportAllOnlyIncludesManagedSiteProxyURLInPlainMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&models.Group{},
+		&models.DynamicWeightMetric{},
+		&sitemanagement.ManagedSite{},
+		&sitemanagement.ManagedSiteSetting{},
+	))
+	const proxyURL = "http://user:pass@proxy.example.test:8080"
+	require.NoError(t, db.Create(&models.SystemSetting{
+		SettingKey:   "proxy_url",
+		SettingValue: proxyURL,
+	}).Error)
+	require.NoError(t, db.Create(&models.Group{
+		Name:        "group with authenticated proxy",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		Enabled:     true,
+		TestModel:   "gpt-test",
+		Upstreams:   datatypes.JSON(`[{"url":"https://api.example.com","weight":100,"proxy_url":"` + proxyURL + `"}]`),
+		Config:      datatypes.JSONMap{"proxy_url": proxyURL},
+	}).Error)
+	require.NoError(t, db.Create(&sitemanagement.ManagedSite{
+		Name:     "site with authenticated proxy",
+		BaseURL:  "https://example.com",
+		SiteType: sitemanagement.SiteTypeNewAPI,
+		Enabled:  true,
+		UseProxy: true,
+		ProxyURL: proxyURL,
+		AuthType: sitemanagement.AuthTypeNone,
+	}).Error)
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+	server := &Server{
+		ImportExportService: services.NewImportExportService(db, nil, encSvc),
+		EncryptionSvc:       encSvc,
+	}
+
+	tests := []struct {
+		name         string
+		target       string
+		wantProxyURL string
+	}{
+		{name: "encrypted", target: "/system/export"},
+		{name: "plain", target: "/system/export?mode=plain", wantProxyURL: proxyURL},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, tt.target, nil)
+
+			server.ExportAll(c)
+
+			require.Equal(t, http.StatusOK, w.Code)
+			var payload struct {
+				Data SystemExportData `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &payload))
+			require.NotNil(t, payload.Data.ManagedSites)
+			require.Len(t, payload.Data.ManagedSites.Sites, 1)
+			assert.Equal(t, tt.wantProxyURL, payload.Data.ManagedSites.Sites[0].ProxyURL)
+			assert.Equal(t, tt.wantProxyURL, payload.Data.SystemSettings["proxy_url"])
+			require.Len(t, payload.Data.Groups, 1)
+			assert.Equal(t, tt.wantProxyURL, payload.Data.Groups[0].Group.Config["proxy_url"])
+			var upstreams []struct {
+				ProxyURL string `json:"proxy_url"`
+			}
+			require.NoError(t, json.Unmarshal(payload.Data.Groups[0].Group.Upstreams, &upstreams))
+			require.Len(t, upstreams, 1)
+			assert.Equal(t, tt.wantProxyURL, upstreams[0].ProxyURL)
+			if tt.wantProxyURL == "" {
+				assert.NotContains(t, w.Body.String(), proxyURL)
+			}
+		})
+	}
+}
+
+func TestExportGroupOnlyIncludesProxyConfigurationInPlainMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	const proxyURL = "http://user:pass@proxy.example.test:8080"
+	group := models.Group{
+		Name:        "group with authenticated proxy",
+		GroupType:   "standard",
+		ChannelType: "openai",
+		Enabled:     true,
+		TestModel:   "gpt-test",
+		Upstreams:   datatypes.JSON(`[{"url":"https://api.example.com","weight":100,"proxy_url":"` + proxyURL + `"}]`),
+		Config:      datatypes.JSONMap{"proxy_url": proxyURL},
+	}
+	require.NoError(t, db.Create(&group).Error)
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-enough!!")
+	require.NoError(t, err)
+	server := &Server{
+		ImportExportService: services.NewImportExportService(db, nil, encSvc),
+		EncryptionSvc:       encSvc,
+	}
+
+	tests := []struct {
+		name         string
+		target       string
+		wantProxyURL string
+	}{
+		{name: "encrypted", target: "/groups/1/export"},
+		{name: "plain", target: "/groups/1/export?mode=plain", wantProxyURL: proxyURL},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Params = gin.Params{{Key: "id", Value: strconv.FormatUint(uint64(group.ID), 10)}}
+			c.Request = httptest.NewRequest(http.MethodGet, tt.target, nil)
+
+			server.ExportGroup(c)
+
+			require.Equal(t, http.StatusOK, w.Code)
+			var exported GroupExportData
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &exported))
+			assert.Equal(t, tt.wantProxyURL, exported.Group.Config["proxy_url"])
+			var upstreams []struct {
+				ProxyURL string `json:"proxy_url"`
+			}
+			require.NoError(t, json.Unmarshal(exported.Group.Upstreams, &upstreams))
+			require.Len(t, upstreams, 1)
+			assert.Equal(t, tt.wantProxyURL, upstreams[0].ProxyURL)
+			if tt.wantProxyURL == "" {
+				assert.NotContains(t, w.Body.String(), proxyURL)
+			}
+		})
+	}
+}
+
 func TestExportAllReturnsPlainManagedSiteCredentialDecryptErrors(t *testing.T) {
 	tests := []struct {
 		name      string

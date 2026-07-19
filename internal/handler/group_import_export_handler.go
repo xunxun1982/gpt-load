@@ -117,6 +117,7 @@ func (s *Server) ExportGroup(c *gin.Context) {
 	}
 	// Determine export mode: plain or encrypted (default encrypted)
 	exportMode := GetExportMode(c)
+	plainMode := exportMode == "plain"
 	// Parse HeaderRules for export format using common utility function
 	// ParseHeaderRulesForExport handles errors internally and logs warnings
 	headerRules := ParseHeaderRulesForExport(groupData.Group.HeaderRules, groupData.Group.ID)
@@ -168,6 +169,11 @@ func (s *Server) ExportGroup(c *gin.Context) {
 		SubGroups:  make([]SubGroupExportInfo, 0, len(groupData.SubGroups)),
 		ExportedAt: time.Now().Format(time.RFC3339),
 		Version:    "2.0",
+	}
+	if err := sanitizeGroupProxyFieldsForExport(&exportData.Group, plainMode); err != nil {
+		logrus.WithError(err).Error("Failed to sanitize group proxy configuration during encrypted export")
+		response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "database.export_failed")
+		return
 	}
 
 	// Convert keys to export format. Decrypt to plaintext only when explicitly requested.

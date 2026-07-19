@@ -852,6 +852,8 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 				result = s.checkInOneRequest(ctx, refreshedSite)
 			}
 		}
+		// The shared non-reentrant stripe must serialize rotating credentials. Keep this unlock manual:
+		// refreshBalanceAfterCheckin may reacquire it through fetchSub2APIBalance, so deferring would deadlock.
 		unlock()
 	} else {
 		result = s.checkInOneRequest(ctx, site)

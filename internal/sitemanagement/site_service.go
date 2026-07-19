@@ -1743,7 +1743,7 @@ func (s *SiteService) generateUniqueSiteName(ctx context.Context, baseName strin
 	return siteName, nil
 }
 
-// SiteExportInfo represents exported site information (without sensitive data in plain mode)
+// SiteExportInfo represents exported site information.
 type SiteExportInfo struct {
 	Name               string `json:"name"`
 	Notes              string `json:"notes"`
@@ -1820,7 +1820,7 @@ func (s *SiteService) ExportSites(ctx context.Context, includeConfig bool, plain
 			AutoCheckInEnabled: site.AutoCheckInEnabled,
 			CustomCheckInURL:   site.CustomCheckInURL,
 			UseProxy:           site.UseProxy,
-			ProxyURL:           site.ProxyURL,
+			ProxyURL:           utils.ProxyURLForExport(site.ProxyURL, plainMode),
 			BypassMethod:       site.BypassMethod,
 			AuthType:           authType,
 			BalanceMultiplier:  normalizeManagedSiteBalanceMultiplier(site.BalanceMultiplier),

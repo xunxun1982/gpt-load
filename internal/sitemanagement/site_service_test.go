@@ -2,6 +2,7 @@ package sitemanagement
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -1364,6 +1365,49 @@ func TestExportImportSitesPreservesBalanceMultiplier(t *testing.T) {
 	require.Len(t, sites, 2)
 	assert.Equal(t, int64(7), sites[0].BalanceMultiplier)
 	assert.Equal(t, int64(1), sites[1].BalanceMultiplier)
+}
+
+func TestExportSitesOnlyIncludesProxyURLInPlainMode(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	const proxyURL = "http://user:pass@proxy.example.test:8080"
+	require.NoError(t, db.Create(&ManagedSite{
+		Name:     "site with authenticated proxy",
+		BaseURL:  "https://example.com",
+		SiteType: SiteTypeNewAPI,
+		Enabled:  true,
+		UseProxy: true,
+		ProxyURL: proxyURL,
+		AuthType: AuthTypeNone,
+	}).Error)
+	service := NewSiteService(db, nil, encSvc)
+
+	encrypted, err := service.ExportSites(context.Background(), false, false)
+	require.NoError(t, err)
+	require.Len(t, encrypted.Sites, 1)
+	assert.Empty(t, encrypted.Sites[0].ProxyURL)
+	encryptedJSON, err := json.Marshal(encrypted)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encryptedJSON), proxyURL)
+	targetDB := setupTestDB(t)
+	require.NoError(t, targetDB.AutoMigrate(&ManagedSite{}))
+	targetService := NewSiteService(targetDB, nil, setupTestEncryption(t))
+	imported, skipped, err := targetService.ImportSites(context.Background(), encrypted, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, imported)
+	assert.Zero(t, skipped)
+	var importedSite ManagedSite
+	require.NoError(t, targetDB.Where("name = ?", "site with authenticated proxy").First(&importedSite).Error)
+	assert.True(t, importedSite.UseProxy)
+	assert.Empty(t, importedSite.ProxyURL)
+
+	plain, err := service.ExportSites(context.Background(), false, true)
+	require.NoError(t, err)
+	require.Len(t, plain.Sites, 1)
+	assert.Equal(t, proxyURL, plain.Sites[0].ProxyURL)
 }
 
 func TestExportSitesReturnsPlainCredentialDecryptErrors(t *testing.T) {

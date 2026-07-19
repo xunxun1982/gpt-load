@@ -90,6 +90,7 @@ type ManagedSiteExportInfo struct {
 func (s *Server) ExportAll(c *gin.Context) {
 	// Determine export mode: plain or encrypted (default encrypted)
 	exportMode := GetExportMode(c)
+	plainMode := exportMode == "plain"
 
 	// Use the new ImportExportService to export the entire system
 	// This fixes the FindInBatches limitation that only exports 2000 records
@@ -145,6 +146,11 @@ func (s *Server) ExportAll(c *gin.Context) {
 			},
 			Keys:      []KeyExportInfo{},
 			SubGroups: []SubGroupExportInfo{},
+		}
+		if err := sanitizeGroupProxyFieldsForExport(&groupExport.Group, plainMode); err != nil {
+			logrus.WithError(err).Error("Failed to sanitize group proxy configuration during encrypted system export")
+			response.ErrorI18nFromAPIError(c, app_errors.ErrInternalServer, "database.export_failed")
+			return
 		}
 
 		// Convert keys; when plain mode, decrypt for output
@@ -210,7 +216,7 @@ func (s *Server) ExportAll(c *gin.Context) {
 	exportData := SystemExportData{
 		Version:        systemData.Version,
 		ExportedAt:     systemData.ExportedAt,
-		SystemSettings: systemData.SystemSettings,
+		SystemSettings: sanitizeSystemSettingsForExport(systemData.SystemSettings, plainMode),
 		Groups:         groupExports,
 		HubAccessKeys:  hubAccessKeys,
 		DynamicWeights: systemData.DynamicWeights,
@@ -286,7 +292,7 @@ func (s *Server) ExportAll(c *gin.Context) {
 				AutoCheckInEnabled: site.AutoCheckInEnabled,
 				CustomCheckInURL:   site.CustomCheckInURL,
 				UseProxy:           site.UseProxy,
-				ProxyURL:           site.ProxyURL,
+				ProxyURL:           utils.ProxyURLForExport(site.ProxyURL, plainMode),
 				BypassMethod:       site.BypassMethod,
 				AuthType:           authType,
 				AuthValue:          authValue,
