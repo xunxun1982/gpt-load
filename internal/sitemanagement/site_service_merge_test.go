@@ -48,6 +48,35 @@ func TestSiteService_MergeAuthValues(t *testing.T) {
 		assert.Equal(t, "new-token", result)
 	})
 
+	t.Run("single auth type - replacing access token drops stale expiration metadata", func(t *testing.T) {
+		existingValue := `{"access_token":"old-token","refresh_token":"old-refresh","token_expires_at":"2020-01-01T00:00:00Z"}`
+		encrypted, err := encSvc.Encrypt(existingValue)
+		require.NoError(t, err)
+
+		result, err := svc.mergeAuthValues("access_token", encrypted, `{"access_token":"new-token"}`)
+		require.NoError(t, err)
+
+		var parsed map[string]string
+		require.NoError(t, json.Unmarshal([]byte(result), &parsed))
+		assert.Equal(t, "new-token", parsed[AuthTypeAccessToken])
+		assert.Equal(t, "old-refresh", parsed[authFieldRefreshToken])
+		assert.NotContains(t, parsed, authFieldTokenExpiresAt)
+	})
+
+	t.Run("single auth type - explicit new expiration metadata wins", func(t *testing.T) {
+		existingValue := `{"access_token":"old-token","token_expires_at":"2020-01-01T00:00:00Z"}`
+		encrypted, err := encSvc.Encrypt(existingValue)
+		require.NoError(t, err)
+
+		result, err := svc.mergeAuthValues("access_token", encrypted, `{"access_token":"new-token","token_expires_at":"2030-01-01T00:00:00Z"}`)
+		require.NoError(t, err)
+
+		var parsed map[string]string
+		require.NoError(t, json.Unmarshal([]byte(result), &parsed))
+		assert.Equal(t, "new-token", parsed[AuthTypeAccessToken])
+		assert.Equal(t, "2030-01-01T00:00:00Z", parsed[authFieldTokenExpiresAt])
+	})
+
 	t.Run("multi-auth - new JSON with both values", func(t *testing.T) {
 		newValue := `{"access_token":"new-token","cookie":"new-cookie"}`
 		result, err := svc.mergeAuthValues("access_token,cookie", "", newValue)
@@ -94,6 +123,37 @@ func TestSiteService_MergeAuthValues(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "old-token", parsed["access_token"], "should preserve existing token")
 		assert.Equal(t, "new-cookie", parsed["cookie"])
+	})
+
+	t.Run("multi-auth - preserves and updates Sub2API supplemental values", func(t *testing.T) {
+		existingValue := `{"access_token":"old-token","cookie":"old-cookie","refresh_token":"old-refresh","token_expires_at":"2020-01-01T00:00:00Z"}`
+		encrypted, err := encSvc.Encrypt(existingValue)
+		require.NoError(t, err)
+
+		result, err := svc.mergeAuthValues("access_token,cookie", encrypted, `{"access_token":"new-token","refresh_token":"new-refresh"}`)
+		require.NoError(t, err)
+
+		var parsed map[string]string
+		require.NoError(t, json.Unmarshal([]byte(result), &parsed))
+		assert.Equal(t, "new-token", parsed[AuthTypeAccessToken])
+		assert.Equal(t, "old-cookie", parsed[AuthTypeCookie])
+		assert.Equal(t, "new-refresh", parsed[authFieldRefreshToken])
+		assert.NotContains(t, parsed, authFieldTokenExpiresAt)
+	})
+
+	t.Run("cookie-only auth drops stale Sub2API supplemental values", func(t *testing.T) {
+		existingValue := `{"cookie":"old-cookie","refresh_token":"stale-refresh","token_expires_at":"2020-01-01T00:00:00Z"}`
+		encrypted, err := encSvc.Encrypt(existingValue)
+		require.NoError(t, err)
+
+		result, err := svc.mergeAuthValues(AuthTypeCookie, encrypted, `{"cookie":"new-cookie"}`)
+		require.NoError(t, err)
+
+		var parsed map[string]string
+		require.NoError(t, json.Unmarshal([]byte(result), &parsed))
+		assert.Equal(t, "new-cookie", parsed[AuthTypeCookie])
+		assert.NotContains(t, parsed, authFieldRefreshToken)
+		assert.NotContains(t, parsed, authFieldTokenExpiresAt)
 	})
 
 	t.Run("multi-auth - plain text new value", func(t *testing.T) {
@@ -205,4 +265,26 @@ func TestSiteService_MergeAuthValues(t *testing.T) {
 		assert.Equal(t, "old-token", parsed["access_token"], "empty string should not override")
 		assert.Equal(t, "new-cookie", parsed["cookie"])
 	})
+}
+
+func TestSiteService_ReconcileAuthValuePreservesRefreshOnlySub2APIToken(t *testing.T) {
+	encSvc, err := encryption.NewService("test-key-32-bytes-long-exactly!")
+	require.NoError(t, err)
+	svc := &SiteService{encryptionSvc: encSvc}
+
+	existing, err := encSvc.Encrypt(`{"refresh_token":"refresh-only"}`)
+	require.NoError(t, err)
+
+	reconciled, err := svc.reconcileAuthValueForTypeChange(
+		AuthTypeAccessToken,
+		AuthTypeAccessToken+","+AuthTypeCookie,
+		existing,
+	)
+	require.NoError(t, err)
+
+	decrypted, err := encSvc.Decrypt(reconciled)
+	require.NoError(t, err)
+	var values map[string]string
+	require.NoError(t, json.Unmarshal([]byte(decrypted), &values))
+	assert.Equal(t, "refresh-only", values[authFieldRefreshToken])
 }

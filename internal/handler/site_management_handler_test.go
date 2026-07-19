@@ -921,6 +921,9 @@ func TestSystemPlainExportImportRoundTripsManagedSiteCredentials(t *testing.T) {
 		UserID:            encryptedUserID,
 		AuthType:          sitemanagement.AuthTypeAccessToken,
 		AuthValue:         encryptedAuth,
+		UseProxy:          true,
+		ProxyURL:          "proxy-pool:7",
+		BypassMethod:      sitemanagement.BypassMethodStealth,
 		BalanceMultiplier: 7,
 	}).Error)
 	sourceServer := &Server{
@@ -942,6 +945,9 @@ func TestSystemPlainExportImportRoundTripsManagedSiteCredentials(t *testing.T) {
 	require.Len(t, exported.Data.ManagedSites.Sites, 1)
 	assert.Equal(t, "plain-user-id", exported.Data.ManagedSites.Sites[0].UserID)
 	assert.Equal(t, "plain-auth-value", exported.Data.ManagedSites.Sites[0].AuthValue)
+	assert.True(t, exported.Data.ManagedSites.Sites[0].UseProxy)
+	assert.Equal(t, "proxy-pool:7", exported.Data.ManagedSites.Sites[0].ProxyURL)
+	assert.Equal(t, sitemanagement.BypassMethodStealth, exported.Data.ManagedSites.Sites[0].BypassMethod)
 	assert.Equal(t, int64(7), exported.Data.ManagedSites.Sites[0].BalanceMultiplier)
 
 	importBody, err := json.Marshal(exported.Data)
@@ -974,6 +980,9 @@ func TestSystemPlainExportImportRoundTripsManagedSiteCredentials(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "plain-user-id", userID)
 	assert.Equal(t, "plain-auth-value", authValue)
+	assert.True(t, imported.UseProxy)
+	assert.Equal(t, "proxy-pool:7", imported.ProxyURL)
+	assert.Equal(t, sitemanagement.BypassMethodStealth, imported.BypassMethod)
 	assert.Equal(t, int64(7), imported.BalanceMultiplier)
 }
 

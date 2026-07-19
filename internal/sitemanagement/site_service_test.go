@@ -31,7 +31,6 @@ func TestSiteServiceUpdateInvalidatesBindingSnapshot(t *testing.T) {
 		Enabled: true,
 	}
 	require.NoError(t, db.Create(&site).Error)
-
 	bindingService := NewBindingService(db, services.ReadOnlyDB{DB: db}, nil)
 	siteService := NewSiteService(db, memStore, encSvc)
 	siteService.SetCacheInvalidationCallback(bindingService.InvalidateSitesForBindingCache)
@@ -255,6 +254,306 @@ func TestSiteService_UpdateSite(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Updated Name", updated.Name)
 	assert.False(t, updated.Enabled)
+}
+
+func TestSiteServiceRejectsProviderConfigurationsThatCannotRun(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		siteType  string
+		authType  string
+		authValue string
+		userID    string
+		bypass    string
+		checkinOn bool
+		customURL string
+		wantError bool
+	}{
+		{
+			name:      "anyrouter access token",
+			siteType:  SiteTypeAnyrouter,
+			authType:  AuthTypeAccessToken,
+			authValue: "token",
+			userID:    "42",
+			wantError: true,
+		},
+		{
+			name:      "anyrouter missing user id",
+			siteType:  SiteTypeAnyrouter,
+			authType:  AuthTypeCookie,
+			authValue: "session=browser",
+			wantError: true,
+		},
+		{
+			name:      "stealth access token only",
+			siteType:  SiteTypeOneHub,
+			authType:  AuthTypeAccessToken,
+			authValue: "token",
+			bypass:    BypassMethodStealth,
+			wantError: true,
+		},
+		{
+			name:      "stealth cookie without waf cookie",
+			siteType:  SiteTypeOneHub,
+			authType:  AuthTypeCookie,
+			authValue: "session=browser",
+			bypass:    BypassMethodStealth,
+			wantError: true,
+		},
+		{
+			name:      "sub2api automatic checkin without endpoint",
+			siteType:  SiteTypeSub2API,
+			authType:  AuthTypeAccessToken,
+			authValue: "token",
+			checkinOn: true,
+			wantError: true,
+		},
+		{
+			name:      "sub2api cookie only cannot fetch balance",
+			siteType:  SiteTypeSub2API,
+			authType:  AuthTypeCookie,
+			authValue: "session=browser",
+			wantError: true,
+		},
+		{
+			name:      "sub2api active site requires a credential",
+			siteType:  SiteTypeSub2API,
+			authType:  AuthTypeAccessToken,
+			wantError: true,
+		},
+		{
+			name:      "sub2api refresh token only is valid",
+			siteType:  SiteTypeSub2API,
+			authType:  AuthTypeAccessToken,
+			authValue: `{"refresh_token":"refresh-token"}`,
+		},
+		{
+			name:      "valid anyrouter cookie configuration",
+			siteType:  SiteTypeAnyrouter,
+			authType:  AuthTypeCookie,
+			authValue: "session=browser",
+			userID:    "42",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			encSvc := setupTestEncryption(t)
+			require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+			service := NewSiteService(db, store.NewMemoryStore(), encSvc)
+
+			_, err := service.CreateSite(t.Context(), CreateSiteParams{
+				Name:             tt.name,
+				BaseURL:          "https://example.com",
+				Enabled:          true,
+				SiteType:         tt.siteType,
+				AuthType:         tt.authType,
+				AuthValue:        tt.authValue,
+				UserID:           tt.userID,
+				BypassMethod:     tt.bypass,
+				CheckInEnabled:   tt.checkinOn,
+				CustomCheckInURL: tt.customURL,
+			})
+			if tt.wantError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestSiteServiceUpdatePreservesConcurrentAuthRotation(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	service := NewSiteService(db, store.NewMemoryStore(), encSvc)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+
+	oldAuth, err := encSvc.Encrypt(`{"access_token":"old-token","refresh_token":"old-refresh"}`)
+	require.NoError(t, err)
+	freshAuth, err := encSvc.Encrypt(`{"access_token":"fresh-token","refresh_token":"fresh-refresh"}`)
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "Concurrent auth site",
+		BaseURL:   "https://example.com",
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: oldAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	callbackName := "test:rotate-auth-before-site-update"
+	rotated := false
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if rotated || tx.Statement.Table != "managed_sites" || tx.Statement.Schema == nil || tx.Statement.Schema.Name != "ManagedSite" {
+			return
+		}
+		rotated = true
+		if err := tx.Exec("UPDATE managed_sites SET auth_value = ? WHERE id = ?", freshAuth, site.ID).Error; err != nil {
+			tx.AddError(err)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(callbackName) })
+
+	notes := "edited while token refreshed"
+	_, err = service.UpdateSite(context.Background(), site.ID, UpdateSiteParams{Notes: &notes})
+	require.NoError(t, err)
+	assert.True(t, rotated)
+
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, freshAuth, stored.AuthValue, "editing a non-auth field must not roll back a concurrent token rotation")
+}
+
+func TestSiteServiceEnableRejectsConcurrentCredentialClear(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	service := NewSiteService(db, store.NewMemoryStore(), encSvc)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+
+	encryptedAuth, err := encSvc.Encrypt("access-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "Concurrent configuration validation",
+		BaseURL:   "https://example.com",
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: encryptedAuth,
+		Enabled:   false,
+	}
+	require.NoError(t, db.Create(&site).Error)
+	require.NoError(t, db.Model(&ManagedSite{}).Where("id = ?", site.ID).Update("enabled", false).Error)
+
+	cleared := false
+	callbackName := "test:clear-auth-before-enable"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if cleared || tx.Statement.Table != "managed_sites" || tx.Statement.Schema == nil || tx.Statement.Schema.Name != "ManagedSite" {
+			return
+		}
+		cleared = true
+		if err := tx.Exec("UPDATE managed_sites SET auth_value = '' WHERE id = ?", site.ID).Error; err != nil {
+			tx.AddError(err)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(callbackName) })
+
+	enabled := true
+	_, err = service.UpdateSite(context.Background(), site.ID, UpdateSiteParams{Enabled: &enabled})
+	require.Error(t, err)
+	assert.True(t, cleared)
+
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.False(t, stored.Enabled)
+	assert.Empty(t, stored.AuthValue)
+}
+
+func TestSiteServiceUpdateClearsCredentialsWhenAuthTypeChangesWithoutValue(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	service := NewSiteService(db, store.NewMemoryStore(), encSvc)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+
+	encryptedAuth, err := encSvc.Encrypt("old-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "Auth type switch",
+		BaseURL:   "https://example.com",
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: encryptedAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	newAuthType := AuthTypeCookie
+	_, err = service.UpdateSite(context.Background(), site.ID, UpdateSiteParams{AuthType: &newAuthType})
+	require.NoError(t, err)
+
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, AuthTypeCookie, stored.AuthType)
+	assert.Empty(t, stored.AuthValue, "changing auth type without a new value must not retain a credential under the wrong type")
+}
+
+func TestSiteServiceAuthTypeUpdateDoesNotOverwriteConcurrentCredentialRotation(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	service := NewSiteService(db, store.NewMemoryStore(), encSvc)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+
+	oldAuth, err := encSvc.Encrypt("old-token")
+	require.NoError(t, err)
+	freshAuth, err := encSvc.Encrypt(`{"access_token":"fresh-token","refresh_token":"fresh-refresh"}`)
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "Auth type concurrent rotation",
+		BaseURL:   "https://example.com",
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: oldAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	rotated := false
+	callbackName := "test:rotate-auth-before-auth-type-update"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if rotated || tx.Statement.Table != "managed_sites" || tx.Statement.Schema == nil || tx.Statement.Schema.Name != "ManagedSite" {
+			return
+		}
+		rotated = true
+		if err := tx.Exec("UPDATE managed_sites SET auth_value = ? WHERE id = ?", freshAuth, site.ID).Error; err != nil {
+			tx.AddError(err)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Update().Remove(callbackName) })
+
+	newAuthType := AuthTypeCookie
+	_, err = service.UpdateSite(context.Background(), site.ID, UpdateSiteParams{AuthType: &newAuthType})
+
+	require.Error(t, err)
+	assert.True(t, rotated)
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, AuthTypeAccessToken, stored.AuthType)
+	assert.Equal(t, freshAuth, stored.AuthValue)
+}
+
+func TestSiteServiceUpdatePreservesOnlySharedAuthTypesWhenAuthTypeChanges(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	service := NewSiteService(db, store.NewMemoryStore(), encSvc)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &models.Group{}))
+
+	encryptedCookie, err := encSvc.Encrypt("session=old-cookie")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "Auth type expansion",
+		BaseURL:   "https://example.com",
+		AuthType:  AuthTypeCookie,
+		AuthValue: encryptedCookie,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	newAuthType := AuthTypeAccessToken + "," + AuthTypeCookie
+	_, err = service.UpdateSite(context.Background(), site.ID, UpdateSiteParams{AuthType: &newAuthType})
+	require.NoError(t, err)
+
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	decrypted, err := encSvc.Decrypt(stored.AuthValue)
+	require.NoError(t, err)
+	config := parseAuthConfig(stored.AuthType, decrypted)
+	assert.Empty(t, config.GetAuthValue(AuthTypeAccessToken))
+	assert.Equal(t, "session=old-cookie", config.GetAuthValue(AuthTypeCookie))
 }
 
 // TestSiteService_DeleteSite tests site deletion

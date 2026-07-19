@@ -78,6 +78,9 @@ type ManagedSiteExportInfo struct {
 	CheckInEnabled     bool   `json:"checkin_enabled"`
 	AutoCheckInEnabled bool   `json:"auto_checkin_enabled"`
 	CustomCheckInURL   string `json:"custom_checkin_url"`
+	UseProxy           bool   `json:"use_proxy"`
+	ProxyURL           string `json:"proxy_url"`
+	BypassMethod       string `json:"bypass_method"`
 	AuthType           string `json:"auth_type"`
 	AuthValue          string `json:"auth_value,omitempty"`
 	BalanceMultiplier  int64  `json:"balance_multiplier,omitempty"`
@@ -282,6 +285,9 @@ func (s *Server) ExportAll(c *gin.Context) {
 				CheckInEnabled:     site.CheckInEnabled,
 				AutoCheckInEnabled: site.AutoCheckInEnabled,
 				CustomCheckInURL:   site.CustomCheckInURL,
+				UseProxy:           site.UseProxy,
+				ProxyURL:           site.ProxyURL,
+				BypassMethod:       site.BypassMethod,
 				AuthType:           authType,
 				AuthValue:          authValue,
 				BalanceMultiplier:  site.BalanceMultiplier,
@@ -495,6 +501,9 @@ func (s *Server) ImportAll(c *gin.Context) {
 				CheckInEnabled:     site.CheckInEnabled,
 				AutoCheckInEnabled: site.AutoCheckInEnabled,
 				CustomCheckInURL:   site.CustomCheckInURL,
+				UseProxy:           site.UseProxy,
+				ProxyURL:           site.ProxyURL,
+				BypassMethod:       site.BypassMethod,
 				AuthType:           authType,
 				AuthValue:          authValue,
 				BalanceMultiplier:  site.BalanceMultiplier,

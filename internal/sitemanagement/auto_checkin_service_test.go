@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,6 +40,38 @@ func assertPersistedAuthTokens(t *testing.T, db *gorm.DB, encSvc encryption.Serv
 	require.NoError(t, json.Unmarshal([]byte(decrypted), &persisted))
 	assert.Equal(t, accessToken, persisted["access_token"])
 	assert.Equal(t, refreshToken, persisted["refresh_token"])
+}
+
+func TestTryMultiAuthPreservesAuthUpdatesAcrossFallback(t *testing.T) {
+	t.Parallel()
+
+	config := AuthConfig{
+		AuthTypes: []string{AuthTypeAccessToken, AuthTypeCookie},
+		AuthValues: map[string]string{
+			AuthTypeAccessToken: "old-access-token",
+			AuthTypeCookie:      "session=browser",
+		},
+	}
+
+	result, err := tryMultiAuth(config, []string{AuthTypeAccessToken, AuthTypeCookie}, func(authType, _ string) (providerResult, error) {
+		if authType == AuthTypeAccessToken {
+			return providerResult{
+				Status: CheckinResultFailed,
+				AuthUpdates: map[string]string{
+					AuthTypeAccessToken:   "fresh-access-token",
+					authFieldRefreshToken: "fresh-refresh-token",
+				},
+			}, nil
+		}
+		return providerResult{Status: CheckinResultSuccess, Message: "cookie fallback succeeded"}, nil
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	assert.Equal(t, map[string]string{
+		AuthTypeAccessToken:   "fresh-access-token",
+		authFieldRefreshToken: "fresh-refresh-token",
+	}, result.AuthUpdates)
 }
 
 // TestTaskTypeConstantsSync verifies that local task type constants match services package
@@ -429,12 +462,40 @@ func TestIsBrowserChallengeResponseIgnoresJSONForbiddenChallengeMessage(t *testi
 	assert.False(t, isBrowserChallengeResponse(http.StatusForbidden, data))
 }
 
-func TestResolveProviderMapsLegacyVeloeraToNewAPI(t *testing.T) {
+func TestResolveProviderMapsNewAPICompatibleSites(t *testing.T) {
 	t.Parallel()
 
-	provider := resolveProvider(SiteTypeVeloera)
+	for _, siteType := range []string{SiteTypeNewAPI, SiteTypeOneHub, SiteTypeDoneHub} {
+		t.Run(siteType, func(t *testing.T) {
+			t.Parallel()
+			assert.IsType(t, newAPIProvider{}, resolveProvider(siteType))
+		})
+	}
+}
 
-	assert.IsType(t, newAPIProvider{}, provider)
+func TestWongProviderUsesMatchingStealthHeaders(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.Header.Get("User-Agent"), "Chrome/146.0.0.0")
+		assert.Contains(t, r.Header.Get("Sec-Ch-Ua"), `v="146"`)
+		assert.Equal(t, "session=browser-ok; cf_clearance=test", r.Header.Get("Cookie"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	result, err := (wongProvider{}).CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:      server.URL,
+		SiteType:     SiteTypeWongGongyi,
+		BypassMethod: "stealth",
+	}, AuthConfig{
+		AuthTypes:  []string{AuthTypeCookie},
+		AuthValues: map[string]string{AuthTypeCookie: "session=browser-ok; cf_clearance=test"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
 }
 
 func TestAnyRouterProviderUsesCookieAjaxSignInEndpoint(t *testing.T) {
@@ -491,11 +552,102 @@ func TestAnyRouterProviderUsesCookieAjaxSignInEndpoint(t *testing.T) {
 	}
 }
 
-func TestAnyRouterProviderDoesNotSendUserIDHeader(t *testing.T) {
+func TestAutoCheckinBatchLoadsAnyRouterStealthBypassMethod(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteCheckinLog{}, &ManagedSiteSetting{}))
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/api/user/sign_in" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Sec-Ch-Ua") == "" || !strings.Contains(r.Header.Get("User-Agent"), "Chrome/146.0.0.0") {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("<!doctype html><title>Just a moment...</title><p>Cloudflare challenge</p>"))
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	encryptedCookie, err := encSvc.Encrypt("session=browser-ok; cf_clearance=test")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:           "AnyRouter scheduled stealth",
+		BaseURL:        server.URL,
+		SiteType:       SiteTypeAnyrouter,
+		Enabled:        true,
+		CheckInEnabled: true,
+		BypassMethod:   BypassMethodStealth,
+		AuthType:       AuthTypeCookie,
+		AuthValue:      encryptedCookie,
+	}
+	require.NoError(t, db.Create(&site).Error)
+	require.NoError(t, db.Create(&ManagedSiteSetting{
+		ID:                     1,
+		AutoCheckinEnabled:     true,
+		ScheduleTimes:          "09:00",
+		WindowStart:            "09:00",
+		WindowEnd:              "18:00",
+		ScheduleMode:           AutoCheckinScheduleModeMultiple,
+		RetryMaxAttemptsPerDay: 2,
+	}).Error)
+
+	service := NewAutoCheckinService(db, nil, encSvc)
+	service.runAllCheckins(t.Context())
+
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, CheckinResultSuccess, stored.LastCheckInStatus)
+	assert.Equal(t, int32(1), requests.Load())
+}
+
+func TestAutoCheckinBatchSkipsSub2APIWithoutCustomEndpoint(t *testing.T) {
+	t.Parallel()
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteCheckinLog{}))
+	authValue, err := encSvc.Encrypt("access-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "standard Sub2API",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: authValue,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewAutoCheckinService(db, nil, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	summary := service.runSitesCheckin(t.Context(), []ManagedSite{site})
+
+	assert.Equal(t, 1, summary.SkippedCount)
+	assert.Zero(t, summary.FailedCount)
+	assert.False(t, summary.NeedsRetry)
+	assert.Zero(t, requests.Load())
+}
+
+func TestAnyRouterProviderSendsUserIDHeaders(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Empty(t, r.Header.Get("New-API-User"))
+		assert.Equal(t, "test-user-id", r.Header.Get("New-API-User"))
+		assert.Equal(t, "test-user-id", r.Header.Get("User-id"))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
 	}))
@@ -763,6 +915,72 @@ func TestSub2APIProviderKeepsExpiredTokenMessageOnUnauthorized(t *testing.T) {
 	assert.Equal(t, "HTTP 401: Token has expired", result.Message)
 }
 
+func TestSub2APIProviderRestoresAccessTokenFromRefreshTokenOnly(t *testing.T) {
+	t.Parallel()
+
+	var refreshRequests atomic.Int32
+	var checkinRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshRequests.Add(1)
+			assert.Empty(t, r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/v1/user/check-in":
+			checkinRequests.Add(1)
+			assert.Equal(t, "Bearer fresh-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	result, err := (sub2APIProvider{}).CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:          []string{AuthTypeAccessToken},
+		AuthValues:         map[string]string{AuthTypeAccessToken: ""},
+		SupplementalValues: map[string]string{authFieldRefreshToken: "refresh-only-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	assert.Equal(t, int32(1), refreshRequests.Load())
+	assert.Equal(t, int32(1), checkinRequests.Load())
+	assert.Equal(t, "fresh-token", result.AuthUpdates[AuthTypeAccessToken])
+	assert.Equal(t, "fresh-refresh-token", result.AuthUpdates[authFieldRefreshToken])
+}
+
+func TestSub2APIProviderReportsRefreshOnlyProactiveFailure(t *testing.T) {
+	t.Parallel()
+
+	var refreshRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/auth/refresh", r.URL.Path)
+		refreshRequests.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"code":502,"message":"temporary refresh failure"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	result, err := (sub2APIProvider{}).CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:          []string{AuthTypeAccessToken},
+		AuthValues:         map[string]string{AuthTypeAccessToken: ""},
+		SupplementalValues: map[string]string{authFieldRefreshToken: "refresh-only-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Contains(t, result.Message, "token refresh failed")
+	assert.Equal(t, int32(1), refreshRequests.Load())
+}
+
 func TestSub2APIProviderReportsRefreshFailureOnUnauthorized(t *testing.T) {
 	t.Parallel()
 
@@ -798,14 +1016,105 @@ func TestSub2APIProviderReportsRefreshFailureOnUnauthorized(t *testing.T) {
 	assert.NotContains(t, result.Message, "expired-refresh-token")
 }
 
+func TestSub2APIProviderRetriesAfterProactiveFailureOnlyOnce(t *testing.T) {
+	t.Parallel()
+
+	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
+	var refreshRequests atomic.Int32
+	var checkinRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshRequests.Add(1)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":401,"message":"refresh rejected"}`))
+		case "/api/v1/user/check-in":
+			checkinRequests.Add(1)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"message":"Token has expired"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	result, err := (sub2APIProvider{}).CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:          []string{AuthTypeAccessToken},
+		AuthValues:         map[string]string{AuthTypeAccessToken: expiredToken},
+		SupplementalValues: map[string]string{authFieldRefreshToken: "single-use-refresh-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	// A failed proactive attempt must not consume the single 401-driven retry;
+	// the reactive attempt itself still happens at most once.
+	assert.Equal(t, int32(2), refreshRequests.Load())
+	assert.Equal(t, int32(1), checkinRequests.Load())
+}
+
+func TestSub2APIProviderRetriesAfterProactiveRefreshFailure(t *testing.T) {
+	t.Parallel()
+
+	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
+	var refreshRequests atomic.Int32
+	var checkinRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			requestNumber := refreshRequests.Add(1)
+			if requestNumber == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(`{"code":502,"message":"temporary refresh failure"}`))
+				return
+			}
+			assert.Equal(t, "Bearer "+expiredToken, r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/v1/user/check-in":
+			requestNumber := checkinRequests.Add(1)
+			if requestNumber == 1 {
+				assert.Equal(t, "Bearer "+expiredToken, r.Header.Get("Authorization"))
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"success":false,"message":"Token has expired"}`))
+				return
+			}
+			assert.Equal(t, "Bearer fresh-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	result, err := (sub2APIProvider{}).CheckIn(t.Context(), server.Client(), ManagedSite{
+		BaseURL:  server.URL,
+		SiteType: SiteTypeSub2API,
+	}, AuthConfig{
+		AuthTypes:          []string{AuthTypeAccessToken},
+		AuthValues:         map[string]string{AuthTypeAccessToken: expiredToken},
+		SupplementalValues: map[string]string{authFieldRefreshToken: "refresh-token"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	assert.Equal(t, int32(2), refreshRequests.Load())
+	assert.Equal(t, int32(2), checkinRequests.Load())
+	assert.Equal(t, "fresh-token", result.AuthUpdates[AuthTypeAccessToken])
+}
+
 func TestAutoCheckinRefreshesSub2APITokenOnExpiredAccessToken(t *testing.T) {
 	t.Parallel()
 
 	db := setupTestDB(t)
 	encSvc := setupTestEncryption(t)
-	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteCheckinLog{}))
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
 
 	var checkinAuthorizations []string
+	var balanceAuthorizations []string
 	refreshRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -825,8 +1134,14 @@ func TestAutoCheckinRefreshesSub2APITokenOnExpiredAccessToken(t *testing.T) {
 			assert.Equal(t, http.MethodPost, r.Method)
 			assert.Equal(t, "Bearer expired-token", r.Header.Get("Authorization"))
 			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
-		case "/api/user/self":
-			_, _ = w.Write([]byte(`{"success":true,"data":{"quota":0}}`))
+		case "/api/v1/auth/me":
+			balanceAuthorizations = append(balanceAuthorizations, r.Header.Get("Authorization"))
+			if r.Header.Get("Authorization") != "Bearer fresh-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"code":401,"message":"expired"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"balance":2}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -855,8 +1170,12 @@ func TestAutoCheckinRefreshesSub2APITokenOnExpiredAccessToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, CheckinResultSuccess, result.Status)
 	assert.Equal(t, []string{"Bearer expired-token", "Bearer fresh-token"}, checkinAuthorizations)
+	assert.Equal(t, []string{"Bearer fresh-token"}, balanceAuthorizations)
 	assert.Equal(t, 1, refreshRequests)
 	assertPersistedAuthTokens(t, db, encSvc, site.ID, "fresh-token", "fresh-refresh-token")
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, "$2.00", stored.LastBalance)
 }
 
 func TestAutoCheckinRefreshesSub2APITokenBeforeCheckinWhenJWTExpired(t *testing.T) {
@@ -924,6 +1243,7 @@ func TestAutoCheckinPersistsProactiveSub2APITokenWhenEndpointMissing(t *testing.
 
 	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
 	refreshRequests := 0
+	checkinRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -932,6 +1252,7 @@ func TestAutoCheckinPersistsProactiveSub2APITokenWhenEndpointMissing(t *testing.
 			assert.Equal(t, http.MethodPost, r.Method)
 			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
 		default:
+			checkinRequests++
 			http.NotFound(w, r)
 		}
 	}))
@@ -959,6 +1280,7 @@ func TestAutoCheckinPersistsProactiveSub2APITokenWhenEndpointMissing(t *testing.
 	assert.Equal(t, CheckinResultFailed, result.Status)
 	assert.Equal(t, "check-in endpoint not configured", result.Message)
 	assert.Equal(t, 1, refreshRequests)
+	assert.Equal(t, 2, checkinRequests)
 	assertPersistedAuthTokens(t, db, encSvc, site.ID, "fresh-token", "fresh-refresh-token")
 }
 
@@ -971,6 +1293,7 @@ func TestAutoCheckinPersistsProactiveSub2APITokenWhenCheckinRequestErrors(t *tes
 
 	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
 	refreshRequests := 0
+	checkinRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -979,6 +1302,7 @@ func TestAutoCheckinPersistsProactiveSub2APITokenWhenCheckinRequestErrors(t *tes
 			assert.Equal(t, http.MethodPost, r.Method)
 			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
 		case "/api/v1/user/check-in":
+			checkinRequests++
 			hijacker, ok := w.(http.Hijacker)
 			require.True(t, ok)
 			conn, _, err := hijacker.Hijack()
@@ -1011,6 +1335,7 @@ func TestAutoCheckinPersistsProactiveSub2APITokenWhenCheckinRequestErrors(t *tes
 	require.NoError(t, err)
 	assert.Equal(t, CheckinResultFailed, result.Status)
 	assert.Equal(t, 1, refreshRequests)
+	assert.Equal(t, 1, checkinRequests)
 	assertPersistedAuthTokens(t, db, encSvc, site.ID, "fresh-token", "fresh-refresh-token")
 }
 
@@ -1265,6 +1590,119 @@ func TestSub2APIRefreshTokensDoesNotExposeApplicationMessage(t *testing.T) {
 	assert.Equal(t, "upstream rejected token refresh", err.Error())
 	assert.NotContains(t, err.Error(), "secret")
 	assert.NotContains(t, err.Error(), "refresh_token")
+}
+
+func TestSub2APIRefreshTokensSendsWAFSessionCookie(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/auth/refresh", r.URL.Path)
+		assert.Equal(t, "Bearer old-access", r.Header.Get("Authorization"))
+		assert.Equal(t, "session=browser; cf_clearance=valid", r.Header.Get("Cookie"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	refreshed, err := sub2APIProvider{}.refreshTokens(
+		t.Context(),
+		server.Client(),
+		ManagedSite{BaseURL: server.URL},
+		"old-access",
+		"old-refresh",
+		true,
+		"session=browser; cf_clearance=valid",
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "fresh-token", refreshed.AccessToken)
+}
+
+func TestBearerProvidersUseCookieWithStealthRequests(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		provider checkinProvider
+		siteType string
+		path     string
+	}{
+		{name: "sub2api", provider: sub2APIProvider{}, siteType: SiteTypeSub2API, path: "/api/v1/user/check-in"},
+		{name: "onehub", provider: newAPIProvider{}, siteType: SiteTypeOneHub, path: "/api/user/checkin"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, tt.path, r.URL.Path)
+				assert.Equal(t, "Bearer access-token", r.Header.Get("Authorization"))
+				assert.Equal(t, "session=browser; cf_clearance=valid", r.Header.Get("Cookie"))
+				assert.Contains(t, r.Header.Get("User-Agent"), "Chrome/146.0.0.0")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"success":true,"message":"ok"}`))
+			}))
+			t.Cleanup(server.Close)
+
+			result, err := tt.provider.CheckIn(t.Context(), server.Client(), ManagedSite{
+				BaseURL:      server.URL,
+				SiteType:     tt.siteType,
+				BypassMethod: BypassMethodStealth,
+			}, AuthConfig{
+				AuthTypes: []string{AuthTypeAccessToken, AuthTypeCookie},
+				AuthValues: map[string]string{
+					AuthTypeAccessToken: "access-token",
+					AuthTypeCookie:      "session=browser; cf_clearance=valid",
+				},
+				SupplementalValues: map[string]string{},
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, CheckinResultSuccess, result.Status)
+		})
+	}
+}
+
+func TestSub2APIRefreshTokensRejectsInvalidSuccessEnvelope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		response string
+	}{
+		{
+			name:     "missing code",
+			response: `{"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`,
+		},
+		{
+			name:     "missing expiry",
+			response: `{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := sub2APIProvider{}.refreshTokens(
+				t.Context(),
+				server.Client(),
+				ManagedSite{BaseURL: server.URL},
+				"old-access",
+				"old-refresh",
+				false,
+			)
+
+			require.EqualError(t, err, "invalid refresh response")
+		})
+	}
 }
 
 func TestComputeRandomTriggerTreatsWindowEndAsCutoff(t *testing.T) {
@@ -1569,6 +2007,200 @@ func TestAutoCheckinServiceStopClosesSubscriptionsOnce(t *testing.T) {
 
 	assert.Equal(t, int32(1), configSubscription.closeCount.Load())
 	assert.Equal(t, int32(1), runNowSubscription.closeCount.Load())
+}
+
+func TestSub2APIAuthManagerReturnsPersistenceError(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/auth/refresh", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	encryptedAuth, err := encSvc.Encrypt(`{"access_token":"old-token","refresh_token":"old-refresh-token"}`)
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "Sub2API persistence failure",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: encryptedAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	state := sub2APIAuthState{
+		Site:         site,
+		Config:       parseAuthConfig(site.AuthType, `{"access_token":"old-token","refresh_token":"old-refresh-token"}`),
+		AccessToken:  "old-token",
+		RefreshToken: "old-refresh-token",
+	}
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	manager := newSub2APIAuthManager(db, encSvc)
+	err = manager.refresh(t.Context(), &state, server.Client(), false)
+
+	require.Error(t, err)
+	assert.Equal(t, "old-token", state.AccessToken)
+	assert.Equal(t, "old-refresh-token", state.RefreshToken)
+}
+
+func TestSub2APIAuthManagerAdoptsCredentialsRotatedByAnotherInstance(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/auth/refresh", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":401,"message":"refresh token already rotated"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldAuth, err := encSvc.Encrypt(`{"access_token":"old-token","refresh_token":"old-refresh-token"}`)
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "Sub2API cross-instance refresh",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: oldAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	state := sub2APIAuthState{
+		Site:             site,
+		Config:           parseAuthConfig(site.AuthType, `{"access_token":"old-token","refresh_token":"old-refresh-token"}`),
+		AccessToken:      "old-token",
+		RefreshToken:     "old-refresh-token",
+		RefreshAttempted: false,
+	}
+
+	rotatedAuth, err := encSvc.Encrypt(`{"access_token":"fresh-token","refresh_token":"fresh-refresh-token"}`)
+	require.NoError(t, err)
+	require.NoError(t, db.Model(&ManagedSite{}).Where("id = ?", site.ID).Update("auth_value", rotatedAuth).Error)
+
+	manager := newSub2APIAuthManager(db, encSvc)
+	err = manager.refresh(t.Context(), &state, server.Client(), false)
+
+	require.NoError(t, err)
+	assert.Equal(t, "fresh-token", state.AccessToken)
+	assert.Equal(t, "fresh-refresh-token", state.RefreshToken)
+	assert.True(t, state.RefreshAttempted)
+}
+
+func TestAutoCheckinRetriesSub2APIWithCredentialsRotatedByAnotherInstance(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}, &ManagedSiteCheckinLog{}))
+
+	oldAuth, err := encSvc.Encrypt(`{"access_token":"old-token","refresh_token":"old-refresh-token"}`)
+	require.NoError(t, err)
+	rotatedAuth, err := encSvc.Encrypt(`{"access_token":"fresh-token","refresh_token":"fresh-refresh-token"}`)
+	require.NoError(t, err)
+
+	var site ManagedSite
+	var checkinRequests atomic.Int32
+	var refreshRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/user/check-in":
+			checkinRequests.Add(1)
+			if r.Header.Get("Authorization") == "Bearer fresh-token" {
+				_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":401,"message":"access token expired"}`))
+		case "/api/v1/auth/refresh":
+			refreshRequests.Add(1)
+			if updateErr := db.Model(&ManagedSite{}).Where("id = ?", site.ID).Update("auth_value", rotatedAuth).Error; updateErr != nil {
+				http.Error(w, "failed to rotate credentials", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":401,"message":"refresh token already rotated"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	site = ManagedSite{
+		Name:               "Sub2API cross-instance check-in",
+		BaseURL:            server.URL,
+		SiteType:           SiteTypeSub2API,
+		AuthType:           AuthTypeAccessToken,
+		AuthValue:          oldAuth,
+		Enabled:            true,
+		CheckInEnabled:     true,
+		AutoCheckInEnabled: true,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewAutoCheckinService(db, nil, encSvc)
+	result := service.checkInOne(t.Context(), site)
+
+	assert.Equal(t, CheckinResultSuccess, result.Status)
+	assert.Equal(t, int32(2), checkinRequests.Load())
+	assert.Equal(t, int32(1), refreshRequests.Load())
+	var logs []ManagedSiteCheckinLog
+	require.NoError(t, db.Where("site_id = ?", site.ID).Find(&logs).Error)
+	require.Len(t, logs, 1)
+	assert.Equal(t, CheckinResultSuccess, logs[0].Status)
+}
+
+func TestAutoCheckinFailsWhenRotatedCredentialsCannotPersist(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/v1/user/check-in":
+			assert.Equal(t, "Bearer fresh-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"success":true,"message":"签到成功"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	encryptedAuth, err := encSvc.Encrypt(`{"access_token":"` + expiredToken + `","refresh_token":"old-refresh-token"}`)
+	require.NoError(t, err)
+	site := ManagedSite{
+		ID:        1,
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: encryptedAuth,
+	}
+	service := NewAutoCheckinService(db, nil, encSvc)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	result := service.checkInOneRequest(t.Context(), site)
+
+	assert.Equal(t, CheckinResultFailed, result.Status)
+	assert.Equal(t, "credential update failed", result.Message)
 }
 
 func storeSuccessfulAutoCheckinStatus(memStore store.Store, now time.Time) error {

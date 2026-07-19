@@ -41,7 +41,10 @@ export default {
   checkinPageUrlTooltip: "チェックインページの完全なURL",
   customCheckinUrl: "サインインAPI",
   customCheckinUrlPlaceholder: "/api/user/checkin",
+  sub2ApiCustomCheckinUrlPlaceholder: "/your/checkin/path",
   customCheckinUrlTooltip: "カスタムチェックインAPIパス、空欄でデフォルト使用",
+  sub2ApiCustomCheckinHint:
+    "Sub2API 上流には標準の内蔵チェックインAPIがありません。この環境が案内する互換パスだけを入力し、残高API /api/v1/auth/me は指定しないでください。",
   checkinAvailable: "チェックイン可能",
   checkinAvailableTooltip: "このサイトがチェックインをサポートしているかどうか",
   checkinEnabled: "サインイン",
@@ -60,6 +63,13 @@ export default {
   bypassMethodNone: "なし",
   bypassMethodStealth: "ステルス (TLS指紋)",
   stealthBypassHint: "⚠️ ステルスバイパスにはCookie認証が必要です",
+  bypassNoneHint: "ブラウザ保護がないAPI向けの標準方式です。通常はこちらを優先します。",
+  bypassStealthHint:
+    "ChromeのTLS指紋とリクエストヘッダーを模倣します。通常のCookieリクエストが拒否される場合のみ有効化し、WAF Cookieの生成や更新はできません。",
+  anyrouterStealthHint:
+    "AnyRouterで403やブラウザ検証が発生した場合に試します。有効なCookieが必要で、送信元IP変更後は再取得が必要な場合があります。",
+  sub2ApiStealthHint:
+    "WAFが標準リクエストを拒否する場合のみ有効化します。本人確認にはアクセストークンを使い、有効な保護Cookieも必要です。",
   stealthCookieHint:
     "💡 ブラウザからWAF Cookie（cf_clearance、acw_tc、cdn_sec_tc、acw_sc__v2など）を含めてください",
   stealthRequiresCookieAuth: "ステルスバイパスにはCookie認証が必要です",
@@ -77,14 +87,38 @@ export default {
   authTypeAccessToken: "アクセストークン",
   sub2ApiRefreshToken: "リフレッシュトークン",
   sub2ApiRefreshTokenPlaceholder: "refresh_tokenを入力",
+  sub2ApiRefreshTokenHint:
+    "auth_tokenと同じ場所から取得します。自動残高更新は2分前に更新し、互換環境のチェックインも更新後のTokenを使用します。",
   authTypeCookie: "Cookie",
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
     "ブラウザからCookieを取得してください。session/tokenなどのフィールドを含めます。サイトがブラウザ保護を使用している場合は、cf_clearanceやacw_tcなどのWAF Cookieも含めてください。",
   sub2ApiAuthHint:
-    "Sub2APIはアクセストークンを選択します。Access TokenにはApplication/Local Storageの現在のドメインにあるauth_tokenを入力し、Refresh Tokenには同じ場所のrefresh_tokenを入力します。期限切れ時に自動更新できるよう、両方の入力を推奨します。ユーザーIDは空欄にします。",
+    "Sub2APIはアクセストークンを選択し、Application/Local Storageの現在のドメインにあるauth_tokenとrefresh_tokenを入力すると残高更新を自動更新できます。上流に内蔵チェックインはありません。互換APIまたはカスタムチェックインURLがある場合のみ使用し、ユーザーIDは空欄にします。",
   anyrouterAuthHint:
-    "AnyRouterはCookieを選択します。ログイン後、Networkで https://<AnyRouterドメイン>/api/user/sign_in リクエストを探し、Request HeadersのCookie全体をコピーします。ユーザーIDは空欄にします。",
+    "AnyRouterはCookieを選択し、ブラウザのNetworkにある /api/user/sign_in リクエストからCookie全体をコピーします。自動処理を有効にする場合はユーザーIDが必要です。WAF Cookieはブラウザ指紋や送信元IPに紐づく場合があり、ステルスモードでは自動更新できないため、期限切れ後は再取得してください。",
+  newApiCompatibleAuthHint:
+    "New API互換サイトではログイン用アクセストークンを優先し、Cookieも使用できます。一部の環境ではユーザーIDヘッダーも必要です。モデルAPIキーではなくログイン認証情報を使用します。",
+  sub2ApiCapabilityHint:
+    "標準残高APIは /api/v1/auth/me で、Tokenの自動更新に対応します。上流に内蔵チェックインはありません。互換実装またはカスタムチェックインAPIがある場合のみ利用できます。",
+  anyrouterCapabilityHint:
+    "Cookieによる自動チェックインと残高更新に対応します。期限切れのブラウザ保護Cookieは手動更新が必要です。",
+  newApiCapabilityHint:
+    "自動チェックインと残高更新に対応します。モデルAPIキーではなくログイン用アクセストークンまたはCookieを使用します。",
+  capabilitylessHint:
+    "この種類には自動チェックインや残高取得の内蔵機能がなく、サイト記録としてのみ保存されます。",
+  sub2ApiUserIDHint: "Sub2APIでは使用しないため空欄にします。",
+  anyrouterUserIDHint:
+    "サイトを有効にする場合は必須です。アカウント情報または /api/user/self の応答から取得します。",
+  anyrouterUserIDRequired: "AnyRouter の自動処理を有効にするにはユーザー ID が必要です",
+  anyrouterCookieRequired: "AnyRouter の自動処理を有効にするには Cookie が必要です",
+  sub2ApiAccessTokenRequired: "Sub2API の自動処理を有効にするには Access Token 認証が必要です",
+  sub2ApiCredentialRequired:
+    "Sub2API の自動処理を有効にするには Access Token または Refresh Token が必要です",
+  sub2ApiCustomCheckinRequired:
+    "Sub2API 上流には組み込みチェックインがありません。先にカスタム API を設定してください。",
+  genericUserIDHint:
+    "一部のNew API互換サイトで必要です。/api/user/self またはアカウント画面から取得します。",
   multiAuthHint:
     "複数の認証方式が選択されています。チェックイン時はまずアクセストークンを試し、失敗した場合はCookieを試します。いずれかが成功すればチェックイン成功となります。",
   hasAuth: "認証設定済み",
@@ -95,7 +129,6 @@ export default {
   siteTypeBrand: "ブランド",
   siteTypeNewApi: "New API",
   siteTypeSub2Api: "Sub2API",
-  siteTypeVeloera: "Veloera",
   siteTypeOneHub: "One Hub",
   siteTypeDoneHub: "Done Hub",
   siteTypeWong: "Wong公益站",

@@ -121,6 +121,120 @@ test("Sub2API locale hints tell users where auth_token and refresh_token come fr
   }
 });
 
+test("Sub2API hints distinguish verified v1 balance from optional compatible check-in", () => {
+  assert.match(zhSiteLocale, /\/api\/v1\/auth\/me/);
+  assert.match(zhSiteLocale, /无内置签到/);
+  assert.match(enSiteLocale, /\/api\/v1\/auth\/me/);
+  assert.match(enSiteLocale, /no built-in check-in/i);
+  assert.match(jaSiteLocale, /\/api\/v1\/auth\/me/);
+  assert.match(jaSiteLocale, /内蔵チェックイン.*ありません/);
+});
+
+test("Sub2API custom check-in field does not suggest a generic built-in endpoint", () => {
+  assert.match(panel, /siteManagement\.sub2ApiCustomCheckinUrlPlaceholder/);
+  assert.match(panel, /siteManagement\.sub2ApiCustomCheckinHint/);
+  for (const locale of [zhSiteLocale, enSiteLocale, jaSiteLocale]) {
+    assert.match(locale, /sub2ApiCustomCheckinUrlPlaceholder:/);
+    assert.match(locale, /sub2ApiCustomCheckinHint:/);
+  }
+});
+
+test("site-specific auth options match Sub2API and AnyRouter provider contracts", () => {
+  assert.match(panel, /const authTypeOptions = computed\(\(\) => \{/);
+  assert.match(panel, /case "sub2api":/);
+  assert.match(panel, /return \[accessTokenOption\]/);
+  assert.match(panel, /case "anyrouter":\s+return \[cookieOption\]/);
+});
+
+test("AnyRouter requires exactly one cookie auth value before submit", () => {
+  assert.match(
+    panel,
+    /siteForm\.site_type === "anyrouter"[\s\S]*siteForm\.auth_type\.length !== 1[\s\S]*siteForm\.auth_type\[0\] !== "cookie"/
+  );
+  assert.match(panel, /backendMsg_anyrouterRequiresCookie/);
+});
+
+test("AnyRouter balance capability is exposed by the site table", () => {
+  assert.match(panel, /function supportsBalance\(siteType: string\)/);
+  assert.match(panel, /"wong-gongyi",\s+"anyrouter"/);
+});
+
+test("site auth hints explain AnyRouter user ID and browser-bound cookies", () => {
+  assert.match(zhSiteLocale, /AnyRouter[^\n]*Cookie/);
+  assert.match(zhSiteLocale, /anyrouterUserIDHint[^\n]*(必须|必填)/);
+  assert.match(zhSiteLocale, /浏览器指纹|出口 IP/);
+  assert.doesNotMatch(zhSiteLocale, /AnyRouter[^\n]*用户ID留空/);
+
+  assert.match(enSiteLocale, /AnyRouter[^\n]*Cookie/);
+  assert.match(enSiteLocale, /User ID[^\n]*(recommended|required)/i);
+  assert.match(enSiteLocale, /browser fingerprint|egress IP/i);
+  assert.doesNotMatch(enSiteLocale, /AnyRouter[^\n]*Leave User ID empty/);
+
+  assert.match(jaSiteLocale, /AnyRouter[^\n]*Cookie/);
+  assert.match(jaSiteLocale, /ユーザーID[^\n]*(推奨|必要)/);
+  assert.match(jaSiteLocale, /ブラウザ指紋|送信元IP/);
+  assert.doesNotMatch(jaSiteLocale, /AnyRouter[^\n]*ユーザーIDは空欄/);
+});
+
+test("provider-specific required fields are validated before submit", () => {
+  assert.match(panel, /siteManagement\.anyrouterUserIDRequired/);
+  assert.match(panel, /siteManagement\.anyrouterCookieRequired/);
+  assert.match(panel, /siteManagement\.sub2ApiCustomCheckinRequired/);
+  assert.match(
+    panel,
+    /siteForm\.site_type === "sub2api"[\s\S]*siteForm\.checkin_enabled[\s\S]*siteForm\.custom_checkin_url\.trim\(\)/
+  );
+});
+
+test("active Sub2API sites require JWT auth and a token source", () => {
+  assert.match(panel, /siteManagement\.sub2ApiAccessTokenRequired/);
+  assert.match(panel, /siteManagement\.sub2ApiCredentialRequired/);
+  assert.match(
+    panel,
+    /siteForm\.site_type === "sub2api"[\s\S]*siteForm\.enabled \|\| siteForm\.checkin_enabled/
+  );
+  for (const locale of [zhSiteLocale, enSiteLocale, jaSiteLocale]) {
+    assert.match(locale, /sub2ApiAccessTokenRequired:/);
+    assert.match(locale, /sub2ApiCredentialRequired:/);
+  }
+});
+
+test("provider guidance is placed next to site type, user ID, bypass, and auth fields", () => {
+  for (const key of ["siteCapabilityHintKey", "siteUserIDHintKey", "bypassHintKey"]) {
+    assert.match(panel, new RegExp(`const ${key} = computed`));
+    assert.match(panel, new RegExp(`t\\(${key}\\)`));
+  }
+  assert.match(panel, /class="field-stack"/);
+  assert.match(panel, /class="field-hint provider-field-hint"/);
+  assert.match(panel, /const bypassMethodOptions = computed/);
+  assert.match(panel, /function updateSiteType\(siteType: ManagedSiteType\)/);
+  assert.match(panel, /siteType === "anyrouter"/);
+  assert.match(
+    panel,
+    /siteForm\.auth_type = siteForm\.auth_type\.includes\("cookie"\) \? \["cookie"\] : \[\]/
+  );
+  assert.match(panel, /@update:value="updateSiteType"/);
+
+  for (const locale of [zhSiteLocale, enSiteLocale, jaSiteLocale]) {
+    for (const key of [
+      "sub2ApiCapabilityHint",
+      "anyrouterCapabilityHint",
+      "newApiCapabilityHint",
+      "capabilitylessHint",
+      "sub2ApiUserIDHint",
+      "anyrouterUserIDHint",
+      "genericUserIDHint",
+      "bypassNoneHint",
+      "bypassStealthHint",
+      "anyrouterStealthHint",
+      "sub2ApiStealthHint",
+      "sub2ApiRefreshTokenHint",
+    ]) {
+      assert.match(locale, new RegExp(`${key}:`));
+    }
+  }
+});
+
 test("auto check-in status still updates when config refresh fails", async () => {
   assert.ok(existsSync(autoCheckinComposableUrl));
   assert.ok(existsSync(autoCheckinTimeUtilsUrl));

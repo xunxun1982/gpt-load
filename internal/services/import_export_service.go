@@ -39,7 +39,10 @@ type importGroupOptions struct {
 	ImportAggregateSubGroups bool
 }
 
-const managedSiteAuthTypeNone = "none"
+const (
+	managedSiteAuthTypeNone        = "none"
+	managedSiteBypassMethodStealth = "stealth"
+)
 
 // NormalizeManagedSiteAuthType canonicalizes system import/export auth types without validating provider-specific values.
 func NormalizeManagedSiteAuthType(raw string) string {
@@ -61,6 +64,19 @@ func NormalizeManagedSiteAuthType(raw string) string {
 // ManagedSiteAuthTypeRequiresCredential reports whether an auth value may be retained or exported.
 func ManagedSiteAuthTypeRequiresCredential(authType string) bool {
 	return NormalizeManagedSiteAuthType(authType) != managedSiteAuthTypeNone
+}
+
+// NormalizeManagedSiteBypassMethod keeps system imports aligned with the site-management contract.
+// The empty value is the persisted representation of the no-bypass option.
+func NormalizeManagedSiteBypassMethod(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", managedSiteAuthTypeNone:
+		return "", true
+	case managedSiteBypassMethodStealth:
+		return managedSiteBypassMethodStealth, true
+	default:
+		return "", false
+	}
 }
 
 // NewImportExportService creates a new import/export service
@@ -937,6 +953,9 @@ type ManagedSiteExportInfo struct {
 	CheckInEnabled     bool   `json:"checkin_enabled"`
 	AutoCheckInEnabled bool   `json:"auto_checkin_enabled"`
 	CustomCheckInURL   string `json:"custom_checkin_url"`
+	UseProxy           bool   `json:"use_proxy"`
+	ProxyURL           string `json:"proxy_url"`
+	BypassMethod       string `json:"bypass_method"`
 	AuthType           string `json:"auth_type"`
 	AuthValue          string `json:"auth_value,omitempty"`
 	BalanceMultiplier  int64  `json:"balance_multiplier,omitempty"`
@@ -962,6 +981,9 @@ type managedSiteModel struct {
 	CheckInEnabled     bool   `gorm:"column:checkin_enabled"`
 	AutoCheckInEnabled bool   `gorm:"column:auto_checkin_enabled"`
 	CustomCheckInURL   string `gorm:"column:custom_checkin_url"`
+	UseProxy           bool   `gorm:"column:use_proxy;not null;default:false"`
+	ProxyURL           string `gorm:"column:proxy_url;not null;default:''"`
+	BypassMethod       string `gorm:"column:bypass_method;not null;default:''"`
 	AuthType           string `gorm:"column:auth_type"`
 	AuthValue          string `gorm:"column:auth_value"`
 	BalanceMultiplier  int64  `gorm:"column:balance_multiplier;not null;default:1"`
@@ -1160,9 +1182,13 @@ func (s *ImportExportService) exportManagedSites() (*ManagedSitesExportData, err
 			CheckInEnabled:     site.CheckInEnabled,
 			AutoCheckInEnabled: site.AutoCheckInEnabled,
 			CustomCheckInURL:   site.CustomCheckInURL,
-			AuthType:           authType,
-			AuthValue:          authValue, // Keep encrypted only when authentication is configured.
-			BalanceMultiplier:  max(site.BalanceMultiplier, int64(1)),
+			UseProxy:           site.UseProxy,
+			ProxyURL:           site.ProxyURL,
+			// Preserve unknown values for forward-compatible backups; import validates them.
+			BypassMethod:      strings.TrimSpace(site.BypassMethod),
+			AuthType:          authType,
+			AuthValue:         authValue, // Keep encrypted only when authentication is configured.
+			BalanceMultiplier: max(site.BalanceMultiplier, int64(1)),
 		})
 	}
 
@@ -1878,6 +1904,12 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 			skipped++
 			continue
 		}
+		bypassMethod, validBypassMethod := NormalizeManagedSiteBypassMethod(siteInfo.BypassMethod)
+		if !validBypassMethod {
+			logrus.Warnf("Skipping site %s: invalid bypass method", name)
+			skipped++
+			continue
+		}
 
 		baseURL := strings.TrimSpace(siteInfo.BaseURL)
 		if baseURL == "" {
@@ -1945,6 +1977,9 @@ func (s *ImportExportService) importManagedSites(tx *gorm.DB, data *ManagedSites
 			CheckInEnabled:     checkInEnabled,
 			AutoCheckInEnabled: autoCheckInEnabled,
 			CustomCheckInURL:   strings.TrimSpace(siteInfo.CustomCheckInURL),
+			UseProxy:           siteInfo.UseProxy,
+			ProxyURL:           strings.TrimSpace(siteInfo.ProxyURL),
+			BypassMethod:       bypassMethod,
 			AuthType:           authType,
 			AuthValue:          authValue,
 			BalanceMultiplier:  max(siteInfo.BalanceMultiplier, int64(1)),

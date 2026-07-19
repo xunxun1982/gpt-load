@@ -111,6 +111,71 @@ type UpdateSiteParams struct {
 	BalanceMultiplier *int64
 }
 
+// managedSiteValidationSnapshot contains every persisted field used by
+// validateManagedSiteConfiguration. Configuration edits compare this snapshot
+// in the UPDATE predicate so a concurrent credential or capability change
+// cannot leave an enabled site in an invalid state.
+type managedSiteValidationSnapshot struct {
+	siteType       string
+	userID         string
+	authType       string
+	authValue      string
+	customCheckURL string
+	bypassMethod   string
+	enabled        bool
+	checkinEnabled bool
+	autoCheckin    bool
+}
+
+func snapshotManagedSiteValidation(site ManagedSite) managedSiteValidationSnapshot {
+	return managedSiteValidationSnapshot{
+		siteType:       site.SiteType,
+		userID:         site.UserID,
+		authType:       site.AuthType,
+		authValue:      site.AuthValue,
+		customCheckURL: site.CustomCheckInURL,
+		bypassMethod:   site.BypassMethod,
+		enabled:        site.Enabled,
+		checkinEnabled: site.CheckInEnabled,
+		autoCheckin:    site.AutoCheckInEnabled,
+	}
+}
+
+func (snapshot managedSiteValidationSnapshot) applyCAS(query *gorm.DB) *gorm.DB {
+	return query.Where(
+		"site_type = ? AND user_id = ? AND auth_type = ? AND auth_value = ? AND custom_checkin_url = ? AND bypass_method = ? AND enabled = ? AND checkin_enabled = ? AND auto_checkin_enabled = ?",
+		snapshot.siteType,
+		snapshot.userID,
+		snapshot.authType,
+		snapshot.authValue,
+		snapshot.customCheckURL,
+		snapshot.bypassMethod,
+		snapshot.enabled,
+		snapshot.checkinEnabled,
+		snapshot.autoCheckin,
+	)
+}
+
+func (snapshot managedSiteValidationSnapshot) matches(ctx context.Context, db *gorm.DB, siteID uint) (bool, error) {
+	var count int64
+	query := snapshot.applyCAS(db.WithContext(ctx).Model(&ManagedSite{}).Where("id = ?", siteID))
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func managedSiteValidationUpdateRequested(params UpdateSiteParams) bool {
+	return params.Enabled != nil ||
+		params.SiteType != nil ||
+		params.UserID != nil ||
+		params.CheckInEnabled != nil ||
+		params.CustomCheckInURL != nil ||
+		params.BypassMethod != nil ||
+		params.AuthType != nil ||
+		params.AuthValue != nil
+}
+
 type SiteReorderItem struct {
 	ID   uint
 	Sort int
@@ -605,6 +670,22 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 	if authType == "" {
 		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_auth_type", nil)
 	}
+	if !isValidBypassMethod(params.BypassMethod) {
+		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_bypass_method", nil)
+	}
+	bypassMethod := normalizeBypassMethod(params.BypassMethod)
+	if err := validateManagedSiteConfiguration(
+		siteType,
+		authType,
+		params.AuthValue,
+		params.UserID,
+		strings.TrimSpace(params.CustomCheckInURL),
+		bypassMethod,
+		params.Enabled,
+		params.CheckInEnabled,
+	); err != nil {
+		return nil, err
+	}
 
 	encryptedAuth := ""
 	if authType != AuthTypeNone {
@@ -641,7 +722,7 @@ func (s *SiteService) CreateSite(ctx context.Context, params CreateSiteParams) (
 		CustomCheckInURL:  strings.TrimSpace(params.CustomCheckInURL),
 		UseProxy:          params.UseProxy,
 		ProxyURL:          strings.TrimSpace(params.ProxyURL),
-		BypassMethod:      normalizeBypassMethod(params.BypassMethod),
+		BypassMethod:      bypassMethod,
 		AuthType:          authType,
 		AuthValue:         encryptedAuth,
 		BalanceMultiplier: balanceMultiplier,
@@ -667,6 +748,9 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 	if err := s.db.WithContext(ctx).First(&site, siteID).Error; err != nil {
 		return nil, app_errors.ParseDBError(err)
 	}
+	originalAuthType := site.AuthType
+	originalValidation := snapshotManagedSiteValidation(site)
+	authTypeChanged := false
 	if params.BalanceMultiplier != nil && *params.BalanceMultiplier < defaultManagedSiteBalanceMultiplier {
 		return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.balance_multiplier_min", nil)
 	}
@@ -747,7 +831,14 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		if authType == "" {
 			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_auth_type", nil)
 		}
-		// Update AuthType first - subsequent AuthValue check depends on this value
+		authTypeChanged = authType != site.AuthType
+		if authTypeChanged && authType != AuthTypeNone {
+			reconciled, err := s.reconcileAuthValueForTypeChange(originalAuthType, authType, site.AuthValue)
+			if err != nil {
+				return nil, fmt.Errorf("failed to reconcile auth values: %w", err)
+			}
+			site.AuthValue = reconciled
+		}
 		site.AuthType = authType
 		if authType == AuthTypeNone {
 			site.AuthValue = ""
@@ -783,12 +874,9 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 	}
 	if params.CheckInEnabled != nil {
 		site.CheckInEnabled = *params.CheckInEnabled
-		// Migrate legacy AutoCheckInEnabled field to ensure UI toggle is effective
-		// Without this, legacy sites with AutoCheckInEnabled=true would continue auto-checkin
-		// even after user turns off the toggle (because query uses OR condition)
+		// Clear the legacy flag so the current toggle remains authoritative.
 		site.AutoCheckInEnabled = false
 	}
-	// Note: CustomCheckInURL is already handled above (around line 461), removed duplicate per AI review
 	if params.UseProxy != nil {
 		site.UseProxy = *params.UseProxy
 	}
@@ -796,11 +884,107 @@ func (s *SiteService) UpdateSite(ctx context.Context, siteID uint, params Update
 		site.ProxyURL = strings.TrimSpace(*params.ProxyURL)
 	}
 	if params.BypassMethod != nil {
+		if !isValidBypassMethod(*params.BypassMethod) {
+			return nil, services.NewI18nError(app_errors.ErrValidation, "site_management.validation.invalid_bypass_method", nil)
+		}
 		site.BypassMethod = normalizeBypassMethod(*params.BypassMethod)
 	}
+	if err := s.validateStoredManagedSiteConfiguration(site); err != nil {
+		return nil, err
+	}
 
-	if err := s.db.WithContext(ctx).Save(&site).Error; err != nil {
-		return nil, app_errors.ParseDBError(err)
+	// Update only requested columns so a concurrent token refresh cannot be
+	// overwritten by the stale row snapshot loaded at the start of this method.
+	updates := make(map[string]any, 18)
+	if params.Name != nil {
+		updates["name"] = site.Name
+	}
+	if params.Notes != nil {
+		updates["notes"] = site.Notes
+	}
+	if params.Description != nil {
+		updates["description"] = site.Description
+	}
+	if params.Sort != nil {
+		updates["sort"] = site.Sort
+	}
+	if params.BalanceMultiplier != nil {
+		updates["balance_multiplier"] = site.BalanceMultiplier
+	}
+	if params.Enabled != nil {
+		updates["enabled"] = site.Enabled
+	}
+	if params.BaseURL != nil {
+		updates["base_url"] = site.BaseURL
+	}
+	if params.SiteType != nil {
+		updates["site_type"] = site.SiteType
+	}
+	if params.UserID != nil {
+		updates["user_id"] = site.UserID
+	}
+	if params.CheckInPageURL != nil {
+		updates["checkin_page_url"] = site.CheckInPageURL
+	}
+	if params.CustomCheckInURL != nil {
+		updates["custom_checkin_url"] = site.CustomCheckInURL
+	}
+	if params.AuthType != nil {
+		updates["auth_type"] = site.AuthType
+	}
+	if params.AuthValue != nil || authTypeChanged {
+		updates["auth_value"] = site.AuthValue
+	}
+	if params.CheckInAvailable != nil {
+		updates["checkin_available"] = site.CheckInAvailable
+	}
+	if params.CheckInEnabled != nil {
+		updates["checkin_enabled"] = site.CheckInEnabled
+		updates["auto_checkin_enabled"] = site.AutoCheckInEnabled
+	}
+	if params.UseProxy != nil {
+		updates["use_proxy"] = site.UseProxy
+	}
+	if params.ProxyURL != nil {
+		updates["proxy_url"] = site.ProxyURL
+	}
+	if params.BypassMethod != nil {
+		updates["bypass_method"] = site.BypassMethod
+	}
+
+	if len(updates) > 0 {
+		updateQuery := s.db.WithContext(ctx).Model(&ManagedSite{}).Where("id = ?", siteID)
+		// Authentication rotations use compare-and-swap so a user edit cannot
+		// silently restore a credential snapshot read before a token refresh.
+		authUpdateRequested := params.AuthValue != nil || authTypeChanged
+		configurationUpdateRequested := managedSiteValidationUpdateRequested(params)
+		if configurationUpdateRequested {
+			updateQuery = originalValidation.applyCAS(updateQuery)
+		}
+		updateResult := updateQuery.Updates(updates)
+		if updateResult.Error != nil {
+			return nil, app_errors.ParseDBError(updateResult.Error)
+		}
+		if configurationUpdateRequested && updateResult.RowsAffected == 0 {
+			matches, matchErr := originalValidation.matches(ctx, s.db, siteID)
+			if matchErr != nil {
+				return nil, app_errors.ParseDBError(matchErr)
+			}
+			if matches {
+				// MySQL may report zero affected rows when the CAS matched but
+				// every requested value was already equal to the stored value.
+				updateResult.RowsAffected = 1
+			} else {
+				messageKey := "site_management.validation.configuration_changed_retry"
+				if authUpdateRequested {
+					messageKey = "site_management.validation.auth_changed_retry"
+				}
+				return nil, services.NewI18nError(app_errors.ErrValidation, messageKey, nil)
+			}
+		}
+		if err := s.db.WithContext(ctx).First(&site, siteID).Error; err != nil {
+			return nil, app_errors.ParseDBError(err)
+		}
 	}
 
 	// Invalidate cache after update
@@ -1397,6 +1581,104 @@ func normalizeBypassMethod(raw string) string {
 	}
 }
 
+func isValidBypassMethod(raw string) bool {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "", BypassMethodNone, BypassMethodStealth:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateManagedSiteConfiguration(
+	siteType string,
+	authType string,
+	plainAuthValue string,
+	plainUserID string,
+	customCheckInURL string,
+	bypassMethod string,
+	enabled bool,
+	checkInEnabled bool,
+) error {
+	authConfig := parseAuthConfig(authType, plainAuthValue)
+	active := enabled || checkInEnabled
+
+	if siteType == SiteTypeAnyrouter {
+		authTypes := configuredAuthTypeSet(authType)
+		_, hasCookie := authTypes[AuthTypeCookie]
+		if !hasCookie || len(authTypes) != 1 {
+			return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.anyrouter_requires_cookie", nil)
+		}
+		if active && strings.TrimSpace(plainUserID) == "" {
+			return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.anyrouter_user_id_required", nil)
+		}
+		if active && strings.TrimSpace(authConfig.GetAuthValue(AuthTypeCookie)) == "" {
+			return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.anyrouter_cookie_required", nil)
+		}
+	}
+	if siteType == SiteTypeSub2API && active {
+		authTypes := configuredAuthTypeSet(authType)
+		if _, hasAccessToken := authTypes[AuthTypeAccessToken]; !hasAccessToken {
+			return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.sub2api_requires_access_token", nil)
+		}
+		if strings.TrimSpace(authConfig.GetAuthValue(AuthTypeAccessToken)) == "" &&
+			strings.TrimSpace(authConfig.GetSupplementalValue(authFieldRefreshToken)) == "" {
+			return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.sub2api_credential_required", nil)
+		}
+	}
+
+	if isStealthBypassMethod(bypassMethod) {
+		if !authConfig.HasAuthType(AuthTypeCookie) {
+			return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.stealth_requires_cookie", nil)
+		}
+		cookie := strings.TrimSpace(authConfig.GetAuthValue(AuthTypeCookie))
+		if cookie == "" {
+			return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.stealth_cookie_required", nil)
+		}
+		if missing := validateCFCookies(cookie); len(missing) > 0 {
+			return services.NewI18nError(
+				app_errors.ErrValidation,
+				"site_management.validation.stealth_waf_cookie_required",
+				map[string]any{"cookies": strings.Join(missing, ", ")},
+			)
+		}
+	}
+
+	if siteType == SiteTypeSub2API && checkInEnabled && strings.TrimSpace(customCheckInURL) == "" {
+		return services.NewI18nError(app_errors.ErrValidation, "site_management.validation.sub2api_custom_checkin_required", nil)
+	}
+	return nil
+}
+
+func (s *SiteService) validateStoredManagedSiteConfiguration(site ManagedSite) error {
+	plainAuthValue := ""
+	if strings.TrimSpace(site.AuthValue) != "" {
+		decrypted, err := s.encryptionSvc.Decrypt(site.AuthValue)
+		if err != nil {
+			return fmt.Errorf("decrypt auth value for validation: %w", err)
+		}
+		plainAuthValue = decrypted
+	}
+	plainUserID := ""
+	if strings.TrimSpace(site.UserID) != "" {
+		decrypted, err := s.encryptionSvc.Decrypt(site.UserID)
+		if err != nil {
+			return fmt.Errorf("decrypt user_id for validation: %w", err)
+		}
+		plainUserID = decrypted
+	}
+	return validateManagedSiteConfiguration(
+		site.SiteType,
+		site.AuthType,
+		plainAuthValue,
+		plainUserID,
+		site.CustomCheckInURL,
+		site.BypassMethod,
+		site.Enabled,
+		site.CheckInEnabled || site.AutoCheckInEnabled,
+	)
+}
+
 func normalizeBaseURL(raw string) (string, error) {
 	clean := strings.TrimSpace(raw)
 	clean = strings.TrimRight(clean, "/")
@@ -1659,6 +1941,11 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 		if siteType == "" {
 			siteType = SiteTypeUnknown
 		}
+		if !isValidBypassMethod(siteInfo.BypassMethod) {
+			logrus.Warnf("Skipping site %s: invalid bypass_method", name)
+			skipped++
+			continue
+		}
 
 		// Site imports activate only auth methods supported by this binary; unknown future types stay disabled.
 		authType := normalizeAuthType(siteInfo.AuthType)
@@ -1730,6 +2017,39 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 
 		// Ensure checkin flags are consistent (merge auto_checkin_enabled into checkin_enabled for backward compatibility)
 		checkInEnabled := siteInfo.CheckInEnabled || siteInfo.AutoCheckInEnabled
+		plainAuthValue := ""
+		if encryptedAuth != "" {
+			plainAuthValue, err = s.encryptionSvc.Decrypt(encryptedAuth)
+			if err != nil {
+				logrus.WithError(err).Warnf("Failed to decrypt auth value for site %s", name)
+				skipped++
+				continue
+			}
+		}
+		plainUserID := ""
+		if encryptedUserID != "" {
+			plainUserID, err = s.encryptionSvc.Decrypt(encryptedUserID)
+			if err != nil {
+				logrus.WithError(err).Warnf("Failed to decrypt user_id for site %s", name)
+				skipped++
+				continue
+			}
+		}
+		bypassMethod := normalizeBypassMethod(siteInfo.BypassMethod)
+		if err := validateManagedSiteConfiguration(
+			siteType,
+			authType,
+			plainAuthValue,
+			plainUserID,
+			strings.TrimSpace(siteInfo.CustomCheckInURL),
+			bypassMethod,
+			siteInfo.Enabled,
+			checkInEnabled,
+		); err != nil {
+			logrus.WithError(err).Warnf("Skipping site %s: invalid provider configuration", name)
+			skipped++
+			continue
+		}
 
 		// Generate unique name if conflict exists
 		uniqueName, err := s.generateUniqueSiteName(ctx, name)
@@ -1754,7 +2074,7 @@ func (s *SiteService) ImportSites(ctx context.Context, data *SiteExportData, pla
 			CustomCheckInURL:  strings.TrimSpace(siteInfo.CustomCheckInURL),
 			UseProxy:          siteInfo.UseProxy,
 			ProxyURL:          strings.TrimSpace(siteInfo.ProxyURL),
-			BypassMethod:      normalizeBypassMethod(siteInfo.BypassMethod),
+			BypassMethod:      bypassMethod,
 			AuthType:          authType,
 			AuthValue:         encryptedAuth,
 			BalanceMultiplier: normalizeManagedSiteBalanceMultiplier(siteInfo.BalanceMultiplier),
@@ -1799,6 +2119,32 @@ func (s *SiteService) mergeAuthValues(authType, existingEncrypted, newValue stri
 			cleanAuthTypes = append(cleanAuthTypes, at)
 		}
 	}
+	configuredAuthTypes := make(map[string]struct{}, len(cleanAuthTypes))
+	for _, at := range cleanAuthTypes {
+		configuredAuthTypes[at] = struct{}{}
+	}
+	filterAuthValues := func(values map[string]string) map[string]string {
+		filtered := make(map[string]string, len(values))
+		for key, value := range values {
+			if !isConfiguredAuthValueKey(key, configuredAuthTypes) {
+				continue
+			}
+			filtered[key] = value
+		}
+		return filtered
+	}
+	accessTokenUpdate := func(values map[string]string) (string, bool) {
+		if _, configured := configuredAuthTypes[AuthTypeAccessToken]; !configured {
+			return "", false
+		}
+		if value, ok := values[AuthTypeAccessToken]; ok && strings.TrimSpace(value) != "" {
+			return value, true
+		}
+		if value, ok := values[authFieldAuthToken]; ok && strings.TrimSpace(value) != "" {
+			return value, true
+		}
+		return "", false
+	}
 
 	// Plain single-auth updates are replacements. Sub2API keeps refresh_token by
 	// sending JSON explicitly, so non-JSON values must not keep supplemental fields.
@@ -1813,15 +2159,19 @@ func (s *SiteService) mergeAuthValues(authType, existingEncrypted, newValue stri
 			if decrypted, err := s.encryptionSvc.Decrypt(existingEncrypted); err == nil {
 				var existingJSON map[string]string
 				if err := json.Unmarshal([]byte(decrypted), &existingJSON); err == nil {
-					existingValues = existingJSON
+					existingValues = filterAuthValues(existingJSON)
 				} else if len(cleanAuthTypes) > 0 && strings.TrimSpace(decrypted) != "" {
 					existingValues[cleanAuthTypes[0]] = decrypted
 				}
 			}
 		}
+		if newToken, ok := accessTokenUpdate(newJSON); ok &&
+			strings.TrimSpace(existingValues[AuthTypeAccessToken]) != strings.TrimSpace(newToken) {
+			delete(existingValues, authFieldTokenExpiresAt)
+		}
 
 		for k, v := range newJSON {
-			if strings.TrimSpace(v) != "" {
+			if strings.TrimSpace(v) != "" && isConfiguredAuthValueKey(k, configuredAuthTypes) {
 				existingValues[k] = v
 			}
 		}
@@ -1848,7 +2198,7 @@ func (s *SiteService) mergeAuthValues(authType, existingEncrypted, newValue stri
 			// Try to parse as JSON (multi-auth format)
 			var jsonValues map[string]string
 			if err := json.Unmarshal([]byte(decrypted), &jsonValues); err == nil {
-				existingValues = jsonValues
+				existingValues = filterAuthValues(jsonValues)
 			} else {
 				// Legacy single-auth format - assign to first auth type
 				if len(cleanAuthTypes) > 0 {
@@ -1871,16 +2221,17 @@ func (s *SiteService) mergeAuthValues(authType, existingEncrypted, newValue stri
 		}
 	}
 
-	// Merge: new values override existing ones, but keep existing values for unconfigured types
-	mergedValues := make(map[string]string)
-	for _, at := range cleanAuthTypes {
-		if newVal, ok := newValues[at]; ok && newVal != "" {
-			// Use new value if provided
-			mergedValues[at] = newVal
-		} else if existingVal, ok := existingValues[at]; ok && existingVal != "" {
-			// Keep existing value if new value not provided
-			mergedValues[at] = existingVal
+	// New values override existing ones while preserving provider supplemental fields.
+	mergedValues := filterAuthValues(existingValues)
+	if newToken, ok := accessTokenUpdate(newValues); ok &&
+		strings.TrimSpace(existingValues[AuthTypeAccessToken]) != strings.TrimSpace(newToken) {
+		delete(mergedValues, authFieldTokenExpiresAt)
+	}
+	for key, value := range newValues {
+		if strings.TrimSpace(value) == "" || !isConfiguredAuthValueKey(key, configuredAuthTypes) {
+			continue
 		}
+		mergedValues[key] = value
 	}
 
 	// Return merged values as JSON
@@ -1890,4 +2241,89 @@ func (s *SiteService) mergeAuthValues(authType, existingEncrypted, newValue stri
 	}
 
 	return string(mergedJSON), nil
+}
+
+// reconcileAuthValueForTypeChange translates an existing credential snapshot
+// when auth_type changes.  The old type is used for parsing legacy plaintext
+// values so a token cannot accidentally become a cookie (or vice versa).
+// Only credentials present in both type sets survive; Sub2API metadata is kept
+// only when access_token itself remains configured.
+func (s *SiteService) reconcileAuthValueForTypeChange(oldAuthType, newAuthType, existingEncrypted string) (string, error) {
+	oldTypes := configuredAuthTypeSet(oldAuthType)
+	newTypes := configuredAuthTypeSet(newAuthType)
+	if len(newTypes) == 0 || strings.TrimSpace(existingEncrypted) == "" {
+		return "", nil
+	}
+
+	decrypted, err := s.encryptionSvc.Decrypt(existingEncrypted)
+	if err != nil {
+		return "", fmt.Errorf("decrypt existing auth value: %w", err)
+	}
+	oldConfig := parseAuthConfig(oldAuthType, decrypted)
+	values := make(map[string]string, len(newTypes)+2)
+	for authType := range newTypes {
+		if _, shared := oldTypes[authType]; !shared {
+			continue
+		}
+		value := strings.TrimSpace(oldConfig.GetAuthValue(authType))
+		if value != "" {
+			values[authType] = value
+		}
+	}
+
+	// refresh_token and expiry metadata only have meaning alongside the shared
+	// access token.  Discarding them on a cookie-only transition avoids stale
+	// credentials being interpreted by a later provider.
+	if _, accessShared := oldTypes[AuthTypeAccessToken]; accessShared {
+		if _, accessConfigured := newTypes[AuthTypeAccessToken]; accessConfigured {
+			for key, value := range oldConfig.SupplementalValues {
+				if key == authFieldAuthToken || strings.TrimSpace(value) == "" {
+					continue
+				}
+				values[key] = value
+			}
+		}
+	}
+
+	if len(values) == 0 {
+		return "", nil
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "", fmt.Errorf("marshal reconciled auth values: %w", err)
+	}
+	encrypted, err := s.encryptionSvc.Encrypt(string(data))
+	if err != nil {
+		return "", fmt.Errorf("encrypt reconciled auth values: %w", err)
+	}
+	return encrypted, nil
+}
+
+func configuredAuthTypeSet(authType string) map[string]struct{} {
+	configured := make(map[string]struct{})
+	for _, value := range strings.Split(authType, ",") {
+		value = strings.TrimSpace(value)
+		if value != "" && value != AuthTypeNone {
+			configured[value] = struct{}{}
+		}
+	}
+	return configured
+}
+
+// isConfiguredAuthValueKey keeps active credentials and provider metadata while
+// dropping stale credentials for auth types that are no longer selected.
+func isConfiguredAuthValueKey(key string, configured map[string]struct{}) bool {
+	switch key {
+	case AuthTypeAccessToken, AuthTypeCookie:
+		_, ok := configured[key]
+		return ok
+	case authFieldAuthToken:
+		_, ok := configured[AuthTypeAccessToken]
+		return ok
+	case authFieldRefreshToken, authFieldTokenExpiresAt:
+		_, ok := configured[AuthTypeAccessToken]
+		return ok
+	default:
+		return true
+	}
 }

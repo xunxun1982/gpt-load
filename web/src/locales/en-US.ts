@@ -1165,7 +1165,6 @@ export default {
     authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
     siteTypeUnknown: "Unknown",
     siteTypeSub2Api: "Sub2API",
-    siteTypeVeloera: "Veloera",
     siteTypeWong: "Wong-gongyi",
     lastStatus: "Last Status",
     status: "Status",

@@ -43,6 +43,8 @@ const (
 	// Message constants for check-in results
 	msgNoValidCredentials       = "no valid credentials"
 	msgBrowserChallengeDetected = "browser challenge, update cookies from browser"
+	msgCredentialUpdateFailed   = "credential update failed"
+	msgSub2APICustomURLRequired = "Sub2API has no built-in check-in; configure a custom endpoint"
 
 	newAPICheckinPoWAction = "checkin"
 	maxPoWAttempts         = uint64(1 << 32)
@@ -56,6 +58,7 @@ type AutoCheckinService struct {
 	encryptionSvc encryption.Service
 	client        *http.Client
 	balanceSvc    *BalanceService
+	sub2APIAuth   *sub2APIAuthManager
 	proxyResolver managedSiteProxyURLResolver
 
 	// Proxy client cache to reuse HTTP clients with same proxy URL for connection pooling.
@@ -108,6 +111,7 @@ func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encrypt
 			Transport: transport,
 			Timeout:   20 * time.Second,
 		},
+		sub2APIAuth:      newSub2APIAuthManager(db, encryptionSvc),
 		stealthClientMgr: NewStealthClientManager(30 * time.Second),
 		stopCh:           make(chan struct{}),
 		rescheduleCh:     make(chan struct{}, 1),
@@ -118,6 +122,9 @@ func NewAutoCheckinService(db *gorm.DB, store store.Store, encryptionSvc encrypt
 
 func (s *AutoCheckinService) SetBalanceService(balanceSvc *BalanceService) {
 	s.balanceSvc = balanceSvc
+	if balanceSvc != nil {
+		s.sub2APIAuth = balanceSvc.sub2APIAuth
+	}
 }
 
 func (s *AutoCheckinService) SetProxyURLResolver(resolver managedSiteProxyURLResolver) {
@@ -690,7 +697,7 @@ func (s *AutoCheckinService) runAllCheckins(ctx context.Context) {
 	// Query sites where auto check-in should run: enabled=true AND (checkin_enabled=true OR auto_checkin_enabled=true)
 	// This supports both new logic (checkin_enabled) and legacy data (auto_checkin_enabled)
 	err = s.db.WithContext(qctx).
-		Select("id, name, base_url, site_type, user_id, custom_checkin_url, use_proxy, proxy_url, checkin_enabled, auth_type, auth_value").
+		Select("id, name, base_url, site_type, user_id, custom_checkin_url, use_proxy, proxy_url, bypass_method, checkin_enabled, auth_type, auth_value").
 		Where("enabled = ? AND (checkin_enabled = ? OR auto_checkin_enabled = ?)", true, true, true).
 		Order("id ASC").
 		Find(&sites).Error
@@ -751,6 +758,16 @@ func (s *AutoCheckinService) runSitesCheckin(ctx context.Context, sites []Manage
 		go func() {
 			defer workers.Done()
 			for site := range jobs {
+				if site.SiteType == SiteTypeSub2API && strings.TrimSpace(site.CustomCheckInURL) == "" {
+					res := CheckinResult{
+						SiteID:  site.ID,
+						Status:  CheckinResultSkipped,
+						Message: msgSub2APICustomURLRequired,
+					}
+					s.persistSiteResult(ctx, site.ID, res.Status, res.Message)
+					results <- res
+					continue
+				}
 				res := s.checkInOne(ctx, site)
 				results <- res
 			}
@@ -785,9 +802,10 @@ func (s *AutoCheckinService) runSitesCheckin(ctx context.Context, sites []Manage
 }
 
 type CheckinResult struct {
-	SiteID  uint   `json:"site_id"`
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	SiteID      uint   `json:"site_id"`
+	Status      string `json:"status"`
+	Message     string `json:"message"`
+	authUpdated bool
 }
 
 // CheckInSite performs a manual check-in for a specific site.
@@ -808,14 +826,53 @@ func (s *AutoCheckinService) CheckInSite(ctx context.Context, siteID uint) (*Che
 }
 
 func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) CheckinResult {
+	balanceSite := site
+	var result CheckinResult
+	if site.SiteType == SiteTypeSub2API {
+		unlock := s.sub2APIAuth.lockSite(site.ID)
+		latest, err := s.sub2APIAuth.loadLatestSite(ctx, site)
+		if err != nil {
+			unlock()
+			result = CheckinResult{SiteID: site.ID, Status: CheckinResultFailed, Message: "load auth failed"}
+			s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
+			return result
+		}
+		balanceSite = latest
+		result = s.checkInOneRequest(ctx, latest)
+		if result.Status == CheckinResultFailed && !result.authUpdated {
+			// Another instance may rotate a refresh token while this request is in flight.
+			// Retry once only when the persisted authentication snapshot changed, and
+			// rebuild the client from the complete latest site configuration.
+			refreshedSite, loadErr := s.sub2APIAuth.loadLatestSite(ctx, latest)
+			if loadErr != nil {
+				logrus.WithError(loadErr).WithField("site_id", latest.ID).
+					Debug("failed to reload Sub2API credentials after check-in failure")
+			} else if refreshedSite.AuthType != latest.AuthType || refreshedSite.AuthValue != latest.AuthValue {
+				balanceSite = refreshedSite
+				result = s.checkInOneRequest(ctx, refreshedSite)
+			}
+		}
+		unlock()
+	} else {
+		result = s.checkInOneRequest(ctx, site)
+	}
+
+	s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
+	if result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked {
+		s.refreshBalanceAfterCheckin(ctx, balanceSite)
+	}
+	return result
+}
+
+// checkInOneRequest executes one provider attempt without recording its outcome.
+// checkInOne records only the final result after any credential-race retry.
+func (s *AutoCheckinService) checkInOneRequest(ctx context.Context, site ManagedSite) CheckinResult {
 	result := CheckinResult{SiteID: site.ID, Status: CheckinResultFailed}
-	encryptedUserID := site.UserID
 
 	provider := resolveProvider(site.SiteType)
 	if provider == nil {
 		result.Status = CheckinResultSkipped
 		result.Message = "no provider"
-		s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
 		return result
 	}
 
@@ -823,7 +880,6 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 	if err != nil {
 		result.Status = CheckinResultFailed
 		result.Message = "decrypt auth failed"
-		s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
 		return result
 	}
 
@@ -835,7 +891,6 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 	if err != nil {
 		result.Status = CheckinResultFailed
 		result.Message = "decrypt user_id failed"
-		s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
 		return result
 	}
 	site.UserID = userID
@@ -845,25 +900,27 @@ func (s *AutoCheckinService) checkInOne(ctx context.Context, site ManagedSite) C
 
 	res, err := provider.CheckIn(ctx, client, site, authConfig)
 	if len(res.AuthUpdates) > 0 {
-		if err := s.persistAuthUpdates(ctx, site, authConfig, res.AuthUpdates); err != nil {
-			logrus.WithError(err).WithField("site_id", site.ID).Warn("failed to persist managed site auth update")
+		if persistErr := s.persistAuthUpdates(ctx, site, authConfig, res.AuthUpdates); persistErr != nil {
+			if errors.Is(persistErr, errManagedSiteAuthChangedDuringCheckin) {
+				logrus.WithField("site_id", site.ID).Debug("managed site auth changed while check-in was running")
+			} else {
+				logrus.WithError(persistErr).WithField("site_id", site.ID).Warn("failed to persist managed site auth update")
+				result.Status = CheckinResultFailed
+				result.Message = msgCredentialUpdateFailed
+				return result
+			}
+		} else {
+			result.authUpdated = true
 		}
 	}
 	if err != nil {
 		result.Status = CheckinResultFailed
 		result.Message = err.Error()
-		s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
 		return result
 	}
 
 	result.Status = res.Status
 	result.Message = res.Message
-	s.persistSiteResult(ctx, site.ID, result.Status, result.Message)
-	if result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked {
-		site.UserID = encryptedUserID
-		s.refreshBalanceAfterCheckin(ctx, site)
-	}
-
 	return result
 }
 
@@ -952,46 +1009,8 @@ func (s *AutoCheckinService) decryptAuthValue(encrypted string) (string, error) 
 }
 
 func (s *AutoCheckinService) persistAuthUpdates(ctx context.Context, site ManagedSite, authConfig AuthConfig, updates map[string]string) error {
-	values := make(map[string]string, len(authConfig.AuthValues)+len(authConfig.SupplementalValues)+len(updates))
-	for k, v := range authConfig.AuthValues {
-		if strings.TrimSpace(v) != "" {
-			values[k] = v
-		}
-	}
-	for k, v := range authConfig.SupplementalValues {
-		if k != authFieldAuthToken && strings.TrimSpace(v) != "" {
-			values[k] = v
-		}
-	}
-	for k, v := range updates {
-		if strings.TrimSpace(v) != "" {
-			values[k] = v
-		}
-	}
-	if len(values) == 0 {
-		return nil
-	}
-
-	data, err := json.Marshal(values)
-	if err != nil {
-		return err
-	}
-	encrypted, err := s.encryptionSvc.Encrypt(string(data))
-	if err != nil {
-		return err
-	}
-	result := s.db.WithContext(ctx).
-		Model(&ManagedSite{}).
-		Where("id = ? AND auth_type = ? AND auth_value = ?", site.ID, site.AuthType, site.AuthValue).
-		Update("auth_value", encrypted)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		// Preserve credentials if the user edited auth while check-in was running.
-		return errManagedSiteAuthChangedDuringCheckin
-	}
-	return nil
+	_, err := persistManagedSiteAuthUpdates(ctx, s.db, s.encryptionSvc, site, authConfig, updates)
+	return err
 }
 
 func (s *AutoCheckinService) persistSiteResult(ctx context.Context, siteID uint, status, message string) {
@@ -1173,14 +1192,13 @@ func buildCheckinURL(siteBaseURL, customURL, defaultPath string) string {
 
 func buildUserHeaders(userID string) map[string]string {
 	// Multiple header names for compatibility with different third-party API implementations
-	// (New-API, Veloera, VoAPI, One-Hub, Rix-API, Neo-API, etc.)
+	// (New-API, VoAPI, One-Hub, Rix-API, Neo-API, etc.)
 	uid := strings.TrimSpace(userID)
 	if uid == "" {
 		return nil
 	}
 	return map[string]string{
 		"New-API-User": uid,
-		"Veloera-User": uid,
 		"voapi-user":   uid,
 		"User-id":      uid,
 		"Rix-Api-User": uid,
@@ -1493,6 +1511,7 @@ func tryMultiAuth(
 	tryFn func(authType, authValue string) (providerResult, error),
 ) (providerResult, error) {
 	var lastResult providerResult
+	var authUpdates map[string]string
 
 	for _, authType := range authTypesToTry {
 		// Skip if this auth type is not configured
@@ -1507,9 +1526,13 @@ func tryMultiAuth(
 
 		// Try check-in with this auth type
 		result, err := tryFn(authType, authValue)
+		// A previous auth attempt may have rotated credentials before falling back.
+		// Keep those updates attached to whichever result is ultimately returned.
+		authUpdates = mergeProviderAuthUpdates(authUpdates, result.AuthUpdates)
 
 		// If successful or already checked, return immediately
 		if err == nil && (result.Status == CheckinResultSuccess || result.Status == CheckinResultAlreadyChecked) {
+			result.AuthUpdates = authUpdates
 			return result, nil
 		}
 
@@ -1519,10 +1542,25 @@ func tryMultiAuth(
 
 	// All auth types failed, return the last result if any attempt was made
 	if lastResult.Status != "" {
+		lastResult.AuthUpdates = authUpdates
 		return lastResult, nil
 	}
 
 	return providerResult{Status: CheckinResultSkipped, Message: msgNoValidCredentials}, nil
+}
+
+func mergeProviderAuthUpdates(existing, incoming map[string]string) map[string]string {
+	if len(existing) == 0 && len(incoming) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(existing)+len(incoming))
+	for key, value := range existing {
+		merged[key] = value
+	}
+	for key, value := range incoming {
+		merged[key] = value
+	}
+	return merged
 }
 
 type sub2APIProvider struct{}
@@ -1535,14 +1573,42 @@ func (p sub2APIProvider) CheckIn(ctx context.Context, client *http.Client, site 
 	useStealth := shouldUseStealthRequest(site)
 	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
 	refreshToken := authConfig.GetSupplementalValue(authFieldRefreshToken)
+	tokenExpiresAt := authConfig.GetSupplementalValue(authFieldTokenExpiresAt)
 	var cookieSession string
 	if authConfig.HasAuthType(AuthTypeCookie) {
 		cookieSession = authConfig.GetAuthValue(AuthTypeCookie)
 	}
+	var authUpdates map[string]string
+	if authConfig.HasAuthType(AuthTypeAccessToken) &&
+		strings.TrimSpace(authConfig.GetAuthValue(AuthTypeAccessToken)) == "" &&
+		strings.TrimSpace(refreshToken) != "" {
+		refreshed, refreshErr := p.refreshTokens(ctx, client, site, "", refreshToken, useStealth, cookieSession)
+		if refreshErr == nil {
+			authConfig.AuthValues[AuthTypeAccessToken] = refreshed.AccessToken
+			authConfig.SupplementalValues[authFieldRefreshToken] = refreshed.RefreshToken
+			if !refreshed.TokenExpiresAt.IsZero() {
+				authConfig.SupplementalValues[authFieldTokenExpiresAt] = refreshed.TokenExpiresAt.Format(time.RFC3339)
+			}
+			refreshToken = refreshed.RefreshToken
+			tokenExpiresAt = refreshed.TokenExpiresAt.Format(time.RFC3339)
+			authUpdates = sub2APIAuthUpdates(refreshed)
+		} else {
+			logrus.WithError(refreshErr).WithField("site_id", site.ID).
+				Warn("Sub2API token-only check-in refresh failed")
+			if strings.TrimSpace(cookieSession) == "" {
+				return providerResult{
+					Status:  CheckinResultFailed,
+					Message: sub2APIRefreshFailureMessage("check-in failed", refreshErr),
+				}, nil
+			}
+		}
+	}
 
-	return tryMultiAuth(authConfig, authTypesToTry, func(authType, authValue string) (providerResult, error) {
-		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, cookieSession, refreshToken, useStealth)
+	result, err := tryMultiAuth(authConfig, authTypesToTry, func(authType, authValue string) (providerResult, error) {
+		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, cookieSession, refreshToken, tokenExpiresAt, useStealth)
 	})
+	result.AuthUpdates = mergeProviderAuthUpdates(authUpdates, result.AuthUpdates)
+	return result, err
 }
 
 func (p sub2APIProvider) tryCheckInWithAuthType(
@@ -1553,12 +1619,13 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 	authValue string,
 	cookieSession string,
 	refreshToken string,
+	tokenExpiresAt string,
 	useStealth bool,
 ) (providerResult, error) {
 	headers := make(map[string]string)
 	switch authType {
 	case AuthTypeAccessToken:
-		if useStealth {
+		if useStealth && strings.TrimSpace(cookieSession) == "" {
 			return providerResult{Status: CheckinResultFailed, Message: "stealth bypass requires cookie auth"}, nil
 		}
 		headers["Authorization"] = bearerAuthorizationValue(authValue)
@@ -1581,6 +1648,7 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 	}
 
 	authUpdates := map[string]string(nil)
+	refreshAttempted := false
 	withAuthUpdates := func(result providerResult) providerResult {
 		if len(authUpdates) > 0 {
 			result.AuthUpdates = authUpdates
@@ -1589,18 +1657,16 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 	}
 	if authType == AuthTypeAccessToken &&
 		strings.TrimSpace(refreshToken) != "" &&
-		sub2APIAccessTokenNeedsRefresh(authValue, time.Now()) {
-		refreshed, refreshErr := p.refreshTokens(ctx, client, site, authValue, refreshToken, useStealth)
+		sub2APIAccessTokenNeedsRefreshAt(authValue, tokenExpiresAt, time.Now()) {
+		refreshed, refreshErr := p.refreshTokens(ctx, client, site, authValue, refreshToken, useStealth, cookieSession)
 		if refreshErr != nil {
 			logrus.WithError(refreshErr).Warn("Sub2API token proactive refresh failed")
 		} else {
+			refreshAttempted = true
 			authValue = refreshed.AccessToken
 			refreshToken = refreshed.RefreshToken
 			headers["Authorization"] = bearerAuthorizationValue(authValue)
-			authUpdates = map[string]string{
-				AuthTypeAccessToken:   refreshed.AccessToken,
-				authFieldRefreshToken: refreshed.RefreshToken,
-			}
+			authUpdates = sub2APIAuthUpdates(refreshed)
 		}
 	}
 
@@ -1612,8 +1678,9 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 		if missingEndpoint {
 			continue
 		}
-		if authType == AuthTypeAccessToken && statusCode == http.StatusUnauthorized && strings.TrimSpace(refreshToken) != "" {
-			refreshed, refreshErr := p.refreshTokens(ctx, client, site, authValue, refreshToken, useStealth)
+		if authType == AuthTypeAccessToken && statusCode == http.StatusUnauthorized && !refreshAttempted && strings.TrimSpace(refreshToken) != "" {
+			refreshAttempted = true
+			refreshed, refreshErr := p.refreshTokens(ctx, client, site, authValue, refreshToken, useStealth, cookieSession)
 			if refreshErr != nil {
 				logrus.WithError(refreshErr).WithField("endpoint", pathForLog(apiURL)).Warn("Sub2API token refresh failed")
 				result.Message = sub2APIRefreshFailureMessage(result.Message, refreshErr)
@@ -1622,10 +1689,7 @@ func (p sub2APIProvider) tryCheckInWithAuthType(
 			authValue = refreshed.AccessToken
 			refreshToken = refreshed.RefreshToken
 			headers["Authorization"] = bearerAuthorizationValue(refreshed.AccessToken)
-			authUpdates = map[string]string{
-				AuthTypeAccessToken:   refreshed.AccessToken,
-				authFieldRefreshToken: refreshed.RefreshToken,
-			}
+			authUpdates = sub2APIAuthUpdates(refreshed)
 			retryResult, _, _, retryErr := p.requestCheckIn(ctx, client, apiURL, headers, authType, useStealth)
 			if retryErr != nil {
 				return withAuthUpdates(retryResult), retryErr
@@ -1709,8 +1773,9 @@ func (p sub2APIProvider) requestCheckIn(
 }
 
 type sub2APIRefreshResult struct {
-	AccessToken  string
-	RefreshToken string
+	AccessToken    string
+	RefreshToken   string
+	TokenExpiresAt time.Time
 }
 
 func (p sub2APIProvider) refreshTokens(
@@ -1720,11 +1785,15 @@ func (p sub2APIProvider) refreshTokens(
 	accessToken string,
 	refreshToken string,
 	useStealth bool,
+	cookieSessions ...string,
 ) (sub2APIRefreshResult, error) {
 	endpoint := buildCheckinURL(site.BaseURL, "/api/v1/auth/refresh", "/api/v1/auth/refresh")
 	headers := map[string]string{}
 	if strings.TrimSpace(accessToken) != "" {
 		headers["Authorization"] = bearerAuthorizationValue(accessToken)
+	}
+	if len(cookieSessions) > 0 && strings.TrimSpace(cookieSessions[0]) != "" {
+		headers["Cookie"] = strings.TrimSpace(cookieSessions[0])
 	}
 	body := map[string]any{authFieldRefreshToken: refreshToken}
 
@@ -1745,26 +1814,33 @@ func (p sub2APIProvider) refreshTokens(
 	}
 
 	var resp struct {
-		Code int    `json:"code"`
+		Code *int   `json:"code"`
 		Msg  string `json:"message"`
 		Data struct {
 			AccessToken  string `json:"access_token"`
 			RefreshToken string `json:"refresh_token"`
+			ExpiresIn    int64  `json:"expires_in"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return sub2APIRefreshResult{}, err
 	}
-	if resp.Code != 0 || strings.TrimSpace(resp.Data.AccessToken) == "" || strings.TrimSpace(resp.Data.RefreshToken) == "" {
-		if resp.Msg != "" {
+	if resp.Code == nil || *resp.Code != 0 ||
+		strings.TrimSpace(resp.Data.AccessToken) == "" ||
+		strings.TrimSpace(resp.Data.RefreshToken) == "" || resp.Data.ExpiresIn <= 0 {
+		if resp.Code != nil && *resp.Code != 0 && resp.Msg != "" {
 			return sub2APIRefreshResult{}, errors.New("upstream rejected token refresh")
 		}
 		return sub2APIRefreshResult{}, errors.New("invalid refresh response")
 	}
-	return sub2APIRefreshResult{
+	result := sub2APIRefreshResult{
 		AccessToken:  strings.TrimSpace(resp.Data.AccessToken),
 		RefreshToken: strings.TrimSpace(resp.Data.RefreshToken),
-	}, nil
+	}
+	if resp.Data.ExpiresIn > 0 {
+		result.TokenExpiresAt = time.Now().UTC().Add(time.Duration(resp.Data.ExpiresIn) * time.Second)
+	}
+	return result, nil
 }
 
 func sub2APIAccessTokenNeedsRefresh(token string, now time.Time) bool {
@@ -1783,7 +1859,14 @@ func sub2APIAccessTokenNeedsRefresh(token string, now time.Time) bool {
 		return false
 	}
 	expiresAt := time.Unix(claims.Exp, 0)
-	return !expiresAt.After(now.Add(2 * time.Minute))
+	return !expiresAt.After(now.Add(sub2APITokenRefreshLeadTime))
+}
+
+func sub2APIAccessTokenNeedsRefreshAt(token, storedExpiresAt string, now time.Time) bool {
+	if expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(storedExpiresAt)); err == nil {
+		return !expiresAt.After(now.Add(sub2APITokenRefreshLeadTime))
+	}
+	return sub2APIAccessTokenNeedsRefresh(token, now)
 }
 
 type genericCheckInResponse struct {
@@ -1821,6 +1904,8 @@ func buildSub2APICheckinURLs(site ManagedSite) []string {
 	if strings.TrimSpace(site.CustomCheckInURL) != "" {
 		add(site.CustomCheckInURL)
 	}
+	// Upstream Sub2API has no built-in check-in. These paths are compatibility
+	// probes for forks; an explicitly configured endpoint always takes priority.
 	add("/api/v1/user/check-in")
 	add("/api/v1/check-in")
 	return urls
@@ -1859,9 +1944,14 @@ func (p wongProvider) CheckIn(ctx context.Context, client *http.Client, site Man
 
 	// Try each auth type in order: access_token first, then cookie
 	authTypesToTry := []string{AuthTypeAccessToken, AuthTypeCookie}
+	useStealth := shouldUseStealthRequest(site)
+	cookieSession := ""
+	if authConfig.HasAuthType(AuthTypeCookie) {
+		cookieSession = authConfig.GetAuthValue(AuthTypeCookie)
+	}
 
 	return tryMultiAuth(authConfig, authTypesToTry, func(authType, authValue string) (providerResult, error) {
-		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue)
+		return p.tryCheckInWithAuthType(ctx, client, site, authType, authValue, cookieSession, useStealth)
 	})
 }
 
@@ -1871,6 +1961,8 @@ func (p wongProvider) tryCheckInWithAuthType(
 	site ManagedSite,
 	authType string,
 	authValue string,
+	cookieSession string,
+	useStealth bool,
 ) (providerResult, error) {
 	headers := buildUserHeaders(site.UserID)
 	if headers == nil {
@@ -1880,15 +1972,40 @@ func (p wongProvider) tryCheckInWithAuthType(
 	// Set auth header based on auth type
 	switch authType {
 	case AuthTypeAccessToken:
+		if useStealth && strings.TrimSpace(cookieSession) == "" {
+			return providerResult{Status: CheckinResultFailed, Message: "stealth bypass requires cookie auth"}, nil
+		}
 		headers["Authorization"] = bearerAuthorizationValue(authValue)
+		if cookieSession != "" {
+			headers["Cookie"] = cookieSession
+		}
 	case AuthTypeCookie:
+		if useStealth {
+			missingCookies := validateCFCookies(authValue)
+			if len(missingCookies) > 0 {
+				return providerResult{
+					Status:  CheckinResultFailed,
+					Message: fmt.Sprintf("missing cf cookies, need one of: %s", strings.Join(missingCookies, ", ")),
+				}, nil
+			}
+		}
 		headers["Cookie"] = authValue
 	default:
 		return providerResult{Status: CheckinResultSkipped, Message: "unsupported auth type"}, nil
 	}
 
 	apiURL := buildCheckinURL(site.BaseURL, site.CustomCheckInURL, "/api/user/checkin")
-	data, statusCode, err := doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+	var data []byte
+	var statusCode int
+	var err error
+	if useStealth {
+		data, statusCode, err = doStealthJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+	} else {
+		data, statusCode, err = doJSONRequest(ctx, client, http.MethodPost, apiURL, headers, map[string]any{})
+	}
+	if isBrowserChallengeResponse(statusCode, data) {
+		return providerResult{Status: CheckinResultFailed, Message: msgBrowserChallengeDetected}, nil
+	}
 
 	var resp struct {
 		Success bool   `json:"success"`
@@ -1993,6 +2110,9 @@ func (p anyrouterProvider) tryCheckInWithAuthType(
 	// Add required headers for anyrouter
 	headers["Cookie"] = authValue
 	headers["X-Requested-With"] = "XMLHttpRequest"
+	for name, value := range buildUserHeaders(site.UserID) {
+		headers[name] = value
+	}
 
 	// Extract base URL for Origin and Referer headers (important for CORS)
 	baseURL := extractBaseURL(site.BaseURL)
@@ -2146,7 +2266,7 @@ func (p newAPIProvider) tryCheckInWithAuthType(
 	switch authType {
 	case AuthTypeAccessToken:
 		// Stealth bypass requires cookie auth for CF cookies
-		if useStealth {
+		if useStealth && strings.TrimSpace(cookieSession) == "" {
 			return providerResult{Status: CheckinResultFailed, Message: "stealth bypass requires cookie auth"}, nil
 		}
 		headers["Authorization"] = bearerAuthorizationValue(authValue)

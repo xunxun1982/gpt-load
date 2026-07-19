@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,12 +23,43 @@ import (
 const (
 	// balanceRequestTimeout is the timeout for balance fetch requests
 	balanceRequestTimeout = 10 * time.Second
+	// balancePersistenceTimeout bounds best-effort writes after fetch cancellation.
+	balancePersistenceTimeout = 5 * time.Second
 )
 
 // BalanceInfo represents the balance information for a site
 type BalanceInfo struct {
 	SiteID  uint    `json:"site_id"`
 	Balance *string `json:"balance"` // nil means no authoritative refresh value; an empty string is authoritative
+
+	// sourceSnapshot identifies the site configuration used for the request.
+	// It is kept private so API responses stay unchanged while cache writes can
+	// reject responses belonging to a replaced account configuration.
+	sourceSnapshot    balanceSourceSnapshot
+	hasSourceSnapshot bool
+	sourceMultiplier  int64
+}
+
+type balanceSourceSnapshot struct {
+	baseURL      string
+	siteType     string
+	userID       string
+	authType     string
+	authValue    string
+	useProxy     bool
+	proxyURL     string
+	bypassMethod string
+}
+
+func (s *balanceSourceSnapshot) set(site ManagedSite) {
+	s.baseURL = site.BaseURL
+	s.siteType = site.SiteType
+	s.userID = site.UserID
+	s.authType = site.AuthType
+	s.authValue = site.AuthValue
+	s.useProxy = site.UseProxy
+	s.proxyURL = site.ProxyURL
+	s.bypassMethod = site.BypassMethod
 }
 
 // userSelfResponse represents the /api/user/self API response structure
@@ -43,15 +76,16 @@ type sub2APIProfileResponse struct {
 	Success *bool `json:"success"`
 	Code    *int  `json:"code"`
 	Data    struct {
-		Balance *float64 `json:"balance"`
+		Balance json.RawMessage `json:"balance"`
 	} `json:"data"`
-	Balance *float64 `json:"balance"`
+	Balance json.RawMessage `json:"balance"`
 }
 
 // BalanceService handles fetching balance information from managed sites
 type BalanceService struct {
 	db               *gorm.DB
 	encryptionSvc    encryption.Service
+	sub2APIAuth      *sub2APIAuthManager
 	client           *http.Client
 	stealthClientMgr *StealthClientManager
 	proxyClients     sync.Map // Cache for proxy-enabled HTTP clients
@@ -84,6 +118,7 @@ func NewBalanceService(db *gorm.DB, encryptionSvc encryption.Service) *BalanceSe
 	return &BalanceService{
 		db:               db,
 		encryptionSvc:    encryptionSvc,
+		sub2APIAuth:      newSub2APIAuthManager(db, encryptionSvc),
 		client:           &http.Client{Transport: transport, Timeout: balanceRequestTimeout},
 		stealthClientMgr: NewStealthClientManager(balanceRequestTimeout),
 		stopCh:           make(chan struct{}),
@@ -314,9 +349,9 @@ func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uin
 		}
 		balance := *info.Balance
 
-		// Update only balance fields to avoid touching other columns
-		updateResult := s.db.WithContext(ctx).Model(&ManagedSite{}).
-			Where("id = ?", siteID).
+		// Update only balance fields, and only if the response still belongs to
+		// the same request-affecting site configuration.
+		updateResult := s.balanceSourceQuery(ctx, siteID, info).
 			Updates(map[string]interface{}{
 				"last_balance":      balance,
 				"last_balance_date": today,
@@ -334,7 +369,21 @@ func (s *BalanceService) updateBalancesInDB(ctx context.Context, results map[uin
 			}
 			continue
 		}
-		updated = true
+		if updateResult.RowsAffected == 0 && info.hasSourceSnapshot {
+			matches, matchErr := s.balanceSourceStillMatches(ctx, siteID, info)
+			if matchErr != nil {
+				failedUpdates++
+				if firstUpdateErr == nil {
+					firstUpdateErr = fmt.Errorf("failed to verify balance source for site %d: %w", siteID, matchErr)
+				}
+				continue
+			}
+			if !matches {
+				info.Balance = nil
+				continue
+			}
+		}
+		updated = updated || updateResult.RowsAffected > 0
 	}
 
 	if updated {
@@ -353,8 +402,16 @@ func (s *BalanceService) FetchSiteBalance(ctx context.Context, site *ManagedSite
 	result := s.fetchSiteBalanceInternal(ctx, site)
 
 	if result.Balance != nil {
-		s.updateSiteBalance(ctx, site.ID, *result.Balance)
-		scaleManagedSiteBalanceInfo(result, site.BalanceMultiplier)
+		if !s.updateSiteBalance(ctx, result) {
+			// Do not expose a response that no longer belongs to the saved site.
+			result.Balance = nil
+		} else {
+			multiplier := result.sourceMultiplier
+			if multiplier < 1 {
+				multiplier = site.BalanceMultiplier
+			}
+			scaleManagedSiteBalanceInfo(result, multiplier)
+		}
 	}
 
 	return result
@@ -364,6 +421,9 @@ func (s *BalanceService) FetchSiteBalance(ctx context.Context, site *ManagedSite
 // Used internally by batch operations to avoid duplicate DB updates.
 func (s *BalanceService) fetchSiteBalanceInternal(ctx context.Context, site *ManagedSite) *BalanceInfo {
 	result := &BalanceInfo{SiteID: site.ID}
+	result.sourceSnapshot.set(*site)
+	result.hasSourceSnapshot = true
+	result.sourceMultiplier = site.BalanceMultiplier
 
 	// Check if site type supports balance fetching
 	if !s.supportsBalance(site.SiteType) {
@@ -372,6 +432,13 @@ func (s *BalanceService) fetchSiteBalanceInternal(ctx context.Context, site *Man
 
 	// Check if site has auth configured
 	if strings.TrimSpace(site.AuthValue) == "" {
+		return result
+	}
+	if site.SiteType == SiteTypeSub2API {
+		balance, effectiveSite := s.fetchSub2APIBalance(ctx, *site)
+		result.Balance = balance
+		result.sourceSnapshot.set(effectiveSite)
+		result.sourceMultiplier = effectiveSite.BalanceMultiplier
 		return result
 	}
 
@@ -400,20 +467,225 @@ func (s *BalanceService) fetchSiteBalanceInternal(ctx context.Context, site *Man
 	return result
 }
 
-// updateSiteBalance updates a single site's balance cache
-func (s *BalanceService) updateSiteBalance(ctx context.Context, siteID uint, balance string) {
-	today := GetBeijingCheckinDay()
-	if err := s.db.WithContext(ctx).Model(&ManagedSite{}).
-		Where("id = ?", siteID).
-		Updates(map[string]interface{}{
-			"last_balance":      balance,
-			"last_balance_date": today,
-		}).Error; err != nil {
-		logrus.WithError(err).WithField("site_id", siteID).
-			Debug("Failed to update site balance cache")
-		return
+func (s *BalanceService) fetchSub2APIBalance(ctx context.Context, snapshot ManagedSite) (*string, ManagedSite) {
+	unlock := s.sub2APIAuth.lockSite(snapshot.ID)
+	defer unlock()
+
+	state, err := s.sub2APIAuth.loadState(ctx, snapshot)
+	if err != nil {
+		logrus.WithError(err).WithField("site_id", snapshot.ID).
+			Debug("Failed to load Sub2API auth for balance fetch")
+		return nil, snapshot
 	}
-	s.invalidateBalanceConsumers()
+	if state.Site.SiteType != SiteTypeSub2API {
+		return nil, state.Site
+	}
+	if state.AccessToken == "" && state.RefreshToken == "" && strings.TrimSpace(state.Config.GetAuthValue(AuthTypeCookie)) == "" {
+		return nil, state.Site
+	}
+
+	client := s.getHTTPClient(ctx, &state.Site)
+	useStealth := shouldUseStealthRequest(state.Site)
+	if state.RefreshToken != "" && (state.AccessToken == "" || state.needsRefresh(time.Now())) {
+		if err := s.sub2APIAuth.refresh(ctx, &state, client, useStealth); err != nil {
+			logrus.WithError(err).WithField("site_id", state.Site.ID).
+				Warn("Sub2API token proactive balance refresh failed")
+		} else {
+			client = s.getHTTPClient(ctx, &state.Site)
+			useStealth = shouldUseStealthRequest(state.Site)
+		}
+	}
+
+	balance, endpoint, bareTokenUnauthorized := s.fetchSub2APIBalanceEndpoints(ctx, client, &state, useStealth)
+	if endpoint == "" || !bareTokenUnauthorized || state.RefreshAttempted || state.RefreshToken == "" {
+		return balance, state.Site
+	}
+	if err := s.sub2APIAuth.refresh(ctx, &state, client, useStealth); err != nil {
+		logrus.WithError(err).WithField("site_id", state.Site.ID).
+			Warn("Sub2API token reactive balance refresh failed")
+		return balance, state.Site
+	}
+	client = s.getHTTPClient(ctx, &state.Site)
+	useStealth = shouldUseStealthRequest(state.Site)
+
+	if refreshedBalance := s.fetchSub2APIBalanceWithAccessToken(ctx, client, &state, endpoint, useStealth); refreshedBalance != nil {
+		return refreshedBalance, state.Site
+	}
+	return balance, state.Site
+}
+
+func (s *BalanceService) fetchSub2APIBalanceEndpoints(
+	ctx context.Context,
+	client *http.Client,
+	state *sub2APIAuthState,
+	useStealth bool,
+) (*string, string, bool) {
+	// /api/v1/auth/me is the Sub2API standard. Keep the former profile path
+	// only as a missing-endpoint compatibility fallback for legacy deployments.
+	endpoints := []string{resolveSiteCapabilities(SiteTypeSub2API).BalanceEndpoint, "/api/v1/user/profile"}
+	for _, endpoint := range endpoints {
+		balance, missingEndpoint, bareTokenUnauthorized := s.fetchSub2APIBalanceEndpoint(ctx, client, state, endpoint, useStealth)
+		if missingEndpoint {
+			continue
+		}
+		return balance, endpoint, bareTokenUnauthorized
+	}
+	return nil, "", false
+}
+
+func (s *BalanceService) fetchSub2APIBalanceEndpoint(
+	ctx context.Context,
+	client *http.Client,
+	state *sub2APIAuthState,
+	endpoint string,
+	useStealth bool,
+) (*string, bool, bool) {
+	cookie := strings.TrimSpace(state.Config.GetAuthValue(AuthTypeCookie))
+	type authAttempt struct {
+		authType string
+		value    string
+		cookie   string
+	}
+	attempts := make([]authAttempt, 0, 3)
+	if state.AccessToken != "" {
+		if cookie != "" {
+			attempts = append(attempts, authAttempt{authType: AuthTypeAccessToken, value: state.AccessToken, cookie: cookie})
+		}
+		attempts = append(attempts, authAttempt{authType: AuthTypeAccessToken, value: state.AccessToken})
+	}
+	if cookie != "" {
+		attempts = append(attempts, authAttempt{authType: AuthTypeCookie, value: cookie})
+	}
+
+	bareTokenUnauthorized := false
+	challengeDetected := false
+	for _, attempt := range attempts {
+		if ctx.Err() != nil {
+			return nil, false, bareTokenUnauthorized
+		}
+		data, statusCode, err := s.requestSub2APIBalance(
+			ctx,
+			client,
+			state.Site,
+			endpoint,
+			buildBalanceHeaders(attempt.authType, attempt.value, "", attempt.cookie),
+			useStealth,
+		)
+		if isBrowserChallengeResponse(statusCode, data) {
+			logrus.WithField("site_id", state.Site.ID).
+				Debug("Sub2API balance request returned a browser challenge")
+			challengeDetected = true
+			continue
+		}
+		if sub2APIMissingEndpointStatus(statusCode) {
+			if challengeDetected {
+				return nil, false, bareTokenUnauthorized
+			}
+			return nil, true, bareTokenUnauthorized
+		}
+		if attempt.authType == AuthTypeAccessToken && attempt.cookie == "" && statusCode == http.StatusUnauthorized {
+			bareTokenUnauthorized = true
+		}
+		if err != nil {
+			logrus.WithError(err).WithField("site_id", state.Site.ID).
+				Debug("Failed to fetch Sub2API balance")
+			continue
+		}
+		if balance := s.parseSub2APIBalanceResponse(data); balance != nil {
+			return balance, false, bareTokenUnauthorized
+		}
+	}
+	return nil, false, bareTokenUnauthorized
+}
+
+func (s *BalanceService) fetchSub2APIBalanceWithAccessToken(
+	ctx context.Context,
+	client *http.Client,
+	state *sub2APIAuthState,
+	endpoint string,
+	useStealth bool,
+) *string {
+	balance, _, _ := s.fetchSub2APIBalanceEndpoint(ctx, client, state, endpoint, useStealth)
+	if balance == nil {
+		logrus.WithField("site_id", state.Site.ID).
+			Debug("Failed to retry Sub2API balance after token refresh")
+	}
+	return balance
+}
+
+func (s *BalanceService) requestSub2APIBalance(
+	ctx context.Context,
+	client *http.Client,
+	site ManagedSite,
+	endpoint string,
+	headers map[string]string,
+	useStealth bool,
+) ([]byte, int, error) {
+	apiURL := extractBaseURL(site.BaseURL) + endpoint
+	if useStealth {
+		return doStealthJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+	}
+	return doJSONRequest(ctx, client, http.MethodGet, apiURL, headers, nil)
+}
+
+func (s *BalanceService) balanceSourceQuery(ctx context.Context, siteID uint, info *BalanceInfo) *gorm.DB {
+	query := s.db.WithContext(ctx).Model(&ManagedSite{}).Where("id = ?", siteID)
+	if info == nil || !info.hasSourceSnapshot {
+		return query
+	}
+	snapshot := info.sourceSnapshot
+	return query.Where(
+		"base_url = ? AND site_type = ? AND user_id = ? AND auth_type = ? AND auth_value = ? AND use_proxy = ? AND proxy_url = ? AND bypass_method = ?",
+		snapshot.baseURL,
+		snapshot.siteType,
+		snapshot.userID,
+		snapshot.authType,
+		snapshot.authValue,
+		snapshot.useProxy,
+		snapshot.proxyURL,
+		snapshot.bypassMethod,
+	)
+}
+
+func (s *BalanceService) balanceSourceStillMatches(ctx context.Context, siteID uint, info *BalanceInfo) (bool, error) {
+	var count int64
+	if err := s.balanceSourceQuery(ctx, siteID, info).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// updateSiteBalance updates a single site's balance cache if its request source is still current.
+func (s *BalanceService) updateSiteBalance(ctx context.Context, info *BalanceInfo) bool {
+	if info == nil || info.Balance == nil {
+		return false
+	}
+	today := GetBeijingCheckinDay()
+	result := s.balanceSourceQuery(ctx, info.SiteID, info).
+		Updates(map[string]interface{}{
+			"last_balance":      *info.Balance,
+			"last_balance_date": today,
+		})
+	if result.Error != nil {
+		logrus.WithError(result.Error).WithField("site_id", info.SiteID).
+			Debug("Failed to update site balance cache")
+		return false
+	}
+	if result.RowsAffected == 0 && info.hasSourceSnapshot {
+		matches, err := s.balanceSourceStillMatches(ctx, info.SiteID, info)
+		if err != nil {
+			logrus.WithError(err).WithField("site_id", info.SiteID).
+				Debug("Failed to verify site balance source")
+			return false
+		}
+		if !matches {
+			return false
+		}
+	}
+	if result.RowsAffected > 0 {
+		s.invalidateBalanceConsumers()
+	}
+	return true
 }
 
 // supportsBalance checks if a site type supports balance fetching
@@ -556,6 +828,9 @@ func (s *BalanceService) parseSub2APIBalanceResponse(data []byte) *string {
 		return nil
 	}
 
+	if resp.Success == nil && resp.Code == nil {
+		return nil
+	}
 	if resp.Success != nil && !*resp.Success {
 		return nil
 	}
@@ -563,16 +838,33 @@ func (s *BalanceService) parseSub2APIBalanceResponse(data []byte) *string {
 		return nil
 	}
 
-	balance := resp.Data.Balance
-	if balance == nil {
-		balance = resp.Balance
+	balance, ok := parseSub2APIBalanceValue(resp.Data.Balance)
+	if !ok {
+		balance, ok = parseSub2APIBalanceValue(resp.Balance)
 	}
-	if balance == nil {
+	if !ok {
 		return nil
 	}
 
-	balanceStr := fmt.Sprintf("$%.2f", *balance)
+	balanceStr := fmt.Sprintf("$%.2f", balance)
 	return &balanceStr
+}
+
+func parseSub2APIBalanceValue(raw json.RawMessage) (float64, bool) {
+	var number *float64
+	if err := json.Unmarshal(raw, &number); err == nil && number != nil && !math.IsNaN(*number) && !math.IsInf(*number, 0) {
+		return *number, true
+	}
+
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return 0, false
+	}
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, false
+	}
+	return parsed, true
 }
 
 // getHTTPClient returns appropriate HTTP client based on site settings.
@@ -719,10 +1011,15 @@ func (s *BalanceService) RefreshAllBalances(ctx context.Context) (map[uint]*Bala
 	results := s.FetchAllBalances(ctx, sites)
 	// Keep database writes raw; every return path exposes the same scaled response contract.
 	defer scaleManagedSiteBalanceResults(results, sites)
-	if err := ctx.Err(); err != nil {
-		return results, err
+	persistCtx := ctx
+	var releasePersistCtx func()
+	if ctx.Err() != nil {
+		// Preserve balances that completed before the fetch deadline, while
+		// keeping the post-timeout database work strictly bounded.
+		persistCtx, releasePersistCtx = context.WithTimeout(context.WithoutCancel(ctx), balancePersistenceTimeout)
+		defer releasePersistCtx()
 	}
-	updateErr := s.updateBalancesInDB(ctx, results)
+	updateErr := s.updateBalancesInDB(persistCtx, results)
 	if err := ctx.Err(); err != nil {
 		// Cancellation remains the primary caller contract even when a persistence attempt also failed.
 		return results, err
