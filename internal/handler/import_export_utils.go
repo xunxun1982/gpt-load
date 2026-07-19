@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"strings"
 
 	"gpt-load/internal/models"
@@ -15,7 +16,10 @@ import (
 	"gorm.io/datatypes"
 )
 
-var errPlainExportKeyDecrypt = errors.New("failed to decrypt key for plain export")
+var (
+	errPlainExportKeyDecrypt            = errors.New("failed to decrypt key for plain export")
+	errEncryptedExportProxySanitization = errors.New("failed to sanitize proxy configuration for encrypted export")
+)
 
 func exportKeyValue(value, exportMode string, decrypt func(string) (string, error)) (string, error) {
 	if exportMode != "plain" {
@@ -30,6 +34,89 @@ func exportKeyValue(value, exportMode string, decrypt func(string) (string, erro
 		return "", errPlainExportKeyDecrypt
 	}
 	return decrypted, nil
+}
+
+func sanitizeSystemSettingsForExport(settings map[string]string, plainMode bool) map[string]string {
+	if plainMode || settings == nil {
+		return settings
+	}
+	containsProxyURL := false
+	for key := range settings {
+		if isProxyURLKey(key) {
+			containsProxyURL = true
+			break
+		}
+	}
+	if !containsProxyURL {
+		return settings
+	}
+	sanitized := maps.Clone(settings)
+	for key := range sanitized {
+		if isProxyURLKey(key) {
+			sanitized[key] = ""
+		}
+	}
+	return sanitized
+}
+
+func sanitizeGroupProxyFieldsForExport(group *GroupExportInfo, plainMode bool) error {
+	if group == nil || plainMode {
+		return nil
+	}
+	group.Config = sanitizeGroupConfigForExport(group.Config, false)
+	if len(group.Upstreams) == 0 {
+		return nil
+	}
+	var upstreams []map[string]json.RawMessage
+	if err := json.Unmarshal(group.Upstreams, &upstreams); err != nil {
+		// Fail closed instead of returning malformed JSON that may still contain credentials.
+		return errEncryptedExportProxySanitization
+	}
+	changed := false
+	for i := range upstreams {
+		for key := range upstreams[i] {
+			if isProxyURLKey(key) {
+				upstreams[i][key] = json.RawMessage(`""`)
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return nil
+	}
+	encoded, err := json.Marshal(upstreams)
+	if err != nil {
+		return errEncryptedExportProxySanitization
+	}
+	group.Upstreams = encoded
+	return nil
+}
+
+func sanitizeGroupConfigForExport(config map[string]any, plainMode bool) map[string]any {
+	if plainMode || config == nil {
+		return config
+	}
+	containsProxyURL := false
+	for key := range config {
+		if isProxyURLKey(key) {
+			containsProxyURL = true
+			break
+		}
+	}
+	if !containsProxyURL {
+		return config
+	}
+	sanitized := maps.Clone(config)
+	for key := range sanitized {
+		if isProxyURLKey(key) {
+			sanitized[key] = ""
+		}
+	}
+	return sanitized
+}
+
+func isProxyURLKey(key string) bool {
+	return strings.EqualFold(key, "proxy_url")
 }
 
 // ConvertModelRedirectRulesToExport converts datatypes.JSONMap to map[string]string for export
@@ -135,7 +222,7 @@ func ConvertChildGroupsForExport(childGroups []services.ChildGroupExport, export
 			Sort:                 cg.Sort,
 			TestModel:            cg.TestModel,
 			ParamOverrides:       rawJSONMapForExport(cg.ParamOverrides, cg.Name, "ParamOverrides"),
-			Config:               rawJSONMapForExport(cg.Config, cg.Name, "Config"),
+			Config:               sanitizeGroupConfigForExport(rawJSONMapForExport(cg.Config, cg.Name, "Config"), exportMode == "plain"),
 			HeaderRules:          ParseHeaderRulesForExport(cg.HeaderRules, 0),
 			ModelMapping:         cg.ModelMapping,
 			ModelRedirectRules:   rawModelRedirectRulesForExport(cg.ModelRedirectRules, cg.Name),
@@ -146,7 +233,6 @@ func ConvertChildGroupsForExport(childGroups []services.ChildGroupExport, export
 			PathRedirects:        ParsePathRedirectsForExport(cg.PathRedirects),
 			Keys:                 make([]KeyExportInfo, 0, len(cg.Keys)),
 		}
-
 		for _, key := range cg.Keys {
 			kv, err := exportKeyValue(key.KeyValue, exportMode, decrypt)
 			if err != nil {

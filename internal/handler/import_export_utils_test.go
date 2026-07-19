@@ -314,6 +314,94 @@ func TestConvertChildGroupsForExportAndImport(t *testing.T) {
 	assert.Equal(t, "encrypted-plain-encrypted-key", imported[0].Keys[0].KeyValue)
 }
 
+func TestSanitizeProxyFieldsForEncryptedGroupExport(t *testing.T) {
+	t.Parallel()
+
+	const proxyURL = "http://user:pass@proxy.example.test:8080"
+	group := GroupExportInfo{
+		Upstreams: json.RawMessage(`[{"url":"https://api.example.com","weight":100,"proxy_url":"` + proxyURL + `"}]`),
+		Config: map[string]any{
+			"proxy_url": proxyURL,
+			"keep":      "value",
+		},
+	}
+
+	require.NoError(t, sanitizeGroupProxyFieldsForExport(&group, false))
+	assert.NotContains(t, string(group.Upstreams), proxyURL)
+	assert.JSONEq(t, `[{"url":"https://api.example.com","weight":100,"proxy_url":""}]`, string(group.Upstreams))
+	assert.Empty(t, group.Config["proxy_url"])
+	assert.Equal(t, "value", group.Config["keep"])
+
+	escaped := GroupExportInfo{
+		Upstreams: json.RawMessage(`[{"url":"https://api.example.com","weight":100,"\u0070roxy_url":"` + proxyURL + `"}]`),
+	}
+	require.NoError(t, sanitizeGroupProxyFieldsForExport(&escaped, false))
+	assert.NotContains(t, string(escaped.Upstreams), proxyURL)
+	caseVariant := GroupExportInfo{
+		Upstreams: json.RawMessage(`[{"url":"https://api.example.com","weight":100,"PROXY_URL":"` + proxyURL + `","Proxy_URL":"` + proxyURL + `"}]`),
+		Config:    map[string]any{"PROXY_URL": proxyURL},
+	}
+	require.NoError(t, sanitizeGroupProxyFieldsForExport(&caseVariant, false))
+	assert.NotContains(t, string(caseVariant.Upstreams), proxyURL)
+	assert.Empty(t, caseVariant.Config["PROXY_URL"])
+
+	plain := GroupExportInfo{
+		Upstreams: json.RawMessage(`[{"url":"https://api.example.com","weight":100,"proxy_url":"` + proxyURL + `"}]`),
+		Config:    map[string]any{"proxy_url": proxyURL},
+	}
+	require.NoError(t, sanitizeGroupProxyFieldsForExport(&plain, true))
+	assert.Contains(t, string(plain.Upstreams), proxyURL)
+	assert.Equal(t, proxyURL, plain.Config["proxy_url"])
+}
+
+func TestSanitizeProxyFieldsForEncryptedGroupExportFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	const proxyURL = "http://user:pass@proxy.example.test:8080"
+	group := GroupExportInfo{
+		Upstreams: json.RawMessage(`[{"proxy_url":"` + proxyURL + `"`),
+	}
+
+	err := sanitizeGroupProxyFieldsForExport(&group, false)
+	require.ErrorIs(t, err, errEncryptedExportProxySanitization)
+	assert.NotContains(t, err.Error(), proxyURL)
+}
+
+func TestSanitizeSystemSettingsForEncryptedExport(t *testing.T) {
+	t.Parallel()
+
+	const proxyURL = "http://user:pass@proxy.example.test:8080"
+	settings := map[string]string{"PROXY_URL": proxyURL, "request_timeout": "60"}
+	sanitized := sanitizeSystemSettingsForExport(settings, false)
+	assert.Empty(t, sanitized["PROXY_URL"])
+	assert.Equal(t, "60", sanitized["request_timeout"])
+	assert.Equal(t, proxyURL, settings["PROXY_URL"])
+	assert.Equal(t, proxyURL, sanitizeSystemSettingsForExport(settings, true)["PROXY_URL"])
+}
+
+func TestConvertChildGroupsForExportOnlyIncludesProxyConfigInPlainMode(t *testing.T) {
+	t.Parallel()
+
+	const proxyURL = "http://user:pass@proxy.example.test:8080"
+	source := []services.ChildGroupExport{{
+		Name:   "child-group",
+		Config: json.RawMessage(`{"proxy_url":"` + proxyURL + `","keep":"value"}`),
+	}}
+
+	encrypted, err := ConvertChildGroupsForExport(source, "encrypted", nil)
+	require.NoError(t, err)
+	require.Len(t, encrypted, 1)
+	assert.Empty(t, encrypted[0].Config["proxy_url"])
+	assert.Equal(t, "value", encrypted[0].Config["keep"])
+
+	plain, err := ConvertChildGroupsForExport(source, "plain", func(value string) (string, error) {
+		return value, nil
+	})
+	require.NoError(t, err)
+	require.Len(t, plain, 1)
+	assert.Equal(t, proxyURL, plain[0].Config["proxy_url"])
+}
+
 func TestConvertChildGroupsForExportDoesNotReturnCiphertextOnDecryptFailure(t *testing.T) {
 	t.Parallel()
 

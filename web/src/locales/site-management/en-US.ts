@@ -41,7 +41,10 @@ export default {
   checkinPageUrlTooltip: "Full URL of the check-in page for quick access",
   customCheckinUrl: "Check-in API",
   customCheckinUrlPlaceholder: "/api/user/checkin",
+  sub2ApiCustomCheckinUrlPlaceholder: "/your/checkin/path",
   customCheckinUrlTooltip: "Custom check-in API path, leave empty for default",
+  sub2ApiCustomCheckinHint:
+    "Sub2API has no standard built-in check-in endpoint. Enter only a compatible path documented by this deployment; do not use the balance endpoint /api/v1/auth/me.",
   checkinAvailable: "Can Check-in",
   checkinAvailableTooltip: "Whether this site supports check-in (system or third-party)",
   checkinEnabled: "Check-in",
@@ -60,6 +63,14 @@ export default {
   bypassMethodNone: "None",
   bypassMethodStealth: "Stealth (TLS Fingerprint)",
   stealthBypassHint: "⚠️ Stealth bypass requires Cookie auth type",
+  bypassNoneHint:
+    "Uses standard API requests without browser emulation. Try Stealth mode only if the site returns 403 or requires browser verification.",
+  bypassStealthHint:
+    "Simulates Chrome TLS and request headers. Enable only when ordinary Cookie requests are rejected; it cannot create or renew WAF cookies.",
+  anyrouterStealthHint:
+    "Try this for AnyRouter 403 or browser challenges. A valid Cookie is still required and may need recapturing after the egress IP changes.",
+  sub2ApiStealthHint:
+    "Enable only when a WAF blocks standard requests. Access Token remains the identity and must be paired with a valid protection Cookie.",
   stealthCookieHint:
     "💡 Include browser WAF cookies (cf_clearance, acw_tc, cdn_sec_tc, acw_sc__v2, etc.) from browser",
   stealthRequiresCookieAuth: "Stealth bypass requires Cookie auth type",
@@ -77,14 +88,39 @@ export default {
   authTypeAccessToken: "Access Token",
   sub2ApiRefreshToken: "Refresh Token",
   sub2ApiRefreshTokenPlaceholder: "Enter refresh_token",
+  sub2ApiRefreshTokenHint:
+    "Read it beside auth_token. Automatic balance refresh renews two minutes early; compatible check-in requests reuse the rotated tokens.",
   authTypeCookie: "Cookie",
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
     "Capture Cookie from browser, including session/token fields. If site uses browser protection, also include WAF cookies such as cf_clearance and acw_tc.",
   sub2ApiAuthHint:
-    "For Sub2API, select Access Token. Fill Access Token with auth_token from Application/Local Storage for the current domain; fill Refresh Token with refresh_token from the same place. Filling both is recommended so expired tokens can be renewed automatically. Leave User ID empty.",
+    "For Sub2API, select Access Token and fill auth_token plus refresh_token from Application/Local Storage for automatic balance renewal. Upstream has no built-in check-in; use it only when the deployment exposes a compatible endpoint or a custom check-in URL is set. Leave User ID empty.",
   anyrouterAuthHint:
-    "For AnyRouter, select Cookie. After login, find the https://<AnyRouter domain>/api/user/sign_in request in Network and copy the full Cookie from Request Headers. Leave User ID empty.",
+    "For AnyRouter, select Cookie and copy the full Cookie from the browser Network /api/user/sign_in request. User ID is required when automation is enabled. WAF cookies may be bound to the browser fingerprint and egress IP; stealth mode cannot renew them, so copy them again after expiry.",
+  newApiCompatibleAuthHint:
+    "For New API compatible sites, prefer the login Access Token; Cookie is also supported. Some deployments also require User ID headers. These are login credentials, not a model API key.",
+  sub2ApiCapabilityHint:
+    "The standard balance endpoint is /api/v1/auth/me with automatic token renewal. Upstream has no built-in check-in; only compatible deployments or custom check-in endpoints can use it.",
+  anyrouterCapabilityHint:
+    "Supports Cookie-based automatic check-in and balance refresh; expired browser-protection cookies must be updated manually.",
+  newApiCapabilityHint:
+    "Supports automatic check-in and balance refresh. Use a login Access Token or Cookie, not a model API key.",
+  capabilitylessHint:
+    "This type has no built-in automatic check-in or balance retrieval and is stored as a site record only.",
+  sub2ApiUserIDHint: "Sub2API does not use this field; leave it empty.",
+  anyrouterUserIDHint:
+    "Required while the site is enabled. Read it from account details or the /api/user/self response.",
+  anyrouterUserIDRequired: "User ID is required for enabled AnyRouter automation",
+  anyrouterCookieRequired: "Cookie is required for enabled AnyRouter automation",
+  sub2ApiAccessTokenRequired:
+    "Access Token authentication is required for enabled Sub2API automation",
+  sub2ApiCredentialRequired:
+    "An Access Token or Refresh Token is required for enabled Sub2API automation",
+  sub2ApiCustomCheckinRequired:
+    "Sub2API has no built-in check-in. Configure a custom check-in endpoint first.",
+  genericUserIDHint:
+    "Required by some New API compatible sites. Read it from /api/user/self or the account page.",
   multiAuthHint:
     "Multiple auth types selected. Check-in will try Access Token first, then Cookie if it fails. Success with either counts as successful check-in.",
   hasAuth: "Auth Configured",
@@ -95,7 +131,6 @@ export default {
   siteTypeBrand: "Brand",
   siteTypeNewApi: "New API",
   siteTypeSub2Api: "Sub2API",
-  siteTypeVeloera: "Veloera",
   siteTypeOneHub: "One Hub",
   siteTypeDoneHub: "Done Hub",
   siteTypeWong: "Wong Gongyi",

@@ -58,6 +58,11 @@ func scaleManagedSiteBalanceInfo(info *BalanceInfo, multiplier int64) {
 
 func scaleManagedSiteBalanceResults(results map[uint]*BalanceInfo, sites []ManagedSite) {
 	for i := range sites {
-		scaleManagedSiteBalanceInfo(results[sites[i].ID], sites[i].BalanceMultiplier)
+		info := results[sites[i].ID]
+		multiplier := sites[i].BalanceMultiplier
+		if info != nil && info.sourceMultiplier >= 1 {
+			multiplier = info.sourceMultiplier
+		}
+		scaleManagedSiteBalanceInfo(info, multiplier)
 	}
 }

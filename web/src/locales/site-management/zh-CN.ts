@@ -41,7 +41,10 @@ export default {
   checkinPageUrlTooltip: "签到页面的完整URL，用于快速跳转",
   customCheckinUrl: "签到接口",
   customCheckinUrlPlaceholder: "/api/user/checkin",
+  sub2ApiCustomCheckinUrlPlaceholder: "/your/checkin/path",
   customCheckinUrlTooltip: "自定义签到API路径，留空使用默认路径",
+  sub2ApiCustomCheckinHint:
+    "Sub2API 上游没有标准签到接口；仅填写站点明确提供的兼容接口路径，不要填写余额接口 /api/v1/auth/me。",
   checkinAvailable: "可签到",
   checkinAvailableTooltip: "标记此站点是否支持签到功能（系统内置或第三方）",
   checkinEnabled: "启用签到",
@@ -60,6 +63,13 @@ export default {
   bypassMethodNone: "无",
   bypassMethodStealth: "隐身模式 (TLS指纹)",
   stealthBypassHint: "⚠️ 隐身绕过需要使用 Cookie 认证方式",
+  bypassNoneHint: "默认使用普通 API 请求，不模拟浏览器；遇到 403 或浏览器验证时，再尝试隐身模式。",
+  bypassStealthHint:
+    "模拟 Chrome TLS 指纹和请求头，仅在站点拒绝普通 Cookie 请求时启用；不会生成或续期防护 Cookie。",
+  anyrouterStealthHint:
+    "AnyRouter 遇到 403 或浏览器验证时可尝试；必须同时提供有效 Cookie，且出口 IP 变化后可能需要重新获取。",
+  sub2ApiStealthHint:
+    "仅在 WAF 拦截标准请求时启用；Access Token 仍负责身份认证，并需同时填写有效防护 Cookie。",
   stealthCookieHint:
     "💡 请在 Cookie 中包含浏览器防护 Cookie（cf_clearance、acw_tc、cdn_sec_tc、acw_sc__v2 等）",
   stealthRequiresCookieAuth: "隐身绕过需要使用 Cookie 认证方式",
@@ -77,14 +87,32 @@ export default {
   authTypeAccessToken: "Access Token",
   sub2ApiRefreshToken: "Refresh Token",
   sub2ApiRefreshTokenPlaceholder: "输入 refresh_token",
+  sub2ApiRefreshTokenHint:
+    "与 auth_token 同处获取；自动余额会提前 2 分钟续期，兼容部署的签到请求复用刷新后的 Token。",
   authTypeCookie: "Cookie",
   authTypeCookiePlaceholder: "session=xxx; token=xxx; cf_clearance=xxx",
   authTypeCookieHint:
     "需要从浏览器抓取 Cookie，包含 session/token 等字段。如站点启用了浏览器防护，还需包含 cf_clearance、acw_tc 等防护 Cookie。",
   sub2ApiAuthHint:
-    "Sub2API 选择 Access Token；Access Token 填 Application/Local Storage 当前域名里的 auth_token；Refresh Token 填同处的 refresh_token，推荐两者一起填写以便过期后自动续期；用户ID留空。",
+    "Sub2API 选择 Access Token；分别填写 Application/Local Storage 当前域名里的 auth_token 与 refresh_token，以便自动余额续期。上游无内置签到，需确认部署提供兼容接口或填写自定义签到地址；用户ID留空。",
   anyrouterAuthHint:
-    "AnyRouter 选择 Cookie；登录站点后在 Network 中找 https://<AnyRouter域名>/api/user/sign_in 请求，复制 Request Headers 里的完整 Cookie，用户ID留空。",
+    "AnyRouter 选择 Cookie；从浏览器 Network 的 /api/user/sign_in 请求复制完整 Cookie；启用自动功能时必须填写用户ID。防护 Cookie 可能绑定浏览器指纹与出口 IP，隐身模式不能自动续期，失效后需重新复制。",
+  newApiCompatibleAuthHint:
+    "New API 兼容站点优先填写登录 Access Token，也可使用 Cookie；部分部署还需要用户ID请求头。这里使用的是登录凭据，不是模型 API Key。",
+  sub2ApiCapabilityHint:
+    "标准余额接口为 /api/v1/auth/me，并支持 Token 自动续期；上游无内置签到，仅兼容部署或自定义签到接口可用。",
+  anyrouterCapabilityHint: "支持 Cookie 自动签到和余额；浏览器防护 Cookie 失效后需手动更新。",
+  newApiCapabilityHint:
+    "支持自动签到和余额；使用登录 Access Token 或 Cookie，不要填写模型 API Key。",
+  capabilitylessHint: "该类型没有内置自动签到或余额获取，仅作为站点记录使用。",
+  sub2ApiUserIDHint: "Sub2API 不使用此字段，留空。",
+  anyrouterUserIDHint: "启用站点后必填；从账号信息或 /api/user/self 响应中获取。",
+  anyrouterUserIDRequired: "AnyRouter 启用自动功能时必须填写用户 ID",
+  anyrouterCookieRequired: "AnyRouter 启用自动功能时必须填写 Cookie",
+  sub2ApiAccessTokenRequired: "Sub2API 启用自动功能时必须选择 Access Token 认证",
+  sub2ApiCredentialRequired: "Sub2API 启用自动功能时必须填写 Access Token 或 Refresh Token",
+  sub2ApiCustomCheckinRequired: "Sub2API 上游没有内置签到，请先填写自定义签到接口",
+  genericUserIDHint: "部分 New API 兼容站点需要；从 /api/user/self 返回或页面账号信息中获取。",
   multiAuthHint:
     "已选择多个认证方式。签到时将先尝试 Access Token，失败后再尝试 Cookie，任一成功即算签到成功。",
   hasAuth: "已配置认证",
@@ -95,7 +123,6 @@ export default {
   siteTypeBrand: "品牌",
   siteTypeNewApi: "New API",
   siteTypeSub2Api: "Sub2API",
-  siteTypeVeloera: "Veloera",
   siteTypeOneHub: "One Hub",
   siteTypeDoneHub: "Done Hub",
   siteTypeWong: "Wong公益站",

@@ -49,7 +49,7 @@ func (a registeredSiteAdapter) CheckIn(ctx context.Context, client *http.Client,
 
 func resolveManagedSiteAdapter(siteType string) managedSiteAdapter {
 	switch siteType {
-	case SiteTypeNewAPI, SiteTypeVeloera, SiteTypeOneHub, SiteTypeDoneHub:
+	case SiteTypeNewAPI, SiteTypeOneHub, SiteTypeDoneHub:
 		return registeredSiteAdapter{
 			siteType: siteType,
 			capabilities: SiteCapabilities{
@@ -66,7 +66,7 @@ func resolveManagedSiteAdapter(siteType string) managedSiteAdapter {
 			capabilities: SiteCapabilities{
 				SupportsCheckin: true,
 				SupportsBalance: true,
-				BalanceEndpoint: "/api/v1/user/profile",
+				BalanceEndpoint: "/api/v1/auth/me",
 				balanceParser:   balanceParserSub2API,
 			},
 			provider: sub2APIProvider{},
@@ -87,6 +87,9 @@ func resolveManagedSiteAdapter(siteType string) managedSiteAdapter {
 			siteType: siteType,
 			capabilities: SiteCapabilities{
 				SupportsCheckin: true,
+				SupportsBalance: true,
+				BalanceEndpoint: "/api/user/self",
+				balanceParser:   balanceParserNewAPI,
 			},
 			provider: anyrouterProvider{},
 		}
@@ -108,7 +111,7 @@ func resolveSiteCapabilities(siteType string) SiteCapabilities {
 
 func isKnownCapabilitylessSiteType(siteType string) bool {
 	switch siteType {
-	case "", SiteTypeUnknown, SiteTypeBrand:
+	case "", SiteTypeUnknown, SiteTypeBrand, "Veloera":
 		return true
 	default:
 		return false

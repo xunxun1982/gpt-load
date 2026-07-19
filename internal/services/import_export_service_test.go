@@ -31,6 +31,17 @@ type managedSiteSettingScheduleTimesTestModel struct {
 	ScheduleTimes string `gorm:"column:schedule_times;not null;default:'09:00'"`
 }
 
+type managedSiteNetworkSettingsTestModel struct {
+	ID           uint   `gorm:"primaryKey"`
+	UseProxy     bool   `gorm:"column:use_proxy"`
+	ProxyURL     string `gorm:"column:proxy_url"`
+	BypassMethod string `gorm:"column:bypass_method"`
+}
+
+func (managedSiteNetworkSettingsTestModel) TableName() string {
+	return "managed_sites"
+}
+
 func (managedSiteSettingScheduleTimesTestModel) TableName() string {
 	return "managed_site_settings"
 }
@@ -85,6 +96,56 @@ func TestExportImportSystemRestoresAutoBalanceConfig(t *testing.T) {
 	var restoredSchedule managedSiteSettingScheduleTimesTestModel
 	require.NoError(t, targetDB.First(&restoredSchedule, 1).Error)
 	assert.Equal(t, "08:00,12:30", restoredSchedule.ScheduleTimes)
+}
+
+func TestExportImportSystemRestoresManagedSiteNetworkSettings(t *testing.T) {
+	t.Parallel()
+
+	sourceDB := setupTestDB(t)
+	require.NoError(t, sourceDB.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+	))
+	require.NoError(t, sourceDB.AutoMigrate(&managedSiteNetworkSettingsTestModel{}))
+	sourceSite := managedSiteModel{
+		Name:     "WAF protected site",
+		BaseURL:  "https://example.com",
+		SiteType: "anyrouter",
+		AuthType: "none",
+		Enabled:  false,
+	}
+	require.NoError(t, sourceDB.Create(&sourceSite).Error)
+	require.NoError(t, sourceDB.Model(&managedSiteNetworkSettingsTestModel{}).
+		Where("id = ?", sourceSite.ID).
+		Updates(map[string]any{
+			"use_proxy":     true,
+			"proxy_url":     "proxy-pool:7",
+			"bypass_method": "stealth",
+		}).Error)
+
+	exported, err := NewImportExportService(sourceDB, nil, nil).ExportSystem()
+	require.NoError(t, err)
+	require.NotNil(t, exported.ManagedSites)
+	require.Len(t, exported.ManagedSites.Sites, 1)
+	siteJSON, err := json.Marshal(exported.ManagedSites.Sites[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(siteJSON), `"use_proxy":true`)
+	assert.Contains(t, string(siteJSON), `"proxy_url":"proxy-pool:7"`)
+	assert.Contains(t, string(siteJSON), `"bypass_method":"stealth"`)
+
+	targetDB := setupTestDB(t)
+	require.NoError(t, targetDB.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+	))
+	require.NoError(t, targetDB.AutoMigrate(&managedSiteNetworkSettingsTestModel{}))
+	require.NoError(t, NewImportExportService(targetDB, nil, nil).ImportSystem(targetDB, exported))
+
+	var restored managedSiteNetworkSettingsTestModel
+	require.NoError(t, targetDB.First(&restored).Error)
+	assert.True(t, restored.UseProxy)
+	assert.Equal(t, "proxy-pool:7", restored.ProxyURL)
+	assert.Equal(t, "stealth", restored.BypassMethod)
 }
 
 func TestExportSystemNormalizesNoAuthAndOmitsCredential(t *testing.T) {
@@ -229,6 +290,36 @@ func TestImportSystemSkipsNegativeManagedSiteBalanceMultiplier(t *testing.T) {
 				SiteType:          "new-api",
 				AuthType:          "none",
 				BalanceMultiplier: -1,
+			}}},
+		})
+	})
+	require.NoError(t, err)
+
+	var count int64
+	require.NoError(t, db.Model(&managedSiteModel{}).Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestImportSystemSkipsManagedSiteWithInvalidBypassMethod(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&models.SystemSetting{},
+		&managedSiteModel{},
+		&managedSiteSettingModel{},
+	))
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		return NewImportExportService(db, nil, nil).ImportSystem(tx, &SystemExportData{
+			ManagedSites: &ManagedSitesExportData{Sites: []ManagedSiteExportInfo{{
+				Name:         "Invalid bypass",
+				BaseURL:      "https://example.com",
+				SiteType:     "new-api",
+				AuthType:     "none",
+				BypassMethod: "unsupported",
+				UseProxy:     true,
+				ProxyURL:     "proxy-pool:7",
 			}}},
 		})
 	})

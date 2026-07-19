@@ -5,7 +5,6 @@ import "time"
 const (
 	SiteTypeNewAPI     = "new-api"
 	SiteTypeSub2API    = "sub2api"
-	SiteTypeVeloera    = "Veloera" // Legacy value; existing records use NewAPI-compatible check-in.
 	SiteTypeWongGongyi = "wong-gongyi"
 	SiteTypeOneHub     = "one-hub"
 	SiteTypeDoneHub    = "done-hub"

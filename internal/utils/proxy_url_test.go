@@ -162,3 +162,15 @@ func TestNormalizeProxyURLParseErrorDoesNotLeakCredentials(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyURLForExportOnlyPreservesPlainMode(t *testing.T) {
+	t.Parallel()
+
+	const proxyURL = "http://user:pass@proxy.example.test:8080"
+	if got := ProxyURLForExport(proxyURL, true); got != proxyURL {
+		t.Fatalf("plain export proxy URL = %q, want %q", got, proxyURL)
+	}
+	if got := ProxyURLForExport(proxyURL, false); got != "" {
+		t.Fatalf("encrypted export proxy URL = %q, want empty", got)
+	}
+}

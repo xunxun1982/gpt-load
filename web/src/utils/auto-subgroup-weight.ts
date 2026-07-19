@@ -16,7 +16,8 @@ export interface AutoSubGroupWeightResult {
 
 export function calculateAutoSubGroupWeights(
   candidates: AutoSubGroupWeightCandidate[],
-  maxWeight: number
+  maxWeight: number,
+  minWeight = 1
 ): AutoSubGroupWeightResult {
   const usable = candidates.filter(
     candidate =>
@@ -32,14 +33,14 @@ export function calculateAutoSubGroupWeights(
   const updates = usable.map(candidate => {
     const balance = candidate.balance ?? 0;
     if (balance === 0 || highestBalance === 0) {
-      return { subGroupId: candidate.subGroupId, weight: 1 };
+      return { subGroupId: candidate.subGroupId, weight: minWeight };
     }
 
     // The backend distinguishes skipped/already-checked from explicit failure and no history.
     const checkinFactor =
       candidate.checkinStatus === "failed" || !candidate.checkinStatus ? 0.7 : 1;
     const weight = Math.max(
-      1,
+      minWeight,
       Math.min(maxWeight, Math.round((maxWeight * balance * checkinFactor) / highestBalance))
     );
     return { subGroupId: candidate.subGroupId, weight };

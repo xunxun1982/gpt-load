@@ -179,8 +179,6 @@ const logsLoading = ref(false);
 const logs = ref<CheckinLogDTO[]>([]);
 const logsSite = ref<ManagedSiteDTO | null>(null);
 
-const legacyVeloeraSiteType = "Veloera" as const;
-
 const baseSiteTypeOptions = computed<SelectOption[]>(() => [
   { label: t("siteManagement.siteTypeNewApi"), value: "new-api" },
   { label: t("siteManagement.siteTypeSub2Api"), value: "sub2api" },
@@ -192,25 +190,7 @@ const baseSiteTypeOptions = computed<SelectOption[]>(() => [
   { label: t("siteManagement.siteTypeOther"), value: "unknown" },
 ]);
 
-const legacyVeloeraOption = computed<SelectOption>(() => ({
-  label: t("siteManagement.siteTypeVeloera"),
-  value: legacyVeloeraSiteType,
-}));
-
-const siteTypeLabelOptions = computed<SelectOption[]>(() => [
-  ...baseSiteTypeOptions.value.slice(0, 2),
-  legacyVeloeraOption.value,
-  ...baseSiteTypeOptions.value.slice(2),
-]);
-
-const siteTypeOptions = computed<SelectOption[]>(() => {
-  if (siteForm.site_type !== legacyVeloeraSiteType) {
-    return baseSiteTypeOptions.value;
-  }
-
-  // Keep legacy Veloera editable without exposing it for new site creation.
-  return siteTypeLabelOptions.value;
-});
+const siteTypeOptions = baseSiteTypeOptions;
 
 const siteProxySelectOptions = computed<SelectOption[]>(() => {
   const options: SelectOption[] = [
@@ -225,10 +205,54 @@ const siteProxySelectOptions = computed<SelectOption[]>(() => {
 });
 
 // Auth type options for multi-select
-const authTypeOptions = computed(() => [
-  { label: t("siteManagement.authTypeAccessToken"), value: "access_token" },
-  { label: t("siteManagement.authTypeCookie"), value: "cookie" },
-]);
+const authTypeOptions = computed(() => {
+  const accessTokenOption = {
+    label: t("siteManagement.authTypeAccessToken"),
+    value: "access_token",
+  };
+  const cookieOption = { label: t("siteManagement.authTypeCookie"), value: "cookie" };
+  switch (siteForm.site_type) {
+    case "sub2api":
+      if (siteForm.bypass_method === "stealth" || siteForm.auth_type.includes("cookie")) {
+        return [accessTokenOption, cookieOption];
+      }
+      return [accessTokenOption];
+    case "anyrouter":
+      return [cookieOption];
+    default:
+      return [accessTokenOption, cookieOption];
+  }
+});
+
+const siteCapabilityHintKey = computed(() => {
+  switch (siteForm.site_type) {
+    case "sub2api":
+      return "siteManagement.sub2ApiCapabilityHint";
+    case "anyrouter":
+      return "siteManagement.anyrouterCapabilityHint";
+    case "brand":
+    case "unknown":
+    case "Veloera":
+      return "siteManagement.capabilitylessHint";
+    default:
+      return "siteManagement.newApiCapabilityHint";
+  }
+});
+
+const siteUserIDHintKey = computed(() => {
+  switch (siteForm.site_type) {
+    case "sub2api":
+      return "siteManagement.sub2ApiUserIDHint";
+    case "anyrouter":
+      return "siteManagement.anyrouterUserIDHint";
+    case "brand":
+    case "unknown":
+    case "Veloera":
+      return "";
+    default:
+      return "siteManagement.genericUserIDHint";
+  }
+});
 
 const siteSpecificAuthHintKey = computed(() => {
   switch (siteForm.site_type) {
@@ -236,15 +260,40 @@ const siteSpecificAuthHintKey = computed(() => {
       return "siteManagement.sub2ApiAuthHint";
     case "anyrouter":
       return "siteManagement.anyrouterAuthHint";
+    case "one-hub":
+    case "done-hub":
+    case "new-api":
+    case "wong-gongyi":
+      return "siteManagement.newApiCompatibleAuthHint";
     default:
       return "";
   }
 });
 
-const bypassMethodOptions = computed(() => [
-  { label: t("siteManagement.bypassMethodNone"), value: "" },
-  { label: t("siteManagement.bypassMethodStealth"), value: "stealth" },
-]);
+const bypassMethodOptions = computed(() => {
+  const noneOption = { label: t("siteManagement.bypassMethodNone"), value: "" };
+  if (
+    siteForm.site_type === "brand" ||
+    siteForm.site_type === "unknown" ||
+    siteForm.site_type === "Veloera"
+  ) {
+    return [noneOption];
+  }
+  return [noneOption, { label: t("siteManagement.bypassMethodStealth"), value: "stealth" }];
+});
+
+const bypassHintKey = computed(() => {
+  if (siteForm.bypass_method !== "stealth") {
+    return "siteManagement.bypassNoneHint";
+  }
+  if (siteForm.site_type === "anyrouter") {
+    return "siteManagement.anyrouterStealthHint";
+  }
+  if (siteForm.site_type === "sub2api") {
+    return "siteManagement.sub2ApiStealthHint";
+  }
+  return "siteManagement.bypassStealthHint";
+});
 
 // Filter options for enabled status (use string values for naive-ui select compatibility)
 const enabledFilterOptions = computed<SelectOption[]>(() => [
@@ -522,6 +571,21 @@ function updateSiteProxySelection(value: string | null) {
   siteForm.use_proxy = proxyURL.trim() !== "";
 }
 
+function updateSiteType(siteType: ManagedSiteType) {
+  siteForm.site_type = siteType;
+  if (siteType === "anyrouter") {
+    siteForm.auth_type = siteForm.auth_type.includes("cookie") ? ["cookie"] : [];
+    return;
+  }
+  if (siteType === "sub2api" && siteForm.bypass_method !== "stealth") {
+    siteForm.auth_type = siteForm.auth_type.filter(authType => authType === "access_token");
+    return;
+  }
+  if (siteType === "brand" || siteType === "unknown") {
+    siteForm.bypass_method = "";
+  }
+}
+
 // Known WAF/Cloudflare cookie names that indicate bypass capability.
 // IMPORTANT: This list is duplicated from backend (auto_checkin_service.go).
 // Keep both lists in sync when adding/removing cookie names.
@@ -583,6 +647,61 @@ async function submitSite() {
   const balanceMultiplier = siteForm.balance_multiplier ?? 1;
   if (!Number.isSafeInteger(balanceMultiplier) || balanceMultiplier < 1) {
     message.warning(t("siteManagement.balanceMultiplierInvalid"));
+    return;
+  }
+
+  if (
+    siteForm.site_type === "anyrouter" &&
+    (siteForm.auth_type.length !== 1 || siteForm.auth_type[0] !== "cookie")
+  ) {
+    message.error(t("siteManagement.backendMsg_anyrouterRequiresCookie"));
+    return;
+  }
+
+  if (siteForm.site_type === "anyrouter" && (siteForm.enabled || siteForm.checkin_enabled)) {
+    if (!siteForm.user_id.trim()) {
+      message.error(t("siteManagement.anyrouterUserIDRequired"));
+      return;
+    }
+    const previousAuthTypes = editingSite.value?.auth_type
+      ? editingSite.value.auth_type.split(",").map(value => value.trim())
+      : [];
+    const keepsExistingCookie =
+      !!editingSite.value && previousAuthTypes.includes("cookie") && !authValueInputs.cookie.trim();
+    if (!authValueInputs.cookie.trim() && !keepsExistingCookie) {
+      message.error(t("siteManagement.anyrouterCookieRequired"));
+      return;
+    }
+  }
+
+  if (siteForm.site_type === "sub2api" && (siteForm.enabled || siteForm.checkin_enabled)) {
+    if (!siteForm.auth_type.includes("access_token")) {
+      message.error(t("siteManagement.sub2ApiAccessTokenRequired"));
+      return;
+    }
+    const previousAuthTypes = editingSite.value?.auth_type
+      ? editingSite.value.auth_type.split(",").map(value => value.trim())
+      : [];
+    const keepsExistingToken =
+      !!editingSite.value &&
+      editingSite.value.has_auth &&
+      previousAuthTypes.includes("access_token");
+    if (
+      !authValueInputs.access_token.trim() &&
+      !authValueInputs.refresh_token.trim() &&
+      !keepsExistingToken
+    ) {
+      message.error(t("siteManagement.sub2ApiCredentialRequired"));
+      return;
+    }
+  }
+
+  if (
+    siteForm.site_type === "sub2api" &&
+    siteForm.checkin_enabled &&
+    !siteForm.custom_checkin_url.trim()
+  ) {
+    message.error(t("siteManagement.sub2ApiCustomCheckinRequired"));
     return;
   }
 
@@ -801,7 +920,7 @@ function statusTag(status: ManagedSiteDTO["last_checkin_status"]) {
 }
 
 function getSiteTypeLabel(type: string) {
-  const label = siteTypeLabelOptions.value.find(o => o.value === type)?.label;
+  const label = siteTypeOptions.value.find(o => o.value === type)?.label;
   return typeof label === "string" ? label : type;
 }
 
@@ -1557,7 +1676,9 @@ function getBalanceDisplay(site: ManagedSiteDTO): string {
 
 // Check if site type supports balance fetching
 function supportsBalance(siteType: string): boolean {
-  return ["new-api", "sub2api", "Veloera", "one-hub", "done-hub", "wong-gongyi"].includes(siteType);
+  return ["new-api", "sub2api", "one-hub", "done-hub", "wong-gongyi", "anyrouter"].includes(
+    siteType
+  );
 }
 
 // Delete all unbound sites with confirmation
@@ -2285,7 +2406,20 @@ watch(
                 />
               </n-form-item>
               <n-form-item :label="t('siteManagement.siteType')" class="form-item-half">
-                <n-select v-model:value="siteForm.site_type" :options="siteTypeOptions" />
+                <div class="field-stack">
+                  <n-select
+                    :value="siteForm.site_type"
+                    :options="siteTypeOptions"
+                    @update:value="updateSiteType"
+                  />
+                  <n-text
+                    v-if="siteCapabilityHintKey"
+                    depth="3"
+                    class="field-hint provider-field-hint"
+                  >
+                    {{ t(siteCapabilityHintKey) }}
+                  </n-text>
+                </div>
               </n-form-item>
             </div>
             <n-form-item :label="t('siteManagement.baseUrl')" required>
@@ -2342,11 +2476,23 @@ watch(
           <div class="form-section">
             <h4 class="section-title">{{ t("siteManagement.checkinSettings") }}</h4>
             <div class="form-row">
-              <n-form-item :label="t('siteManagement.userId')" class="form-item-half">
-                <n-input
-                  v-model:value="siteForm.user_id"
-                  :placeholder="t('siteManagement.userIdPlaceholder')"
-                />
+              <n-form-item
+                :label="t('siteManagement.userId')"
+                :required="
+                  siteForm.site_type === 'anyrouter' &&
+                  (siteForm.enabled || siteForm.checkin_enabled)
+                "
+                class="form-item-half"
+              >
+                <div class="field-stack">
+                  <n-input
+                    v-model:value="siteForm.user_id"
+                    :placeholder="t('siteManagement.userIdPlaceholder')"
+                  />
+                  <n-text v-if="siteUserIDHintKey" depth="3" class="field-hint provider-field-hint">
+                    {{ t(siteUserIDHintKey) }}
+                  </n-text>
+                </div>
               </n-form-item>
               <n-form-item :label="t('siteManagement.checkinPageUrl')" class="form-item-half">
                 <n-input
@@ -2355,11 +2501,27 @@ watch(
                 />
               </n-form-item>
             </div>
-            <n-form-item :label="t('siteManagement.customCheckinUrl')">
-              <n-input
-                v-model:value="siteForm.custom_checkin_url"
-                :placeholder="t('siteManagement.customCheckinUrlPlaceholder')"
-              />
+            <n-form-item
+              :label="t('siteManagement.customCheckinUrl')"
+              :required="siteForm.site_type === 'sub2api' && siteForm.checkin_enabled"
+            >
+              <div class="field-stack">
+                <n-input
+                  v-model:value="siteForm.custom_checkin_url"
+                  :placeholder="
+                    siteForm.site_type === 'sub2api'
+                      ? t('siteManagement.sub2ApiCustomCheckinUrlPlaceholder')
+                      : t('siteManagement.customCheckinUrlPlaceholder')
+                  "
+                />
+                <n-text
+                  v-if="siteForm.site_type === 'sub2api'"
+                  depth="3"
+                  class="field-hint provider-field-hint"
+                >
+                  {{ t("siteManagement.sub2ApiCustomCheckinHint") }}
+                </n-text>
+              </div>
             </n-form-item>
             <div class="form-row form-row-switches">
               <n-form-item :label="t('siteManagement.checkinAvailable')" class="form-item-switch">
@@ -2382,45 +2544,42 @@ watch(
               />
             </n-form-item>
             <n-form-item :label="t('siteManagement.bypassMethod')">
-              <n-select
-                v-model:value="siteForm.bypass_method"
-                :options="bypassMethodOptions"
-                style="width: 200px"
-              />
+              <div class="field-stack">
+                <n-select
+                  v-model:value="siteForm.bypass_method"
+                  :options="bypassMethodOptions"
+                  class="bypass-select"
+                />
+                <n-text
+                  depth="3"
+                  class="field-hint provider-field-hint"
+                  :class="{ 'warning-field-hint': siteForm.bypass_method === 'stealth' }"
+                >
+                  {{ t(bypassHintKey) }}
+                </n-text>
+              </div>
             </n-form-item>
-            <!-- Stealth bypass hint -->
-            <n-text
-              v-if="siteForm.bypass_method === 'stealth'"
-              depth="3"
-              style="
-                font-size: 12px;
-                display: block;
-                margin-top: -4px;
-                margin-bottom: 8px;
-                color: #f0a020;
-              "
-            >
-              {{ t("siteManagement.stealthBypassHint") }}
-            </n-text>
           </div>
           <div class="form-section">
             <h4 class="section-title">{{ t("siteManagement.authSettings") }}</h4>
             <n-form-item :label="t('siteManagement.authType')">
-              <n-select
-                v-model:value="siteForm.auth_type"
-                :options="authTypeOptions"
-                multiple
-                :placeholder="t('siteManagement.authTypePlaceholder')"
-                style="width: 100%"
-              />
+              <div class="field-stack">
+                <n-select
+                  v-model:value="siteForm.auth_type"
+                  :options="authTypeOptions"
+                  multiple
+                  :placeholder="t('siteManagement.authTypePlaceholder')"
+                  style="width: 100%"
+                />
+                <n-text
+                  v-if="siteSpecificAuthHintKey"
+                  depth="3"
+                  class="field-hint provider-field-hint"
+                >
+                  {{ t(siteSpecificAuthHintKey) }}
+                </n-text>
+              </div>
             </n-form-item>
-            <n-text
-              v-if="siteSpecificAuthHintKey"
-              depth="3"
-              style="font-size: 12px; display: block; margin-top: -4px; margin-bottom: 8px"
-            >
-              {{ t(siteSpecificAuthHintKey) }}
-            </n-text>
             <!-- Access Token input (shown when access_token is selected) -->
             <n-form-item
               v-if="siteForm.auth_type.includes('access_token')"
@@ -2441,41 +2600,50 @@ watch(
               v-if="siteForm.site_type === 'sub2api' && siteForm.auth_type.includes('access_token')"
               :label="t('siteManagement.sub2ApiRefreshToken')"
             >
-              <n-input
-                v-model:value="authValueInputs.refresh_token"
-                type="password"
-                show-password-on="click"
-                :placeholder="
-                  editingSite
-                    ? t('siteManagement.authValueEditHint')
-                    : t('siteManagement.sub2ApiRefreshTokenPlaceholder')
-                "
-              />
+              <div class="field-stack">
+                <n-input
+                  v-model:value="authValueInputs.refresh_token"
+                  type="password"
+                  show-password-on="click"
+                  :placeholder="
+                    editingSite
+                      ? t('siteManagement.authValueEditHint')
+                      : t('siteManagement.sub2ApiRefreshTokenPlaceholder')
+                  "
+                />
+                <n-text depth="3" class="field-hint provider-field-hint">
+                  {{ t("siteManagement.sub2ApiRefreshTokenHint") }}
+                </n-text>
+              </div>
             </n-form-item>
             <!-- Cookie input (shown when cookie is selected) -->
             <n-form-item
               v-if="siteForm.auth_type.includes('cookie')"
               :label="t('siteManagement.authTypeCookie')"
             >
-              <n-input
-                v-model:value="authValueInputs.cookie"
-                type="password"
-                show-password-on="click"
-                :placeholder="
-                  editingSite
-                    ? t('siteManagement.authValueEditHint')
-                    : t('siteManagement.authTypeCookiePlaceholder')
-                "
-              />
+              <div class="field-stack">
+                <n-input
+                  v-model:value="authValueInputs.cookie"
+                  type="password"
+                  show-password-on="click"
+                  :placeholder="
+                    editingSite
+                      ? t('siteManagement.authValueEditHint')
+                      : t('siteManagement.authTypeCookiePlaceholder')
+                  "
+                />
+                <n-text depth="3" class="field-hint provider-field-hint">
+                  {{ t("siteManagement.authTypeCookieHint") }}
+                </n-text>
+                <n-text
+                  v-if="siteForm.bypass_method === 'stealth'"
+                  depth="3"
+                  class="field-hint warning-field-hint"
+                >
+                  {{ t("siteManagement.stealthCookieHint") }}
+                </n-text>
+              </div>
             </n-form-item>
-            <!-- Cookie auth hint -->
-            <n-text
-              v-if="siteForm.auth_type.includes('cookie')"
-              depth="3"
-              style="font-size: 12px; display: block; margin-top: -4px; margin-bottom: 8px"
-            >
-              {{ t("siteManagement.authTypeCookieHint") }}
-            </n-text>
             <!-- Multi-auth hint -->
             <n-text
               v-if="siteForm.auth_type.length > 1"
@@ -2489,20 +2657,6 @@ watch(
               "
             >
               {{ t("siteManagement.multiAuthHint") }}
-            </n-text>
-            <!-- Stealth cookie requirement hint -->
-            <n-text
-              v-if="siteForm.bypass_method === 'stealth' && siteForm.auth_type.includes('cookie')"
-              depth="3"
-              style="
-                font-size: 12px;
-                display: block;
-                margin-top: -4px;
-                margin-bottom: 8px;
-                color: #18a058;
-              "
-            >
-              {{ t("siteManagement.stealthCookieHint") }}
             </n-text>
           </div>
         </n-form>
@@ -2872,11 +3026,26 @@ watch(
   width: 180px;
   max-width: 100%;
 }
+.field-stack {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+}
+.bypass-select {
+  width: 240px;
+  max-width: 100%;
+}
 .field-hint {
   display: block;
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.35;
+}
+.provider-field-hint {
+  color: var(--n-text-color-3, var(--text-tertiary));
+}
+.warning-field-hint {
+  color: #f0a020;
 }
 .site-form-footer {
   display: flex;

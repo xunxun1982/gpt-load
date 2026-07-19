@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -110,6 +112,100 @@ func TestBalanceService_FetchSiteBalance(t *testing.T) {
 	assert.Equal(t, 1, invalidations)
 }
 
+func TestBalanceServiceRejectsResponseAfterAuthConfigurationChanges(t *testing.T) {
+	t.Parallel()
+
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer old-token", r.Header.Get("Authorization"))
+		close(requestStarted)
+		<-releaseResponse
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"quota":500000}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	oldAuth, err := encSvc.Encrypt("old-token")
+	require.NoError(t, err)
+	newAuth, err := encSvc.Encrypt("new-token")
+	require.NoError(t, err)
+	site := &ManagedSite{
+		Name:      "auth changes during balance request",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeNewAPI,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: oldAuth,
+	}
+	require.NoError(t, db.Create(site).Error)
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	resultCh := make(chan *BalanceInfo, 1)
+	go func() {
+		resultCh <- service.FetchSiteBalance(t.Context(), site)
+	}()
+
+	<-requestStarted
+	require.NoError(t, db.Model(&ManagedSite{}).Where("id = ?", site.ID).Update("auth_value", newAuth).Error)
+	close(releaseResponse)
+	result := <-resultCh
+
+	assert.Nil(t, result.Balance)
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, newAuth, stored.AuthValue)
+	assert.Empty(t, stored.LastBalance)
+}
+
+func TestBalanceServiceFetchesNewAPICompatibleSiteTypes(t *testing.T) {
+	t.Parallel()
+
+	for _, siteType := range []string{
+		SiteTypeNewAPI,
+		SiteTypeOneHub,
+		SiteTypeDoneHub,
+		SiteTypeWongGongyi,
+	} {
+		t.Run(siteType, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/api/user/self", r.URL.Path)
+				assert.Equal(t, "Bearer login-token", r.Header.Get("Authorization"))
+				assert.Equal(t, "42", r.Header.Get("New-API-User"))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"success":true,"data":{"quota":500000}}`))
+			}))
+			t.Cleanup(server.Close)
+
+			db := setupTestDB(t)
+			encSvc := setupTestEncryption(t)
+			require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+			authValue, err := encSvc.Encrypt("login-token")
+			require.NoError(t, err)
+			userID, err := encSvc.Encrypt("42")
+			require.NoError(t, err)
+			site := &ManagedSite{
+				Name:      siteType,
+				BaseURL:   server.URL,
+				SiteType:  siteType,
+				AuthType:  AuthTypeAccessToken,
+				AuthValue: authValue,
+				UserID:    userID,
+			}
+			require.NoError(t, db.Create(site).Error)
+
+			result := NewBalanceService(db, encSvc).FetchSiteBalance(t.Context(), site)
+
+			require.NotNil(t, result.Balance)
+			assert.Equal(t, "$1.00", *result.Balance)
+		})
+	}
+}
+
 func TestBalanceServiceRefreshAllBalancesReturnsScaledValuesAfterRawPersistence(t *testing.T) {
 	t.Parallel()
 
@@ -201,6 +297,13 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 			expectedBalance:    stringPtr("$12.50"),
 		},
 		{
+			name:               "string balance",
+			authToken:          "test-token",
+			expectedAuthHeader: "Bearer test-token",
+			response:           `{"code":0,"message":"success","data":{"balance":"12.5"}}`,
+			expectedBalance:    stringPtr("$12.50"),
+		},
+		{
 			name:               "access token with browser session cookie",
 			authToken:          "test-token",
 			cookieSession:      "session=browser-ok",
@@ -230,6 +333,13 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 			expectedBalance:    nil,
 		},
 		{
+			name:               "missing success envelope",
+			authToken:          "test-token",
+			expectedAuthHeader: "Bearer test-token",
+			response:           `{"data":{"balance":12.5}}`,
+			expectedBalance:    nil,
+		},
+		{
 			name:               "zero data balance",
 			authToken:          "test-token",
 			expectedAuthHeader: "Bearer test-token",
@@ -252,7 +362,7 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 			var requestCount atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requestCount.Add(1)
-				assert.Equal(t, "/api/v1/user/profile", r.URL.Path)
+				assert.Equal(t, "/api/v1/auth/me", r.URL.Path)
 				assert.Equal(t, tt.expectedAuthHeader, r.Header.Get("Authorization"))
 				assert.Equal(t, tt.cookieSession, r.Header.Get("Cookie"))
 				w.Header().Set("Content-Type", "application/json")
@@ -296,6 +406,631 @@ func TestBalanceService_FetchSub2APIBalance(t *testing.T) {
 			assert.Equal(t, *tt.expectedBalance, *result.Balance)
 		})
 	}
+}
+
+func TestBalanceServiceSkipsStaleSub2APIAdapterAfterSiteTypeChange(t *testing.T) {
+	t.Parallel()
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"balance":99}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	encryptedAuth, err := encSvc.Encrypt("new-api-token")
+	require.NoError(t, err)
+	stored := ManagedSite{
+		Name:      "site type changed",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeNewAPI,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: encryptedAuth,
+	}
+	require.NoError(t, db.Create(&stored).Error)
+
+	staleSnapshot := stored
+	staleSnapshot.SiteType = SiteTypeSub2API
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	result := service.FetchSiteBalance(t.Context(), &staleSnapshot)
+
+	assert.Nil(t, result.Balance)
+	assert.Zero(t, requests.Load())
+}
+
+func TestBalanceServiceRefreshAllBalancesRenewsExpiredSub2APIToken(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
+	var refreshRequests atomic.Int32
+	var balanceRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshRequests.Add(1)
+			assert.Equal(t, http.MethodPost, r.Method)
+			assert.Equal(t, "Bearer "+expiredToken, r.Header.Get("Authorization"))
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "old-refresh-token", body[authFieldRefreshToken])
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/v1/auth/me":
+			balanceRequests.Add(1)
+			assert.Equal(t, "Bearer fresh-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"balance":12.5}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	authJSON := fmt.Sprintf(`{"access_token":%q,"refresh_token":"old-refresh-token"}`, expiredToken)
+	encryptedAuth, err := encSvc.Encrypt(authJSON)
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "automatic Sub2API balance",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeSub2API,
+		Enabled:   true,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: encryptedAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	results, err := service.RefreshAllBalances(t.Context())
+
+	require.NoError(t, err)
+	require.NotNil(t, results[site.ID].Balance)
+	assert.Equal(t, "$12.50", *results[site.ID].Balance)
+	assert.Equal(t, int32(1), refreshRequests.Load())
+	assert.Equal(t, int32(1), balanceRequests.Load())
+
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	decrypted, err := encSvc.Decrypt(stored.AuthValue)
+	require.NoError(t, err)
+	storedAuth := parseAuthConfig(stored.AuthType, decrypted)
+	assert.Equal(t, "fresh-token", storedAuth.GetAuthValue(AuthTypeAccessToken))
+	assert.Equal(t, "fresh-refresh-token", storedAuth.GetSupplementalValue(authFieldRefreshToken))
+	expiresAt, err := time.Parse(time.RFC3339, storedAuth.GetSupplementalValue("token_expires_at"))
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now().Add(time.Hour), expiresAt, 5*time.Second)
+}
+
+func TestBalanceServiceRefreshesSub2APIWithRefreshTokenOnly(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	var refreshRequests atomic.Int32
+	var balanceRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshRequests.Add(1)
+			assert.Empty(t, r.Header.Get("Authorization"))
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "refresh-only-token", body[authFieldRefreshToken])
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/v1/auth/me":
+			balanceRequests.Add(1)
+			assert.Equal(t, "Bearer fresh-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"balance":6.25}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	encryptedAuth, err := encSvc.Encrypt(`{"refresh_token":"refresh-only-token"}`)
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "Sub2API refresh-only balance",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: encryptedAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	result := service.FetchSiteBalance(t.Context(), &site)
+
+	require.NotNil(t, result.Balance)
+	assert.Equal(t, "$6.25", *result.Balance)
+	assert.Equal(t, int32(1), refreshRequests.Load())
+	assert.Equal(t, int32(1), balanceRequests.Load())
+}
+
+func TestBalanceServiceRefreshesSub2APITokenAfterUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	var refreshRequests atomic.Int32
+	var balanceRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshRequests.Add(1)
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/v1/auth/me":
+			balanceRequests.Add(1)
+			if r.Header.Get("Authorization") == "Bearer stale-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"code":401,"message":"expired"}`))
+				return
+			}
+			assert.Equal(t, "Bearer fresh-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"balance":8.75}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	encryptedAuth, err := encSvc.Encrypt(`{"access_token":"stale-token","refresh_token":"refresh-token"}`)
+	require.NoError(t, err)
+	site := &ManagedSite{
+		Name:      "reactive Sub2API balance refresh",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: encryptedAuth,
+	}
+	require.NoError(t, db.Create(site).Error)
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	result := service.FetchSiteBalance(t.Context(), site)
+
+	require.NotNil(t, result.Balance)
+	assert.Equal(t, "$8.75", *result.Balance)
+	assert.Equal(t, int32(1), refreshRequests.Load())
+	assert.Equal(t, int32(2), balanceRequests.Load())
+}
+
+func TestBalanceServiceRetriesAfterProactiveSub2APIRefreshFailure(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
+	var refreshRequests atomic.Int32
+	var balanceRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			requestNumber := refreshRequests.Add(1)
+			if requestNumber == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(`{"code":502,"message":"temporary refresh failure"}`))
+				return
+			}
+			assert.Equal(t, "Bearer "+expiredToken, r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/v1/auth/me":
+			requestNumber := balanceRequests.Add(1)
+			if requestNumber == 1 {
+				assert.Equal(t, "Bearer "+expiredToken, r.Header.Get("Authorization"))
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"code":401,"message":"expired"}`))
+				return
+			}
+			assert.Equal(t, "Bearer fresh-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"balance":9.5}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	authJSON := fmt.Sprintf(`{"access_token":%q,"refresh_token":"old-refresh-token"}`, expiredToken)
+	encryptedAuth, err := encSvc.Encrypt(authJSON)
+	require.NoError(t, err)
+	site := &ManagedSite{
+		Name:      "Sub2API proactive refresh retry",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: encryptedAuth,
+	}
+	require.NoError(t, db.Create(site).Error)
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	result := service.FetchSiteBalance(t.Context(), site)
+
+	require.NotNil(t, result.Balance)
+	assert.Equal(t, "$9.50", *result.Balance)
+	assert.Equal(t, int32(2), refreshRequests.Load())
+	assert.Equal(t, int32(2), balanceRequests.Load())
+	assertPersistedAuthTokens(t, db, encSvc, site.ID, "fresh-token", "fresh-refresh-token")
+}
+
+func TestBalanceServiceRefreshesSub2APITokenAfterCookieFallback(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	var refreshRequests atomic.Int32
+	var balanceRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshRequests.Add(1)
+			assert.Equal(t, "session=browser", r.Header.Get("Cookie"))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/v1/auth/me":
+			balanceRequests.Add(1)
+			authorization := r.Header.Get("Authorization")
+			cookie := r.Header.Get("Cookie")
+			switch {
+			case authorization == "Bearer fresh-token":
+				assert.Equal(t, "session=browser", cookie)
+				_, _ = w.Write([]byte(`{"code":0,"data":{"balance":8.75}}`))
+			case authorization == "" && cookie == "session=browser":
+				_, _ = w.Write([]byte(`{"code":0,"data":{"balance":3.5}}`))
+			default:
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"code":401,"message":"expired"}`))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	encryptedAuth, err := encSvc.Encrypt(`{"access_token":"stale-token","refresh_token":"refresh-token","cookie":"session=browser"}`)
+	require.NoError(t, err)
+	site := &ManagedSite{
+		Name:      "Sub2API cookie fallback refresh",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken + "," + AuthTypeCookie,
+		AuthValue: encryptedAuth,
+	}
+	require.NoError(t, db.Create(site).Error)
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	result := service.FetchSiteBalance(t.Context(), site)
+
+	require.NotNil(t, result.Balance)
+	assert.Equal(t, "$8.75", *result.Balance)
+	assert.Equal(t, int32(1), refreshRequests.Load())
+	assert.Equal(t, int32(4), balanceRequests.Load())
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	decrypted, err := encSvc.Decrypt(stored.AuthValue)
+	require.NoError(t, err)
+	storedAuth := parseAuthConfig(stored.AuthType, decrypted)
+	assert.Equal(t, "fresh-token", storedAuth.GetAuthValue(AuthTypeAccessToken))
+	assert.Equal(t, "fresh-refresh-token", storedAuth.GetSupplementalValue(authFieldRefreshToken))
+}
+
+func TestBalanceServiceRetriesFreshSub2APIAccessTokenWithoutStaleCookie(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	var refreshRequests atomic.Int32
+	var freshBareRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshRequests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"fresh-refresh-token","expires_in":3600}}`))
+		case "/api/v1/auth/me":
+			authorization := r.Header.Get("Authorization")
+			cookie := r.Header.Get("Cookie")
+			if authorization == "Bearer fresh-token" && cookie == "" {
+				freshBareRequests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"code":0,"data":{"balance":12.5}}`))
+				return
+			}
+			if authorization == "Bearer fresh-token" && cookie != "" {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`<!doctype html><html><title>Just a moment...</title><p>Cloudflare challenge</p></html>`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":401,"message":"expired"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	encryptedAuth, err := encSvc.Encrypt(`{"access_token":"stale-token","refresh_token":"refresh-token","cookie":"stale-session"}`)
+	require.NoError(t, err)
+	site := &ManagedSite{
+		Name:      "Sub2API stale cookie",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken + "," + AuthTypeCookie,
+		AuthValue: encryptedAuth,
+	}
+	require.NoError(t, db.Create(site).Error)
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	result := service.FetchSiteBalance(t.Context(), site)
+
+	require.NotNil(t, result.Balance)
+	assert.Equal(t, "$12.50", *result.Balance)
+	assert.Equal(t, int32(1), refreshRequests.Load())
+	assert.Equal(t, int32(1), freshBareRequests.Load())
+}
+
+func TestBalanceServiceSerializesSub2APITokenRefreshPerSite(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	// :memory: SQLite databases are connection-local; keep one connection so this test exercises auth concurrency, not isolated schemas.
+	sqlDB.SetMaxOpenConns(1)
+
+	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
+	var refreshRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshRequests.Add(1)
+			time.Sleep(20 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"code":0,"data":{"access_token":"fresh-token","refresh_token":"rotated-refresh-token","expires_in":3600}}`))
+		case "/api/v1/auth/me":
+			assert.Equal(t, "Bearer fresh-token", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"balance":3.5}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	authJSON := fmt.Sprintf(`{"access_token":%q,"refresh_token":"single-use-refresh-token"}`, expiredToken)
+	encryptedAuth, err := encSvc.Encrypt(authJSON)
+	require.NoError(t, err)
+	site := &ManagedSite{
+		Name:      "concurrent Sub2API balance",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: encryptedAuth,
+	}
+	require.NoError(t, db.Create(site).Error)
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	results := make(chan *BalanceInfo, 2)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- service.FetchSiteBalance(t.Context(), site)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	for result := range results {
+		require.NotNil(t, result.Balance)
+		assert.Equal(t, "$3.50", *result.Balance)
+	}
+	assert.Equal(t, int32(1), refreshRequests.Load())
+}
+
+func TestBalanceServiceUsesLatestNetworkSettingsAfterAdoptingRotatedSub2APICredentials(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+
+	rotatedAuth, err := encSvc.Encrypt(`{"access_token":"fresh-token","refresh_token":"fresh-refresh-token"}`)
+	require.NoError(t, err)
+	latestServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/auth/me", r.URL.Path)
+		assert.Equal(t, "Bearer fresh-token", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Sec-Ch-Ua") == "" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"code":403,"message":"browser headers required"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"balance":4.25}}`))
+	}))
+	t.Cleanup(latestServer.Close)
+
+	var site ManagedSite
+	refreshServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/auth/refresh", r.URL.Path)
+		updateErr := db.Model(&ManagedSite{}).Where("id = ?", site.ID).Updates(map[string]any{
+			"auth_value":    rotatedAuth,
+			"base_url":      latestServer.URL,
+			"bypass_method": BypassMethodStealth,
+		}).Error
+		if updateErr != nil {
+			http.Error(w, "failed to rotate site settings", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":401,"message":"refresh token already rotated"}`))
+	}))
+	t.Cleanup(refreshServer.Close)
+
+	expiredToken := testSub2APIJWTWithExp(time.Now().Add(-time.Hour))
+	oldAuth, err := encSvc.Encrypt(fmt.Sprintf(`{"access_token":%q,"refresh_token":"old-refresh-token"}`, expiredToken))
+	require.NoError(t, err)
+	site = ManagedSite{
+		Name:      "Sub2API latest network settings",
+		BaseURL:   refreshServer.URL,
+		SiteType:  SiteTypeSub2API,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: oldAuth,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	result := service.FetchSiteBalance(t.Context(), &site)
+
+	require.NotNil(t, result.Balance)
+	assert.Equal(t, "$4.25", *result.Balance)
+}
+
+func TestBalanceServiceFallsBackToLegacySub2APIProfileEndpoint(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/me":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"route not found"}`))
+		case "/api/v1/user/profile":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"balance":6.25}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	encryptedAuth, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := &ManagedSite{Name: "legacy Sub2API", BaseURL: server.URL, SiteType: SiteTypeSub2API, AuthType: AuthTypeAccessToken, AuthValue: encryptedAuth}
+	require.NoError(t, db.Create(site).Error)
+
+	result := NewBalanceService(db, encSvc).FetchSiteBalance(t.Context(), site)
+
+	require.NotNil(t, result.Balance)
+	assert.Equal(t, "$6.25", *result.Balance)
+}
+
+func TestBalanceServiceDoesNotFallbackFromSub2APIBrowserChallenge(t *testing.T) {
+	t.Parallel()
+
+	var profileRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/me":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`<!doctype html><html><script>var arg1='challenge';</script></html>`))
+		case "/api/v1/user/profile":
+			profileRequests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"data":{"balance":99}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	encryptedAuth, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := &ManagedSite{
+		Name:            "challenged Sub2API",
+		BaseURL:         server.URL,
+		SiteType:        SiteTypeSub2API,
+		AuthType:        AuthTypeAccessToken,
+		AuthValue:       encryptedAuth,
+		LastBalance:     "$7.00",
+		LastBalanceDate: "2026-07-01",
+	}
+	require.NoError(t, db.Create(site).Error)
+
+	result := NewBalanceService(db, encSvc).FetchSiteBalance(t.Context(), site)
+
+	assert.Nil(t, result.Balance)
+	assert.Equal(t, int32(0), profileRequests.Load())
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, "$7.00", stored.LastBalance)
+	assert.Equal(t, "2026-07-01", stored.LastBalanceDate)
+}
+
+func TestBalanceServiceFetchesAnyRouterBalanceWithCookieAndUserID(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/user/self", r.URL.Path)
+		assert.Equal(t, "session=browser-ok", r.Header.Get("Cookie"))
+		assert.Equal(t, "123", r.Header.Get("New-API-User"))
+		assert.Equal(t, "123", r.Header.Get("User-id"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"quota":1500000}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	encryptedAuth, err := encSvc.Encrypt("session=browser-ok")
+	require.NoError(t, err)
+	encryptedUserID, err := encSvc.Encrypt("123")
+	require.NoError(t, err)
+	site := &ManagedSite{
+		Name:      "AnyRouter",
+		BaseURL:   server.URL,
+		SiteType:  SiteTypeAnyrouter,
+		AuthType:  AuthTypeCookie,
+		AuthValue: encryptedAuth,
+		UserID:    encryptedUserID,
+	}
+	require.NoError(t, db.Create(site).Error)
+
+	result := NewBalanceService(db, encSvc).FetchSiteBalance(t.Context(), site)
+
+	require.NotNil(t, result.Balance)
+	assert.Equal(t, "$3.00", *result.Balance)
 }
 
 func TestBalanceService_FetchSiteBalanceIsolatesConfiguredCredentials(t *testing.T) {
@@ -696,6 +1431,47 @@ func TestBalanceServiceRefreshAllBalancesReturnsFetchCancellation(t *testing.T) 
 
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Contains(t, results, site.ID)
+}
+
+func TestBalanceServicePersistsCompletedBalancesWhenFetchContextExpires(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	encSvc := setupTestEncryption(t)
+	require.NoError(t, db.AutoMigrate(&ManagedSite{}))
+	authValue, err := encSvc.Encrypt("test-token")
+	require.NoError(t, err)
+	site := ManagedSite{
+		Name:      "persist completed balance after timeout",
+		BaseURL:   "https://balance-timeout.example.com",
+		SiteType:  SiteTypeNewAPI,
+		Enabled:   true,
+		AuthType:  AuthTypeAccessToken,
+		AuthValue: authValue,
+	}
+	require.NoError(t, db.Create(&site).Error)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	service := NewBalanceService(db, encSvc)
+	t.Cleanup(service.closeIdleConnections)
+	service.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		cancel()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"success":true,"data":{"quota":500000}}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	results, err := service.RefreshAllBalances(ctx)
+
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NotNil(t, results[site.ID].Balance)
+	var stored ManagedSite
+	require.NoError(t, db.First(&stored, site.ID).Error)
+	assert.Equal(t, "$1.00", stored.LastBalance)
 }
 
 func TestBalanceServiceRefreshAllBalancesReturnsUpdateCancellation(t *testing.T) {
@@ -1257,11 +2033,11 @@ func TestBalanceService_SupportsBalance(t *testing.T) {
 	}{
 		{SiteTypeNewAPI, true},
 		{SiteTypeSub2API, true},
-		{SiteTypeVeloera, true},
+		{"Veloera", false},
 		{SiteTypeOneHub, true},
 		{SiteTypeDoneHub, true},
 		{SiteTypeWongGongyi, true},
-		{SiteTypeAnyrouter, false},
+		{SiteTypeAnyrouter, true},
 		{SiteTypeUnknown, false},
 	}
 
