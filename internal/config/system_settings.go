@@ -484,6 +484,20 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			continue
 		}
 
+		if key == "codex_affinity_max_retries" {
+			intVal, err := integerConfigValue(key, value)
+			if err != nil {
+				return err
+			}
+			if intVal < 1 {
+				return fmt.Errorf("value for %s (%d) is below minimum value (%d)", key, intVal, 1)
+			}
+			if intVal > 500 {
+				return fmt.Errorf("value for %s (%d) exceeds maximum value (%d)", key, intVal, 500)
+			}
+			continue
+		}
+
 		// Allow group-only override keys that are not part of system-level settings metadata.
 		// Currently this is used for aggregate group sub-group retry configuration.
 		if key == "sub_max_retries" {

@@ -37,16 +37,18 @@ import (
 )
 
 const (
-	maxUpstreamErrorBodySize    = 64 * 1024
-	maxProxyBodyPreallocBytes   = 2 * 1024 * 1024
-	maxEstimatedTokenBodyBytes  = 256 * 1024
-	quotaExhaustedRatePressure  = int64(4)
-	requestLogUserAgentMaxRunes = 512
-	retryBackoffRampRetries     = 100
-	retryDelayJitterRatio       = 0.30
-	statusClientClosedRequest   = 499
-	maxRetryConfigRetries       = 5000
-	maxSubRetryConfigRetries    = 500
+	maxUpstreamErrorBodySize     = 64 * 1024
+	maxProxyBodyPreallocBytes    = 2 * 1024 * 1024
+	maxEstimatedTokenBodyBytes   = 256 * 1024
+	quotaExhaustedRatePressure   = int64(4)
+	requestLogUserAgentMaxRunes  = 512
+	retryBackoffRampRetries      = 100
+	retryDelayJitterRatio        = 0.30
+	statusClientClosedRequest    = 499
+	maxRetryConfigRetries        = 5000
+	maxSubRetryConfigRetries     = 500
+	defaultCodexAffinityAttempts = 5
+	maxCodexAffinityAttempts     = 500
 )
 
 const (
@@ -652,6 +654,8 @@ type retryContext struct {
 	codexAffinityKey               string        // Stable Codex affinity key for this aggregate request
 	codexAffinityCacheKey          string        // Precomputed bounded cache key reused across retries and binding
 	codexAffinityPrimarySubGroupID uint          // Stable primary sub-group for Codex affinity requests
+	codexAffinityAttemptCount      int           // Actual requests sent to the affinity primary before degradation
+	codexAffinityDegraded          bool          // Keeps encrypted reasoning stripped after leaving the affinity stage
 	codexParsedPayload             map[string]any
 	codexParsedPayloadSet          bool
 	codexParsedModel               string
@@ -845,7 +849,7 @@ func parseRetryConfigInt(config map[string]any, key string) int {
 		return 0
 	}
 	maxRetries := maxRetryConfigRetries
-	if key == "sub_max_retries" {
+	if key == "sub_max_retries" || key == "codex_affinity_max_retries" {
 		maxRetries = maxSubRetryConfigRetries
 	}
 	if retries > maxRetries {
@@ -872,6 +876,25 @@ func parseSubMaxRetries(config map[string]any) (int, bool) {
 		return 0, false
 	}
 	return parseRetryConfigInt(config, "sub_max_retries"), true
+}
+
+// parseCodexAffinityMaxAttempts returns the total affinity attempt limit,
+// including the first request. Missing or invalid persisted values use 5.
+func parseCodexAffinityMaxAttempts(config map[string]any) int {
+	if config == nil {
+		return defaultCodexAffinityAttempts
+	}
+	if _, ok := config["codex_affinity_max_retries"]; !ok {
+		return defaultCodexAffinityAttempts
+	}
+	attempts := parseRetryConfigInt(config, "codex_affinity_max_retries")
+	if attempts < 1 {
+		return defaultCodexAffinityAttempts
+	}
+	if attempts > maxCodexAffinityAttempts {
+		return maxCodexAffinityAttempts
+	}
+	return attempts
 }
 
 func subGroupKeyMaxRetries(subGroupCfg types.SystemSettings, parentSubMaxRetries int, parentSubMaxRetriesSet bool) int {
@@ -2221,13 +2244,18 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Get sub-group key retry upper bound. This limits retries inside the selected
 	// sub-group only; aggregate-level sub-group switches are controlled by max_retries.
 	subMaxRetries, subMaxRetriesSet := parseSubMaxRetries(originalGroup.Config)
+	codexAffinityEnabled := codexAggregateAffinityEnabled(c, originalGroup)
+	codexAffinityMaxAttempts := parseCodexAffinityMaxAttempts(originalGroup.Config)
 
 	logrus.WithFields(logrus.Fields{
-		"aggregate_group":     originalGroup.Name,
-		"max_retries":         maxRetries,
-		"sub_max_retries":     subMaxRetries,
-		"sub_max_retries_set": subMaxRetriesSet,
-		"attempt_count":       retryCtx.attemptCount,
+		"aggregate_group":             originalGroup.Name,
+		"max_retries":                 maxRetries,
+		"sub_max_retries":             subMaxRetries,
+		"sub_max_retries_set":         subMaxRetriesSet,
+		"attempt_count":               retryCtx.attemptCount,
+		"codex_affinity_attempt":      retryCtx.codexAffinityAttemptCount,
+		"codex_affinity_max_attempts": codexAffinityMaxAttempts,
+		"codex_affinity_degraded":     retryCtx.codexAffinityDegraded,
 	}).Debug("Aggregate retry configuration")
 
 	// Pre-check: if this is the first attempt, check if there are any valid sub-groups
@@ -2258,7 +2286,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	} else {
 		retryCtx.forcedSubGroupID = 0
 		var err error
-		if codexAggregateAffinityEnabled(c, originalGroup) {
+		if codexAffinityEnabled && !retryCtx.codexAffinityDegraded {
 			affinityKey := codexAggregateAffinityThreadHeaderKey(c, originalGroup)
 			if affinityKey == "" {
 				payload, payloadOK := retryCtx.codexRequestPayload(bodyBytes)
@@ -2287,6 +2315,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 							"model":           model,
 						}).Debug("Selected Codex aggregate sub-group from affinity cache")
 					} else {
+						if cached {
+							retryCtx.codexAffinityDegraded = true
+						}
 						subGroupName = ""
 						subGroupID = 0
 					}
@@ -2312,7 +2343,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			return
 		}
 	}
-	if codexAggregateAffinityEnabled(c, originalGroup) &&
+	if codexAffinityEnabled &&
 		subGroupID != 0 && retryCtx.codexAffinityPrimarySubGroupID == 0 {
 		// Simulated Codex identity is generated after routing, so track the first
 		// actual target even when the inbound request has no affinity identifier.
@@ -2343,8 +2374,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 	// Store current sub-group ID for failure handling
 	c.Set("current_sub_group_id", subGroupID)
-	codexAffinityFallback := retryCtx.codexAffinityPrimarySubGroupID != 0 &&
-		subGroupID != retryCtx.codexAffinityPrimarySubGroupID
+	codexAffinityFallback := retryCtx.codexAffinityDegraded
 	clearModelRedirectContext(c)
 
 	// Apply model mapping for the selected sub-group
@@ -2740,6 +2770,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	apiKey, err := ps.keyProvider.SelectKey(group.ID)
 	if err != nil {
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCtx.attemptCount+1, err)
+		if codexAffinityEnabled && !retryCtx.codexAffinityDegraded &&
+			retryCtx.codexAffinityPrimarySubGroupID == subGroupID {
+			// No request was sent, so this does not consume an affinity attempt.
+			retryCtx.codexAffinityDegraded = true
+		}
 
 		// Handle sub-group failure
 		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, http.StatusServiceUnavailable, err, nil)
@@ -2874,6 +2909,13 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		"is_stream": isStream,
 	}).Debug("Using HTTP client for aggregate sub-group request")
 
+	isCodexAffinityPrimaryAttempt := codexAffinityEnabled &&
+		!retryCtx.codexAffinityDegraded &&
+		retryCtx.codexAffinityPrimarySubGroupID == subGroupID
+	if isCodexAffinityPrimaryAttempt {
+		// Count only attempts that reach the actual upstream client call.
+		retryCtx.codexAffinityAttemptCount++
+	}
 	resp, err := client.Do(req)
 	if resp != nil {
 		defer resp.Body.Close()
@@ -2926,6 +2968,45 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 		// Update key status
 		ps.keyProvider.UpdateStatus(apiKey, group, false, internalError)
+
+		if isCodexAffinityPrimaryAttempt {
+			if retryCtx.codexAffinityAttemptCount < codexAffinityMaxAttempts {
+				ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(internalError), isStream,
+					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeRetry)
+
+				logrus.WithFields(logrus.Fields{
+					"aggregate_group":             originalGroup.Name,
+					"sub_group":                   group.Name,
+					"sub_group_id":                subGroupID,
+					"codex_affinity_attempt":      retryCtx.codexAffinityAttemptCount,
+					"codex_affinity_max_attempts": codexAffinityMaxAttempts,
+				}).Debug("Retrying Codex affinity primary sub-group")
+
+				if !waitBeforeRetry(retryCtx.lifecycleCtx, retryDelayForAttempt(group.EffectiveConfig, retryCtx.codexAffinityAttemptCount-1)) {
+					statusCode, ctxErr := retryLifecycleErrorStatus(retryCtx.lifecycleCtx)
+					ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(ctxErr), isStream,
+						upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+					writeRetryLifecycleError(c, statusCode, ctxErr)
+					return
+				}
+
+				retryCtx.forcedSubGroupID = subGroupID
+				ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, retryCtx.originalBodyBytes, isStream, startTime, retryCtx)
+				return
+			}
+
+			retryCtx.codexAffinityDegraded = true
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group":             originalGroup.Name,
+				"sub_group":                   group.Name,
+				"sub_group_id":                subGroupID,
+				"codex_affinity_attempt":      retryCtx.codexAffinityAttemptCount,
+				"codex_affinity_max_attempts": codexAffinityMaxAttempts,
+			}).Debug("Codex affinity attempts exhausted, applying aggregate failover budget")
+
+			ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, statusCode, errors.New(internalError), apiKey)
+			return
+		}
 
 		// Check sub-group's key retry limit
 		subGroupCfg := group.EffectiveConfig

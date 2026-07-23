@@ -405,7 +405,8 @@ export default {
     maxRetries: "最大リトライ回数",
     maxRetriesPlaceholder: "1 回の集約リクエストでサブグループを切り替える最大回数（0-5000）",
     subMaxRetries: "サブグループ最大リトライ",
-    subMaxRetriesPlaceholder: "空欄は追加上限なし、0 は追加キー再試行なし（0-500）",
+    subMaxRetriesPlaceholder:
+      "通常リクエストとアフィニティ降格後のグループ内キー再試行のみを制限します。空欄は追加上限なし、0 は再試行なし（0-500）",
     healthResetInterval: "健康度リセット間隔",
     healthResetDisabled: "自動リセットしない",
     healthResetEveryMinutes: "{count}分ごと",
@@ -415,9 +416,10 @@ export default {
       "毎日 00:00 を基準に、この集約グループ内のすべてのサブグループの健康度をリセットします",
     codexAffinity: "Codex アフィニティ",
     codexAffinityHint:
-      "OpenAI Responses の集約グループに対する Codex リクエストにのみ適用されます。デフォルトはオフです。有効にすると、同じ Codex セッションは安定したサブグループを優先します。そのサブグループが利用不可、または再試行を使い切った場合のみ、残りの利用可能なサブグループから有効重みに基づいて選択します。ヘッダーは変更しません。アフィニティ対象外のサブグループへフェイルオーバーする場合のみ、互換性のため Responses encrypted reasoning を除去します。",
-    codexAffinityRetryHint:
-      "Codex アフィニティを有効にする場合は、一時的なキー失敗ですぐフェイルオーバーしないよう、サブグループ最大リトライを増やすことを検討してください。集約レベルのフェイルオーバーは引き続き最大リトライ回数で制限されます。",
+      "OpenAI Responses の集約グループに対する Codex リクエストにのみ適用され、既定では無効です。有効にすると、同じ Codex セッションは安定したサブグループを優先します。そのサブグループが利用不可、またはアフィニティ試行を使い切った場合、残りのサブグループを有効重みに基づいて選択します。ヘッダーは変更せず、アフィニティ降格後は互換性のため Responses encrypted reasoning を除去します。",
+    codexAffinityMaxRetries: "Codex アフィニティ最大リトライ",
+    codexAffinityMaxRetriesHint:
+      "初回リクエストを含み、既定では最大 5 回試行します。設定したアフィニティ試行回数を使い切るとサブグループ切り替えへ進み、切り替え回数は引き続き最大リトライ回数で制限されます。",
     precondition: "前提条件",
     preconditions: "前提条件",
     preconditionMaxRequestSize: "リクエストサイズ制限",

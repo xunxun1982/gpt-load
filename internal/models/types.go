@@ -108,6 +108,8 @@ type GroupConfig struct {
 	ResponsesIncludeEncryptedReasoning *bool `json:"responses_include_encrypted_reasoning,omitempty"`
 	// CodexAffinityEnabled keeps Codex sessions on a stable sub-group for OpenAI Responses aggregate groups.
 	CodexAffinityEnabled *bool `json:"codex_affinity_enabled,omitempty"`
+	// CodexAffinityMaxRetries is the total attempt limit, including the first request, for the affinity sub-group.
+	CodexAffinityMaxRetries *int `json:"codex_affinity_max_retries,omitempty"`
 	// CodexDegradationMitigationEnabled folds truncated Codex Responses reasoning rounds into one SSE response.
 	// Only applies to OpenAI Responses (openai-response) channel groups.
 	CodexDegradationMitigationEnabled *bool `json:"codex_degradation_mitigation_enabled,omitempty"`

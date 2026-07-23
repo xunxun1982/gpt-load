@@ -405,7 +405,8 @@ export default {
     maxRetries: "Max Retries",
     maxRetriesPlaceholder: "Max sub-group failovers per aggregate request (0-5000)",
     subMaxRetries: "Sub-group max retries",
-    subMaxRetriesPlaceholder: "Blank: no extra cap; 0 disables extra key retries (0-500)",
+    subMaxRetriesPlaceholder:
+      "Caps extra in-group key retries for regular requests and after affinity degradation; blank adds no cap, 0 disables retries (0-500)",
     healthResetInterval: "Health Reset Interval",
     healthResetDisabled: "Do not reset automatically",
     healthResetEveryMinutes: "Every {count} minutes",
@@ -415,9 +416,10 @@ export default {
       "Aligned from 00:00 each day; resets every sub-group's health in this aggregate group",
     codexAffinity: "Codex Affinity",
     codexAffinityHint:
-      "Only applies to Codex requests on OpenAI Responses aggregate groups. Off by default. When enabled, the same Codex session prefers a stable sub-group. Only when that sub-group is unavailable or its retries are exhausted will remaining available sub-groups be selected by effective weight. Headers are unchanged; when failing over away from the affinity sub-group, Responses encrypted reasoning is stripped for compatibility.",
-    codexAffinityRetryHint:
-      "When Codex Affinity is enabled, consider increasing sub-group max retries so transient key failures stay on the same sub-group before failover; aggregate-level failovers are still limited by Max Retries.",
+      "Only applies to Codex requests on OpenAI Responses aggregate groups. Off by default. When enabled, the same Codex session prefers a stable sub-group. If that sub-group is unavailable or affinity attempts are exhausted, remaining sub-groups are selected by effective weight. Headers stay unchanged; Responses encrypted reasoning is stripped after affinity degradation for compatibility.",
+    codexAffinityMaxRetries: "Codex Affinity Max Retries",
+    codexAffinityMaxRetriesHint:
+      "Includes the first request and defaults to 5 attempts. Sub-group failover begins when the configured affinity attempt limit is exhausted; failover count remains limited by Max Retries.",
     precondition: "Precondition",
     preconditions: "Preconditions",
     preconditionMaxRequestSize: "Request Size Limit",

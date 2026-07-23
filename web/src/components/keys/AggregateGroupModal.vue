@@ -39,6 +39,7 @@ interface GroupConfig {
   sub_max_retries?: number;
   health_reset_interval_seconds?: number;
   codex_affinity_enabled?: boolean;
+  codex_affinity_max_retries?: number;
   codex_degradation_mitigation_enabled?: boolean;
 }
 
@@ -121,6 +122,7 @@ const defaultFormData = {
   sub_max_retries: null as number | null,
   health_reset_interval_seconds: 0,
   codex_affinity_enabled: false,
+  codex_affinity_max_retries: 5,
   codex_degradation_mitigation_enabled: false,
   preconditionItems: [] as PreconditionItem[], // Dynamic precondition list
 };
@@ -188,6 +190,7 @@ function loadGroupData() {
     : null;
   const healthResetIntervalSeconds = config.health_reset_interval_seconds ?? 0;
   const codexAffinityEnabled = config.codex_affinity_enabled === true;
+  const codexAffinityMaxRetries = config.codex_affinity_max_retries ?? 5;
   const codexDegradationMitigationEnabled =
     props.group.channel_type === "openai-response" &&
     config.codex_degradation_mitigation_enabled === true;
@@ -213,6 +216,7 @@ function loadGroupData() {
     sub_max_retries: subMaxRetries,
     health_reset_interval_seconds: healthResetIntervalSeconds,
     codex_affinity_enabled: codexAffinityEnabled,
+    codex_affinity_max_retries: codexAffinityMaxRetries,
     codex_degradation_mitigation_enabled: codexDegradationMitigationEnabled,
     preconditionItems,
   });
@@ -307,6 +311,9 @@ async function handleSubmit() {
     };
     if (formData.sub_max_retries !== null) {
       config.sub_max_retries = formData.sub_max_retries;
+    }
+    if (formData.channel_type === "openai-response") {
+      config.codex_affinity_max_retries = formData.codex_affinity_max_retries ?? 5;
     }
 
     // Build submit payload
@@ -461,10 +468,24 @@ async function handleSubmit() {
             <template #feedback>
               <div style="color: var(--text-secondary); font-size: 12px">
                 <div>{{ t("keys.codexAffinityHint") }}</div>
-                <div v-if="formData.codex_affinity_enabled">
-                  {{ t("keys.codexAffinityRetryHint") }}
-                </div>
               </div>
+            </template>
+          </n-form-item>
+
+          <n-form-item
+            v-if="formData.channel_type === 'openai-response' && formData.codex_affinity_enabled"
+            :label="t('keys.codexAffinityMaxRetries')"
+          >
+            <n-input-number
+              v-model:value="formData.codex_affinity_max_retries"
+              :min="1"
+              :max="500"
+              style="width: 100%"
+            />
+            <template #feedback>
+              <span style="color: var(--text-secondary); font-size: 12px">
+                {{ t("keys.codexAffinityMaxRetriesHint") }}
+              </span>
             </template>
           </n-form-item>
 

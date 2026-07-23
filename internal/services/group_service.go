@@ -2843,6 +2843,7 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any, channelT
 	}
 	if channelType != "openai-response" {
 		delete(configMap, "codex_affinity_enabled")
+		delete(configMap, "codex_affinity_max_retries")
 		delete(configMap, "responses_include_encrypted_reasoning")
 		delete(configMap, "codex_degradation_mitigation_enabled")
 	}

@@ -430,6 +430,75 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid minimum codex_affinity_max_retries",
+			config: map[string]any{
+				"codex_affinity_max_retries": float64(1),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid default codex_affinity_max_retries",
+			config: map[string]any{
+				"codex_affinity_max_retries": float64(5),
+			},
+			expectError: false,
+		},
+		{
+			name: "valid maximum codex_affinity_max_retries",
+			config: map[string]any{
+				"codex_affinity_max_retries": float64(500),
+			},
+			expectError: false,
+		},
+		{
+			name: "zero codex_affinity_max_retries",
+			config: map[string]any{
+				"codex_affinity_max_retries": float64(0),
+			},
+			expectError: true,
+			errorMsg:    "below minimum value",
+		},
+		{
+			name: "negative codex_affinity_max_retries",
+			config: map[string]any{
+				"codex_affinity_max_retries": float64(-1),
+			},
+			expectError: true,
+			errorMsg:    "below minimum value",
+		},
+		{
+			name: "codex_affinity_max_retries above maximum",
+			config: map[string]any{
+				"codex_affinity_max_retries": float64(501),
+			},
+			expectError: true,
+			errorMsg:    "exceeds maximum value",
+		},
+		{
+			name: "fractional codex_affinity_max_retries",
+			config: map[string]any{
+				"codex_affinity_max_retries": float64(1.5),
+			},
+			expectError: true,
+			errorMsg:    "must be an integer",
+		},
+		{
+			name: "string codex_affinity_max_retries",
+			config: map[string]any{
+				"codex_affinity_max_retries": "5",
+			},
+			expectError: true,
+			errorMsg:    "expected a number",
+		},
+		{
+			name: "boolean codex_affinity_max_retries",
+			config: map[string]any{
+				"codex_affinity_max_retries": true,
+			},
+			expectError: true,
+			errorMsg:    "expected a number",
+		},
+		{
 			name: "valid retry_delay_ms",
 			config: map[string]any{
 				"retry_delay_ms": float64(1000),
