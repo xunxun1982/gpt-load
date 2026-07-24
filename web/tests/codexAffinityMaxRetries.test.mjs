@@ -54,23 +54,44 @@ test("neighboring aggregate retry counters also use integer input semantics", ()
 
 test("Codex affinity retry copy is present in all supported locales", () => {
   assert.match(zhLocale, /codexAffinityMaxRetries:\s*"Codex 亲和最大重试"/);
-  assert.match(zhLocale, /codexAffinityMaxRetriesHint:[\s\S]*包含首次请求/);
-  assert.match(zhLocale, /codexAffinityMaxRetriesHint:[\s\S]*配置的亲和尝试次数耗尽后/);
+  assert.match(zhLocale, /codexAffinityMaxRetriesHint:[\s\S]*包含首次请求的总尝试次数/);
+  assert.match(
+    zhLocale,
+    /codexAffinityMaxRetriesHint:[\s\S]*默认 5[^"]*首次请求 1 次[^"]*最多 4 次亲和重试/
+  );
+  assert.match(
+    zhLocale,
+    /codexAffinityMaxRetriesHint:[\s\S]*另两个字段只计算首次请求后的切组或 Key 重试/
+  );
   assert.match(zhLocale, /subMaxRetriesPlaceholder:\s*\n?\s*"[^"]*亲和降级后/);
 
   assert.match(enLocale, /codexAffinityMaxRetries:\s*"Codex Affinity Max Retries"/);
-  assert.match(enLocale, /codexAffinityMaxRetriesHint:[\s\S]*Includes the first request/);
   assert.match(
     enLocale,
-    /codexAffinityMaxRetriesHint:[\s\S]*configured affinity attempt limit is exhausted/
+    /codexAffinityMaxRetriesHint:[\s\S]*Total affinity attempts including the first request/
+  );
+  assert.match(
+    enLocale,
+    /codexAffinityMaxRetriesHint:[\s\S]*Default 5 = 1 initial request \+ up to 4 affinity retries/
+  );
+  assert.match(
+    enLocale,
+    /codexAffinityMaxRetriesHint:[\s\S]*other two fields count only failovers or key retries after the initial request/
   );
   assert.match(enLocale, /subMaxRetriesPlaceholder:\s*\n?\s*"[^"]*affinity degradation/);
 
   assert.match(jaLocale, /codexAffinityMaxRetries:\s*"Codex アフィニティ最大リトライ"/);
-  assert.match(jaLocale, /codexAffinityMaxRetriesHint:[\s\S]*初回リクエストを含み/);
   assert.match(
     jaLocale,
-    /codexAffinityMaxRetriesHint:[\s\S]*設定したアフィニティ試行回数を使い切ると/
+    /codexAffinityMaxRetriesHint:[\s\S]*初回リクエストを含むアフィニティの総試行回数/
+  );
+  assert.match(
+    jaLocale,
+    /codexAffinityMaxRetriesHint:[\s\S]*既定値 5[^"]*初回 1 回 \+ 最大 4 回のアフィニティ再試行/
+  );
+  assert.match(
+    jaLocale,
+    /codexAffinityMaxRetriesHint:[\s\S]*ほかの 2 項目は初回後のサブグループ切り替えまたはキー再試行のみ/
   );
   assert.match(jaLocale, /subMaxRetriesPlaceholder:\s*\n?\s*"[^"]*アフィニティ降格後/);
 });

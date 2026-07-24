@@ -711,6 +711,18 @@ func (rc *retryContext) codexRequestModel(bodyBytes []byte) string {
 	return rc.codexParsedModel
 }
 
+// isCodexAffinityPrimary reports whether the current sub-group selection is still
+// serving the Codex affinity primary. It returns false once affinity has degraded
+// so the pre-dispatch degrade check and the attempt counter always agree on when a
+// request counts against the affinity budget. The distinct
+// codexAffinityPrimarySubGroupID == 0 bootstrap check that establishes the primary
+// is intentionally not folded in here.
+func (rc *retryContext) isCodexAffinityPrimary(codexAffinityEnabled bool, subGroupID uint) bool {
+	return codexAffinityEnabled &&
+		!rc.codexAffinityDegraded &&
+		rc.codexAffinityPrimarySubGroupID == subGroupID
+}
+
 // safeProxyURL returns the proxy URL value with credentials redacted for safe logging.
 // Returns "none" when the pointer is nil or the underlying string is empty.
 // If the URL contains user credentials (user:pass@host), they are redacted to prevent
@@ -2792,8 +2804,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	apiKey, err := ps.keyProvider.SelectKey(group.ID)
 	if err != nil {
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCtx.attemptCount+1, err)
-		if codexAffinityEnabled && !retryCtx.codexAffinityDegraded &&
-			retryCtx.codexAffinityPrimarySubGroupID == subGroupID {
+		if retryCtx.isCodexAffinityPrimary(codexAffinityEnabled, subGroupID) {
 			// This is not a primary upstream attempt: SelectKey failed before client.Do,
 			// so no affinity attempt is consumed. Degrade now so fallback strips reasoning.
 			retryCtx.codexAffinityDegraded = true
@@ -2932,9 +2943,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		"is_stream": isStream,
 	}).Debug("Using HTTP client for aggregate sub-group request")
 
-	isCodexAffinityPrimaryAttempt := codexAffinityEnabled &&
-		!retryCtx.codexAffinityDegraded &&
-		retryCtx.codexAffinityPrimarySubGroupID == subGroupID
+	isCodexAffinityPrimaryAttempt := retryCtx.isCodexAffinityPrimary(codexAffinityEnabled, subGroupID)
 	if isCodexAffinityPrimaryAttempt {
 		// Count only attempts that reach the actual upstream client call.
 		retryCtx.codexAffinityAttemptCount++

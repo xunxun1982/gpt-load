@@ -419,7 +419,7 @@ export default {
       "Only applies to Codex requests on OpenAI Responses aggregate groups. Off by default. When enabled, the same Codex session prefers a stable sub-group. If that sub-group is unavailable or affinity attempts are exhausted, remaining sub-groups are selected by effective weight. Headers stay unchanged; Responses encrypted reasoning is stripped after affinity degradation for compatibility.",
     codexAffinityMaxRetries: "Codex Affinity Max Retries",
     codexAffinityMaxRetriesHint:
-      "Includes the first request and defaults to 5 attempts. Sub-group failover begins when the configured affinity attempt limit is exhausted; failover count remains limited by Max Retries.",
+      "Total affinity attempts including the first request. Default 5 = 1 initial request + up to 4 affinity retries; sub-group failover begins only after this budget is exhausted and remains limited by Max Retries, while the other two fields count only failovers or key retries after the initial request.",
     precondition: "Precondition",
     preconditions: "Preconditions",
     preconditionMaxRequestSize: "Request Size Limit",

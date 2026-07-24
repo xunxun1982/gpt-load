@@ -411,7 +411,7 @@ export default {
       "仅对 OpenAI Responses 聚合分组的 Codex 请求有效，默认关闭。启用后，同一 Codex 会话会优先稳定选择同一子组；该子组不可用或亲和尝试耗尽后，才按剩余可用子组的有效权重选择。进入切组后会移除 Responses encrypted reasoning 以提升兼容性，不修改请求头。",
     codexAffinityMaxRetries: "Codex 亲和最大重试",
     codexAffinityMaxRetriesHint:
-      "包含首次请求；默认最多尝试 5 次；配置的亲和尝试次数耗尽后进入子组切换，切组次数仍受最大重试次数限制。",
+      "包含首次请求的总尝试次数；默认 5 = 首次请求 1 次 + 最多 4 次亲和重试。该次数耗尽后才进入子组切换，切组次数仍受最大重试次数限制；另两个字段只计算首次请求后的切组或 Key 重试。",
     precondition: "前置条件",
     preconditions: "前置条件",
     preconditionMaxRequestSize: "请求大小限制",
