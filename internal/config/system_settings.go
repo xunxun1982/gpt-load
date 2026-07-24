@@ -24,6 +24,9 @@ import (
 
 const SettingsUpdateChannel = "system_settings:updated"
 
+// MaxCodexAffinityAttempts keeps write-time validation and proxy runtime clamping aligned.
+const MaxCodexAffinityAttempts = 500
+
 // SystemSettingsManager manages system configuration.
 type SystemSettingsManager struct {
 	syncer           *syncer.CacheSyncer[types.SystemSettings]
@@ -492,8 +495,8 @@ func (sm *SystemSettingsManager) ValidateGroupConfigOverrides(configMap map[stri
 			if intVal < 1 {
 				return fmt.Errorf("value for %s (%d) is below minimum value (%d)", key, intVal, 1)
 			}
-			if intVal > 500 {
-				return fmt.Errorf("value for %s (%d) exceeds maximum value (%d)", key, intVal, 500)
+			if intVal > MaxCodexAffinityAttempts {
+				return fmt.Errorf("value for %s (%d) exceeds maximum value (%d)", key, intVal, MaxCodexAffinityAttempts)
 			}
 			continue
 		}

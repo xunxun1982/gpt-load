@@ -48,7 +48,6 @@ const (
 	maxRetryConfigRetries        = 5000
 	maxSubRetryConfigRetries     = 500
 	defaultCodexAffinityAttempts = 5
-	maxCodexAffinityAttempts     = 500
 )
 
 const (
@@ -798,12 +797,12 @@ func sanitizeInternalError(err error) error {
 
 // parseRetryConfigInt extracts and validates a retry-related integer config value.
 // Aggregate failovers and per-sub-group key retries have separate UI/runtime caps.
-func parseRetryConfigInt(config map[string]any, key string) int {
-	if config == nil {
+func parseRetryConfigInt(cfg map[string]any, key string) int {
+	if cfg == nil {
 		return 0
 	}
 
-	val, ok := config[key]
+	val, ok := cfg[key]
 	if !ok {
 		return 0
 	}
@@ -849,8 +848,11 @@ func parseRetryConfigInt(config map[string]any, key string) int {
 		return 0
 	}
 	maxRetries := maxRetryConfigRetries
-	if key == "sub_max_retries" || key == "codex_affinity_max_retries" {
+	switch key {
+	case "sub_max_retries":
 		maxRetries = maxSubRetryConfigRetries
+	case "codex_affinity_max_retries":
+		maxRetries = config.MaxCodexAffinityAttempts
 	}
 	if retries > maxRetries {
 		return maxRetries
@@ -880,19 +882,19 @@ func parseSubMaxRetries(config map[string]any) (int, bool) {
 
 // parseCodexAffinityMaxAttempts returns the total affinity attempt limit,
 // including the first request. Missing or invalid persisted values use 5.
-func parseCodexAffinityMaxAttempts(config map[string]any) int {
-	if config == nil {
+func parseCodexAffinityMaxAttempts(cfg map[string]any) int {
+	if cfg == nil {
 		return defaultCodexAffinityAttempts
 	}
-	if _, ok := config["codex_affinity_max_retries"]; !ok {
+	if _, ok := cfg["codex_affinity_max_retries"]; !ok {
 		return defaultCodexAffinityAttempts
 	}
-	attempts := parseRetryConfigInt(config, "codex_affinity_max_retries")
+	attempts := parseRetryConfigInt(cfg, "codex_affinity_max_retries")
 	if attempts < 1 {
 		return defaultCodexAffinityAttempts
 	}
-	if attempts > maxCodexAffinityAttempts {
-		return maxCodexAffinityAttempts
+	if attempts > config.MaxCodexAffinityAttempts {
+		return config.MaxCodexAffinityAttempts
 	}
 	return attempts
 }

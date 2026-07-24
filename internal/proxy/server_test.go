@@ -471,6 +471,14 @@ func TestParseRetryConfigInt(t *testing.T) {
 			key:      "sub_max_retries",
 			expected: 500,
 		},
+		{
+			name: "codex_affinity_max_retries_clamped_to_shared_limit",
+			config: map[string]any{
+				"codex_affinity_max_retries": config.MaxCodexAffinityAttempts + 1,
+			},
+			key:      "codex_affinity_max_retries",
+			expected: config.MaxCodexAffinityAttempts,
+		},
 	}
 
 	for _, tt := range tests {

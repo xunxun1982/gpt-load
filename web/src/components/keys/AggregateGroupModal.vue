@@ -93,6 +93,7 @@ const preconditionOptions = computed<PreconditionOption[]>(() => [
   },
 ]);
 const healthResetOptions = computed(() => getAggregateHealthResetOptions(t));
+const maxCodexAffinityAttempts = 500;
 
 // Get available precondition options (exclude already added)
 const availablePreconditionOptions = computed<SelectOption[]>(() => {
@@ -148,6 +149,19 @@ const rules: FormRules = {
     {
       required: true,
       message: t("keys.selectChannelType"),
+      trigger: ["blur", "change"],
+    },
+  ],
+  codex_affinity_max_retries: [
+    {
+      validator: (_rule, value) =>
+        formData.channel_type !== "openai-response" ||
+        !formData.codex_affinity_enabled ||
+        (typeof value === "number" &&
+          Number.isInteger(value) &&
+          value >= 1 &&
+          value <= maxCodexAffinityAttempts),
+      message: t("keys.codexAffinityMaxRetriesHint"),
       trigger: ["blur", "change"],
     },
   ],
@@ -431,6 +445,8 @@ async function handleSubmit() {
               :placeholder="t('keys.maxRetriesPlaceholder')"
               :min="0"
               :max="5000"
+              :precision="0"
+              :step="1"
               clearable
               style="width: 100%"
             />
@@ -442,6 +458,8 @@ async function handleSubmit() {
               :placeholder="t('keys.subMaxRetriesPlaceholder')"
               :min="0"
               :max="500"
+              :precision="0"
+              :step="1"
               clearable
               style="width: 100%"
             />
@@ -475,11 +493,14 @@ async function handleSubmit() {
           <n-form-item
             v-if="formData.channel_type === 'openai-response' && formData.codex_affinity_enabled"
             :label="t('keys.codexAffinityMaxRetries')"
+            path="codex_affinity_max_retries"
           >
             <n-input-number
               v-model:value="formData.codex_affinity_max_retries"
               :min="1"
-              :max="500"
+              :max="maxCodexAffinityAttempts"
+              :precision="0"
+              :step="1"
               style="width: 100%"
             />
             <template #feedback>

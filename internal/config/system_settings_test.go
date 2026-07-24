@@ -446,7 +446,7 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 		{
 			name: "valid maximum codex_affinity_max_retries",
 			config: map[string]any{
-				"codex_affinity_max_retries": float64(500),
+				"codex_affinity_max_retries": float64(MaxCodexAffinityAttempts),
 			},
 			expectError: false,
 		},
@@ -469,7 +469,7 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 		{
 			name: "codex_affinity_max_retries above maximum",
 			config: map[string]any{
-				"codex_affinity_max_retries": float64(501),
+				"codex_affinity_max_retries": float64(MaxCodexAffinityAttempts + 1),
 			},
 			expectError: true,
 			errorMsg:    "exceeds maximum value",
