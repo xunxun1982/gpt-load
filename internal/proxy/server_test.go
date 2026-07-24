@@ -3783,6 +3783,9 @@ func TestExecuteRequestWithAggregateRetryCyclesAfterEveryAffinitySubGroupFails(t
 	require.Len(t, actualOrder, 8)
 	assert.Equal(t, []int{0, 0, 0, 0, 0}, actualOrder[:5])
 	assert.ElementsMatch(t, []int{1, 2}, actualOrder[5:7])
+	// Resetting the exhausted exclusion cycle restarts weighted selection. Only enabled-set membership,
+	// not the exact weighted winner, is part of the routing contract.
+	assert.Contains(t, []int{0, 1, 2}, actualOrder[7])
 	for _, bodyErr := range actualBodyErrors {
 		require.NoError(t, bodyErr)
 	}

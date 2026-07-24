@@ -47,7 +47,6 @@ const (
 	statusClientClosedRequest    = 499
 	maxRetryConfigRetries        = 5000
 	maxSubRetryConfigRetries     = 500
-	minCodexAffinityAttempts     = 1
 	defaultCodexAffinityAttempts = 5
 )
 
@@ -911,8 +910,8 @@ func parseCodexAffinityMaxAttempts(cfg map[string]any) int {
 		return defaultCodexAffinityAttempts
 	}
 	attempts, valid := parseRetryConfigInt(cfg, "codex_affinity_max_retries")
-	if !valid || attempts < minCodexAffinityAttempts {
-		return minCodexAffinityAttempts
+	if !valid || attempts < config.MinCodexAffinityAttempts {
+		return config.MinCodexAffinityAttempts
 	}
 	if attempts > config.MaxCodexAffinityAttempts {
 		return config.MaxCodexAffinityAttempts
