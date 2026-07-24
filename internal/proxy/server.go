@@ -47,6 +47,7 @@ const (
 	statusClientClosedRequest    = 499
 	maxRetryConfigRetries        = 5000
 	maxSubRetryConfigRetries     = 500
+	minCodexAffinityAttempts     = 1
 	defaultCodexAffinityAttempts = 5
 )
 
@@ -795,58 +796,18 @@ func sanitizeInternalError(err error) error {
 	return errors.New(sanitizeInternalErrorMessage(err.Error()))
 }
 
-// parseRetryConfigInt extracts and validates a retry-related integer config value.
-// Aggregate failovers and per-sub-group key retries have separate UI/runtime caps.
-func parseRetryConfigInt(cfg map[string]any, key string) int {
+// parseRetryConfigInt returns a clamped retry value and whether the configured
+// value used a supported integer representation. Missing values are invalid here.
+func parseRetryConfigInt(cfg map[string]any, key string) (int, bool) {
 	if cfg == nil {
-		return 0
+		return 0, false
 	}
 
 	val, ok := cfg[key]
 	if !ok {
-		return 0
+		return 0, false
 	}
 
-	retries := 0
-	// Try different type assertions
-	switch v := val.(type) {
-	case float64:
-		retries = int(v)
-	case int:
-		retries = v
-	case int64:
-		retries = int(v)
-	case json.Number:
-		if parsed, err := v.Int64(); err == nil {
-			retries = int(parsed)
-		} else {
-			logrus.WithFields(logrus.Fields{
-				"config_key": key,
-				"value":      v,
-				"error":      err,
-			}).Warn("Failed to parse json.Number for retry config value")
-		}
-	case string:
-		if parsed, err := strconv.Atoi(v); err == nil {
-			retries = parsed
-		} else {
-			logrus.WithFields(logrus.Fields{
-				"config_key": key,
-				"value":      v,
-				"error":      err,
-			}).Warn("Failed to parse string for retry config value")
-		}
-	default:
-		logrus.WithFields(logrus.Fields{
-			"config_key": key,
-			"value":      val,
-			"type":       fmt.Sprintf("%T", val),
-		}).Warn("Unexpected type for retry config value")
-	}
-
-	if retries < 0 {
-		return 0
-	}
 	maxRetries := maxRetryConfigRetries
 	switch key {
 	case "sub_max_retries":
@@ -854,17 +815,75 @@ func parseRetryConfigInt(cfg map[string]any, key string) int {
 	case "codex_affinity_max_retries":
 		maxRetries = config.MaxCodexAffinityAttempts
 	}
-	if retries > maxRetries {
-		return maxRetries
+
+	var retries int64
+	// JSON, database adapters, and typed callers can expose different numeric types.
+	switch v := val.(type) {
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
+			logrus.WithFields(logrus.Fields{
+				"config_key": key,
+				"value":      v,
+			}).Warn("Retry config value must be a finite integer")
+			return 0, false
+		}
+		if v < 0 {
+			return 0, true
+		}
+		if v > float64(maxRetries) {
+			return maxRetries, true
+		}
+		retries = int64(v)
+	case int:
+		retries = int64(v)
+	case int64:
+		retries = v
+	case json.Number:
+		if parsed, err := v.Int64(); err == nil {
+			retries = parsed
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"config_key": key,
+				"value":      v,
+				"error":      err,
+			}).Warn("Failed to parse json.Number for retry config value")
+			return 0, false
+		}
+	case string:
+		if parsed, err := strconv.Atoi(v); err == nil {
+			retries = int64(parsed)
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"config_key": key,
+				"value":      v,
+				"error":      err,
+			}).Warn("Failed to parse string for retry config value")
+			return 0, false
+		}
+	default:
+		logrus.WithFields(logrus.Fields{
+			"config_key": key,
+			"value":      val,
+			"type":       fmt.Sprintf("%T", val),
+		}).Warn("Unexpected type for retry config value")
+		return 0, false
 	}
 
-	return retries
+	if retries < 0 {
+		return 0, true
+	}
+	if retries > int64(maxRetries) {
+		return maxRetries, true
+	}
+
+	return int(retries), true
 }
 
 // parseMaxRetries extracts and validates max_retries from group config
 // Returns a value clamped to the range [0, 5000].
 func parseMaxRetries(config map[string]any) int {
-	return parseRetryConfigInt(config, "max_retries")
+	retries, _ := parseRetryConfigInt(config, "max_retries")
+	return retries
 }
 
 // parseSubMaxRetries extracts and validates sub_max_retries from group config.
@@ -877,11 +896,13 @@ func parseSubMaxRetries(config map[string]any) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	return parseRetryConfigInt(config, "sub_max_retries"), true
+	retries, _ := parseRetryConfigInt(config, "sub_max_retries")
+	return retries, true
 }
 
 // parseCodexAffinityMaxAttempts returns the total affinity attempt limit,
-// including the first request. Missing or invalid persisted values use 5.
+// including the first request. Missing values use 5; invalid persisted values
+// fail closed to one attempt so malformed config cannot amplify upstream load.
 func parseCodexAffinityMaxAttempts(cfg map[string]any) int {
 	if cfg == nil {
 		return defaultCodexAffinityAttempts
@@ -889,9 +910,9 @@ func parseCodexAffinityMaxAttempts(cfg map[string]any) int {
 	if _, ok := cfg["codex_affinity_max_retries"]; !ok {
 		return defaultCodexAffinityAttempts
 	}
-	attempts := parseRetryConfigInt(cfg, "codex_affinity_max_retries")
-	if attempts < 1 {
-		return defaultCodexAffinityAttempts
+	attempts, valid := parseRetryConfigInt(cfg, "codex_affinity_max_retries")
+	if !valid || attempts < minCodexAffinityAttempts {
+		return minCodexAffinityAttempts
 	}
 	if attempts > config.MaxCodexAffinityAttempts {
 		return config.MaxCodexAffinityAttempts
@@ -2774,7 +2795,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCtx.attemptCount+1, err)
 		if codexAffinityEnabled && !retryCtx.codexAffinityDegraded &&
 			retryCtx.codexAffinityPrimarySubGroupID == subGroupID {
-			// No request was sent, so this does not consume an affinity attempt.
+			// This is not a primary upstream attempt: SelectKey failed before client.Do,
+			// so no affinity attempt is consumed. Degrade now so fallback strips reasoning.
 			retryCtx.codexAffinityDegraded = true
 		}
 

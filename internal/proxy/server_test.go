@@ -418,10 +418,11 @@ func TestParseRetryConfigInt(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		config   map[string]any
-		key      string
-		expected int
+		name          string
+		config        map[string]any
+		key           string
+		expected      int
+		expectedValid bool
 	}{
 		{
 			name:     "nil_config",
@@ -436,47 +437,142 @@ func TestParseRetryConfigInt(t *testing.T) {
 			expected: 0,
 		},
 		{
-			name:     "float64_value",
-			config:   map[string]any{"max_retries": float64(5)},
-			key:      "max_retries",
-			expected: 5,
+			name:          "float64_value",
+			config:        map[string]any{"max_retries": float64(5)},
+			key:           "max_retries",
+			expected:      5,
+			expectedValid: true,
 		},
 		{
-			name:     "int_value",
-			config:   map[string]any{"max_retries": 3},
-			key:      "max_retries",
-			expected: 3,
-		},
-		{
-			name:     "string_value",
-			config:   map[string]any{"max_retries": "7"},
-			key:      "max_retries",
-			expected: 7,
-		},
-		{
-			name:     "negative_clamped",
-			config:   map[string]any{"max_retries": -5},
+			name:     "fractional_float64_rejected",
+			config:   map[string]any{"max_retries": 1.9},
 			key:      "max_retries",
 			expected: 0,
 		},
 		{
-			name:     "max_retries_clamped_to_5000",
-			config:   map[string]any{"max_retries": 5001},
+			name:     "fractional_json_number_rejected",
+			config:   map[string]any{"max_retries": json.Number("1.9")},
 			key:      "max_retries",
-			expected: 5000,
+			expected: 0,
 		},
 		{
-			name:     "sub_max_retries_clamped_to_500",
-			config:   map[string]any{"sub_max_retries": 501},
-			key:      "sub_max_retries",
-			expected: 500,
+			name:          "int_value",
+			config:        map[string]any{"max_retries": 3},
+			key:           "max_retries",
+			expected:      3,
+			expectedValid: true,
+		},
+		{
+			name:          "int64_value",
+			config:        map[string]any{"max_retries": int64(4)},
+			key:           "max_retries",
+			expected:      4,
+			expectedValid: true,
+		},
+		{
+			name:          "json_number_value",
+			config:        map[string]any{"max_retries": json.Number("6")},
+			key:           "max_retries",
+			expected:      6,
+			expectedValid: true,
+		},
+		{
+			name:          "string_value",
+			config:        map[string]any{"max_retries": "7"},
+			key:           "max_retries",
+			expected:      7,
+			expectedValid: true,
+		},
+		{
+			name:          "negative_clamped",
+			config:        map[string]any{"max_retries": -5},
+			key:           "max_retries",
+			expected:      0,
+			expectedValid: true,
+		},
+		{
+			name:          "max_retries_clamped_to_5000",
+			config:        map[string]any{"max_retries": 5001},
+			key:           "max_retries",
+			expected:      5000,
+			expectedValid: true,
+		},
+		{
+			name:          "sub_max_retries_clamped_to_500",
+			config:        map[string]any{"sub_max_retries": 501},
+			key:           "sub_max_retries",
+			expected:      500,
+			expectedValid: true,
 		},
 		{
 			name: "codex_affinity_max_retries_clamped_to_shared_limit",
 			config: map[string]any{
 				"codex_affinity_max_retries": config.MaxCodexAffinityAttempts + 1,
 			},
-			key:      "codex_affinity_max_retries",
+			key:           "codex_affinity_max_retries",
+			expected:      config.MaxCodexAffinityAttempts,
+			expectedValid: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result, valid := parseRetryConfigInt(tt.config, tt.key)
+			assert.Equal(t, tt.expected, result)
+			assert.Equal(t, tt.expectedValid, valid)
+		})
+	}
+}
+
+func TestParseCodexAffinityMaxAttempts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		config   map[string]any
+		expected int
+	}{
+		{
+			name:     "nil_config_uses_default",
+			config:   nil,
+			expected: defaultCodexAffinityAttempts,
+		},
+		{
+			name:     "missing_value_uses_default",
+			config:   map[string]any{},
+			expected: defaultCodexAffinityAttempts,
+		},
+		{
+			name:     "valid_value",
+			config:   map[string]any{"codex_affinity_max_retries": float64(3)},
+			expected: 3,
+		},
+		{
+			name:     "zero_fails_closed",
+			config:   map[string]any{"codex_affinity_max_retries": 0},
+			expected: 1,
+		},
+		{
+			name:     "negative_fails_closed",
+			config:   map[string]any{"codex_affinity_max_retries": -1},
+			expected: 1,
+		},
+		{
+			name:     "fractional_float64_fails_closed",
+			config:   map[string]any{"codex_affinity_max_retries": 2.9},
+			expected: 1,
+		},
+		{
+			name:     "fractional_json_number_fails_closed",
+			config:   map[string]any{"codex_affinity_max_retries": json.Number("2.9")},
+			expected: 1,
+		},
+		{
+			name: "value_clamped_to_shared_limit",
+			config: map[string]any{
+				"codex_affinity_max_retries": config.MaxCodexAffinityAttempts + 1,
+			},
 			expected: config.MaxCodexAffinityAttempts,
 		},
 	}
@@ -484,8 +580,7 @@ func TestParseRetryConfigInt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := parseRetryConfigInt(tt.config, tt.key)
-			assert.Equal(t, tt.expected, result)
+			assert.Equal(t, tt.expected, parseCodexAffinityMaxAttempts(tt.config))
 		})
 	}
 }
@@ -6013,7 +6108,7 @@ func BenchmarkParseRetryConfigInt(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_ = parseRetryConfigInt(config, "max_retries")
+		_, _ = parseRetryConfigInt(config, "max_retries")
 	}
 }
 
