@@ -418,10 +418,11 @@ func TestParseRetryConfigInt(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		config   map[string]any
-		key      string
-		expected int
+		name          string
+		config        map[string]any
+		key           string
+		expected      int
+		expectedValid bool
 	}{
 		{
 			name:     "nil_config",
@@ -436,48 +437,150 @@ func TestParseRetryConfigInt(t *testing.T) {
 			expected: 0,
 		},
 		{
-			name:     "float64_value",
-			config:   map[string]any{"max_retries": float64(5)},
-			key:      "max_retries",
-			expected: 5,
+			name:          "float64_value",
+			config:        map[string]any{"max_retries": float64(5)},
+			key:           "max_retries",
+			expected:      5,
+			expectedValid: true,
 		},
 		{
-			name:     "int_value",
-			config:   map[string]any{"max_retries": 3},
-			key:      "max_retries",
-			expected: 3,
-		},
-		{
-			name:     "string_value",
-			config:   map[string]any{"max_retries": "7"},
-			key:      "max_retries",
-			expected: 7,
-		},
-		{
-			name:     "negative_clamped",
-			config:   map[string]any{"max_retries": -5},
+			name:     "fractional_float64_rejected",
+			config:   map[string]any{"max_retries": 1.9},
 			key:      "max_retries",
 			expected: 0,
 		},
 		{
-			name:     "max_retries_clamped_to_5000",
-			config:   map[string]any{"max_retries": 5001},
+			name:     "fractional_json_number_rejected",
+			config:   map[string]any{"max_retries": json.Number("1.9")},
 			key:      "max_retries",
-			expected: 5000,
+			expected: 0,
 		},
 		{
-			name:     "sub_max_retries_clamped_to_500",
-			config:   map[string]any{"sub_max_retries": 501},
-			key:      "sub_max_retries",
-			expected: 500,
+			name:          "int_value",
+			config:        map[string]any{"max_retries": 3},
+			key:           "max_retries",
+			expected:      3,
+			expectedValid: true,
+		},
+		{
+			name:          "int64_value",
+			config:        map[string]any{"max_retries": int64(4)},
+			key:           "max_retries",
+			expected:      4,
+			expectedValid: true,
+		},
+		{
+			name:          "json_number_value",
+			config:        map[string]any{"max_retries": json.Number("6")},
+			key:           "max_retries",
+			expected:      6,
+			expectedValid: true,
+		},
+		{
+			name:          "string_value",
+			config:        map[string]any{"max_retries": "7"},
+			key:           "max_retries",
+			expected:      7,
+			expectedValid: true,
+		},
+		{
+			name:          "negative_clamped",
+			config:        map[string]any{"max_retries": -5},
+			key:           "max_retries",
+			expected:      0,
+			expectedValid: true,
+		},
+		{
+			name:          "max_retries_clamped_to_5000",
+			config:        map[string]any{"max_retries": 5001},
+			key:           "max_retries",
+			expected:      5000,
+			expectedValid: true,
+		},
+		{
+			name:          "sub_max_retries_clamped_to_500",
+			config:        map[string]any{"sub_max_retries": 501},
+			key:           "sub_max_retries",
+			expected:      500,
+			expectedValid: true,
+		},
+		{
+			name: "codex_affinity_max_retries_clamped_to_shared_limit",
+			config: map[string]any{
+				"codex_affinity_max_retries": config.MaxCodexAffinityAttempts + 1,
+			},
+			key:           "codex_affinity_max_retries",
+			expected:      config.MaxCodexAffinityAttempts,
+			expectedValid: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := parseRetryConfigInt(tt.config, tt.key)
+			result, valid := parseRetryConfigInt(tt.config, tt.key)
 			assert.Equal(t, tt.expected, result)
+			assert.Equal(t, tt.expectedValid, valid)
+		})
+	}
+}
+
+func TestParseCodexAffinityMaxAttempts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		config   map[string]any
+		expected int
+	}{
+		{
+			name:     "nil_config_uses_default",
+			config:   nil,
+			expected: defaultCodexAffinityAttempts,
+		},
+		{
+			name:     "missing_value_uses_default",
+			config:   map[string]any{},
+			expected: defaultCodexAffinityAttempts,
+		},
+		{
+			name:     "valid_value",
+			config:   map[string]any{"codex_affinity_max_retries": float64(3)},
+			expected: 3,
+		},
+		{
+			name:     "zero_fails_closed",
+			config:   map[string]any{"codex_affinity_max_retries": 0},
+			expected: 1,
+		},
+		{
+			name:     "negative_fails_closed",
+			config:   map[string]any{"codex_affinity_max_retries": -1},
+			expected: 1,
+		},
+		{
+			name:     "fractional_float64_fails_closed",
+			config:   map[string]any{"codex_affinity_max_retries": 2.9},
+			expected: 1,
+		},
+		{
+			name:     "fractional_json_number_fails_closed",
+			config:   map[string]any{"codex_affinity_max_retries": json.Number("2.9")},
+			expected: 1,
+		},
+		{
+			name: "value_clamped_to_shared_limit",
+			config: map[string]any{
+				"codex_affinity_max_retries": config.MaxCodexAffinityAttempts + 1,
+			},
+			expected: config.MaxCodexAffinityAttempts,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, parseCodexAffinityMaxAttempts(tt.config))
 		})
 	}
 }
@@ -3340,7 +3443,7 @@ func TestExecuteRequestWithAggregateRetryUsesSelectedSubGroupMaxRetries(t *testi
 	assert.Equal(t, 1, requestTypes[models.RequestTypeFinal])
 }
 
-func TestExecuteRequestWithAggregateRetryLimitsAffinityKeyRetriesByParentSubMaxRetries(t *testing.T) {
+func TestExecuteRequestWithAggregateRetryUsesDefaultCodexAffinityMaxAttempts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	db := setupTestDB(t)
@@ -3349,9 +3452,9 @@ func TestExecuteRequestWithAggregateRetryLimitsAffinityKeyRetriesByParentSubMaxR
 	var affinityAttempts int32
 	var fallbackAttempts int32
 	loadFallbackKey := make(chan error, 1)
-	affinityBodies := make(chan []byte, 2)
+	affinityBodies := make(chan []byte, 5)
 	fallbackBodies := make(chan []byte, 1)
-	bodyReadErrors := make(chan error, 3)
+	bodyReadErrors := make(chan error, 6)
 	affinityUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		bodyReadErrors <- err
@@ -3361,7 +3464,7 @@ func TestExecuteRequestWithAggregateRetryLimitsAffinityKeyRetriesByParentSubMaxR
 		}
 		affinityBodies <- body
 		attempt := atomic.AddInt32(&affinityAttempts, 1)
-		if attempt == 2 {
+		if attempt == 1 {
 			loadFallbackKey <- ps.keyProvider.LoadKeysFromDB()
 		}
 		http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
@@ -3385,11 +3488,11 @@ func TestExecuteRequestWithAggregateRetryLimitsAffinityKeyRetriesByParentSubMaxR
 	affinitySubGroup := createTestGroup(t, db, "agg-affinity-sub-retry-target", "openai-response")
 	affinitySubGroup.Upstreams = []byte(`[{"url":"` + affinityUpstream.URL + `","weight":100}]`)
 	affinitySubGroup.Config = map[string]any{
-		"max_retries":         10,
+		"max_retries":         0,
 		"blacklist_threshold": 100,
 		"force_non_stream":    true,
 	}
-	affinitySubGroup.EffectiveConfig = systemSettingsWithRetryTimeout(10, 1)
+	affinitySubGroup.EffectiveConfig = systemSettingsWithRetryTimeout(0, 1)
 	require.NoError(t, db.Save(affinitySubGroup).Error)
 
 	fallbackSubGroup := createTestGroup(t, db, "agg-affinity-sub-retry-fallback", "openai-response")
@@ -3410,7 +3513,7 @@ func TestExecuteRequestWithAggregateRetryLimitsAffinityKeyRetriesByParentSubMaxR
 		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
 		Config: map[string]any{
 			"max_retries":            1,
-			"sub_max_retries":        1,
+			"sub_max_retries":        0,
 			"codex_affinity_enabled": true,
 		},
 	}
@@ -3461,12 +3564,12 @@ func TestExecuteRequestWithAggregateRetryLimitsAffinityKeyRetriesByParentSubMaxR
 
 	require.NoError(t, <-loadFallbackKey)
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, int32(2), atomic.LoadInt32(&affinityAttempts))
-	assert.Equal(t, int32(1), atomic.LoadInt32(&fallbackAttempts))
-	for i := 0; i < 3; i++ {
+	require.Equal(t, int32(5), atomic.LoadInt32(&affinityAttempts))
+	require.Equal(t, int32(1), atomic.LoadInt32(&fallbackAttempts))
+	for i := 0; i < 6; i++ {
 		require.NoError(t, <-bodyReadErrors)
 	}
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 5; i++ {
 		var payload map[string]any
 		require.NoError(t, json.Unmarshal(<-affinityBodies, &payload))
 		assert.True(t, jsonArrayContainsStringForTest(payload["include"], responsesEncryptedReasoning))
@@ -3478,6 +3581,102 @@ func TestExecuteRequestWithAggregateRetryLimitsAffinityKeyRetriesByParentSubMaxR
 	assert.False(t, jsonInputContainsReasoningItemForTest(fallbackPayload["input"]))
 }
 
+func TestExecuteRequestWithAggregateRetryCodexAffinityExhaustionDoesNotCreateFailoverBudget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	var attempts int32
+	requestBodies := make(chan []byte, 5)
+	bodyReadErrors := make(chan error, 5)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		bodyReadErrors <- err
+		if err != nil {
+			http.Error(w, `{"error":"read failed"}`, http.StatusBadRequest)
+			return
+		}
+		requestBodies <- body
+		atomic.AddInt32(&attempts, 1)
+		http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
+	}))
+	t.Cleanup(upstream.Close)
+
+	primarySubGroup := createTestGroup(t, db, "agg-affinity-no-failover-budget-primary", "openai-response")
+	primarySubGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	primarySubGroup.Config = map[string]any{
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+		"force_non_stream":    true,
+	}
+	primarySubGroup.EffectiveConfig = systemSettingsWithRetryTimeout(0, 1)
+	require.NoError(t, db.Save(primarySubGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-affinity-no-failover-budget-parent",
+		ChannelType: "openai-response",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config: map[string]any{
+			"max_retries":            0,
+			"sub_max_retries":        0,
+			"codex_affinity_enabled": true,
+		},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      primarySubGroup.ID,
+		SubGroupName:    primarySubGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, primarySubGroup.ID, "sk-agg-affinity-no-failover-budget", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() {
+		ps.groupManager.Stop(context.Background())
+	})
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+
+	const affinityKey = "no-failover-budget-session"
+	const model = "gpt-5"
+	ps.codexAffinityCache.set(
+		codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, model),
+		primarySubGroup.ID,
+		time.Now(),
+	)
+	body := []byte(`{"model":"` + model + `","prompt_cache_key":"` + affinityKey + `","include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	require.Equal(t, int32(5), atomic.LoadInt32(&attempts))
+	for i := 0; i < 5; i++ {
+		require.NoError(t, <-bodyReadErrors)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(<-requestBodies, &payload))
+		assert.True(t, jsonArrayContainsStringForTest(payload["include"], responsesEncryptedReasoning))
+		assert.True(t, jsonInputContainsReasoningItemForTest(payload["input"]))
+	}
+}
+
 func TestExecuteRequestWithAggregateRetryCyclesAfterEveryAffinitySubGroupFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -3487,13 +3686,22 @@ func TestExecuteRequestWithAggregateRetryCyclesAfterEveryAffinitySubGroupFails(t
 	var attempts [3]int32
 	var attemptOrderMu sync.Mutex
 	var attemptOrder []int
+	var reasoningOrder []bool
+	var bodyErrors []error
 	subGroups := make([]*models.Group, 0, len(attempts))
 	for i := range attempts {
 		index := i
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, bodyErr := io.ReadAll(r.Body)
+			var payload map[string]any
+			if bodyErr == nil {
+				bodyErr = json.Unmarshal(body, &payload)
+			}
 			atomic.AddInt32(&attempts[index], 1)
 			attemptOrderMu.Lock()
 			attemptOrder = append(attemptOrder, index)
+			reasoningOrder = append(reasoningOrder, jsonInputContainsReasoningItemForTest(payload["input"]))
+			bodyErrors = append(bodyErrors, bodyErr)
 			attemptOrderMu.Unlock()
 			http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
 		}))
@@ -3518,7 +3726,7 @@ func TestExecuteRequestWithAggregateRetryCyclesAfterEveryAffinitySubGroupFails(t
 		Enabled:     true,
 		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
 		Config: map[string]any{
-			"max_retries":            5,
+			"max_retries":            3,
 			"sub_max_retries":        0,
 			"codex_affinity_enabled": true,
 		},
@@ -3551,7 +3759,7 @@ func TestExecuteRequestWithAggregateRetryCyclesAfterEveryAffinitySubGroupFails(t
 		subGroups[0].ID,
 		time.Now(),
 	)
-	body := []byte(`{"model":"` + model + `","prompt_cache_key":"` + affinityKey + `","input":"hello"}`)
+	body := []byte(`{"model":"` + model + `","prompt_cache_key":"` + affinityKey + `","include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
@@ -3567,17 +3775,21 @@ func TestExecuteRequestWithAggregateRetryCyclesAfterEveryAffinitySubGroupFails(t
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 
 	require.Equal(t, http.StatusBadGateway, w.Code)
-	for i := range attempts {
-		assert.Equal(t, int32(2), atomic.LoadInt32(&attempts[i]), "sub-group %d should run once per retry cycle", i)
-	}
 	attemptOrderMu.Lock()
 	actualOrder := append([]int(nil), attemptOrder...)
+	actualReasoningOrder := append([]bool(nil), reasoningOrder...)
+	actualBodyErrors := append([]error(nil), bodyErrors...)
 	attemptOrderMu.Unlock()
-	require.Len(t, actualOrder, 6)
-	assert.Equal(t, 0, actualOrder[0], "the first retry cycle should start from the affinity sub-group")
-	assert.ElementsMatch(t, []int{0, 1, 2}, actualOrder[:3])
-	assert.Equal(t, 0, actualOrder[3], "the next retry cycle should restart from the affinity sub-group")
-	assert.ElementsMatch(t, []int{0, 1, 2}, actualOrder[3:])
+	require.Len(t, actualOrder, 8)
+	assert.Equal(t, []int{0, 0, 0, 0, 0}, actualOrder[:5])
+	assert.ElementsMatch(t, []int{1, 2}, actualOrder[5:7])
+	// Resetting the exhausted exclusion cycle restarts weighted selection. Only enabled-set membership,
+	// not the exact weighted winner, is part of the routing contract.
+	assert.Contains(t, []int{0, 1, 2}, actualOrder[7])
+	for _, bodyErr := range actualBodyErrors {
+		require.NoError(t, bodyErr)
+	}
+	assert.Equal(t, []bool{true, true, true, true, true, false, false, false}, actualReasoningOrder)
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityFallbackWithoutClientIdentityStripsEncryptedReasoning(t *testing.T) {
@@ -3649,8 +3861,9 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityFallbackWithoutClientIdent
 		Enabled:     true,
 		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
 		Config: map[string]any{
-			"max_retries":            1,
-			"codex_affinity_enabled": true,
+			"max_retries":                1,
+			"codex_affinity_enabled":     true,
+			"codex_affinity_max_retries": 1,
 		},
 	}
 	require.NoError(t, db.Create(aggregateGroup).Error)
@@ -4097,8 +4310,9 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityOfficialSessionHeaderBinds
 		Enabled:     true,
 		Upstreams:   []byte(`[]`),
 		Config: map[string]any{
-			"max_retries":            1,
-			"codex_affinity_enabled": true,
+			"max_retries":                1,
+			"codex_affinity_enabled":     true,
+			"codex_affinity_max_retries": 1,
 		},
 	}
 	require.NoError(t, db.Create(aggregateGroup).Error)
@@ -4544,8 +4758,9 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 		Enabled:     true,
 		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
 		Config: map[string]any{
-			"max_retries":            1,
-			"codex_affinity_enabled": true,
+			"max_retries":                1,
+			"codex_affinity_enabled":     true,
+			"codex_affinity_max_retries": 1,
 		},
 	}
 	require.NoError(t, db.Create(aggregateGroup).Error)
@@ -4912,9 +5127,10 @@ func TestExecuteRequestWithAggregateRetrySubMaxRetriesDoesNotCapParentGroupRetri
 		Enabled:     true,
 		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
 		Config: map[string]any{
-			"max_retries":            2,
-			"sub_max_retries":        1,
-			"codex_affinity_enabled": true,
+			"max_retries":                2,
+			"sub_max_retries":            1,
+			"codex_affinity_enabled":     true,
+			"codex_affinity_max_retries": 2,
 		},
 	}
 	require.NoError(t, db.Create(aggregateGroup).Error)
@@ -5895,7 +6111,7 @@ func BenchmarkParseRetryConfigInt(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_ = parseRetryConfigInt(config, "max_retries")
+		_, _ = parseRetryConfigInt(config, "max_retries")
 	}
 }
 

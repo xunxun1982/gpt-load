@@ -905,14 +905,17 @@ func TestValidateAndCleanConfigCodexAffinityScope(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cleaned, err := svc.validateAndCleanConfig(map[string]any{
-				"codex_affinity_enabled": true,
+				"codex_affinity_enabled":     true,
+				"codex_affinity_max_retries": float64(5),
 			}, tt.channelType)
 
 			require.NoError(t, err)
 			if tt.want {
 				assert.Equal(t, true, cleaned["codex_affinity_enabled"])
+				assert.Equal(t, float64(5), cleaned["codex_affinity_max_retries"])
 			} else {
 				assert.NotContains(t, cleaned, "codex_affinity_enabled")
+				assert.NotContains(t, cleaned, "codex_affinity_max_retries")
 			}
 		})
 	}

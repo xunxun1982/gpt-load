@@ -398,7 +398,8 @@ export default {
     maxRetries: "最大重试次数",
     maxRetriesPlaceholder: "单次聚合请求可切换子组的最大次数（0-5000）",
     subMaxRetries: "子组重试上限",
-    subMaxRetriesPlaceholder: "留空表示不额外限制；0 表示不做额外 Key 重试（范围 0-500）",
+    subMaxRetriesPlaceholder:
+      "仅限制普通请求及亲和降级后的子组内额外 Key 重试；留空不额外限制，0 表示不重试（0-500）",
     healthResetInterval: "健康度重置周期",
     healthResetDisabled: "不自动重置",
     healthResetEveryMinutes: "每 {count} 分钟",
@@ -407,9 +408,10 @@ export default {
     healthResetHint: "按每天 00:00 起算，周期到达后重置该聚合分组下所有子分组健康度",
     codexAffinity: "Codex 亲和力",
     codexAffinityHint:
-      "仅对 OpenAI Responses 聚合分组的 Codex 请求有效，默认关闭。启用后，同一 Codex 会话会优先稳定选择同一子组；只有该子组不可用或重试耗尽后，才按剩余可用子组的有效权重选择。除切到非亲和子组时会移除 Responses encrypted reasoning 以提升兼容性外，不修改请求头。",
-    codexAffinityRetryHint:
-      "启用 Codex 亲和力时，建议适当增加子组重试上限，避免临时 Key 失败时过早切换到其他子组；聚合层仍受最大重试次数限制。",
+      "仅对 OpenAI Responses 聚合分组的 Codex 请求有效，默认关闭。启用后，同一 Codex 会话会优先稳定选择同一子组；该子组不可用或亲和尝试耗尽后，才按剩余可用子组的有效权重选择。进入切组后会移除 Responses encrypted reasoning 以提升兼容性，不修改请求头。",
+    codexAffinityMaxRetries: "Codex 亲和最大重试",
+    codexAffinityMaxRetriesHint:
+      "包含首次请求的总尝试次数；默认 5 = 首次请求 1 次 + 最多 4 次亲和重试。该次数耗尽后才进入子组切换，切组次数仍受最大重试次数限制；另两个字段只计算首次请求后的切组或 Key 重试。",
     precondition: "前置条件",
     preconditions: "前置条件",
     preconditionMaxRequestSize: "请求大小限制",
