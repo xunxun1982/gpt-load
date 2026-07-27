@@ -45,6 +45,23 @@ type testChannelProxy struct {
 	url    string
 }
 
+// recordUpstreamTestPath retains the first path without blocking unexpected retries.
+func recordUpstreamTestPath(receivedPath chan<- string, requestCount *int32, path string) {
+	atomic.AddInt32(requestCount, 1)
+	select {
+	case receivedPath <- path:
+	default:
+	}
+}
+
+// Callers use a size-one buffer after the synchronous proxy request returns, so
+// checking the count first makes missing or extra requests fail without blocking.
+func requireSingleUpstreamTestPath(t *testing.T, receivedPath <-chan string, requestCount *int32, expectedPath string) {
+	t.Helper()
+	require.Equal(t, int32(1), atomic.LoadInt32(requestCount), "unexpected upstream request count")
+	require.Equal(t, expectedPath, <-receivedPath)
+}
+
 func (p *testChannelProxy) SelectUpstreamWithClients(_ *url.URL, _ string) (*channel.UpstreamSelection, error) {
 	return &channel.UpstreamSelection{
 		URL:          p.url,
@@ -4763,9 +4780,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCrossProtocolFailureClears
 			db := setupTestDB(t)
 			ps := setupTestProxyServer(t, db)
 
+			var requestCount int32
 			receivedPath := make(chan string, 1)
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				receivedPath <- r.URL.Path
+				recordUpstreamTestPath(receivedPath, &requestCount, r.URL.Path)
 				http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
 			}))
 			t.Cleanup(upstream.Close)
@@ -4826,7 +4844,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCrossProtocolFailureClears
 			ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 
 			require.Equal(t, http.StatusBadGateway, w.Code)
-			assert.Equal(t, tt.expectedPath, <-receivedPath)
+			requireSingleUpstreamTestPath(t, receivedPath, &requestCount, tt.expectedPath)
 			_, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
 			assert.False(t, ok)
 		})
@@ -4839,9 +4857,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindIncompleteForce
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
+	var requestCount int32
 	receivedPath := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedPath <- r.URL.Path
+		recordUpstreamTestPath(receivedPath, &requestCount, r.URL.Path)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl_partial\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n")
 	}))
@@ -4899,7 +4918,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindIncompleteForce
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, true, time.Now(), retryCtx)
 
 	require.Equal(t, http.StatusBadGateway, w.Code)
-	assert.Equal(t, "/v1/chat/completions", <-receivedPath)
+	requireSingleUpstreamTestPath(t, receivedPath, &requestCount, "/v1/chat/completions")
 	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, "gpt-5")
 	_, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
 	assert.False(t, ok)
