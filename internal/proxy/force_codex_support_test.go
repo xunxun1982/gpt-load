@@ -591,6 +591,32 @@ func TestHandleForceCodexNormalResponseConvertsOpenAIChatError(t *testing.T) {
 	assert.NotContains(t, w.Body.String(), "sk-proj")
 }
 
+func TestHandleForceCodexNormalResponseMarksHTTP200LogicalFailure(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(ctxKeyCodexEnabled, true)
+	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamOpenAIChat)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body: io.NopCloser(strings.NewReader(
+			`{"error":{"type":"server_error","message":"temporary failure"}}`,
+		)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleForceCodexNormalResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	statusCode, message, failed := logicalStatusFromContext(c)
+	require.True(t, failed)
+	assert.Equal(t, http.StatusBadGateway, statusCode)
+	assert.Equal(t, "temporary failure", message)
+}
+
 func TestHandleForceCodexStreamingResponseEmitsFailedForAnthropicError(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -620,6 +646,10 @@ data: [DONE]
 	assert.NotContains(t, out, "event: response.completed")
 	assert.Contains(t, out, `"type":"overloaded_error"`)
 	assert.Contains(t, out, `"message":"try later"`)
+	statusCode, message, failed := logicalStatusFromContext(c)
+	require.True(t, failed)
+	assert.Equal(t, http.StatusBadGateway, statusCode)
+	assert.Equal(t, "try later", message)
 }
 
 func TestHandleForceCodexStreamingResponseEmitsFailedForOpenAIChatError(t *testing.T) {
@@ -652,6 +682,10 @@ data: [DONE]
 	assert.Contains(t, out, `"type":"invalid_request_error"`)
 	assert.Contains(t, out, `"message":"bad request Bearer [REDACTED_API_KEY]"`)
 	assert.NotContains(t, out, "sk-proj")
+	statusCode, message, failed := logicalStatusFromContext(c)
+	require.True(t, failed)
+	assert.Equal(t, http.StatusBadGateway, statusCode)
+	assert.Equal(t, "bad request Bearer [REDACTED_API_KEY]", message)
 }
 
 func TestHandleForceCodexStreamingResponseStopsAfterSSEWriteError(t *testing.T) {
@@ -680,6 +714,121 @@ data: [DONE]
 
 	assert.Equal(t, 1, failingWriter.writes)
 	assert.Empty(t, w.Body.String())
+	processingFailed, exists := c.Get(ctxKeyResponseProcessingFailed)
+	require.True(t, exists)
+	assert.Equal(t, true, processingFailed)
+}
+
+func TestHandleForceCodexStreamingResponseRejectsUnverifiedCompletion(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name   string
+		format string
+		stream string
+	}{
+		{
+			name:   "openai missing terminal",
+			format: codexUpstreamOpenAIChat,
+			stream: "data: {\"id\":\"chatcmpl_partial\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n",
+		},
+		{
+			name:   "openai empty finish reason",
+			format: codexUpstreamOpenAIChat,
+			stream: "data: {\"id\":\"chatcmpl_partial\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"\"}]}\n\n",
+		},
+		{
+			name:   "openai whitespace finish reason",
+			format: codexUpstreamOpenAIChat,
+			stream: "data: {\"id\":\"chatcmpl_partial\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"  \\t\"}]}\n\n",
+		},
+		{
+			name:   "anthropic missing message stop",
+			format: codexUpstreamClaude,
+			stream: "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_partial\",\"model\":\"claude-test\"}}\n\n" +
+				"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
+		},
+		{
+			name:   "malformed data",
+			format: codexUpstreamOpenAIChat,
+			stream: "data: {not-json}\n\n",
+		},
+		{
+			name:   "oversized SSE line",
+			format: codexUpstreamOpenAIChat,
+			stream: "data: " + strings.Repeat("x", maxCodexStreamLineBytes+1) + "\n\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Set(ctxKeyCodexEnabled, true)
+			c.Set(ctxKeyCodexUpstreamFormat, tt.format)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(tt.stream)),
+			}
+
+			ps := &ProxyServer{}
+			ps.handleForceCodexStreamingResponse(c, resp)
+
+			require.Equal(t, http.StatusBadGateway, w.Code)
+			assert.NotContains(t, w.Body.String(), "response.completed")
+			processingFailed, exists := c.Get(ctxKeyResponseProcessingFailed)
+			require.True(t, exists)
+			assert.Equal(t, true, processingFailed)
+		})
+	}
+}
+
+func TestHandleForceCodexStreamingResponseAcceptsProtocolTerminal(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name   string
+		format string
+		stream string
+	}{
+		{
+			name:   "openai finish reason without done marker",
+			format: codexUpstreamOpenAIChat,
+			stream: "data: {\"id\":\"chatcmpl_terminal\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+		},
+		{
+			name:   "anthropic message stop",
+			format: codexUpstreamClaude,
+			stream: "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_terminal\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+				"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"ok\"}}\n\n" +
+				"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+				"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+				"data: {\"type\":\"message_stop\"}\n\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Set(ctxKeyCodexEnabled, true)
+			c.Set(ctxKeyCodexUpstreamFormat, tt.format)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(tt.stream)),
+			}
+
+			ps := &ProxyServer{}
+			ps.handleForceCodexStreamingResponse(c, resp)
+
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Contains(t, w.Body.String(), "event: response.completed")
+			_, processingFailed := c.Get(ctxKeyResponseProcessingFailed)
+			assert.False(t, processingFailed)
+		})
+	}
 }
 
 func TestHandleForceCodexStreamingResponseEmitsResponsesDeltas(t *testing.T) {

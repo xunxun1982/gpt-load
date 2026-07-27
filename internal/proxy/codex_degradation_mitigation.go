@@ -297,6 +297,7 @@ func (s *codexMitigationState) run(firstResp *http.Response) {
 		}
 
 		if result.downstreamErr != nil {
+			markResponseProcessingFailed(s.c)
 			logrus.WithError(sanitizeInternalError(result.downstreamErr)).Debug("Codex degradation mitigation: downstream write failed")
 			return
 		}
@@ -349,6 +350,7 @@ func (s *codexMitigationState) continueRound(roundReasoning []map[string]any, re
 		return nil, false
 	}
 	if s.writeErr != nil || s.c.Request.Context().Err() != nil {
+		markResponseProcessingFailed(s.c)
 		return nil, false
 	}
 
@@ -621,6 +623,14 @@ func (s *codexMitigationState) writeTerminal(terminal map[string]any, stoppedRea
 		terminalType = "response.incomplete"
 	}
 	responseData := codexMitigationMapField(terminal, "response")
+	if terminalType == "response.failed" {
+		errorData := codexMitigationMapField(responseData, "error")
+		errorCode := stringFromJSONMap(errorData, "code")
+		if errorCode == "" {
+			errorCode = stringFromJSONMap(errorData, "type")
+		}
+		setResponsesLogicalFailure(s.c, "failed", errorCode, stringFromJSONMap(errorData, "message"))
+	}
 	response := codexMitigationCloneMap(s.baseResponse)
 	if response == nil {
 		response = codexMitigationCloneMap(responseData)
@@ -650,6 +660,7 @@ func (s *codexMitigationState) writeTerminal(terminal map[string]any, stoppedRea
 }
 
 func (s *codexMitigationState) writeSyntheticIncomplete(reason string) {
+	markResponseProcessingFailed(s.c)
 	if s.writeErr != nil {
 		return
 	}
@@ -713,10 +724,12 @@ func (s *codexMitigationState) writeEvent(event map[string]any) error {
 	data, err := json.Marshal(event)
 	if err != nil {
 		s.writeErr = err
+		markResponseProcessingFailed(s.c)
 		return err
 	}
 	if _, err := fmt.Fprintf(s.c.Writer, "event: %s\ndata: %s\n\n", eventType, data); err != nil {
 		s.writeErr = err
+		markResponseProcessingFailed(s.c)
 		return err
 	}
 	s.flusher.Flush()
@@ -726,6 +739,7 @@ func (s *codexMitigationState) writeEvent(event map[string]any) error {
 func (s *codexMitigationState) writeDone() error {
 	if _, err := io.WriteString(s.c.Writer, "data: [DONE]\n\n"); err != nil {
 		s.writeErr = err
+		markResponseProcessingFailed(s.c)
 		return err
 	}
 	s.flusher.Flush()

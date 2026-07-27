@@ -164,6 +164,34 @@ func TestCodexDegradationMitigationFoldDropsTruncatedOutputAndContinuesOnce(t *t
 	assert.Contains(t, output, "data: [DONE]")
 }
 
+func TestCodexDegradationMitigationMarksFailedTerminal(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	group := &models.Group{
+		GroupType:   "standard",
+		ChannelType: "openai-response",
+		Config:      datatypes.JSONMap{"codex_degradation_mitigation_enabled": true},
+	}
+	baseBody := []byte(`{"model":"gpt-5","stream":true,"input":[{"role":"user","content":"hi"}]}`)
+	first := codexMitigationTestResponse("event: response.failed\n" +
+		"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"temporary failure\"}}}\n\n" +
+		"data: [DONE]\n\n")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex/v1/responses", strings.NewReader(string(baseBody)))
+
+	ps := &ProxyServer{}
+	ps.handleCodexDegradationMitigationStreamingResponse(c, first, baseBody, group, group, nil)
+
+	assert.Contains(t, w.Body.String(), "event: response.failed")
+	statusCode, message, failed := logicalStatusFromContext(c)
+	require.True(t, failed)
+	assert.Equal(t, http.StatusBadGateway, statusCode)
+	assert.Equal(t, "temporary failure", message)
+}
+
 func TestCodexDegradationMitigationLogsStandardContinuation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -341,6 +369,9 @@ func TestCodexDegradationMitigationStopsBeforeContinuationOnDownstreamWriteError
 	ps.handleCodexDegradationMitigationStreamingResponse(c, first, baseBody, group, group, roundTrip)
 
 	assert.Equal(t, 0, continuations)
+	processingFailed, exists := c.Get(ctxKeyResponseProcessingFailed)
+	require.True(t, exists)
+	assert.Equal(t, true, processingFailed)
 }
 
 type codexMitigationFailingHTTPWriter struct {
