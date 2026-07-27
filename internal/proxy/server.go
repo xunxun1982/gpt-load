@@ -407,6 +407,7 @@ type codexAggregateAffinityCacheEntry struct {
 	key        string
 	subGroupID uint
 	expiresAt  time.Time
+	generation uint64
 }
 
 // Uses the standard-library list instead of a third-party LRU to keep Go
@@ -419,6 +420,7 @@ type codexAggregateAffinityCache struct {
 	order   *list.List
 	ttl     time.Duration
 	maxSize int
+	nextGen uint64
 }
 
 func newCodexAggregateAffinityCache(ttl time.Duration, maxSize int) *codexAggregateAffinityCache {
@@ -437,24 +439,29 @@ func newCodexAggregateAffinityCache(ttl time.Duration, maxSize int) *codexAggreg
 }
 
 func (cache *codexAggregateAffinityCache) get(key string, now time.Time) (uint, bool) {
+	subGroupID, _, ok := cache.getWithGeneration(key, now)
+	return subGroupID, ok
+}
+
+func (cache *codexAggregateAffinityCache) getWithGeneration(key string, now time.Time) (uint, uint64, bool) {
 	if cache == nil || key == "" {
-		return 0, false
+		return 0, 0, false
 	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
 	element, ok := cache.entries[key]
 	if !ok {
-		return 0, false
+		return 0, 0, false
 	}
 	entry := element.Value.(*codexAggregateAffinityCacheEntry)
 	if !entry.expiresAt.After(now) {
 		cache.removeElementLocked(element)
-		return 0, false
+		return 0, 0, false
 	}
 
 	cache.order.MoveToFront(element)
-	return entry.subGroupID, true
+	return entry.subGroupID, entry.generation, true
 }
 
 func (cache *codexAggregateAffinityCache) set(key string, subGroupID uint, now time.Time) {
@@ -463,11 +470,16 @@ func (cache *codexAggregateAffinityCache) set(key string, subGroupID uint, now t
 	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
+	cache.nextGen++
+	if cache.nextGen == 0 {
+		cache.nextGen++
+	}
 
 	if element, ok := cache.entries[key]; ok {
 		entry := element.Value.(*codexAggregateAffinityCacheEntry)
 		entry.subGroupID = subGroupID
 		entry.expiresAt = now.Add(cache.ttl)
+		entry.generation = cache.nextGen
 		cache.order.MoveToFront(element)
 		return
 	}
@@ -478,10 +490,28 @@ func (cache *codexAggregateAffinityCache) set(key string, subGroupID uint, now t
 		key:        key,
 		subGroupID: subGroupID,
 		expiresAt:  now.Add(cache.ttl),
+		generation: cache.nextGen,
 	}
 	cache.entries[key] = cache.order.PushFront(entry)
 	if len(cache.entries) > cache.maxSize {
 		cache.removeOldestLocked()
+	}
+}
+
+func (cache *codexAggregateAffinityCache) deleteIfMatches(key string, subGroupID uint, generation uint64) {
+	if cache == nil || key == "" || subGroupID == 0 || generation == 0 {
+		return
+	}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	element, ok := cache.entries[key]
+	if !ok {
+		return
+	}
+	entry := element.Value.(*codexAggregateAffinityCacheEntry)
+	if entry.subGroupID == subGroupID && entry.generation == generation {
+		cache.removeElementLocked(element)
 	}
 }
 
@@ -652,7 +682,8 @@ type retryContext struct {
 	forcedSubGroupID               uint          // Keeps key-level retries on the selected sub-group until its retry budget is exhausted
 	codexAffinityKey               string        // Stable Codex affinity key for this aggregate request
 	codexAffinityCacheKey          string        // Precomputed bounded cache key reused across retries and binding
-	codexAffinityPrimarySubGroupID uint          // Stable primary sub-group for Codex affinity requests
+	codexAffinityCacheGeneration   uint64        // Cache generation observed by this request
+	codexAffinityPrimarySubGroupID uint          // Cached primary sub-group for Codex affinity requests
 	codexAffinityAttemptCount      int           // Actual requests sent to the affinity primary before degradation
 	codexAffinityDegraded          bool          // Keeps encrypted reasoning stripped after leaving the affinity stage
 	codexParsedPayload             map[string]any
@@ -714,13 +745,22 @@ func (rc *retryContext) codexRequestModel(bodyBytes []byte) string {
 // isCodexAffinityPrimary reports whether the current sub-group selection is still
 // serving the Codex affinity primary. It returns false once affinity has degraded
 // so the pre-dispatch degrade check and the attempt counter always agree on when a
-// request counts against the affinity budget. The distinct
-// codexAffinityPrimarySubGroupID == 0 bootstrap check that establishes the primary
-// is intentionally not folded in here.
+// request counts against the affinity budget. A zero primary ID represents a
+// cache miss and never enters the affinity retry stage.
 func (rc *retryContext) isCodexAffinityPrimary(codexAffinityEnabled bool, subGroupID uint) bool {
 	return codexAffinityEnabled &&
 		!rc.codexAffinityDegraded &&
 		rc.codexAffinityPrimarySubGroupID == subGroupID
+}
+
+func (ps *ProxyServer) cancelCodexAffinity(retryCtx *retryContext, subGroupID uint) {
+	if retryCtx == nil || retryCtx.codexAffinityDegraded {
+		return
+	}
+	retryCtx.codexAffinityDegraded = true
+	retryCtx.codexAffinityPrimarySubGroupID = 0
+	ps.codexAffinityCache.deleteIfMatches(retryCtx.codexAffinityCacheKey, subGroupID, retryCtx.codexAffinityCacheGeneration)
+	retryCtx.codexAffinityCacheGeneration = 0
 }
 
 // safeProxyURL returns the proxy URL value with credentials redacted for safe logging.
@@ -2333,15 +2373,14 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 					retryCtx.codexAffinityCacheKey = codexAggregateAffinityCacheKey(originalGroup.ID, affinityKey, model)
 				}
 				cacheKey := retryCtx.codexAffinityCacheKey
-				if cachedSubGroupID, ok := ps.codexAffinityCache.get(cacheKey, time.Now()); ok {
+				if cachedSubGroupID, generation, ok := ps.codexAffinityCache.getWithGeneration(cacheKey, time.Now()); ok {
+					retryCtx.codexAffinityCacheGeneration = generation
 					var cached bool
 					subGroupName, subGroupID, cached = forcedAggregateSubGroup(originalGroup, cachedSubGroupID, retryCtx.excludedSubGroups)
 					// Cache hits bypass the selector, so re-check the active-key list.
 					// Do not cache this result; stale positives would reintroduce bad routing.
-					if cached {
-						retryCtx.codexAffinityPrimarySubGroupID = cachedSubGroupID
-					}
 					if cached && ps.subGroupManager.HasActiveKeys(cachedSubGroupID) {
+						retryCtx.codexAffinityPrimarySubGroupID = cachedSubGroupID
 						logrus.WithFields(logrus.Fields{
 							"aggregate_group": originalGroup.Name,
 							"selected_group":  subGroupName,
@@ -2349,9 +2388,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 							"model":           model,
 						}).Debug("Selected Codex aggregate sub-group from affinity cache")
 					} else {
-						if cached {
-							retryCtx.codexAffinityDegraded = true
-						}
+						ps.cancelCodexAffinity(retryCtx, cachedSubGroupID)
 						subGroupName = ""
 						subGroupID = 0
 					}
@@ -2377,13 +2414,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			return
 		}
 	}
-	if codexAffinityEnabled &&
-		subGroupID != 0 && retryCtx.codexAffinityPrimarySubGroupID == 0 {
-		// Simulated Codex identity is generated after routing, so track the first
-		// actual target even when the inbound request has no affinity identifier.
-		retryCtx.codexAffinityPrimarySubGroupID = subGroupID
-	}
-
 	// Get the selected sub-group
 	group, err := ps.groupManager.GetGroupByName(subGroupName)
 	if err != nil {
@@ -2804,14 +2834,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	apiKey, err := ps.keyProvider.SelectKey(group.ID)
 	if err != nil {
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCtx.attemptCount+1, err)
-		if retryCtx.isCodexAffinityPrimary(codexAffinityEnabled, subGroupID) {
-			// This is not a primary upstream attempt: SelectKey failed before client.Do,
-			// so no affinity attempt is consumed. Degrade now so fallback strips reasoning.
-			retryCtx.codexAffinityDegraded = true
-		}
 
 		// Handle sub-group failure
-		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, http.StatusServiceUnavailable, err, nil)
+		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, codexAffinityEnabled, maxRetries, http.StatusServiceUnavailable, err, nil)
 		return
 	}
 
@@ -3027,7 +3052,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				return
 			}
 
-			retryCtx.codexAffinityDegraded = true
 			logrus.WithFields(logrus.Fields{
 				"aggregate_group":             originalGroup.Name,
 				"sub_group":                   group.Name,
@@ -3036,7 +3060,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				"codex_affinity_max_attempts": codexAffinityMaxAttempts,
 			}).Debug("Codex affinity attempts exhausted, applying aggregate failover budget")
 
-			ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, statusCode, errors.New(internalError), apiKey)
+			ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, codexAffinityEnabled, maxRetries, statusCode, errors.New(internalError), apiKey)
 			return
 		}
 
@@ -3106,7 +3130,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			"sub_group_max_retries": subGroupMaxRetries,
 		}).Debug("Sub-group key retries exhausted, switching to next sub-group")
 
-		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, maxRetries, statusCode, errors.New(internalError), apiKey)
+		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, codexAffinityEnabled, maxRetries, statusCode, errors.New(internalError), apiKey)
 		return
 	}
 
@@ -3251,6 +3275,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	isStream bool,
 	startTime time.Time,
 	retryCtx *retryContext,
+	codexAffinityEnabled bool,
 	maxRetries int,
 	statusCode int,
 	err error,
@@ -3290,6 +3315,11 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 
 	// Check if this is the last attempt
 	isLastAttempt := retryCtx.attemptCount >= maxRetries
+	if codexAffinityEnabled &&
+		!retryCtx.codexAffinityDegraded &&
+		(retryCtx.codexAffinityPrimarySubGroupID != 0 || !isLastAttempt) {
+		ps.cancelCodexAffinity(retryCtx, retryCtx.codexAffinityPrimarySubGroupID)
+	}
 	requestType := models.RequestTypeRetry
 	if isLastAttempt {
 		requestType = models.RequestTypeFinal

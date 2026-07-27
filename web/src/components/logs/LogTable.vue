@@ -392,7 +392,7 @@ const allColumnConfigs: ColumnConfig[] = [
   {
     key: "is_stream",
     title: t("logs.responseType"),
-    width: 140,
+    width: 130,
     defaultVisible: true,
     render: (row: LogRow) =>
       h(
@@ -404,7 +404,7 @@ const allColumnConfigs: ColumnConfig[] = [
   {
     key: "status_code",
     title: t("logs.statusCode"),
-    width: 130,
+    width: 110,
     defaultVisible: true,
   },
   {
@@ -423,7 +423,7 @@ const allColumnConfigs: ColumnConfig[] = [
   {
     key: "group_name",
     title: t("logs.group"),
-    width: 120,
+    width: 160,
     defaultVisible: true,
   },
   {

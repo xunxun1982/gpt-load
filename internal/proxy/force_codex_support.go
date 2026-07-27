@@ -1036,6 +1036,26 @@ func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *m
 	}
 }
 
+func captureForceCodexLogicalFailure(c *gin.Context, response *CodexResponse) {
+	if c == nil {
+		return
+	}
+	if response == nil {
+		c.Set(ctxKeyResponsesStatusUnverified, true)
+		return
+	}
+	errorCode := ""
+	errorMessage := ""
+	if response.Error != nil {
+		errorCode = response.Error.Code
+		if errorCode == "" {
+			errorCode = response.Error.Type
+		}
+		errorMessage = response.Error.Message
+	}
+	setResponsesLogicalFailure(c, response.Status, errorCode, errorMessage)
+}
+
 func (ps *ProxyServer) handleForceCodexNormalResponse(c *gin.Context, resp *http.Response) {
 	format := getCodexUpstreamFormat(c)
 	if format == codexUpstreamResponses {
@@ -1094,6 +1114,7 @@ func (ps *ProxyServer) handleForceCodexNormalResponse(c *gin.Context, resp *http
 		return
 	}
 
+	captureForceCodexLogicalFailure(c, codexResp)
 	out, err := json.Marshal(codexResp)
 	if err != nil {
 		writeForceCodexGatewayError(c, "Failed to marshal Codex response")
@@ -1132,7 +1153,14 @@ func (ps *ProxyServer) handleForceCodexStreamingResponse(c *gin.Context, resp *h
 		writeForceCodexGatewayError(c, "Failed to decompress upstream streaming response")
 		return
 	}
-	streamResp, statusCode := ps.convertForceCodexCollectedStream(c, resp.StatusCode, format, bodyBytes)
+	streamResp, statusCode, conversionErr := ps.convertForceCodexCollectedStream(c, resp.StatusCode, format, bodyBytes)
+	if conversionErr != nil {
+		markResponseProcessingFailed(c)
+		logrus.WithError(conversionErr).Warn("Force Codex: invalid or incomplete upstream stream")
+		writeForceCodexGatewayError(c, "Invalid or incomplete upstream streaming response")
+		return
+	}
+	captureForceCodexLogicalFailure(c, streamResp)
 	out, err := json.Marshal(streamResp)
 	if err != nil {
 		writeForceCodexGatewayError(c, "Failed to marshal collected Codex stream")
@@ -1145,6 +1173,7 @@ func (ps *ProxyServer) handleForceCodexStreamingResponse(c *gin.Context, resp *h
 	c.Header("Content-Type", "text/event-stream")
 	c.Status(statusCode)
 	if err := writeForceCodexCollectedStreamEvents(c, streamResp); err != nil {
+		markResponseProcessingFailed(c)
 		logrus.WithError(err).Warn("Force Codex: failed to write collected SSE stream")
 		return
 	}
@@ -1384,24 +1413,46 @@ func codexReasoningSummaryText(item CodexOutputItem) string {
 	return b.String()
 }
 
-func (ps *ProxyServer) convertForceCodexCollectedStream(c *gin.Context, statusCode int, format string, bodyBytes []byte) (*CodexResponse, int) {
+func (ps *ProxyServer) convertForceCodexCollectedStream(c *gin.Context, statusCode int, format string, bodyBytes []byte) (*CodexResponse, int, error) {
 	if statusCode >= http.StatusBadRequest {
-		return rawCodexErrorResponse(statusCode, bodyBytes), statusCode
+		return rawCodexErrorResponse(statusCode, bodyBytes), statusCode, nil
+	}
+	payloads, err := extractSSEDataPayloads(bodyBytes)
+	if err != nil {
+		return nil, http.StatusBadGateway, fmt.Errorf("parse upstream SSE: %w", err)
 	}
 
 	switch format {
 	case codexUpstreamOpenAIChat:
-		openaiResp := collectOpenAIChatStreamToResponse(bodyBytes)
-		return convertOpenAIChatToCodexResponse(openaiResp, functionCallTriggerSignal(c), codexToolContextFromGin(c)), statusCode
+		openaiResp, terminalSeen, err := collectOpenAIChatStreamPayloads(payloads)
+		if err != nil {
+			return nil, http.StatusBadGateway, err
+		}
+		if !terminalSeen {
+			return nil, http.StatusBadGateway, fmt.Errorf("OpenAI stream ended without a terminal signal")
+		}
+		return convertOpenAIChatToCodexResponse(openaiResp, functionCallTriggerSignal(c), codexToolContextFromGin(c)), statusCode, nil
 	case codexUpstreamClaude:
-		claudeResp := collectClaudeStreamToResponse(bodyBytes)
-		return convertClaudeToCodexResponse(claudeResp, codexToolContextFromGin(c)), statusCode
+		claudeResp, terminalSeen, err := collectClaudeStreamPayloads(payloads)
+		if err != nil {
+			return nil, http.StatusBadGateway, err
+		}
+		if !terminalSeen {
+			return nil, http.StatusBadGateway, fmt.Errorf("Anthropic stream ended without message_stop")
+		}
+		return convertClaudeToCodexResponse(claudeResp, codexToolContextFromGin(c)), statusCode, nil
 	default:
-		return rawCodexErrorResponse(http.StatusBadGateway, []byte("unsupported Codex stream conversion")), http.StatusBadGateway
+		return rawCodexErrorResponse(http.StatusBadGateway, []byte("unsupported Codex stream conversion")), http.StatusBadGateway, nil
 	}
 }
 
 func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
+	payloads, _ := extractSSEDataPayloads(bodyBytes)
+	resp, _, _ := collectOpenAIChatStreamPayloads(payloads)
+	return resp
+}
+
+func collectOpenAIChatStreamPayloads(payloads []string) (*OpenAIResponse, bool, error) {
 	resp := &OpenAIResponse{
 		ID:      "chatcmpl_" + utils.GenerateRandomSuffix(),
 		Object:  "chat.completion",
@@ -1417,13 +1468,15 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 	var reasoningContent strings.Builder
 	toolCallsByIndex := make(map[int]*OpenAIToolCall)
 	finishReason := ""
-	for _, data := range extractSSEDataPayloads(bodyBytes) {
+	terminalSeen := false
+	for _, data := range payloads {
 		if data == "[DONE]" {
-			continue
+			terminalSeen = true
+			break
 		}
 		var chunk OpenAIResponse
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
+			return resp, false, fmt.Errorf("invalid OpenAI stream payload: %w", err)
 		}
 		if chunk.ID != "" {
 			resp.ID = chunk.ID
@@ -1439,13 +1492,18 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 		}
 		if chunk.Error != nil {
 			resp.Error = chunk.Error
+			terminalSeen = true
 			continue
 		}
-		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta == nil {
+		if len(chunk.Choices) == 0 {
 			continue
 		}
-		if chunk.Choices[0].FinishReason != nil {
-			finishReason = *chunk.Choices[0].FinishReason
+		if choiceFinishReason := chunk.Choices[0].FinishReason; choiceFinishReason != nil && strings.TrimSpace(*choiceFinishReason) != "" {
+			finishReason = *choiceFinishReason
+			terminalSeen = true
+		}
+		if chunk.Choices[0].Delta == nil {
+			continue
 		}
 		delta := chunk.Choices[0].Delta
 		if delta.Content != nil {
@@ -1495,10 +1553,16 @@ func collectOpenAIChatStreamToResponse(bodyBytes []byte) *OpenAIResponse {
 			resp.Choices[0].Message.ToolCalls = append(resp.Choices[0].Message.ToolCalls, *tc)
 		}
 	}
-	return resp
+	return resp, terminalSeen, nil
 }
 
 func collectClaudeStreamToResponse(bodyBytes []byte) *ClaudeResponse {
+	payloads, _ := extractSSEDataPayloads(bodyBytes)
+	resp, _, _ := collectClaudeStreamPayloads(payloads)
+	return resp
+}
+
+func collectClaudeStreamPayloads(payloads []string) (*ClaudeResponse, bool, error) {
 	resp := &ClaudeResponse{
 		ID:      "msg_" + utils.GenerateRandomSuffix(),
 		Type:    "message",
@@ -1507,10 +1571,14 @@ func collectClaudeStreamToResponse(bodyBytes []byte) *ClaudeResponse {
 		Usage:   &ClaudeUsage{},
 	}
 	blocks := make(map[int]*ClaudeContentBlock)
-	for _, data := range extractSSEDataPayloads(bodyBytes) {
+	terminalSeen := false
+	for _, data := range payloads {
+		if data == "[DONE]" {
+			continue
+		}
 		var event ClaudeStreamEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			continue
+			return resp, false, fmt.Errorf("invalid Anthropic stream payload: %w", err)
 		}
 		switch event.Type {
 		case "message_start":
@@ -1557,11 +1625,14 @@ func collectClaudeStreamToResponse(bodyBytes []byte) *ClaudeResponse {
 			}
 		case "error":
 			resp.Type = "error"
+			terminalSeen = true
 			if event.Error != nil {
 				resp.Error = event.Error
 			} else {
 				resp.Error = &ClaudeError{Type: "api_error", Message: "upstream stream error"}
 			}
+		case "message_stop":
+			terminalSeen = true
 		}
 	}
 	keys := make([]int, 0, len(blocks))
@@ -1574,10 +1645,10 @@ func collectClaudeStreamToResponse(bodyBytes []byte) *ClaudeResponse {
 			resp.Content = append(resp.Content, *block)
 		}
 	}
-	return resp
+	return resp, terminalSeen, nil
 }
 
-func extractSSEDataPayloads(bodyBytes []byte) []string {
+func extractSSEDataPayloads(bodyBytes []byte) ([]string, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(bodyBytes))
 	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamLineBytes)
 	var payloads []string
@@ -1603,7 +1674,10 @@ func extractSSEDataPayloads(bodyBytes []byte) []string {
 		}
 	}
 	flush()
-	return payloads
+	if err := scanner.Err(); err != nil {
+		return payloads, err
+	}
+	return payloads, nil
 }
 
 func rawCodexErrorResponse(statusCode int, body []byte) *CodexResponse {
@@ -1634,6 +1708,9 @@ func writeForceCodexGatewayError(c *gin.Context, message string) {
 }
 
 func writeForceCodexPassthrough(c *gin.Context, resp *http.Response, body []byte) {
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		c.Set(ctxKeyResponsesStatusUnverified, true)
+	}
 	if shouldCaptureResponse(c) {
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 	}
