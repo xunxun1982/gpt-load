@@ -3313,11 +3313,14 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 		}).Debug("Added failed sub-group to exclusion list")
 	}
 
-	// Check if this is the last attempt
 	isLastAttempt := retryCtx.attemptCount >= maxRetries
+	// Degrade every pending sub-group switch, even when the failed group was not a
+	// confirmed cached primary, so fallback requests strip encrypted reasoning.
+	// A confirmed cached primary is also canceled when no sub-group switch remains.
 	if codexAffinityEnabled &&
 		!retryCtx.codexAffinityDegraded &&
 		(retryCtx.codexAffinityPrimarySubGroupID != 0 || !isLastAttempt) {
+		// A zero primary ID degrades only this request; cache deletion is a no-op.
 		ps.cancelCodexAffinity(retryCtx, retryCtx.codexAffinityPrimarySubGroupID)
 	}
 	requestType := models.RequestTypeRetry
