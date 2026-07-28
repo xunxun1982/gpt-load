@@ -1804,6 +1804,127 @@ func TestCodexAggregateAffinityCacheFallsBackWhenCachedSubGroupHasNoActiveKeys(t
 	assert.Equal(t, "Bearer sk-codex-active-cache", <-authorization)
 }
 
+func TestCodexAggregateAffinityCacheSkipsZeroWeightSubGroupAndRebinds(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	authorization := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp-test","object":"response","created_at":0,"status":"completed","model":"gpt-5","output":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	zeroWeightSubGroup := createTestGroup(t, db, "codex-zero-weight-cache-sub", "openai-response")
+	zeroWeightSubGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	zeroWeightSubGroup.Config = map[string]any{"force_non_stream": true, "max_retries": 0}
+	require.NoError(t, db.Save(zeroWeightSubGroup).Error)
+
+	activeSubGroup := createTestGroup(t, db, "codex-positive-weight-cache-sub", "openai-response")
+	activeSubGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	activeSubGroup.Config = map[string]any{"force_non_stream": true, "max_retries": 0}
+	require.NoError(t, db.Save(activeSubGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "codex-affinity-zero-weight-cache",
+		ChannelType: "openai-response",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[]`),
+		Config: map[string]any{
+			"max_retries":            0,
+			"codex_affinity_enabled": true,
+		},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      zeroWeightSubGroup.ID,
+		SubGroupName:    zeroWeightSubGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          0,
+	}).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      activeSubGroup.ID,
+		SubGroupName:    activeSubGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, zeroWeightSubGroup.ID, "sk-codex-zero-weight-cache", ps.encryptionSvc)
+	createTestKey(t, db, activeSubGroup.ID, "sk-codex-positive-weight-cache", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+	affinityKey := "zero-weight-sticky-thread"
+	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
+	ps.codexAffinityCache.set(cacheKey, zeroWeightSubGroup.ID, time.Now())
+
+	body := []byte(`{"model":"gpt-5","client_metadata":{"thread_id":"` + affinityKey + `"},"input":"ping","stream":false}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+cachedAggregate.Name+"/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("thread-id", affinityKey)
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, "Bearer sk-codex-positive-weight-cache", <-authorization)
+	boundSubGroupID, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
+	require.True(t, ok)
+	assert.Equal(t, activeSubGroup.ID, boundSubGroupID)
+}
+
+func TestCodexAffinityCandidateChecksSkipDisabledAndZeroWeightSubGroups(t *testing.T) {
+	t.Parallel()
+
+	group := &models.Group{SubGroups: []models.GroupSubGroup{
+		{SubGroupID: 1, SubGroupName: "eligible", SubGroupEnabled: true, Weight: 1},
+		{SubGroupID: 2, SubGroupName: "zero-weight", SubGroupEnabled: true, Weight: 0},
+		{SubGroupID: 3, SubGroupName: "disabled", SubGroupEnabled: false, Weight: 100},
+	}}
+
+	tests := []struct {
+		name   string
+		id     uint
+		wantOK bool
+	}{
+		{name: "positive weight", id: 1, wantOK: true},
+		{name: "zero weight", id: 2, wantOK: false},
+		{name: "disabled", id: 3, wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name, id, ok := forcedAggregateSubGroup(group, tt.id, nil)
+			assert.Equal(t, tt.wantOK, ok)
+			if tt.wantOK {
+				assert.Equal(t, "eligible", name)
+				assert.Equal(t, tt.id, id)
+				return
+			}
+			assert.Empty(t, name)
+			assert.Zero(t, id)
+		})
+	}
+
+	ps := &ProxyServer{}
+	assert.Equal(t, 1, ps.countAvailableSubGroups(group, nil))
+}
+
 func TestRetryContextCachesCodexRequestPayloadAndModel(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -4059,7 +4180,7 @@ func TestCodexAggregateAffinityCacheEvictsExpiredAndOldestEntries(t *testing.T) 
 	assert.Equal(t, uint(4), got)
 }
 
-func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcrossModelChange(t *testing.T) {
+func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcrossModelChangeAndResumeSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	db := setupTestDB(t)
@@ -4160,7 +4281,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcr
 		c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
 		c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
 		c.Request.Header.Set("thread-id", affinityKey)
-		c.Request.Header.Set("session-id", "affinity-cache-session")
+		// Session IDs intentionally differ to model a resume boundary and rule out session-only affinity.
+		c.Request.Header.Set("session-id", fmt.Sprintf("affinity-cache-session-%d", i))
 
 		retryCtx := &retryContext{
 			excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
@@ -4171,6 +4293,11 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcr
 
 		ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 		require.Equal(t, http.StatusOK, w.Code)
+		if i == 1 {
+			// Assert the second request actually used the cached primary, not a lucky weighted selection.
+			require.Equal(t, secondSubGroup.ID, retryCtx.codexAffinityPrimarySubGroupID)
+			assert.False(t, retryCtx.codexAffinityDegraded)
+		}
 		if i == 0 {
 			require.NoError(t, ps.keyProvider.LoadKeysFromDB())
 			for j := range cachedAggregate.SubGroups {
@@ -4178,7 +4305,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcr
 				if subGroup.SubGroupID == firstSubGroup.ID {
 					subGroup.Weight = 100
 				} else {
-					subGroup.Weight = 0
+					subGroup.Weight = 1
 				}
 			}
 			ps.subGroupManager.RebuildSelectors(map[string]*models.Group{cachedAggregate.Name: cachedAggregate})

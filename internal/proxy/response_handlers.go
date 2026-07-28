@@ -396,10 +396,12 @@ func captureDecodedResponseChunk(responseCapture *bytes.Buffer, chunk []byte) {
 	responseCapture.Write(toWrite)
 }
 
-func copyRemainingStreamToClient(c *gin.Context, r io.Reader, flusher http.Flusher) {
-	if _, err := io.Copy(streamFlushWriter{writer: c.Writer, flusher: flusher}, r); err != nil {
+func copyRemainingStreamToClient(c *gin.Context, r io.Reader, flusher http.Flusher) error {
+	_, err := io.Copy(streamFlushWriter{writer: c.Writer, flusher: flusher}, r)
+	if err != nil {
 		logUpstreamError("copying remaining compressed stream to client", err)
 	}
+	return err
 }
 
 func setTokenUsageOrEstimateFromCompressedReader(c *gin.Context, contentEncoding string, encodedBody io.ReadCloser, allowEstimate bool) error {
@@ -515,7 +517,7 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 			}
 			logUpstreamError("creating compressed stream decoder", err)
 			markResponseProcessingFailed(c)
-			copyRemainingStreamToClient(c, resp.Body, flusher)
+			_ = copyRemainingStreamToClient(c, resp.Body, flusher)
 			return
 		}
 		defer decodedReader.Close()
@@ -535,6 +537,13 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 				return
 			}
 			if isResponsesStream && failureCapture.terminalSeen {
+				if !strings.EqualFold(contentEncoding, "identity") {
+					// The decoder may expose the semantic terminal before consuming the encoded frame trailer.
+					// Drain only the remaining raw bytes; TeeReader already forwarded anything buffered by the decoder.
+					if err := copyRemainingStreamToClient(c, resp.Body, flusher); err != nil {
+						markResponseProcessingFailed(c)
+					}
+				}
 				break
 			}
 			if err == io.EOF {
@@ -543,7 +552,7 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 			if err != nil {
 				logUpstreamError("decoding compressed stream", err)
 				markResponseProcessingFailed(c)
-				copyRemainingStreamToClient(c, resp.Body, flusher)
+				_ = copyRemainingStreamToClient(c, resp.Body, flusher)
 				return
 			}
 		}

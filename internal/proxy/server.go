@@ -824,7 +824,7 @@ func forcedAggregateSubGroup(group *models.Group, forcedID uint, excluded map[ui
 		return "", 0, false
 	}
 	for _, sg := range group.SubGroups {
-		if sg.SubGroupID == forcedID && sg.SubGroupEnabled {
+		if sg.SubGroupID == forcedID && sg.IsRoutingEnabled() {
 			return sg.SubGroupName, sg.SubGroupID, sg.SubGroupName != ""
 		}
 	}
@@ -3245,13 +3245,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 }
 
 // countAvailableSubGroups counts the number of available sub-groups
-// Excludes: disabled (enabled=false) and sub-groups in the exclusion list
+// Excludes: disabled or non-positive-weight sub-groups and entries in the exclusion list
 // Note: Actual key availability is checked during sub-group selection
 func (ps *ProxyServer) countAvailableSubGroups(group *models.Group, excludedIDs map[uint]bool) int {
 	count := 0
 	for _, sg := range group.SubGroups {
-		// Skip disabled sub-groups
-		if !sg.SubGroupEnabled {
+		if !sg.IsRoutingEnabled() {
 			continue
 		}
 		// Skip sub-groups in exclusion list
