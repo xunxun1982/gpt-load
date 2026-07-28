@@ -184,6 +184,12 @@ type GroupSubGroup struct {
 	SubGroupEnabled bool   `gorm:"-" json:"sub_group_enabled,omitempty"`
 }
 
+// IsRoutingEnabled reports whether this relation may participate in routing
+// before runtime key availability is checked.
+func (g GroupSubGroup) IsRoutingEnabled() bool {
+	return g.SubGroupEnabled && g.Weight > 0
+}
+
 // SubGroupInfo represents sub-group information for API responses.
 type SubGroupInfo struct {
 	Group                      Group              `json:"group"`

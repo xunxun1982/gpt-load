@@ -261,6 +261,30 @@ func TestSelectSubGroupWithRetryAffinitySkipsZeroWeightPrimary(t *testing.T) {
 	assert.False(t, result.UsedFallback)
 }
 
+func TestSubGroupSelectionRejectsSingleZeroWeightSubGroup(t *testing.T) {
+	t.Parallel()
+
+	manager, mockStore := newTestManager(t)
+	group := &models.Group{
+		ID:        1,
+		Name:      "aggregate-group",
+		GroupType: "aggregate",
+		SubGroups: []models.GroupSubGroup{
+			{SubGroupID: 10, SubGroupName: "disabled-by-weight", Weight: 0, SubGroupEnabled: true},
+		},
+	}
+	mockStore.LPush("group:10:active_keys", "key1")
+
+	name, err := manager.SelectSubGroup(group)
+	assert.Error(t, err)
+	assert.Empty(t, name)
+
+	name, id, err := manager.SelectSubGroupWithRetry(group, nil)
+	assert.Error(t, err)
+	assert.Empty(t, name)
+	assert.Zero(t, id)
+}
+
 func TestRebuildSelectors(t *testing.T) {
 	t.Parallel()
 

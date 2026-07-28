@@ -245,7 +245,7 @@ func (m *SubGroupManager) createSelector(group *models.Group, dynamicWeight *Dyn
 			weight:             sg.Weight,
 			minEffectiveWeight: normalizeSubGroupMinEffectiveWeight(sg.Weight, sg.MinEffectiveWeight),
 			currentWeight:      0,
-			enabled:            sg.SubGroupEnabled,
+			enabled:            sg.IsRoutingEnabled(),
 		})
 	}
 
@@ -537,7 +537,7 @@ func (s *selector) selectPrimaryAffinityCandidate(affinityKey string) *subGroupI
 	total := 0
 	for i := range s.subGroups {
 		item := &s.subGroups[i]
-		if !item.enabled || item.weight <= 0 {
+		if !item.enabled {
 			weights[i] = 0
 			continue
 		}
