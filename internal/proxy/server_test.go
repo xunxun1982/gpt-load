@@ -1713,20 +1713,22 @@ func TestCodexAggregateAffinityCacheDeleteIfMatchesPreservesNewerBinding(t *test
 	assert.False(t, ok)
 }
 
-func TestCodexAggregateAffinityCacheKeyHasUnambiguousBoundedEncoding(t *testing.T) {
+func TestCodexAggregateAffinityCacheKeyHasBoundedScopedEncoding(t *testing.T) {
 	t.Parallel()
 
-	first := codexAggregateAffinityCacheKey(1, "b\x00c", "a")
-	second := codexAggregateAffinityCacheKey(1, "c", "a\x00b")
+	first := codexAggregateAffinityCacheKey(1, "b\x00c")
+	second := codexAggregateAffinityCacheKey(1, "c")
+	otherGroup := codexAggregateAffinityCacheKey(2, "b\x00c")
 	assert.NotEqual(t, first, second)
+	assert.NotEqual(t, first, otherGroup)
 	assert.Len(t, first, 64)
 	assert.Len(t, second, 64)
 
 	longKey := strings.Repeat("session-", 10000)
-	encoded := codexAggregateAffinityCacheKey(1, longKey, "gpt-5")
+	encoded := codexAggregateAffinityCacheKey(1, longKey)
 	assert.Len(t, encoded, 64)
 	assert.NotContains(t, encoded, "session-")
-	assert.Equal(t, encoded, codexAggregateAffinityCacheKey(1, longKey, "gpt-5"))
+	assert.Equal(t, encoded, codexAggregateAffinityCacheKey(1, longKey))
 }
 
 func TestCodexAggregateAffinityCacheFallsBackWhenCachedSubGroupHasNoActiveKeys(t *testing.T) {
@@ -1786,7 +1788,7 @@ func TestCodexAggregateAffinityCacheFallsBackWhenCachedSubGroupHasNoActiveKeys(t
 
 	body := []byte(`{"model":"gpt-5","input":"ping","stream":false}`)
 	affinityKey := "sticky-session"
-	cacheKey := codexAggregateAffinityCacheKey(aggregateGroup.ID, affinityKey, "gpt-5")
+	cacheKey := codexAggregateAffinityCacheKey(aggregateGroup.ID, affinityKey)
 	ps.codexAffinityCache.set(cacheKey, staleSubGroup.ID, time.Now())
 
 	w := httptest.NewRecorder()
@@ -3592,7 +3594,7 @@ func TestExecuteRequestWithAggregateRetryUsesDefaultCodexAffinityMaxAttempts(t *
 
 	affinityKey := requireAffinityKeyForSubGroup(t, ps, cachedAggregate, affinitySubGroup.ID, "affinity-sub-retry")
 	ps.codexAffinityCache.set(
-		codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, "gpt-5"),
+		codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey),
 		affinitySubGroup.ID,
 		time.Now(),
 	)
@@ -3628,6 +3630,13 @@ func TestExecuteRequestWithAggregateRetryUsesDefaultCodexAffinityMaxAttempts(t *
 	require.NoError(t, json.Unmarshal(<-fallbackBodies, &fallbackPayload))
 	assert.False(t, jsonArrayContainsStringForTest(fallbackPayload["include"], responsesEncryptedReasoning))
 	assert.False(t, jsonInputContainsReasoningItemForTest(fallbackPayload["input"]))
+
+	reboundSubGroupID, ok := ps.codexAffinityCache.get(
+		codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey),
+		time.Now(),
+	)
+	require.True(t, ok)
+	assert.Equal(t, fallbackSubGroup.ID, reboundSubGroupID)
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityExhaustionDoesNotCreateFailoverBudget(t *testing.T) {
@@ -3695,7 +3704,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityExhaustionDoesNotCreateFai
 
 	const affinityKey = "no-failover-budget-session"
 	const model = "gpt-5"
-	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, model)
+	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
 	ps.codexAffinityCache.set(
 		cacheKey,
 		primarySubGroup.ID,
@@ -3807,7 +3816,7 @@ func TestExecuteRequestWithAggregateRetryCyclesAfterEveryAffinitySubGroupFails(t
 	const affinityKey = "all-fail-session"
 	const model = "gpt-5"
 	ps.codexAffinityCache.set(
-		codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, model),
+		codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey),
 		subGroups[0].ID,
 		time.Now(),
 	)
@@ -3979,7 +3988,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityFallbackWithoutClientIdent
 	malformedAffinityKey := "affinity-strip-malformed"
 	malformedBody := []byte(`{"model":`)
 	ps.codexAffinityCache.set(
-		codexAggregateAffinityCacheKey(cachedAggregate.ID, malformedAffinityKey, ""),
+		codexAggregateAffinityCacheKey(cachedAggregate.ID, malformedAffinityKey),
 		primarySubGroup.ID,
 		time.Now(),
 	)
@@ -4050,7 +4059,7 @@ func TestCodexAggregateAffinityCacheEvictsExpiredAndOldestEntries(t *testing.T) 
 	assert.Equal(t, uint(4), got)
 }
 
-func TestExecuteRequestWithAggregateRetryCodexAffinityCachesSuccessfulSubGroup(t *testing.T) {
+func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcrossModelChange(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	db := setupTestDB(t)
@@ -4138,15 +4147,20 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachesSuccessfulSubGroup(t
 	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
 	require.NoError(t, err)
 
-	affinityKey := "affinity-cache-session"
-	body := []byte(`{"model":"gpt-5","include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
+	affinityKey := "affinity-cache-thread"
+	bodies := [][]byte{
+		[]byte(`{"model":"gpt-5","client_metadata":{"thread_id":"` + affinityKey + `"},"include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`),
+		[]byte(`{"model":"gpt-5-mini","client_metadata":{"thread_id":"` + affinityKey + `"},"include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"follow up"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`),
+	}
 
 	for i := 0; i < 2; i++ {
+		body := bodies[i]
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
 		c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
-		c.Request.Header.Set("session-id", affinityKey)
+		c.Request.Header.Set("thread-id", affinityKey)
+		c.Request.Header.Set("session-id", "affinity-cache-session")
 
 		retryCtx := &retryContext{
 			excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
@@ -4426,7 +4440,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCacheMissBindsOnlySuccessf
 	assert.True(t, jsonArrayContainsStringForTest(fallbackPayload["include"], "web_search_call.results"))
 	assert.False(t, jsonInputContainsReasoningItemForTest(fallbackPayload["input"]))
 
-	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, "gpt-5")
+	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
 	boundID, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
 	require.True(t, ok)
 	assert.Equal(t, fallbackSubGroup.ID, boundID)
@@ -4507,7 +4521,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindLogicalFailure(
 	statusCode, _, logicalFailure := logicalStatusFromContext(c)
 	require.True(t, logicalFailure)
 	assert.Equal(t, http.StatusBadGateway, statusCode)
-	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, "gpt-5")
+	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
 	_, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
 	assert.False(t, ok)
 
@@ -4526,7 +4540,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindLogicalFailure(
 
 	ps.executeRequestWithAggregateRetry(partialContext, nil, cachedAggregate, partialBody, true, time.Now(), partialRetryCtx)
 
-	partialCacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, partialAffinityKey, "gpt-5-partial-stream")
+	partialCacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, partialAffinityKey)
 	_, ok = ps.codexAffinityCache.get(partialCacheKey, time.Now())
 	assert.False(t, ok)
 }
@@ -4596,7 +4610,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindNormalResponses
 	statusCode, _, logicalFailure := logicalStatusFromContext(c)
 	require.True(t, logicalFailure)
 	assert.Equal(t, http.StatusBadGateway, statusCode)
-	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, "gpt-5")
+	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
 	_, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
 	assert.False(t, ok)
 }
@@ -4669,7 +4683,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindForcedStreamPro
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 
 	require.Equal(t, http.StatusBadGateway, w.Code)
-	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, "gpt-5")
+	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
 	_, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
 	assert.False(t, ok)
 
@@ -4689,7 +4703,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindForcedStreamPro
 	ps.executeRequestWithAggregateRetry(partialContext, nil, cachedAggregate, partialBody, false, time.Now(), partialRetryCtx)
 
 	require.Equal(t, http.StatusOK, partialWriter.Code)
-	partialCacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, partialAffinityKey, "gpt-5-partial")
+	partialCacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, partialAffinityKey)
 	_, ok = ps.codexAffinityCache.get(partialCacheKey, time.Now())
 	assert.False(t, ok)
 }
@@ -4758,7 +4772,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindNonSuccessHTTPS
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 
 	require.Equal(t, http.StatusNotFound, w.Code)
-	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, "gpt-5")
+	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
 	_, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
 	assert.False(t, ok)
 }
@@ -4828,7 +4842,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCrossProtocolFailureClears
 			require.NoError(t, err)
 			affinityKey := "cross-protocol-session-" + tt.name
 			body := []byte(`{"model":"gpt-5","stream":false,"prompt_cache_key":"` + affinityKey + `","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
-			cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, "gpt-5")
+			cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
 			ps.codexAffinityCache.set(cacheKey, subGroup.ID, time.Now())
 
 			w := httptest.NewRecorder()
@@ -4919,7 +4933,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindIncompleteForce
 
 	require.Equal(t, http.StatusBadGateway, w.Code)
 	requireSingleUpstreamTestPath(t, receivedPath, &requestCount, "/v1/chat/completions")
-	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, "gpt-5")
+	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
 	_, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
 	assert.False(t, ok)
 }
@@ -5011,7 +5025,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 
 	affinityKey := requireAffinityKeyForSubGroup(t, ps, cachedAggregate, fallbackSubGroup.ID, "affinity-cached-primary")
 	model := "gpt-5"
-	ps.codexAffinityCache.set(codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, model), cachedSubGroup.ID, time.Now())
+	ps.codexAffinityCache.set(codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey), cachedSubGroup.ID, time.Now())
 	body := []byte(`{"model":"` + model + `","client_metadata":{"thread_id":"` + affinityKey + `"},"include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
 
 	w := httptest.NewRecorder()
@@ -5108,7 +5122,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityStaleCachedPrimaryStripsOn
 
 	affinityKey := requireAffinityKeyForSubGroup(t, ps, cachedAggregate, fallbackSubGroup.ID, "affinity-stale-primary")
 	model := "gpt-5"
-	ps.codexAffinityCache.set(codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey, model), staleSubGroup.ID, time.Now())
+	ps.codexAffinityCache.set(codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey), staleSubGroup.ID, time.Now())
 	body := []byte(`{"model":"` + model + `","client_metadata":{"thread_id":"` + affinityKey + `"},"include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
 
 	w := httptest.NewRecorder()

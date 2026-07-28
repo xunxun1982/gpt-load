@@ -47,12 +47,16 @@ type limitedResponseCaptureWriter struct {
 }
 
 type streamFlushWriter struct {
-	writer  io.Writer
-	flusher http.Flusher
+	writer   io.Writer
+	flusher  http.Flusher
+	writeErr *error
 }
 
 func (w streamFlushWriter) Write(p []byte) (int, error) {
 	n, err := w.writer.Write(p)
+	if err != nil && w.writeErr != nil {
+		*w.writeErr = err
+	}
 	if n > 0 && w.flusher != nil {
 		w.flusher.Flush()
 	}
@@ -485,7 +489,8 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
 	encodedResponse := contentEncoding != ""
 	decodedEncodedResponse := encodedResponse && isSupportedResponseContentEncoding(contentEncoding)
-	if encodedResponse && !decodedEncodedResponse && c.Request != nil && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+	isResponsesStream := c.Request != nil && isOpenAIResponsesEndpoint(c.Request.URL.Path)
+	if encodedResponse && !decodedEncodedResponse && isResponsesStream {
 		c.Set(ctxKeyResponsesStatusUnverified, true)
 	}
 	var encodedCapture bytes.Buffer
@@ -495,9 +500,19 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 
 	buf := make([]byte, 4*1024)
 	if decodedEncodedResponse {
-		teeReader := io.TeeReader(resp.Body, streamFlushWriter{writer: c.Writer, flusher: flusher})
+		var downstreamWriteErr error
+		teeReader := io.TeeReader(resp.Body, streamFlushWriter{
+			writer:   c.Writer,
+			flusher:  flusher,
+			writeErr: &downstreamWriteErr,
+		})
 		decodedReader, err := utils.NewDecompressReader(contentEncoding, io.NopCloser(teeReader))
 		if err != nil {
+			if downstreamWriteErr != nil {
+				logUpstreamError("writing stream to client", downstreamWriteErr)
+				markResponseProcessingFailed(c)
+				return
+			}
 			logUpstreamError("creating compressed stream decoder", err)
 			markResponseProcessingFailed(c)
 			copyRemainingStreamToClient(c, resp.Body, flusher)
@@ -513,6 +528,14 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 				estimateCapture.Write(chunk)
 				failureCapture.Write(chunk)
 				captureDecodedResponseChunk(responseCapture, chunk)
+			}
+			if downstreamWriteErr != nil {
+				logUpstreamError("writing stream to client", downstreamWriteErr)
+				markResponseProcessingFailed(c)
+				return
+			}
+			if isResponsesStream && failureCapture.terminalSeen {
+				break
 			}
 			if err == io.EOF {
 				break
@@ -554,6 +577,9 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 				}
 
 				flusher.Flush()
+				if isResponsesStream && failureCapture.terminalSeen {
+					break
+				}
 			}
 			if err == io.EOF {
 				break

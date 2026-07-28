@@ -540,14 +540,13 @@ func (cache *codexAggregateAffinityCache) removeElementLocked(element *list.Elem
 	cache.order.Remove(element)
 }
 
-func codexAggregateAffinityCacheKey(groupID uint, affinityKey string, model string) string {
+func codexAggregateAffinityCacheKey(groupID uint, affinityKey string) string {
 	affinityKey = strings.TrimSpace(affinityKey)
-	model = strings.TrimSpace(model)
 	if groupID == 0 || affinityKey == "" {
 		return ""
 	}
 
-	// Client identifiers are routing hints only; group and model keep every binding within its route scope.
+	// Client identifiers are routing hints only; the aggregate group keeps each binding within its route scope.
 	h := sha256.New()
 	var numberBuffer [20]byte
 	_, _ = h.Write(strconv.AppendUint(numberBuffer[:0], uint64(groupID), 10))
@@ -557,7 +556,6 @@ func codexAggregateAffinityCacheKey(groupID uint, affinityKey string, model stri
 		_, _ = io.WriteString(h, ":")
 		_, _ = io.WriteString(h, value)
 	}
-	writeField(model)
 	writeField(affinityKey)
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -2370,7 +2368,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			if affinityKey != "" {
 				model := retryCtx.codexRequestModel(bodyBytes)
 				if retryCtx.codexAffinityCacheKey == "" {
-					retryCtx.codexAffinityCacheKey = codexAggregateAffinityCacheKey(originalGroup.ID, affinityKey, model)
+					retryCtx.codexAffinityCacheKey = codexAggregateAffinityCacheKey(originalGroup.ID, affinityKey)
 				}
 				cacheKey := retryCtx.codexAffinityCacheKey
 				if cachedSubGroupID, generation, ok := ps.codexAffinityCache.getWithGeneration(cacheKey, time.Now()); ok {

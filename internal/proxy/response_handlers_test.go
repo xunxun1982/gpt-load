@@ -28,6 +28,15 @@ type errorAfterReadCloser struct {
 	done bool
 }
 
+type dataAndErrorReadCloser struct {
+	data []byte
+	done bool
+}
+
+type errorGinResponseWriter struct {
+	gin.ResponseWriter
+}
+
 type shortWriteErrorWriter struct {
 	n int
 }
@@ -73,6 +82,27 @@ func (r *errorAfterReadCloser) Read(p []byte) (int, error) {
 
 func (r *errorAfterReadCloser) Close() error {
 	return nil
+}
+
+func (r *dataAndErrorReadCloser) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if len(r.data) > 0 {
+		return n, nil
+	}
+	r.done = true
+	return n, errors.New("test read error")
+}
+
+func (r *dataAndErrorReadCloser) Close() error {
+	return nil
+}
+
+func (w errorGinResponseWriter) Write(p []byte) (int, error) {
+	return len(p), errors.New("test client write error")
 }
 
 type alwaysErrorReadCloser struct{}
@@ -346,6 +376,73 @@ func TestHandleStreamingResponseParsesResponsesUsage(t *testing.T) {
 	assert.Equal(t, int64(20), usage.TotalTokens)
 	assert.Equal(t, models.TokenUsageSourceUpstream, source)
 	assert.Equal(t, int64(0), getEstimatedOutputTokens(c))
+}
+
+func TestHandleStreamingResponseTreatsCompletedEventAsSuccessBeforeEOF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: &errorAfterReadCloser{data: []byte(
+			"event: response.completed\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_done\",\"status\":\"completed\"}}\n\n",
+		)},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	_, processingFailed := c.Get(ctxKeyResponseProcessingFailed)
+	assert.False(t, processingFailed)
+	assert.Contains(t, w.Body.String(), `"type":"response.completed"`)
+}
+
+func TestHandleStreamingResponseTreatsEncodedCompletedEventAsSuccessWithTrailingUpstreamError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := compressGzipForResponseHandlerTest(t, []byte(
+		"event: response.completed\n"+
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_done\",\"status\":\"completed\"}}\n\n",
+	))
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       &dataAndErrorReadCloser{data: body},
+		Header:     http.Header{"Content-Encoding": []string{"gzip"}},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	_, processingFailed := c.Get(ctxKeyResponseProcessingFailed)
+	assert.False(t, processingFailed)
+	assert.Equal(t, body, w.Body.Bytes())
+}
+
+func TestHandleStreamingResponseKeepsEncodedCompletedEventFailedOnClientWriteError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Writer = errorGinResponseWriter{ResponseWriter: c.Writer}
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := compressGzipForResponseHandlerTest(t, []byte(
+		"event: response.completed\n"+
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_done\",\"status\":\"completed\"}}\n\n",
+	))
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     http.Header{"Content-Encoding": []string{"gzip"}},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	_, processingFailed := c.Get(ctxKeyResponseProcessingFailed)
+	assert.True(t, processingFailed)
 }
 
 func TestHandleStreamingResponseSetsEstimatedOutputFallback(t *testing.T) {
