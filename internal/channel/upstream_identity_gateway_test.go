@@ -55,3 +55,15 @@ func TestUpstreamIdentityGatewaySnapshotKeepsRouteAndIdentityConsistent(t *testi
 	require.Equal(t, "https://gateway-two.example.com/openai/api.example.com/v1/models", current.URL)
 	require.NotEqual(t, selected.Identity, current.Identity)
 }
+
+func TestUpstreamIdentityTreatsWhitespaceGatewayAsDirect(t *testing.T) {
+	channel := &BaseChannel{Name: "openai", Upstreams: []UpstreamInfo{{
+		URL: mustParseURL("https://api.example.com"), Weight: 100, GatewayProxy: " \t ",
+	}}}
+	originalURL := mustParseURL("/proxy/group/v1/models")
+
+	selected, err := channel.SelectUpstreamWithClients(originalURL, "group")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.example.com/v1/models", selected.URL)
+	require.Empty(t, selected.GatewayProxy)
+}

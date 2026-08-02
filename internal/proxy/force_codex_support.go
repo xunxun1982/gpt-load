@@ -206,12 +206,59 @@ func codexRequestTools(req *CodexRequest) ([]CodexTool, error) {
 	if req == nil {
 		return nil, nil
 	}
-	tools := append([]CodexTool(nil), req.Tools...)
 	inputTools, err := codexInputToolDefinitions(req.Input)
 	if err != nil {
 		return nil, err
 	}
-	return append(tools, inputTools...), nil
+	total := len(req.Tools) + len(inputTools)
+	seen := make(map[string]struct{}, total)
+	tools := make([]CodexTool, 0, total)
+	for _, candidates := range [...][]CodexTool{req.Tools, inputTools} {
+		for _, tool := range candidates {
+			if filtered, ok := deduplicateCodexTool(tool, "", seen); ok {
+				tools = append(tools, filtered)
+			}
+		}
+	}
+	return tools, nil
+}
+
+func deduplicateCodexTool(tool CodexTool, namespace string, seen map[string]struct{}) (CodexTool, bool) {
+	if tool.Type == "namespace" {
+		nextNamespace := codexChatToolName(tool.Name, namespace)
+		children := codexNamespaceChildren(tool)
+		filtered := make([]CodexTool, 0, len(children))
+		for _, child := range children {
+			if unique, ok := deduplicateCodexTool(child, nextNamespace, seen); ok {
+				filtered = append(filtered, unique)
+			}
+		}
+		if len(filtered) == 0 {
+			return CodexTool{}, false
+		}
+		if len(tool.Tools) > 0 {
+			tool.Tools = filtered
+		} else {
+			tool.Children = filtered
+		}
+		return tool, true
+	}
+
+	chatName := codexChatToolName(tool.Name, namespace)
+	switch tool.Type {
+	case "custom":
+		chatName = tool.Name
+	case "tool_search":
+		chatName = codexToolSearchProxyName
+	}
+	if chatName == "" {
+		return tool, true
+	}
+	if _, duplicate := seen[chatName]; duplicate {
+		return CodexTool{}, false
+	}
+	seen[chatName] = struct{}{}
+	return tool, true
 }
 
 func codexInputToolDefinitions(input json.RawMessage) ([]CodexTool, error) {
@@ -291,7 +338,7 @@ func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, er
 		ParallelToolCalls: codexReq.ParallelToolCalls,
 	}
 	if codexReq.Reasoning != nil {
-		req.ReasoningEffort = strings.TrimSpace(codexReq.Reasoning.Effort)
+		req.ReasoningEffort = strings.ToLower(strings.TrimSpace(codexReq.Reasoning.Effort))
 	}
 
 	if strings.TrimSpace(codexReq.Instructions) != "" {
@@ -1233,7 +1280,29 @@ func validateForceCodexRequestOptions(req *CodexRequest, target string) error {
 			return unsupportedCodexRequestOption("text.verbosity", target, "expected low, medium, or high")
 		}
 	}
+	if target == codexUpstreamClaude {
+		if strings.TrimSpace(req.ServiceTier) != "" {
+			return unsupportedCodexRequestOption("service_tier", target, "Anthropic Messages has no confirmed equivalent service-tier contract")
+		}
+		if strings.TrimSpace(req.PromptCacheKey) != "" {
+			return unsupportedCodexRequestOption("prompt_cache_key", target, "Anthropic Messages has no equivalent prompt-cache routing key")
+		}
+	}
 	if req.Reasoning != nil {
+		effort := strings.ToLower(strings.TrimSpace(req.Reasoning.Effort))
+		if target == codexUpstreamClaude {
+			switch effort {
+			case "", "none", "low", "medium", "high", "max":
+			default:
+				return unsupportedCodexRequestOption("reasoning.effort", target, "expected none, low, medium, high, or max")
+			}
+		} else {
+			switch effort {
+			case "", "none", "minimal", "low", "medium", "high", "max", "xhigh":
+			default:
+				return unsupportedCodexRequestOption("reasoning.effort", target, "unsupported Chat Completions reasoning effort")
+			}
+		}
 		context := strings.ToLower(strings.TrimSpace(req.Reasoning.Context))
 		switch context {
 		case "", "auto", "current_turn":
@@ -1344,7 +1413,7 @@ func codexChatStreamOptions(raw json.RawMessage) (map[string]any, error) {
 }
 
 type codexConvertedToolFields struct {
-	Strict       bool
+	Strict       *bool
 	DeferLoading *bool
 }
 
@@ -1376,7 +1445,7 @@ func marshalForceCodexOpenAIChatRequest(req *OpenAIRequest, sourceTools []CodexT
 			return nil, fmt.Errorf("Codex/OpenAI tool conversion count mismatch")
 		}
 		for i, field := range fields {
-			if !field.Strict {
+			if field.Strict == nil {
 				continue
 			}
 			tool, ok := tools[i].(map[string]any)
@@ -1387,7 +1456,7 @@ func marshalForceCodexOpenAIChatRequest(req *OpenAIRequest, sourceTools []CodexT
 			if !ok {
 				return nil, fmt.Errorf("invalid converted OpenAI function at index %d", i)
 			}
-			function["strict"] = true
+			function["strict"] = *field.Strict
 		}
 	}
 	if source != nil {
@@ -1440,8 +1509,8 @@ func marshalForceCodexClaudeRequest(req *ClaudeRequest, sourceTools []CodexTool,
 			if !ok {
 				return nil, fmt.Errorf("invalid converted Anthropic tool at index %d", i)
 			}
-			if field.Strict {
-				tool["strict"] = true
+			if field.Strict != nil {
+				tool["strict"] = *field.Strict
 			}
 			if field.DeferLoading != nil {
 				tool["defer_loading"] = *field.DeferLoading

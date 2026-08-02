@@ -67,4 +67,5 @@ func TestHandleProxyAggregateCodexAffinityReusesExactExecutionBinding(t *testing
 	require.Equal(t, first.auth, second.auth)
 	require.Equal(t, first.upstream, second.upstream)
 	require.Contains(t, string(second.body), "reasoning.encrypted_content")
+	require.Empty(t, observations)
 }

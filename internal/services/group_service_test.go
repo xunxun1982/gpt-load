@@ -925,7 +925,7 @@ func TestValidateAndCleanConfigCodexAffinityScope(t *testing.T) {
 	}
 }
 
-func TestValidateAndCleanConfigResponsesIncludeEncryptedReasoningScope(t *testing.T) {
+func TestValidateAndCleanConfigResponsesOptionsScope(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
@@ -945,13 +945,16 @@ func TestValidateAndCleanConfigResponsesIncludeEncryptedReasoningScope(t *testin
 		t.Run(tt.name, func(t *testing.T) {
 			cleaned, err := svc.validateAndCleanConfig(map[string]any{
 				"responses_include_encrypted_reasoning": true,
+				"responses_legacy_user_role":            true,
 			}, tt.channelType)
 
 			require.NoError(t, err)
 			if tt.want {
 				assert.Equal(t, true, cleaned["responses_include_encrypted_reasoning"])
+				assert.Equal(t, true, cleaned["responses_legacy_user_role"])
 			} else {
 				assert.NotContains(t, cleaned, "responses_include_encrypted_reasoning")
+				assert.NotContains(t, cleaned, "responses_legacy_user_role")
 			}
 		})
 	}

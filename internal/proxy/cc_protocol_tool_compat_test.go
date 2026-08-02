@@ -83,7 +83,9 @@ func TestCCProtocolToolCompatChoiceAndMaxTokens(t *testing.T) {
 	}{
 		{name: "auto parallel", choice: `{"type":"auto","disable_parallel_tool_use":false}`, wantChoice: "auto", wantParallel: ccBoolPtr(true)},
 		{name: "any serial", choice: `{"type":"any","disable_parallel_tool_use":true}`, wantChoice: "required", wantParallel: ccBoolPtr(false)},
-		{name: "specific serial", choice: `{"type":"tool","name":"lookup","disable_parallel_tool_use":true}`, wantParallel: ccBoolPtr(false)},
+		{name: "specific serial", choice: `{"type":"tool","name":"lookup","disable_parallel_tool_use":true}`, wantChoice: map[string]any{
+			"type": "function", "function": map[string]string{"name": "lookup"},
+		}, wantParallel: ccBoolPtr(false)},
 		{name: "none", choice: `{"type":"none"}`, wantChoice: "none"},
 	}
 

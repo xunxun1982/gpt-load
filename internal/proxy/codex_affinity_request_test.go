@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -26,6 +27,51 @@ func TestCodexSelectionErrorMappingSanitizesClientMessages(t *testing.T) {
 	require.Equal(t, 503, status)
 	require.Equal(t, "NO_KEYS_AVAILABLE", apiErr.Code)
 	require.NotContains(t, apiErr.Message, "plain-secret")
+}
+
+func TestPrepareStandardCodexAffinityClassifiesUpstreamSelectionFailure(t *testing.T) {
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	group := createTestGroup(t, db, "standard-affinity-selection-error", "openai-response")
+	group.Config = map[string]any{"codex_affinity_enabled": true}
+	require.NoError(t, db.Save(group).Error)
+	createTestKey(t, db, group.ID, "sk-selection-error", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/proxy/"+group.Name+"/v1/responses", nil)
+	retryCtx := &retryContext{originalBodyBytes: []byte(`{"model":"gpt-5","input":"hello"}`)}
+	rawErr := errors.New("upstream selection failed")
+	_, err := ps.prepareStandardCodexAffinity(c, &testChannelProxy{selectErr: rawErr}, group, retryCtx.originalBodyBytes, retryCtx)
+	require.ErrorIs(t, err, rawErr)
+
+	status, apiErr := mapCodexSelectionError(err, nil, true)
+	require.Equal(t, 500, status)
+	require.Equal(t, "INTERNAL_SERVER_ERROR", apiErr.Code)
+}
+
+func TestStandardCodexDispatchRejectsEmptyFallbackResolution(t *testing.T) {
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	group := createTestGroup(t, db, "standard-affinity-empty-fallback", "openai-response")
+	createTestKey(t, db, group.ID, "sk-empty-fallback", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/proxy/"+group.Name+"/v1/responses", nil)
+	body := []byte(`{"model":"gpt-5","input":"hello"}`)
+	retryCtx := &retryContext{
+		codexAffinityEnabled: true,
+		codexSelection: &codexExecutionSelection{binding: codexAffinityBinding{
+			executionGroupID: group.ID, keyID: 1, upstreamIdentity: testChannelProxyIdentity,
+		}},
+	}
+
+	_, upstream, _, err := ps.standardCodexDispatchSelection(c, &testChannelProxy{
+		client: &http.Client{}, url: "https://upstream.example/v1/responses", resolveEmpty: true,
+	}, group, body, retryCtx)
+	require.Error(t, err)
+	require.Nil(t, upstream)
 }
 
 func TestCodexAffinityKeyPrefersCanonicalThreadMetadata(t *testing.T) {

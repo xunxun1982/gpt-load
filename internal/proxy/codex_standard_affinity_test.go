@@ -114,6 +114,10 @@ func TestHandleProxyStandardCodexAffinitySeparatesProxyKeys(t *testing.T) {
 	first := <-observations
 	require.Equal(t, http.StatusOK, runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-b", "", body).Code)
 	second := <-observations
+	require.Equal(t, http.StatusOK, runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "", body).Code)
+	third := <-observations
 
 	require.NotEqual(t, first.auth, second.auth)
+	require.Equal(t, first.auth, third.auth)
+	require.Equal(t, first.upstream, third.upstream)
 }

@@ -68,7 +68,7 @@ func (cache *codexAffinityCache) set(key string, executionGroupID uint, now time
 	if cache == nil || key == "" || executionGroupID == 0 {
 		return
 	}
-	cache.setLocked(key, legacyCodexAffinityBinding(executionGroupID), now)
+	cache.setBinding(key, legacyCodexAffinityBinding(executionGroupID), now)
 }
 
 func (cache *codexAffinityCache) deleteIfMatches(key string, executionGroupID uint, generation uint64) {

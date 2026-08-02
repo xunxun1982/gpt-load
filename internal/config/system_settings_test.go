@@ -722,11 +722,20 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			errorMsg:    "cannot both be enabled",
 		},
 		{
-			name: "valid Responses encrypted reasoning include",
+			name: "valid Responses compatibility flags",
 			config: map[string]any{
 				"responses_include_encrypted_reasoning": true,
+				"responses_legacy_user_role":            true,
 			},
 			expectError: false,
+		},
+		{
+			name: "invalid Responses legacy user role type",
+			config: map[string]any{
+				"responses_legacy_user_role": "true",
+			},
+			expectError: true,
+			errorMsg:    "expected a boolean",
 		},
 		{
 			name: "valid simulated codex client",

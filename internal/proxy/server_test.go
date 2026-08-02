@@ -41,8 +41,10 @@ import (
 )
 
 type testChannelProxy struct {
-	client *http.Client
-	url    string
+	client       *http.Client
+	url          string
+	selectErr    error
+	resolveEmpty bool
 }
 
 const testChannelProxyIdentity = "test-upstream-identity"
@@ -65,6 +67,9 @@ func requireSingleUpstreamTestPath(t *testing.T, receivedPath <-chan string, req
 }
 
 func (p *testChannelProxy) SelectUpstreamWithClients(_ *url.URL, _ string) (*channel.UpstreamSelection, error) {
+	if p.selectErr != nil {
+		return nil, p.selectErr
+	}
 	return &channel.UpstreamSelection{
 		Identity:     testChannelProxyIdentity,
 		URL:          p.url,
@@ -74,6 +79,9 @@ func (p *testChannelProxy) SelectUpstreamWithClients(_ *url.URL, _ string) (*cha
 }
 
 func (p *testChannelProxy) ResolveUpstreamByIdentity(identity string, originalURL *url.URL, groupName string) (*channel.UpstreamSelection, error) {
+	if p.resolveEmpty {
+		return nil, nil
+	}
 	if identity != testChannelProxyIdentity {
 		return nil, errors.New("upstream identity not found")
 	}
@@ -4964,12 +4972,13 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCrossProtocolFailureClears
 			cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
 			require.NoError(t, err)
 			affinityKey := "cross-protocol-session-" + tt.name
-			body := []byte(`{"model":"gpt-5","stream":false,"prompt_cache_key":"` + affinityKey + `","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+			body := []byte(`{"model":"gpt-5","stream":false,"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
 			cacheKey := cacheTestCodexAffinityBinding(t, ps, cachedAggregate, subGroup, cachedKey.ID, affinityKey)
 
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
+			c.Request.Header.Set("Thread-Id", affinityKey)
 			setTestProxyIdentity(c)
 			retryCtx := &retryContext{
 				excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),

@@ -139,6 +139,9 @@ type GroupConfig struct {
 	// Values: "auto" (default, use codexDefaultInstructions), "official" (use official Codex CLI instructions),
 	// "custom" (use CodexInstructions field value).
 	CodexInstructionsMode *string `json:"codex_instructions_mode,omitempty"`
+	// ResponsesLegacyUserRole downgrades converted Claude system prompts to user messages for legacy Responses upstreams.
+	// This weakens instruction priority and should only be enabled when the upstream rejects developer messages.
+	ResponsesLegacyUserRole *bool `json:"responses_legacy_user_role,omitempty"`
 	// InterceptEventLog enables interception of Claude Code event logging endpoint.
 	// Only applies to Anthropic channel groups. When enabled, /api/event_logging/batch
 	// requests are intercepted and not forwarded to upstream.

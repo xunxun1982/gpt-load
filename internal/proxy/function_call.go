@@ -1468,48 +1468,6 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 			continue
 		}
 
-		// Bound parsing window to avoid feeding arbitrarily large content into
-		// the XML parser. We keep only the tail of the content where the
-		// <function_calls> block is expected to appear.
-		// NOTE: Use anchored truncation to avoid missing function calls
-		// when they appear before the default tail window. Anchor on trigger signal
-		// or <function_calls> tag if present.
-		parseInput := contentStr
-		if len(parseInput) > maxContentBufferBytes {
-			start := -1
-			if triggerSignal != "" {
-				start = strings.LastIndex(parseInput, triggerSignal)
-			}
-			if start == -1 {
-				start = strings.LastIndex(parseInput, "<function_calls>")
-			}
-			if start == -1 {
-				// No anchor found, use default tail truncation
-				start = len(parseInput) - maxContentBufferBytes
-			}
-			if start < 0 {
-				start = 0
-			}
-			// Align start to rune boundary to avoid splitting UTF-8 characters
-			for start < len(parseInput) && !utf8.RuneStart(parseInput[start]) {
-				start++
-			}
-
-			// Take a bounded window forward from the anchor point
-			// NOTE: AI suggested taking window forward from anchor instead of
-			// resetting anchor to tail. This preserves the anchor context while
-			// respecting the buffer limit.
-			end := len(parseInput)
-			if end-start > maxContentBufferBytes {
-				end = start + maxContentBufferBytes
-			}
-			// Align end to rune boundary (move backward to avoid splitting UTF-8)
-			for end > start && end < len(parseInput) && !utf8.RuneStart(parseInput[end]) {
-				end--
-			}
-			parseInput = parseInput[start:end]
-		}
-
 		parseResult, validCall := securitySession.ParseAndValidate(contentStr, true)
 		calls := parseResult.Calls
 		callSource := "content"
@@ -1526,24 +1484,19 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		}
 
 		if !validCall || len(calls) == 0 {
-			// Diagnose why parsing failed for debugging purposes.
-			// This helps identify common issues like missing trigger signals,
-			// unclosed tags, or malformed XML structure.
-			// NOTE: parseInput is tail-truncated (maxContentBufferBytes),
-			// so NO_TRIGGER diagnostic may be a false positive if trigger was in the truncated
-			// portion. This is acceptable for debug logging purposes only.
-			// NOTE: The nil check is defensive programming - currently
-			// diagnoseFCParseError never returns nil, but keeping the check for future safety.
-			// NOTE: Gate behind DebugLevel to avoid CPU waste
-			// when debug logging is disabled.
-			if logrus.IsLevelEnabled(logrus.DebugLevel) &&
-				(triggerSignal != "" || strings.Contains(parseInput, "<function_calls>") || strings.Contains(parseInput, "<invoke")) {
-				parseErr := diagnoseFCParseError(parseInput, triggerSignal)
-				if parseErr != nil {
-					// NOTE: Add truncated flag to help identify
-					// potential false positives in NO_TRIGGER diagnostics.
-					inputTruncated := len(contentStr) > maxContentBufferBytes
-					// NOTE: Add choice_index for multi-choice correlation.
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				diagnosticInput := contentStr
+				inputTruncated := len(diagnosticInput) > maxContentBufferBytes
+				if inputTruncated {
+					start := len(diagnosticInput) - maxContentBufferBytes
+					for start < len(diagnosticInput) && !utf8.RuneStart(diagnosticInput[start]) {
+						start++
+					}
+					diagnosticInput = diagnosticInput[start:]
+				}
+
+				if triggerSignal != "" || strings.Contains(diagnosticInput, "<function_calls>") || strings.Contains(diagnosticInput, "<invoke") {
+					parseErr := diagnoseFCParseError(diagnosticInput, triggerSignal)
 					logrus.WithFields(logrus.Fields{
 						"error_code":      parseErr.Code,
 						"error_message":   parseErr.Message,
@@ -1552,20 +1505,17 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 						"choice_index":    i,
 					}).Debug("Function call normal response: parsing failed with diagnostic")
 				}
-			}
 
-			// Log when we detect execution intent phrases but no function_calls XML at all.
-			// NOTE: content_preview is model output and may include user-provided content.
-			// Sanitize before truncate to prevent leaking truncated secrets.
-			if reExecutionIntent.MatchString(parseInput) && !strings.Contains(parseInput, "<function_calls>") {
-				fields := logrus.Fields{
-					"trigger_signal":  triggerSignal,
-					"content_preview": utils.TruncateString(utils.SanitizeErrorBody(parseInput), 200),
+				if reExecutionIntent.MatchString(diagnosticInput) && !strings.Contains(diagnosticInput, "<function_calls>") {
+					fields := logrus.Fields{
+						"trigger_signal":  triggerSignal,
+						"content_preview": utils.TruncateString(utils.SanitizeErrorBody(diagnosticInput), 200),
+					}
+					if fr, ok := chMap["finish_reason"].(string); ok {
+						fields["finish_reason"] = fr
+					}
+					logrus.WithFields(fields).Debug("Function call normal response: detected execution intent without tool call XML")
 				}
-				if fr, ok := chMap["finish_reason"].(string); ok {
-					fields["finish_reason"] = fr
-				}
-				logrus.WithFields(fields).Debug("Function call normal response: detected execution intent without tool call XML")
 			}
 			continue
 		}
@@ -3284,7 +3234,8 @@ func collectAnthropicFunctionCallStreamText(c *gin.Context, events []functionCal
 	if _, _, ok := getTokenUsage(c); !ok {
 		setEstimatedOutputTokens(c, outputEstimate.Tokens())
 	}
-	complete := parseValid && messageStopSeen && (stopReason == "end_turn" || stopReason == "stop_sequence")
+	normalizedStopReason := strings.ToLower(strings.TrimSpace(stopReason))
+	complete := parseValid && messageStopSeen && (normalizedStopReason == "end_turn" || normalizedStopReason == "stop_sequence")
 	return text.String(), messageID, model, inputTokens, outputTokens, complete
 }
 

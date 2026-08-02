@@ -685,6 +685,10 @@ func mapCodexSelectionError(err error, apiKey *models.APIKey, affinityEnabled bo
 	if errors.Is(err, errInvalidCodexStateDomain) {
 		return http.StatusBadRequest, app_errors.NewAPIError(app_errors.ErrInvalidJSON, "Invalid request body for Codex identity change")
 	}
+	var selectionErr *codexExecutionSelectionError
+	if apiKey == nil && errors.As(err, &selectionErr) {
+		apiKey = selectionErr.apiKey
+	}
 	internalError := sanitizeInternalErrorMessage(err.Error())
 	if apiKey == nil {
 		return http.StatusServiceUnavailable, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, internalError)
@@ -1303,13 +1307,9 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		}
 		bodyBytes, err = ps.prepareStandardCodexAffinity(c, channelHandler, originalGroup, bodyBytes, retryCtx)
 		if err != nil {
-			if errors.Is(err, errInvalidCodexStateDomain) {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, "Invalid request body for Codex identity change"))
-				ps.logEarlyError(c, originalGroup, startTime, http.StatusBadRequest, err)
-			} else {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, "No available Codex execution identity"))
-				ps.logEarlyError(c, originalGroup, startTime, http.StatusServiceUnavailable, err)
-			}
+			statusCode, apiErr := mapCodexSelectionError(err, nil, true)
+			response.Error(c, apiErr)
+			ps.logEarlyError(c, originalGroup, startTime, statusCode, sanitizeInternalError(err))
 			return
 		}
 	}
@@ -2283,8 +2283,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		if retryCtx.codexSelection == nil {
 			retryCtx.codexSelection, err = ps.selectFreshCodexExecution(subGroupChannelHandler, group, &preSelectionURL, group.Name)
 			if err != nil {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, "No available Codex execution identity"))
-				ps.logEarlyError(c, group, startTime, http.StatusServiceUnavailable, err)
+				statusCode, apiErr := mapCodexSelectionError(err, nil, true)
+				response.Error(c, apiErr)
+				ps.logEarlyError(c, group, startTime, statusCode, sanitizeInternalError(err))
 				return
 			}
 			retryCtx.codexIdentityChanged = true
@@ -2651,11 +2652,18 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		upstreamSelection, err = subGroupChannelHandler.ResolveUpstreamByIdentity(retryCtx.codexSelection.binding.upstreamIdentity, &subGroupURL, group.Name)
 		if err != nil {
 			ps.degradeCodexAffinity(retryCtx)
+			apiKey = nil
 			retryCtx.codexSelection, err = ps.selectFreshCodexExecution(subGroupChannelHandler, group, &subGroupURL, group.Name)
 			if err == nil {
 				apiKey = retryCtx.codexSelection.apiKey
 				retryCtx.codexIdentityChanged = true
 				finalBodyBytes, err = sanitizeCodexIdentityChange(c, finalBodyBytes, group, codexEncryptedReasoningAllowed(retryCtx))
+				if err != nil {
+					statusCode, apiErr := mapCodexSelectionError(err, apiKey, true)
+					response.Error(c, apiErr)
+					ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(err), isStream, "", nil, "", subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+					return
+				}
 			}
 			if err == nil {
 				upstreamSelection, err = subGroupChannelHandler.ResolveUpstreamByIdentity(retryCtx.codexSelection.binding.upstreamIdentity, &subGroupURL, group.Name)
@@ -2668,7 +2676,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 	if err != nil {
-		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, codexAffinityEnabled, maxRetries, http.StatusServiceUnavailable, err, apiKey)
+		statusCode, apiErr := mapCodexSelectionError(err, apiKey, codexAffinityEnabled)
+		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, codexAffinityEnabled, maxRetries, statusCode, errors.New(apiErr.Message), apiKey)
 		return
 	}
 	if upstreamSelection == nil || upstreamSelection.URL == "" {

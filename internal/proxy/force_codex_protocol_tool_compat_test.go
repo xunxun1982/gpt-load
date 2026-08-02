@@ -46,6 +46,26 @@ func TestProtocolToolCompatReadsAdditionalAndToolSearchTools(t *testing.T) {
 	assert.Contains(t, output, `"name":"big_id"`)
 }
 
+func TestProtocolToolCompatDeduplicatesDiscoveredToolsAfterExplicitTools(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Tools: []CodexTool{{
+			Type: "function", Name: "lookup", Description: "explicit definition",
+			Parameters: json.RawMessage(`{"type":"object"}`),
+		}},
+		Input: json.RawMessage(`[
+			{"type":"additional_tools","tools":[{"type":"function","name":"lookup","description":"discovered definition","parameters":{"type":"object"}}]},
+			{"type":"tool_search_output","tools":[{"type":"function","name":"lookup","description":"replayed definition","parameters":{"type":"object"}}]}
+		]`),
+	}
+
+	got, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+	require.Len(t, got.Tools, 1)
+	assert.Equal(t, "lookup", got.Tools[0].Function.Name)
+	assert.Equal(t, "explicit definition", got.Tools[0].Function.Description)
+}
+
 func TestProtocolToolCompatPreservesStrictAcrossSupportedUpstreams(t *testing.T) {
 	body := []byte(`{"model":"gpt-test","input":"hello","tools":[{"type":"function","name":"lookup","description":"Lookup","strict":true,"parameters":{"type":"object","properties":{"id":{"type":"integer","maximum":9007199254740993}},"required":["id"],"additionalProperties":false}}]}`)
 	for _, channelType := range []string{"openai", "anthropic"} {

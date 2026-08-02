@@ -110,14 +110,14 @@ func (b *BaseChannel) buildUpstreamSelection(snapshot *upstreamSelectionSnapshot
 	finalURL.Path = joinedPath
 	finalURL.RawQuery = originalURL.RawQuery
 	gatewayProxy := ""
-	if upstream.GatewayProxy != "" {
+	if snapshot.gateway.id != "" {
 		directURL := finalURL.String()
-		routedURL, err := buildGatewayProxyURLWithSnapshot(upstream.GatewayProxy, b.Name, finalURL, snapshot.gateway)
+		routedURL, err := buildGatewayProxyURLWithSnapshot(snapshot.gateway.id, b.Name, finalURL, snapshot.gateway)
 		if err != nil {
 			return nil, err
 		}
 		if routedURL.String() != directURL {
-			gatewayProxy = strings.ToLower(strings.TrimSpace(upstream.GatewayProxy))
+			gatewayProxy = snapshot.gateway.id
 		}
 		finalURL = routedURL
 	}

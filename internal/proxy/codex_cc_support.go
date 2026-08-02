@@ -46,7 +46,7 @@ type CodexTool struct {
 	Description  string          `json:"description,omitempty"`
 	Parameters   json.RawMessage `json:"parameters,omitempty"`
 	Format       json.RawMessage `json:"format,omitempty"`
-	Strict       bool            `json:"strict,omitempty"`
+	Strict       *bool           `json:"strict,omitempty"`
 	DeferLoading *bool           `json:"defer_loading,omitempty"`
 	Execution    string          `json:"execution,omitempty"`
 	Tools        []CodexTool     `json:"tools,omitempty"`
@@ -408,20 +408,22 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	// Build input array using the Codex CLI-compatible Responses format.
 	var inputItems []interface{}
 
-	// Preserve Claude's system prompt as a developer input item. Current Codex
-	// Responses requests support this role, while converting it to user text
-	// weakens the caller's instruction boundary.
+	// Preserve Claude's system prompt as a developer input item by default.
 	if len(claudeReq.System) > 0 {
 		systemContent := extractSystemContent(claudeReq.System)
 		if systemContent != "" {
+			systemRole := "developer"
+			if getGroupConfigBool(group, "responses_legacy_user_role") {
+				systemRole = "user"
+			}
 			inputItems = append(inputItems, map[string]interface{}{
 				"type": "message",
-				"role": "developer",
+				"role": systemRole,
 				"content": []map[string]interface{}{
 					{"type": "input_text", "text": systemContent},
 				},
 			})
-			logrus.WithField("system_len", len(systemContent)).Debug("Codex CC: Added system as developer message")
+			logrus.WithFields(logrus.Fields{"system_len": len(systemContent), "role": systemRole}).Debug("Codex CC: Added system message")
 		}
 	}
 
@@ -459,6 +461,7 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 
 	// Convert tools with shortened names
 	if len(claudeReq.Tools) > 0 {
+		strict := false
 		tools := make([]CodexTool, 0, len(claudeReq.Tools))
 		for _, tool := range claudeReq.Tools {
 			// Apply shortened name if needed
@@ -473,7 +476,7 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 				Name:        toolName,
 				Description: tool.Description,
 				Parameters:  params,
-				Strict:      false, // Codex CLI-compatible Responses tools require strict=false for flexibility.
+				Strict:      &strict,
 			})
 		}
 		codexReq.Tools = tools

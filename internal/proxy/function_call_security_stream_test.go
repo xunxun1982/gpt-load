@@ -27,6 +27,19 @@ func TestFunctionCallSecurityAnthropicDisconnectDoesNotExecute(t *testing.T) {
 	}
 }
 
+func TestFunctionCallSecurityAnthropicCompletionNormalizesStopReason(t *testing.T) {
+	_, c, _, _ := newFunctionCallSecurityContext(t, "anthropic", "/v1/messages", "auto", "A")
+	events := []functionCallSSEEvent{
+		{Data: `{"type":"message_delta","delta":{"stop_reason":" END_TURN "}}`},
+		{Data: `{"type":"message_stop"}`},
+	}
+
+	_, _, _, _, _, complete := collectAnthropicFunctionCallStreamText(c, events)
+	if !complete {
+		t.Fatal("normalized terminal stop_reason was not accepted")
+	}
+}
+
 func TestFunctionCallSecurityCodexCollectedDisconnectDoesNotExecute(t *testing.T) {
 	ps, c, w, trigger := newFunctionCallSecurityContext(t, "openai-response", "/v1/responses", "auto", "A")
 	c.Set(ctxKeyFunctionCallEnabled, true)

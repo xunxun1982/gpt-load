@@ -21,7 +21,7 @@ func TestCodexRequestOptionCompatMapsCurrentFieldsToOpenAIChat(t *testing.T) {
 		"prompt_cache_key":"cache-thread",
 		"text":{"verbosity":"high","format":{"type":"json_schema","name":"result","strict":true,"schema":{"type":"object","properties":{"id":{"type":"integer","maximum":9007199254740993}},"required":["id"],"additionalProperties":false}}},
 		"client_metadata":{"thread_id":"thread-1"},
-		"reasoning":{"effort":"high","context":"current_turn"}
+		"reasoning":{"effort":" High ","context":"current_turn"}
 	}`)
 
 	payload := decodeCompatObject(t, applyForceCodexCompat(t, "openai", body))
@@ -49,8 +49,6 @@ func TestCodexRequestOptionCompatMapsStructuredOutputToAnthropic(t *testing.T) {
 		"model":"claude-test",
 		"input":"hello",
 		"stream_options":{"reasoning_summary_delivery":"sequential_cutoff"},
-		"service_tier":"priority",
-		"prompt_cache_key":"cache-thread",
 		"text":{"verbosity":"medium","format":{"type":"json_schema","name":"result","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}}},
 		"client_metadata":{"thread_id":"thread-1"},
 		"reasoning":{"context":"current_turn"}
@@ -58,8 +56,6 @@ func TestCodexRequestOptionCompatMapsStructuredOutputToAnthropic(t *testing.T) {
 
 	payload := decodeCompatObject(t, applyForceCodexCompat(t, "anthropic", body))
 	assert.NotContains(t, payload, "stream_options")
-	assert.NotContains(t, payload, "service_tier")
-	assert.NotContains(t, payload, "prompt_cache_key")
 	assert.NotContains(t, payload, "text")
 	assert.NotContains(t, payload, "client_metadata")
 
@@ -81,6 +77,10 @@ func TestCodexRequestOptionCompatRejectsNonEquivalentOptions(t *testing.T) {
 		{name: "anthropic_all_turns_reasoning", channelType: "anthropic", field: `"reasoning":{"context":"all_turns"}`},
 		{name: "chat_all_turns_reasoning", channelType: "openai", field: `"reasoning":{"context":"all_turns"}`},
 		{name: "chat_non_json_format", channelType: "openai", field: `"text":{"format":{"type":"grammar","name":"result","strict":true,"schema":{}}}`},
+		{name: "anthropic_service_tier", channelType: "anthropic", field: `"service_tier":"priority"`},
+		{name: "anthropic_prompt_cache_key", channelType: "anthropic", field: `"prompt_cache_key":"cache-thread"`},
+		{name: "anthropic_unknown_effort", channelType: "anthropic", field: `"reasoning":{"effort":"turbo"}`},
+		{name: "chat_unknown_effort", channelType: "openai", field: `"reasoning":{"effort":"turbo"}`},
 	}
 
 	for _, tt := range tests {

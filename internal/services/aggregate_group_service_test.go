@@ -297,17 +297,6 @@ func TestValidateSubGroupsAllowsAnthropicAggregateCCCompatibleChannels(t *testin
 			Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
 			Config:      datatypes.JSONMap{"cc_support": true},
 		},
-		{
-			Name:               "legacy-gemini-cc",
-			DisplayName:        "Legacy Gemini CC",
-			GroupType:          "standard",
-			Enabled:            true,
-			ChannelType:        "gemini",
-			TestModel:          "gemini-2.0-flash",
-			ValidationEndpoint: "/v1beta/models/gemini:generateContent",
-			Upstreams:          datatypes.JSON([]byte(`[{"url":"https://generativelanguage.googleapis.com","weight":1}]`)),
-			Config:             datatypes.JSONMap{"cc_support": "true"},
-		},
 	}
 	require.NoError(t, db.Create(&groups).Error)
 
@@ -320,6 +309,24 @@ func TestValidateSubGroupsAllowsAnthropicAggregateCCCompatibleChannels(t *testin
 	require.NoError(t, err)
 	require.Len(t, result.SubGroups, len(groups))
 	assert.Equal(t, "/v1/messages", result.ValidationEndpoint)
+}
+
+func TestValidateSubGroupsRejectsGeminiCCForAnthropicAggregate(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
+	gemini := models.Group{
+		Name: "gemini-cc-rejected", DisplayName: "Gemini CC Rejected",
+		GroupType: "standard", Enabled: true, ChannelType: "gemini", TestModel: "gemini-2.0-flash",
+		ValidationEndpoint: "/v1beta/models/gemini:generateContent",
+		Upstreams:          datatypes.JSON([]byte(`[{"url":"https://generativelanguage.googleapis.com","weight":1}]`)),
+		Config:             datatypes.JSONMap{"cc_support": true},
+	}
+	require.NoError(t, db.Create(&gemini).Error)
+
+	_, err := service.ValidateSubGroups(context.Background(), "anthropic", []SubGroupInput{{
+		GroupID: gemini.ID, Weight: 100,
+	}}, "")
+	require.Error(t, err)
 }
 
 func TestValidateSubGroupsAllowsResponsesAggregateCodexCompatibleChannels(t *testing.T) {
@@ -437,7 +444,7 @@ func TestAddSubGroupsPersistsHealthResetInterval(t *testing.T) {
 	assert.Equal(t, int64(3600), relation.HealthResetIntervalSeconds)
 }
 
-func TestAddSubGroupsPreservesLegacyGeminiCCEndpoint(t *testing.T) {
+func TestAddSubGroupsRejectsLegacyGeminiCCMember(t *testing.T) {
 	db := setupTestDB(t)
 	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
 
@@ -469,7 +476,7 @@ func TestAddSubGroupsPreservesLegacyGeminiCCEndpoint(t *testing.T) {
 	err := service.AddSubGroups(context.Background(), aggregateGroup.ID, []SubGroupInput{{
 		GroupID: openAICC.ID, Weight: 100,
 	}})
-	require.NoError(t, err)
+	require.Error(t, err)
 }
 
 func TestAddSubGroupsRejectsInvalidHealthResetInterval(t *testing.T) {

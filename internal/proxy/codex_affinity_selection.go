@@ -16,6 +16,14 @@ type codexExecutionSelection struct {
 	apiKey  *models.APIKey
 }
 
+type codexExecutionSelectionError struct {
+	apiKey *models.APIKey
+	cause  error
+}
+
+func (e *codexExecutionSelectionError) Error() string { return e.cause.Error() }
+func (e *codexExecutionSelectionError) Unwrap() error { return e.cause }
+
 func (ps *ProxyServer) selectFreshCodexExecution(handler channel.ChannelProxy, group *models.Group, requestURL *url.URL, routeName string) (*codexExecutionSelection, error) {
 	apiKey, err := ps.keyProvider.SelectKey(group.ID)
 	if err != nil {
@@ -23,10 +31,10 @@ func (ps *ProxyServer) selectFreshCodexExecution(handler channel.ChannelProxy, g
 	}
 	upstream, err := handler.SelectUpstreamWithClients(requestURL, routeName)
 	if err != nil {
-		return nil, err
+		return nil, &codexExecutionSelectionError{apiKey: apiKey, cause: err}
 	}
 	if upstream == nil || upstream.Identity == "" || upstream.URL == "" {
-		return nil, fmt.Errorf("selected upstream has no stable identity")
+		return nil, &codexExecutionSelectionError{apiKey: apiKey, cause: fmt.Errorf("selected upstream has no stable identity")}
 	}
 	return &codexExecutionSelection{
 		binding: codexAffinityBinding{
@@ -121,6 +129,9 @@ func (ps *ProxyServer) standardCodexDispatchSelection(c *gin.Context, handler ch
 		upstream, selectErr = handler.ResolveUpstreamByIdentity(selection.binding.upstreamIdentity, c.Request.URL, group.Name)
 		if selectErr != nil {
 			return nil, nil, body, selectErr
+		}
+		if upstream == nil || upstream.URL == "" {
+			return nil, nil, body, fmt.Errorf("resolved upstream is empty")
 		}
 	}
 	return retryCtx.codexSelection.apiKey, upstream, body, nil

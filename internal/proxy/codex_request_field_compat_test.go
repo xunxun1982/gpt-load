@@ -68,6 +68,36 @@ func TestProtocolToolCompatUsesDeveloperRoleForClaudeSystem(t *testing.T) {
 	assert.Equal(t, "user", input[1]["role"])
 }
 
+func TestProtocolToolCompatCanUseLegacyUserRoleForClaudeSystem(t *testing.T) {
+	got, err := convertClaudeToCodex(&ClaudeRequest{
+		Model:    "gpt-test",
+		System:   json.RawMessage(`"application rules"`),
+		Messages: []ClaudeMessage{{Role: "user", Content: json.RawMessage(`"hello"`)}},
+	}, "", &models.Group{Config: map[string]any{"responses_legacy_user_role": true}})
+	require.NoError(t, err)
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(got.Input, &input))
+	require.Len(t, input, 2)
+	assert.Equal(t, "user", input[0]["role"])
+	assert.Equal(t, "user", input[1]["role"])
+}
+
+func TestProtocolToolCompatEmitsExplicitFalseStrictForClaudeTools(t *testing.T) {
+	got, err := convertClaudeToCodex(&ClaudeRequest{
+		Model: "gpt-test",
+		Tools: []ClaudeTool{{
+			Name: "lookup", InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+	}, "", nil)
+	require.NoError(t, err)
+
+	encoded, err := json.Marshal(got)
+	require.NoError(t, err)
+	payload := decodeCompatObject(t, encoded)
+	tool := payload["tools"].([]any)[0].(map[string]any)
+	assert.Equal(t, false, tool["strict"])
+}
+
 func TestProtocolToolCompatKeepsZeroArgumentToolCall(t *testing.T) {
 	got := convertCodexToClaudeResponse(&CodexResponse{
 		ID: "resp_test", Status: "completed", Model: "gpt-test",

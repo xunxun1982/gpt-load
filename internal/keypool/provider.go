@@ -1461,7 +1461,7 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 	p.store.Delete(activeKeysListKey)
 
 	err := p.db.Model(&models.APIKey{}).
-		Select("id, key_value, status, failure_count, group_id, created_at"). // Only select needed fields
+		Select("id, key_value, key_hash, status, failure_count, group_id, created_at"). // Only select needed fields
 		Where("group_id = ?", groupID).
 		FindInBatches(&batchKeys, batchSize, func(tx *gorm.DB, batch int) error {
 			totalProcessed += len(batchKeys)

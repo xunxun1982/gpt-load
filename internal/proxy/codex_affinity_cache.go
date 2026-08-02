@@ -63,10 +63,6 @@ func (cache *codexAffinityCache) setBinding(key string, binding codexAffinityBin
 	if cache == nil || key == "" || !binding.valid() {
 		return
 	}
-	cache.setLocked(key, binding, now)
-}
-
-func (cache *codexAffinityCache) setLocked(key string, binding codexAffinityBinding, now time.Time) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	cache.nextGen++

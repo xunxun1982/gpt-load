@@ -348,6 +348,21 @@ func TestLoadKeysFromDB(t *testing.T) {
 	assert.Equal(t, 5, len(loadedKeys))
 }
 
+func TestLoadGroupKeysToStorePreservesKeyHash(t *testing.T) {
+	provider, db, keyStore := setupTestProvider(t)
+	defer provider.Stop()
+	group := createTestGroup(t, db, "load-group-key-hash")
+	key := &models.APIKey{
+		GroupID: group.ID, KeyValue: "stored-key", KeyHash: "stored-key-hash", Status: models.KeyStatusActive,
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	require.NoError(t, provider.LoadGroupKeysToStore(group.ID))
+	stored, err := keyStore.HGetAll(fmt.Sprintf("key:%d", key.ID))
+	require.NoError(t, err)
+	require.Equal(t, key.KeyHash, stored["key_hash"])
+}
+
 // setupBenchProvider creates a test KeyProvider for benchmarks
 func setupBenchProvider(b *testing.B) (*KeyProvider, *gorm.DB, store.Store) {
 	b.Helper()
