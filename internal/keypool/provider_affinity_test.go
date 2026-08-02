@@ -17,6 +17,7 @@ func storeAffinityKey(t *testing.T, provider *KeyProvider, keyStore store.Store,
 	require.NoError(t, keyStore.HSet(fmt.Sprintf("key:%d", keyID), map[string]any{
 		"id":            keyID,
 		"key_string":    encrypted,
+		"key_hash":      provider.encryptionSvc.Hash(plaintext),
 		"status":        status,
 		"failure_count": 0,
 		"group_id":      groupID,
@@ -116,4 +117,45 @@ func TestGetActiveKeyByIDDoesNotChangeSelectKeyRotation(t *testing.T) {
 	selected, err := provider.SelectKey(groupID)
 	require.NoError(t, err)
 	require.Equal(t, uint(302), selected.ID)
+}
+
+func TestKeyProviderRejectsUnverifiedDecryptFailures(t *testing.T) {
+	provider, _, keyStore := setupTestProvider(t)
+	defer provider.Stop()
+
+	const groupID = uint(44)
+	storeRecord := func(keyID uint, keyValue, keyHash string) {
+		require.NoError(t, keyStore.HSet(fmt.Sprintf("key:%d", keyID), map[string]any{
+			"id":            keyID,
+			"key_string":    keyValue,
+			"key_hash":      keyHash,
+			"status":        models.KeyStatusActive,
+			"failure_count": 0,
+			"group_id":      groupID,
+			"created_at":    time.Now().Unix(),
+		}))
+	}
+
+	t.Run("direct lookup", func(t *testing.T) {
+		storeRecord(401, "corrupt-ciphertext", provider.encryptionSvc.Hash("different-value"))
+		key, err := provider.GetActiveKeyByID(groupID, 401)
+		require.Nil(t, key)
+		require.ErrorContains(t, err, "decrypt")
+	})
+
+	t.Run("rotating selection", func(t *testing.T) {
+		storeRecord(402, "corrupt-ciphertext", provider.encryptionSvc.Hash("different-value"))
+		require.NoError(t, keyStore.LPush(fmt.Sprintf("group:%d:active_keys", groupID), 402))
+		key, err := provider.SelectKey(groupID)
+		require.Nil(t, key)
+		require.ErrorContains(t, err, "decrypt")
+	})
+
+	t.Run("verified legacy plaintext", func(t *testing.T) {
+		const plaintext = "sk-legacy-plaintext"
+		storeRecord(403, plaintext, provider.encryptionSvc.Hash(plaintext))
+		key, err := provider.GetActiveKeyByID(groupID, 403)
+		require.NoError(t, err)
+		require.Equal(t, plaintext, key.KeyValue)
+	})
 }

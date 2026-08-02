@@ -107,9 +107,15 @@ func parseStrictFunctionValue(raw string) (any, bool) {
 	decoder.UseNumber()
 	var decoded any
 	if err := decoder.Decode(&decoded); err != nil {
+		if strings.ContainsAny(value[:1], "-0123456789") {
+			return value, true
+		}
 		return nil, false
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if strings.ContainsAny(value[:1], "-0123456789") {
+			return value, true
+		}
 		return nil, false
 	}
 	return decoded, true

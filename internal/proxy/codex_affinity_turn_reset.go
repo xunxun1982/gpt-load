@@ -60,7 +60,8 @@ func codexTurnIDFromMetadataValue(value any) string {
 }
 
 func (cache *codexAffinityCache) markStateReset(key, turnKey string, now time.Time) {
-	if cache == nil || key == "" || strings.TrimSpace(turnKey) == "" {
+	turnKey = strings.TrimSpace(turnKey)
+	if cache == nil || key == "" || turnKey == "" || turnKey == codexStateDomainWithoutTurnState {
 		return
 	}
 	cache.mu.Lock()

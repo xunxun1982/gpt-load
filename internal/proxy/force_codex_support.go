@@ -1135,9 +1135,14 @@ func codexClaudeToolChoiceWithParallel(toolChoice json.RawMessage, parallel *boo
 	}
 	choice := map[string]any{"type": "auto"}
 	if len(toolChoice) > 0 {
-		if err := decodeCodexJSONUseNumber(toolChoice, &choice); err != nil || choice == nil {
+		var decoded map[string]any
+		if err := decodeCodexJSONUseNumber(toolChoice, &decoded); err != nil || decoded == nil {
 			return nil, unsupportedCodexRequestOption("tool_choice", codexUpstreamClaude, "tool_choice must be an object when parallel_tool_calls is set")
 		}
+		choice = decoded
+	}
+	if choiceType, _ := choice["type"].(string); choiceType == "none" {
+		return toolChoice, nil
 	}
 	choice["disable_parallel_tool_use"] = !*parallel
 	return json.Marshal(choice)
@@ -1166,6 +1171,9 @@ func validateForceCodexTools(tools []CodexTool, target string) error {
 		}
 		switch toolType {
 		case "function":
+			if strings.TrimSpace(tool.Name) == "" {
+				return unsupportedCodexTool(toolType, target, "name is required for reversible conversion")
+			}
 			if target == codexUpstreamOpenAIChat && tool.DeferLoading != nil && *tool.DeferLoading {
 				return unsupportedCodexTool(toolType, target, "defer_loading has no Chat Completions equivalent")
 			}

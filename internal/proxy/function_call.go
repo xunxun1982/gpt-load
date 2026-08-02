@@ -23,7 +23,10 @@ import (
 // maxContentBufferBytes limits how much assistant content we buffer when
 // reconstructing the XML block for function call. This avoids unbounded
 // memory growth for very long streaming responses.
-const maxContentBufferBytes = 256 * 1024
+const (
+	maxContentBufferBytes      = 256 * 1024
+	maxDeferredUsageTailEvents = 16
+)
 
 // functionCall represents a parsed tool call from the XML block.
 type functionCall struct {
@@ -2129,6 +2132,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	var prevEventData string
 	prevEventTerminal := false
 	var trailingEvents [][]string
+	trailingEventBytes := 0
 	seenAnyEvent := false
 	// Track whether we are inside a <function_calls> block to suppress XML from streaming output.
 	insideFunctionCalls := false
@@ -2159,6 +2163,27 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 			}
 		}
 		return nil
+	}
+	deferUsageTail := func(lines []string) {
+		eventBytes := 1
+		for _, line := range lines {
+			eventBytes += len(line)
+		}
+		if eventBytes > maxUsageTailCaptureBytes {
+			return
+		}
+		for len(trailingEvents) > 0 && (len(trailingEvents) >= maxDeferredUsageTailEvents ||
+			eventBytes > maxUsageTailCaptureBytes-trailingEventBytes) {
+			oldestBytes := 1
+			for _, line := range trailingEvents[0] {
+				oldestBytes += len(line)
+			}
+			trailingEvents[0] = nil
+			trailingEvents = trailingEvents[1:]
+			trailingEventBytes -= oldestBytes
+		}
+		trailingEvents = append(trailingEvents, append([]string(nil), lines...))
+		trailingEventBytes += eventBytes
 	}
 
 	for {
@@ -2252,9 +2277,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 						_, usageOnlyTail = evt["usage"]
 					} else if ok && len(choices) > 0 {
 						if ch, ok := choices[0].(map[string]any); ok {
-							if finishReason, ok := ch["finish_reason"].(string); ok && finishReason != "" {
-								terminalChoice = true
-							}
+							terminalChoice = chatFunctionCallComplete(ch)
 							if deltaVal, ok := ch["delta"].(map[string]any); ok {
 								// Accumulate reasoning_content for intent detection.
 								if reasoning, ok := deltaVal["reasoning_content"].(string); ok && reasoning != "" {
@@ -2470,7 +2493,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		}
 
 		if usageOnlyTail && prevEventTerminal {
-			trailingEvents = append(trailingEvents, append([]string(nil), modifiedLines...))
+			deferUsageTail(modifiedLines)
 			if eof {
 				break
 			}
@@ -2516,34 +2539,15 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		}
 		setEstimatedOutputTokens(c, outputEstimate.Tokens())
 	}
-	parsedCalls := parseFunctionCallsXML(contentStr, triggerSignal)
-
-	// Fallback: If no calls found with trigger signal, try parsing without it.
-	// This handles cases where AI outputs <function_calls> directly without the trigger.
-	if len(parsedCalls) == 0 && strings.Contains(contentStr, "<function_calls>") {
-		parsedCalls = parseFunctionCallsXML(contentStr, "")
-		if len(parsedCalls) > 0 {
-			logrus.WithField("parsed_count", len(parsedCalls)).
-				Debug("Function call streaming: parsed calls using fallback (no trigger signal)")
+	securitySession := functionCallSessionFromContext(c, triggerSignal)
+	var parsedCalls []functionCall
+	if strings.Count(contentStr, triggerSignal)+strings.Count(reasoningStr, triggerSignal) == 1 {
+		parseResult, validCall := securitySession.ParseAndValidate(contentStr, prevEventTerminal)
+		if !validCall && reasoningStr != "" {
+			parseResult, validCall = securitySession.ParseAndValidate(reasoningStr, prevEventTerminal)
 		}
-	}
-
-	// Fallback: If no calls found in content, try parsing from reasoning_content.
-	// DeepSeek reasoner and similar models may output tool calls in reasoning_content
-	// instead of content field when force_function_call + CC mode is enabled.
-	// This is a known behavior where the model plans tool calls in its thinking process.
-	if len(parsedCalls) == 0 && reasoningStr != "" {
-		// First try with trigger signal
-		if strings.Contains(reasoningStr, triggerSignal) || strings.Contains(reasoningStr, "<invoke") || strings.Contains(reasoningStr, "<function_calls>") {
-			parsedCalls = parseFunctionCallsXML(reasoningStr, triggerSignal)
-			if len(parsedCalls) == 0 {
-				// Try without trigger signal
-				parsedCalls = parseFunctionCallsXML(reasoningStr, "")
-			}
-			if len(parsedCalls) > 0 {
-				logrus.WithField("parsed_count", len(parsedCalls)).
-					Debug("Function call streaming: parsed calls from reasoning_content")
-			}
+		if validCall {
+			parsedCalls = parseResult.Calls
 		}
 	}
 
@@ -3264,7 +3268,9 @@ func collectAnthropicFunctionCallStreamText(c *gin.Context, events []functionCal
 			}
 		case "message_delta":
 			if delta, ok := payload["delta"].(map[string]any); ok {
-				stopReason, _ = delta["stop_reason"].(string)
+				if value, _ := delta["stop_reason"].(string); value != "" {
+					stopReason = value
+				}
 			}
 			if usage, ok := payload["usage"].(map[string]any); ok {
 				outputTokens = intFromAny(usage["output_tokens"])

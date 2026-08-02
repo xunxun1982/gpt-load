@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"math/big"
+	"strings"
 )
 
 func (s *FunctionCallSession) validateCall(call functionCall) bool {
@@ -23,7 +24,13 @@ func validateFunctionCallArguments(args map[string]any, schema map[string]any) b
 		}
 	}
 	properties, _ := schema["properties"].(map[string]any)
+	additionalProperties, hasAdditionalProperties := schema["additionalProperties"].(bool)
 	for name, value := range args {
+		if hasAdditionalProperties && !additionalProperties {
+			if _, declared := properties[name]; !declared {
+				return false
+			}
+		}
 		property, _ := properties[name].(map[string]any)
 		if property != nil && !functionCallValueMatchesType(value, property["type"]) {
 			return false
@@ -91,6 +98,32 @@ func functionCallValueMatchesSingleType(value any, typeName string) bool {
 		return ok
 	case "null":
 		return value == nil
+	default:
+		return false
+	}
+}
+
+func chatFunctionCallComplete(choice map[string]any) bool {
+	finishReason, ok := choice["finish_reason"].(string)
+	return ok && strings.EqualFold(strings.TrimSpace(finishReason), "stop")
+}
+
+func responsesFunctionCallComplete(payload map[string]any) bool {
+	status, ok := payload["status"].(string)
+	return ok && strings.EqualFold(strings.TrimSpace(status), "completed")
+}
+
+func anthropicFunctionCallComplete(payload map[string]any) bool {
+	if payloadType, _ := payload["type"].(string); strings.EqualFold(strings.TrimSpace(payloadType), "error") {
+		return false
+	}
+	stopReason, ok := payload["stop_reason"].(string)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(stopReason)) {
+	case "end_turn", "stop_sequence":
+		return true
 	default:
 		return false
 	}

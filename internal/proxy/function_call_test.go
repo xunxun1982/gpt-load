@@ -11802,6 +11802,7 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Let me search. "},"finish_reason":null}]}` + "\n",
 				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<<CALL_abcd>>"},"finish_reason":null}]}` + "\n",
 				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n",
 				`data: [DONE]` + "\n",
 			},
 			triggerSignal:        "<<CALL_abcd>>",
@@ -11949,6 +11950,7 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 
 			// Set trigger signal in context
 			c.Set(ctxKeyTriggerSignal, tt.triggerSignal)
+			setTestFunctionCallSecuritySession(c, tt.triggerSignal, "search", "test")
 
 			// Set group for logging
 			c.Set("group", &models.Group{Name: "test-group"})
@@ -12402,6 +12404,8 @@ func TestHandleFunctionCallStreamingResponseDecodesCompressedBody(t *testing.T) 
 		``,
 		`data: {"id":"chatcmpl-zip","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":null}]}`,
 		``,
+		`data: {"id":"chatcmpl-zip","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
 		`data: [DONE]`,
 		``,
 	}, "\n")
@@ -12418,6 +12422,7 @@ func TestHandleFunctionCallStreamingResponseDecodesCompressedBody(t *testing.T) 
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_zip>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_zip>>", "search")
 	c.Set("group", &models.Group{Name: "test-group"})
 
 	ps := &ProxyServer{}

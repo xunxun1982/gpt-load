@@ -126,3 +126,34 @@ func TestUpstreamIdentityRejectsDisabledDeletedAndChangedProxy(t *testing.T) {
 		require.ErrorContains(t, err, "upstream identity not found")
 	})
 }
+
+func TestResolveUpstreamByIdentityWaitsForUpstreamLock(t *testing.T) {
+	channel := &BaseChannel{Name: "openai", Upstreams: []UpstreamInfo{{
+		URL: mustParseURL("https://api.example.com"), Weight: 100,
+	}}}
+	originalURL := mustParseURL("/proxy/group/v1/models")
+	selected, err := channel.SelectUpstreamWithClients(originalURL, "group")
+	require.NoError(t, err)
+
+	channel.upstreamLock.Lock()
+	locked := true
+	t.Cleanup(func() {
+		if locked {
+			channel.upstreamLock.Unlock()
+		}
+	})
+	result := make(chan error, 1)
+	go func() {
+		_, resolveErr := channel.ResolveUpstreamByIdentity(selected.Identity, originalURL, "group")
+		result <- resolveErr
+	}()
+
+	select {
+	case err := <-result:
+		require.Failf(t, "identity resolution bypassed upstream lock", "returned early: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	channel.upstreamLock.Unlock()
+	locked = false
+	require.NoError(t, <-result)
+}

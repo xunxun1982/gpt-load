@@ -681,6 +681,24 @@ func sanitizeInternalError(err error) error {
 	return errors.New(sanitizeInternalErrorMessage(err.Error()))
 }
 
+func mapCodexSelectionError(err error, apiKey *models.APIKey, affinityEnabled bool) (int, *app_errors.APIError) {
+	if errors.Is(err, errInvalidCodexStateDomain) {
+		return http.StatusBadRequest, app_errors.NewAPIError(app_errors.ErrInvalidJSON, "Invalid request body for Codex identity change")
+	}
+	internalError := sanitizeInternalErrorMessage(err.Error())
+	if apiKey == nil {
+		return http.StatusServiceUnavailable, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, internalError)
+	}
+	message := "Failed to select Codex execution identity"
+	if !affinityEnabled {
+		message = "Failed to select upstream"
+	}
+	if internalError != "" {
+		message += ": " + internalError
+	}
+	return http.StatusInternalServerError, app_errors.NewAPIError(app_errors.ErrInternalServer, message)
+}
+
 // parseRetryConfigInt returns a clamped retry value and whether the configured
 // value used a supported integer representation. Missing values are invalid here.
 func parseRetryConfigInt(cfg map[string]any, key string) (int, bool) {
@@ -1781,15 +1799,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		}
 	}
 	if err != nil {
-		statusCode := http.StatusInternalServerError
-		apiErr := app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to select Codex execution identity")
-		if apiKey == nil && !errors.Is(err, errInvalidCodexStateDomain) {
-			statusCode = http.StatusServiceUnavailable
-			apiErr = app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, err.Error())
-		} else if errors.Is(err, errInvalidCodexStateDomain) {
-			statusCode = http.StatusBadRequest
-			apiErr = app_errors.NewAPIError(app_errors.ErrInvalidJSON, "Invalid request body for Codex identity change")
-		}
+		statusCode, apiErr := mapCodexSelectionError(err, apiKey, retryCtx != nil && retryCtx.codexAffinityEnabled)
 		response.Error(c, apiErr)
 		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, err, isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
 		return

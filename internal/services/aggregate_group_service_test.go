@@ -297,6 +297,17 @@ func TestValidateSubGroupsAllowsAnthropicAggregateCCCompatibleChannels(t *testin
 			Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
 			Config:      datatypes.JSONMap{"cc_support": true},
 		},
+		{
+			Name:               "legacy-gemini-cc",
+			DisplayName:        "Legacy Gemini CC",
+			GroupType:          "standard",
+			Enabled:            true,
+			ChannelType:        "gemini",
+			TestModel:          "gemini-2.0-flash",
+			ValidationEndpoint: "/v1beta/models/gemini:generateContent",
+			Upstreams:          datatypes.JSON([]byte(`[{"url":"https://generativelanguage.googleapis.com","weight":1}]`)),
+			Config:             datatypes.JSONMap{"cc_support": "true"},
+		},
 	}
 	require.NoError(t, db.Create(&groups).Error)
 
@@ -424,6 +435,41 @@ func TestAddSubGroupsPersistsHealthResetInterval(t *testing.T) {
 	var relation models.GroupSubGroup
 	require.NoError(t, db.Where("group_id = ? AND sub_group_id = ?", aggregateGroup.ID, subGroup.ID).First(&relation).Error)
 	assert.Equal(t, int64(3600), relation.HealthResetIntervalSeconds)
+}
+
+func TestAddSubGroupsPreservesLegacyGeminiCCEndpoint(t *testing.T) {
+	db := setupTestDB(t)
+	service := NewAggregateGroupService(db, ReadOnlyDB{DB: db}, &GroupManager{}, nil)
+
+	aggregateGroup := models.Group{
+		Name: "aggregate-anthropic-legacy-gemini", DisplayName: "Aggregate Anthropic Legacy Gemini",
+		GroupType: "aggregate", Enabled: true, ChannelType: "anthropic", TestModel: "claude-3-haiku-20240307",
+		Upstreams: datatypes.JSON([]byte(`[{"url":"https://api.anthropic.com","weight":1}]`)), Config: datatypes.JSONMap{},
+	}
+	legacyGemini := models.Group{
+		Name: "legacy-gemini-cc", DisplayName: "Legacy Gemini CC",
+		GroupType: "standard", Enabled: true, ChannelType: "gemini", TestModel: "gemini-2.0-flash",
+		ValidationEndpoint: "/v1beta/models/gemini:generateContent",
+		Upstreams:          datatypes.JSON([]byte(`[{"url":"https://generativelanguage.googleapis.com","weight":1}]`)),
+		Config:             datatypes.JSONMap{"cc_support": "true"},
+	}
+	openAICC := models.Group{
+		Name: "openai-cc-after-gemini", DisplayName: "OpenAI CC After Gemini",
+		GroupType: "standard", Enabled: true, ChannelType: "openai", TestModel: "gpt-4.1-mini",
+		Upstreams: datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
+		Config:    datatypes.JSONMap{"cc_support": true},
+	}
+	require.NoError(t, db.Create(&aggregateGroup).Error)
+	require.NoError(t, db.Create(&legacyGemini).Error)
+	require.NoError(t, db.Create(&openAICC).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID: aggregateGroup.ID, SubGroupID: legacyGemini.ID, Weight: 100, MinEffectiveWeight: 1,
+	}).Error)
+
+	err := service.AddSubGroups(context.Background(), aggregateGroup.ID, []SubGroupInput{{
+		GroupID: openAICC.ID, Weight: 100,
+	}})
+	require.NoError(t, err)
 }
 
 func TestAddSubGroupsRejectsInvalidHealthResetInterval(t *testing.T) {

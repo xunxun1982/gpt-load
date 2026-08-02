@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"gpt-load/internal/models"
@@ -10,6 +12,21 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCodexSelectionErrorMappingSanitizesClientMessages(t *testing.T) {
+	rawErr := errors.New(`Post "https://upstream.example/v1/responses?key=plain-secret": dial failed`)
+
+	status, apiErr := mapCodexSelectionError(rawErr, &models.APIKey{}, false)
+	require.Equal(t, 500, status)
+	require.Contains(t, apiErr.Message, "Failed to select upstream")
+	require.NotContains(t, apiErr.Message, "plain-secret")
+	require.True(t, strings.Contains(apiErr.Message, "key=[REDACTED]"))
+
+	status, apiErr = mapCodexSelectionError(rawErr, nil, true)
+	require.Equal(t, 503, status)
+	require.Equal(t, "NO_KEYS_AVAILABLE", apiErr.Code)
+	require.NotContains(t, apiErr.Message, "plain-secret")
+}
 
 func TestCodexAffinityKeyPrefersCanonicalThreadMetadata(t *testing.T) {
 	t.Parallel()

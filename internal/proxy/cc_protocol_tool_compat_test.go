@@ -53,6 +53,27 @@ func TestCCProtocolToolCompatParallelHistory(t *testing.T) {
 	require.JSONEq(t, `{"is_error":true,"content":{"ok":true}}`, rawMessageString(t, got.Messages[2].Content))
 }
 
+func TestCCProtocolToolResultsPrecedeUserContent(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":128,
+		"messages":[
+			{"role":"assistant","content":[{"type":"tool_use","id":"call_a","name":"lookup","input":{}}]},
+			{"role":"user","content":[
+				{"type":"text","text":"continue after the result"},
+				{"type":"tool_result","tool_use_id":"call_a","content":"done"}
+			]}
+		]}`)
+
+	got, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 3)
+	require.Equal(t, []string{"assistant", "tool", "user"}, []string{
+		got.Messages[0].Role, got.Messages[1].Role, got.Messages[2].Role,
+	})
+	require.Equal(t, "call_a", got.Messages[1].ToolCallID)
+	require.Equal(t, "continue after the result", rawMessageString(t, got.Messages[2].Content))
+}
+
 func TestCCProtocolToolCompatChoiceAndMaxTokens(t *testing.T) {
 	tests := []struct {
 		name         string

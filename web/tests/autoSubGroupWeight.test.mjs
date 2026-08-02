@@ -102,6 +102,26 @@ test("resolves subgroup site binding from canonical group and parent group", asy
   assert.equal(resolveSubGroupSiteId({ group: { id: 3 } }, groupsById), 44);
 });
 
+test("normalizes legacy cc_support values at the group API boundary", async () => {
+  const { normalizeGroupCCSupport } = await loadDisplayUtils();
+  for (const value of [true, 1, -1, "true", " TRUE ", "1", "yes", "on"]) {
+    assert.equal(
+      normalizeGroupCCSupport({ config: { cc_support: value } }).config.cc_support,
+      true
+    );
+  }
+  for (const value of [false, 0, "false", "0", "off", null, undefined, {}, []]) {
+    assert.equal(
+      normalizeGroupCCSupport({ config: { cc_support: value } }).config.cc_support,
+      false
+    );
+  }
+  assert.match(keysApi, /getGroups\(\)[\s\S]{0,220}normalizeGroupCCSupport/);
+  assert.match(keysApi, /getSubGroups\([^)]*\)[\s\S]{0,260}normalizeGroupCCSupport/);
+  assert.match(keysApi, /copyGroup\([^)]*[\s\S]{0,360}normalizeGroupCCSupport/);
+  assert.doesNotMatch(keysApi, /getGroupStats\([^)]*\)[\s\S]{0,180}normalizeGroupCCSupport/);
+});
+
 test("assigns weight one to zero and tiny balances and skips unavailable balances", async () => {
   const { calculateAutoSubGroupWeights } = await loadAutoWeightUtils();
   assert.equal(typeof calculateAutoSubGroupWeights, "function");

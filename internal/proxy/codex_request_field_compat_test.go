@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"gpt-load/internal/models"
+
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -96,4 +99,23 @@ func TestProtocolToolCompatReadsToolSearchOutputToolsForClaude(t *testing.T) {
 	var output string
 	require.NoError(t, json.Unmarshal(blocks[0].Content, &output))
 	assert.True(t, strings.Contains(output, `"name":"loaded"`), output)
+}
+
+func TestCodexRequestOptionCompatRejectsUnmodeledTopLevelFields(t *testing.T) {
+	for _, field := range []string{
+		`"background":true`,
+		`"max_tool_calls":4`,
+		`"prompt_cache_retention":"24h"`,
+		`"future_protocol_field":{"enabled":true}`,
+	} {
+		t.Run(field, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-test","input":"hello",` + field + `}`)
+			c, _ := gin.CreateTestContext(nil)
+			_, converted, err := (&ProxyServer{}).applyForceCodexRequestConversion(c, &models.Group{ChannelType: "openai"}, body)
+			require.Error(t, err)
+			assert.False(t, converted)
+			assert.Contains(t, err.Error(), "unsupported_request_option")
+			assert.Contains(t, err.Error(), "Not Supported")
+		})
+	}
 }

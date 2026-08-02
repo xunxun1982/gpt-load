@@ -8,8 +8,10 @@ import type {
   KeyStatus,
   ParentAggregateGroup,
   SubGroupConfig,
+  SubGroupInfo,
   TaskInfo,
 } from "@/types/models";
+import { normalizeGroupCCSupport } from "@/utils/display";
 import http from "@/utils/http";
 
 // Type for model item in OpenAI format
@@ -40,19 +42,19 @@ export const keysApi = {
   // Get all groups
   async getGroups(): Promise<Group[]> {
     const res = await http.get("/groups");
-    return res.data || [];
+    return (res.data || []).map(normalizeGroupCCSupport);
   },
 
   // Create a new group
   async createGroup(group: Partial<Group>): Promise<Group> {
     const res = await http.post("/groups", group);
-    return res.data;
+    return normalizeGroupCCSupport(res.data);
   },
 
   // Update an existing group
   async updateGroup(groupId: number, group: Partial<Group>): Promise<Group> {
     const res = await http.put(`/groups/${groupId}`, group);
-    return res.data;
+    return normalizeGroupCCSupport(res.data);
   },
 
   async reorderGroups(items: { id: number; sort: number }[]): Promise<void> {
@@ -100,7 +102,7 @@ export const keysApi = {
     const res = await http.post(`/groups/${groupId}/copy`, copyData, {
       hideMessage: true,
     });
-    return res.data;
+    return { ...res.data, group: normalizeGroupCCSupport(res.data.group) };
   },
 
   // Get list of groups (simplified)
@@ -327,9 +329,12 @@ export const keysApi = {
   },
 
   // Get sub-groups for an aggregate group
-  async getSubGroups(aggregateGroupId: number): Promise<import("@/types/models").SubGroupInfo[]> {
+  async getSubGroups(aggregateGroupId: number): Promise<SubGroupInfo[]> {
     const res = await http.get(`/groups/${aggregateGroupId}/sub-groups`);
-    return res.data || [];
+    return (res.data || []).map((subGroup: SubGroupInfo) => ({
+      ...subGroup,
+      group: normalizeGroupCCSupport(subGroup.group),
+    }));
   },
 
   // Add sub-groups to an aggregate group

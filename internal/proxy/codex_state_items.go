@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 type codexItemMeta struct {
@@ -134,4 +135,22 @@ func codexItemMetadataFromMap(item map[string]json.RawMessage) codexItemMeta {
 	_ = json.Unmarshal(item["type"], &meta.typeName)
 	_ = json.Unmarshal(item["call_id"], &meta.callID)
 	return meta
+}
+
+func codexCallPairKey(meta codexItemMeta) string {
+	if meta.callID == "" || !strings.HasSuffix(meta.typeName, "_call") {
+		return ""
+	}
+	return meta.typeName + "\x00" + meta.callID
+}
+
+func codexOutputPairKey(meta codexItemMeta) string {
+	if meta.callID == "" || !strings.HasSuffix(meta.typeName, "_output") {
+		return ""
+	}
+	callType := strings.TrimSuffix(meta.typeName, "_output")
+	if !strings.HasSuffix(callType, "_call") {
+		callType += "_call"
+	}
+	return callType + "\x00" + meta.callID
 }

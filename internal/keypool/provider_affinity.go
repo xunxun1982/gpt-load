@@ -1,11 +1,27 @@
 package keypool
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"gpt-load/internal/models"
 	"strconv"
 	"time"
 )
+
+func (p *KeyProvider) decryptStoredKey(keyID uint, keyDetails map[string]string) (string, error) {
+	storedValue := keyDetails["key_string"]
+	decryptedValue, err := p.encryptionSvc.Decrypt(storedValue)
+	if err == nil {
+		return decryptedValue, nil
+	}
+
+	storedHash := keyDetails["key_hash"]
+	plainHash := p.encryptionSvc.Hash(storedValue)
+	if storedHash != "" && plainHash != "" && subtle.ConstantTimeCompare([]byte(storedHash), []byte(plainHash)) == 1 {
+		return storedValue, nil
+	}
+	return "", fmt.Errorf("failed to decrypt key ID %d: %w", keyID, err)
+}
 
 // GetActiveKeyByID returns a fresh decrypted API key from the current store state.
 func (p *KeyProvider) GetActiveKeyByID(groupID, keyID uint) (*models.APIKey, error) {
@@ -36,9 +52,9 @@ func (p *KeyProvider) GetActiveKeyByID(groupID, keyID uint) (*models.APIKey, err
 	if !ok || encryptedKeyValue == "" {
 		return nil, fmt.Errorf("invalid key record for key ID %d: missing key_string", keyID)
 	}
-	decryptedKeyValue, err := p.encryptionSvc.Decrypt(encryptedKeyValue)
+	decryptedKeyValue, err := p.decryptStoredKey(keyID, keyDetails)
 	if err != nil {
-		decryptedKeyValue = encryptedKeyValue
+		return nil, err
 	}
 
 	failureCount, _ := strconv.ParseInt(keyDetails["failure_count"], 10, 64)
@@ -46,6 +62,7 @@ func (p *KeyProvider) GetActiveKeyByID(groupID, keyID uint) (*models.APIKey, err
 	return &models.APIKey{
 		ID:           keyID,
 		KeyValue:     decryptedKeyValue,
+		KeyHash:      keyDetails["key_hash"],
 		Status:       keyDetails["status"],
 		FailureCount: failureCount,
 		GroupID:      groupID,

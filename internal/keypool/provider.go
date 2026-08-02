@@ -179,21 +179,16 @@ func (p *KeyProvider) SelectKey(groupID uint) (*models.APIKey, error) {
 	failureCount, _ := strconv.ParseInt(keyDetails["failure_count"], 10, 64)
 	createdAt, _ := strconv.ParseInt(keyDetails["created_at"], 10, 64)
 
-	// Decrypt the key value for use by channels
-	encryptedKeyValue := keyDetails["key_string"]
-	decryptedKeyValue, err := p.encryptionSvc.Decrypt(encryptedKeyValue)
+	// Decrypt the key value for use by channels.
+	decryptedKeyValue, err := p.decryptStoredKey(uint(keyID), keyDetails)
 	if err != nil {
-		// If decryption fails, try to use the value as-is (backward compatibility for unencrypted keys)
-		logrus.WithFields(logrus.Fields{
-			"keyID": keyID,
-			"error": err,
-		}).Debug("Failed to decrypt key value, using as-is for backward compatibility")
-		decryptedKeyValue = encryptedKeyValue
+		return nil, err
 	}
 
 	apiKey := &models.APIKey{
 		ID:           uint(keyID),
 		KeyValue:     decryptedKeyValue,
+		KeyHash:      keyDetails["key_hash"],
 		Status:       keyDetails["status"],
 		FailureCount: failureCount,
 		GroupID:      groupID,
@@ -1550,6 +1545,7 @@ func (p *KeyProvider) apiKeyToMap(key *models.APIKey) map[string]any {
 	return map[string]any{
 		"id":            strconv.FormatUint(uint64(key.ID), 10), // Use strconv for better performance
 		"key_string":    key.KeyValue,
+		"key_hash":      key.KeyHash,
 		"status":        key.Status,
 		"failure_count": key.FailureCount,
 		"group_id":      key.GroupID,

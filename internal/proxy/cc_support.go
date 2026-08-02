@@ -1071,6 +1071,7 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 
 	var result []OpenAIMessage
 	var userParts []map[string]any
+	var toolMessages []OpenAIMessage
 	flushUser := func() error {
 		if len(userParts) == 0 {
 			return nil
@@ -1095,20 +1096,18 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 			if block.ToolUseID == "" {
 				return nil, fmt.Errorf("Anthropic tool_result requires tool_use_id")
 			}
-			if err := flushUser(); err != nil {
-				return nil, err
-			}
 			content, err := claudeToolResultContent(block)
 			if err != nil {
 				return nil, err
 			}
-			result = append(result, OpenAIMessage{
+			toolMessages = append(toolMessages, OpenAIMessage{
 				Role: "tool", Content: marshalStringAsJSONRaw("tool_result", content), ToolCallID: block.ToolUseID,
 			})
 		default:
 			return nil, ccUnsupported("content block", block.Type)
 		}
 	}
+	result = append(result, toolMessages...)
 	if err := flushUser(); err != nil {
 		return nil, err
 	}

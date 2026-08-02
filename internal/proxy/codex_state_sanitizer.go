@@ -26,17 +26,20 @@ func sanitizeCodexStateDomain(body []byte, supportsEncryptedReasoning bool) ([]b
 	if rawMetadata, ok := payload["client_metadata"]; ok {
 		var metadata map[string]json.RawMessage
 		if json.Unmarshal(rawMetadata, &metadata) == nil && metadata != nil {
+			removedTurnState := false
 			for key := range metadata {
 				if strings.EqualFold(key, "x-codex-turn-state") {
 					delete(metadata, key)
-					encoded, err := json.Marshal(metadata)
-					if err != nil {
-						return body, false, err
-					}
-					payload["client_metadata"] = encoded
-					changed = true
-					break
+					removedTurnState = true
 				}
+			}
+			if removedTurnState {
+				encoded, err := json.Marshal(metadata)
+				if err != nil {
+					return body, false, err
+				}
+				payload["client_metadata"] = encoded
+				changed = true
 			}
 		}
 	}

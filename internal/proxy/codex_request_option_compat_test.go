@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"testing"
 
 	"gpt-load/internal/models"
@@ -132,4 +133,16 @@ func TestCodexRequestOptionCompatMapsAnthropicReasoningAndParallelCalls(t *testi
 	toolChoice := payload["tool_choice"].(map[string]any)
 	assert.Equal(t, "auto", toolChoice["type"])
 	assert.Equal(t, true, toolChoice["disable_parallel_tool_use"])
+}
+
+func TestCodexClaudeParallelToolChoicePreservesSelectorShape(t *testing.T) {
+	parallel := false
+
+	withoutType, err := codexClaudeToolChoiceWithParallel(json.RawMessage(`{"name":"lookup"}`), &parallel, true)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"name":"lookup","disable_parallel_tool_use":true}`, string(withoutType))
+
+	none, err := codexClaudeToolChoiceWithParallel(json.RawMessage(`{"type":"none"}`), &parallel, true)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"none"}`, string(none))
 }

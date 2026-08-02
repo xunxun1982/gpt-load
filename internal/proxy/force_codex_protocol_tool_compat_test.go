@@ -114,6 +114,23 @@ func TestProtocolToolCompatRejectsNonReversibleTools(t *testing.T) {
 	}
 }
 
+func TestProtocolToolCompatRejectsUnnamedFunctionsBeforeConversion(t *testing.T) {
+	for _, tool := range []string{
+		`{"type":"function","parameters":{"type":"object"}}`,
+		`{"type":"namespace","name":"mail","tools":[{"type":"function","parameters":{"type":"object"}}]}`,
+	} {
+		t.Run(tool, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-test","input":"hello","tools":[` + tool + `]}`)
+			c, _ := gin.CreateTestContext(nil)
+			_, converted, err := (&ProxyServer{}).applyForceCodexRequestConversion(c, &models.Group{ChannelType: "openai"}, body)
+			require.Error(t, err)
+			assert.False(t, converted)
+			assert.Contains(t, err.Error(), "unsupported_tool")
+			assert.Contains(t, err.Error(), "name is required")
+		})
+	}
+}
+
 func applyForceCodexCompat(t *testing.T, channelType string, body []byte) []byte {
 	t.Helper()
 	c, _ := gin.CreateTestContext(nil)

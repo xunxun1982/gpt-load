@@ -1,5 +1,28 @@
 import type { Group, GroupListItem, SubGroupInfo } from "@/types/models";
 
+function isBooleanLikeConfigEnabled(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    return ["true", "1", "yes", "on"].includes(value.trim().toLowerCase());
+  }
+  return false;
+}
+
+export function normalizeGroupCCSupport(group: Group): Group {
+  return {
+    ...group,
+    config: {
+      ...(group.config || {}),
+      cc_support: isBooleanLikeConfigEnabled(group.config?.cc_support),
+    },
+  };
+}
+
 /**
  * Formats a string from camelCase, snake_case, or kebab-case
  * into a more readable format with spaces and capitalized words.

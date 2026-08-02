@@ -83,6 +83,27 @@ func TestSanitizeCodexStateDomainRemovesClientMetadataTurnState(t *testing.T) {
 }`, string(got))
 }
 
+func TestSanitizeCodexStateDomainRemovesAllCasedTurnStateKeys(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+  "model":"gpt-5",
+  "client_metadata":{
+    "thread_id":"thread-new",
+    "x-codex-turn-state":"old-lower",
+    "X-Codex-Turn-State":"old-upper"
+  },
+  "input":"hello"
+}`)
+
+	got, changed, err := sanitizeCodexStateDomain(body, true)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.NotContains(t, string(got), "old-lower")
+	require.NotContains(t, string(got), "old-upper")
+	require.Contains(t, string(got), "thread-new")
+}
+
 func TestSanitizeCodexStateDomainDropsUnsupportedEncryptedReasoningInclude(t *testing.T) {
 	t.Parallel()
 

@@ -4,9 +4,19 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestCodexAffinityDoesNotPersistMissingTurnStateReset(t *testing.T) {
+	cache := newCodexAffinityCache(time.Minute, 2)
+	now := time.Unix(100, 0)
+
+	cache.markStateReset("cache-key", codexStateDomainWithoutTurnState, now)
+
+	require.False(t, cache.requiresStateReset("cache-key", codexStateDomainWithoutTurnState, now))
+}
 
 func TestStandardCodexAffinityKeepsStateResetForFailedTurn(t *testing.T) {
 	handler, group, observations := setupRetryingStandardCodexAffinityGroup(t)

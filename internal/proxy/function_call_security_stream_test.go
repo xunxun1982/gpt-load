@@ -83,3 +83,89 @@ func TestFunctionCallSecurityChatUsageTailFollowsConvertedCall(t *testing.T) {
 		t.Fatalf("expected converted call followed by usage tail: %s", output)
 	}
 }
+
+func TestFunctionCallSecurityChatStreamRejectsUnapprovedTool(t *testing.T) {
+	ps, c, w, trigger := newFunctionCallSecurityContext(t, "openai", "/v1/chat/completions", "auto", "A")
+	callText := trigger + `<invoke name="B"><parameter name="q">test</parameter></invoke>`
+	stream := strings.Join([]string{
+		fmt.Sprintf(`data: {"id":"chat_1","choices":[{"index":0,"delta":{"content":%q},"finish_reason":null}]}`, callText),
+		``,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(stream)),
+	}
+
+	ps.handleFunctionCallStreamingResponse(c, resp)
+	if output := w.Body.String(); strings.Contains(output, `"tool_calls"`) {
+		t.Fatalf("unapproved streamed tool call executed: %s", output)
+	}
+}
+
+func TestFunctionCallSecurityChatStreamRejectsDuplicateCrossFieldTrigger(t *testing.T) {
+	ps, c, w, trigger := newFunctionCallSecurityContext(t, "openai", "/v1/chat/completions", "auto", "A")
+	callText := trigger + `<invoke name="A"><parameter name="q">test</parameter></invoke>`
+	stream := strings.Join([]string{
+		fmt.Sprintf(`data: {"id":"chat_1","choices":[{"index":0,"delta":{"content":%q,"reasoning_content":%q},"finish_reason":null}]}`, callText, trigger+" duplicate"),
+		``,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(stream)),
+	}
+
+	ps.handleFunctionCallStreamingResponse(c, resp)
+	if output := w.Body.String(); strings.Contains(output, `"tool_calls"`) {
+		t.Fatalf("duplicate cross-field trigger executed: %s", output)
+	}
+}
+
+func TestFunctionCallSecurityBoundsDeferredUsageTail(t *testing.T) {
+	ps, c, w, trigger := newFunctionCallSecurityContext(t, "openai", "/v1/chat/completions", "auto", "A")
+	callText := trigger + `<invoke name="A"><parameter name="q">test</parameter></invoke>`
+	events := []string{
+		fmt.Sprintf(`data: {"id":"chat_1","choices":[{"index":0,"delta":{"content":%q},"finish_reason":null}]}`, callText),
+		``,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+	}
+	const expectedDeferredUsageTailEvents = 16
+	for i := 0; i < expectedDeferredUsageTailEvents+1; i++ {
+		events = append(events,
+			fmt.Sprintf(`data: {"id":"chat_1","choices":[],"usage":{"total_tokens":%d}}`, 100+i),
+			``,
+		)
+	}
+	events = append(events, `data: [DONE]`, ``)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(strings.Join(events, "\n"))),
+	}
+
+	ps.handleFunctionCallStreamingResponse(c, resp)
+	output := w.Body.String()
+	toolAt := strings.Index(output, `"tool_calls"`)
+	if toolAt < 0 || strings.Count(output, `"total_tokens":`) != expectedDeferredUsageTailEvents {
+		t.Fatalf("usage tail event count was not bounded: %s", output)
+	}
+	if strings.Contains(output, `"total_tokens":100`) {
+		t.Fatalf("oldest usage event was retained instead of the latest bounded tail: %s", output)
+	}
+	for i := 101; i <= 100+expectedDeferredUsageTailEvents; i++ {
+		usageAt := strings.Index(output, fmt.Sprintf(`"total_tokens":%d`, i))
+		if usageAt < toolAt {
+			t.Fatalf("usage event %d preceded the converted terminal event: %s", i, output)
+		}
+	}
+}

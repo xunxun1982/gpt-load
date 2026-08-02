@@ -79,3 +79,58 @@ func TestFunctionCallSecurityRejectsDuplicateTriggerAcrossMessageFields(t *testi
 		t.Fatalf("duplicate cross-field trigger executed: %s", output)
 	}
 }
+
+func TestFunctionCallSecurityUsesSchemaForNumericLookingScalars(t *testing.T) {
+	trigger := "<<CALL_test>>"
+	stringSession := newFunctionCallSession(trigger, []functionToolDefinition{{
+		Name: "A",
+		Parameters: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"q": map[string]any{"type": "string"}},
+		},
+	}}, "auto", true)
+
+	for _, value := range []string{"-draft", "123abc"} {
+		result, valid := stringSession.ParseAndValidate(
+			trigger+`<invoke name="A"><parameter name="q">`+value+`</parameter></invoke>`,
+			true,
+		)
+		if !valid || len(result.Calls) != 1 || result.Calls[0].Args["q"] != value {
+			t.Fatalf("numeric-looking string %q was not validated by its schema: %#v", value, result)
+		}
+	}
+
+	integerSession := newFunctionCallSession(trigger, []functionToolDefinition{{
+		Name: "A",
+		Parameters: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"n": map[string]any{"type": "integer"}},
+		},
+	}}, "auto", true)
+	if _, valid := integerSession.ParseAndValidate(
+		trigger+`<invoke name="A"><parameter name="n">123abc</parameter></invoke>`,
+		true,
+	); valid {
+		t.Fatal("non-JSON scalar bypassed integer schema validation")
+	}
+}
+
+func TestFunctionCallSecurityRejectsAdditionalProperties(t *testing.T) {
+	trigger := "<<CALL_test>>"
+	session := newFunctionCallSession(trigger, []functionToolDefinition{{
+		Name: "A",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{"q": map[string]any{"type": "string"}},
+			"additionalProperties": false,
+		},
+	}}, "auto", true)
+
+	_, valid := session.ParseAndValidate(
+		trigger+`<invoke name="A"><parameter name="q">ok</parameter><parameter name="extra">no</parameter></invoke>`,
+		true,
+	)
+	if valid {
+		t.Fatal("additionalProperties=false accepted an undeclared argument")
+	}
+}

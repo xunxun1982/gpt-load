@@ -173,11 +173,12 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		// OpenAI Responses aggregates allow native Responses groups and forced-Codex children.
 		isOpenAIWithCC := sg.ChannelType == "openai" && isGroupCCSupportEnabled(&sg)
 		isOpenAIResponseWithCC := sg.ChannelType == "openai-response" && isGroupCCSupportEnabled(&sg)
+		isGeminiWithCC := sg.ChannelType == "gemini" && isGroupCCSupportEnabled(&sg)
 		isOpenAIWithCodex := sg.ChannelType == "openai" && utils.IsGroupCodexSupportEnabled(&sg)
 		isAnthropicWithCodex := sg.ChannelType == "anthropic" && utils.IsGroupCodexSupportEnabled(&sg)
 		if channelType == "anthropic" {
 			isAnthropic := sg.ChannelType == "anthropic"
-			if !isAnthropic && !isOpenAIWithCC && !isOpenAIResponseWithCC {
+			if !isAnthropic && !isOpenAIWithCC && !isOpenAIResponseWithCC && !isGeminiWithCC {
 				return nil, NewI18nError(app_errors.ErrValidation, "validation.sub_group_channel_mismatch", nil)
 			}
 		} else if channelType == "openai-response" {
@@ -195,7 +196,7 @@ func (s *AggregateGroupService) ValidateSubGroups(ctx context.Context, channelTy
 		// Calculate effective endpoint for this sub-group in the context of the aggregate group.
 		// For Anthropic aggregates with CC-compatible sub-groups, the CC endpoint uses /v1/messages
 		// (via /claude/v1/messages route) instead of the native endpoint.
-		usesClaudeEndpoint := isOpenAIWithCC || isOpenAIResponseWithCC
+		usesClaudeEndpoint := isOpenAIWithCC || isOpenAIResponseWithCC || isGeminiWithCC
 		usesCodexEndpoint := isOpenAIWithCodex || isAnthropicWithCodex
 		effectiveEndpoint := getEffectiveEndpointForAggregation(&sg, channelType, usesClaudeEndpoint, usesCodexEndpoint)
 
@@ -344,7 +345,8 @@ func (s *AggregateGroupService) AddSubGroups(ctx context.Context, groupID uint, 
 			// Support all CC-compatible sub-groups.
 			isOpenAIWithCC := existingGroup.ChannelType == "openai" && isGroupCCSupportEnabled(&existingGroup)
 			isOpenAIResponseWithCC := existingGroup.ChannelType == "openai-response" && isGroupCCSupportEnabled(&existingGroup)
-			usesClaudeEndpoint := isOpenAIWithCC || isOpenAIResponseWithCC
+			isGeminiWithCC := existingGroup.ChannelType == "gemini" && isGroupCCSupportEnabled(&existingGroup)
+			usesClaudeEndpoint := isOpenAIWithCC || isOpenAIResponseWithCC || isGeminiWithCC
 			isOpenAIWithCodex := existingGroup.ChannelType == "openai" && utils.IsGroupCodexSupportEnabled(&existingGroup)
 			isAnthropicWithCodex := existingGroup.ChannelType == "anthropic" && utils.IsGroupCodexSupportEnabled(&existingGroup)
 			usesCodexEndpoint := isOpenAIWithCodex || isAnthropicWithCodex
