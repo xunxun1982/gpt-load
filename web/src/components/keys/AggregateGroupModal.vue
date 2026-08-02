@@ -381,7 +381,7 @@ async function handleSubmit() {
       class="aggregate-group-card"
       :title="group ? t('keys.editAggregateGroup') : t('keys.createAggregateGroup')"
       :bordered="false"
-      size="huge"
+      size="medium"
       role="dialog"
       aria-modal="true"
     >
@@ -530,11 +530,11 @@ async function handleSubmit() {
             </template>
           </n-form-item>
 
-          <n-form-item :label="t('keys.proxyKeys')">
+          <n-form-item :label="t('keys.proxyKeys')" class="form-item-wide">
             <proxy-keys-input v-model="formData.proxy_keys" />
           </n-form-item>
 
-          <n-form-item :label="t('common.description')">
+          <n-form-item :label="t('common.description')" class="form-item-wide">
             <n-input
               v-model:value="formData.description"
               type="textarea"
@@ -616,7 +616,7 @@ async function handleSubmit() {
           </div>
 
           <!-- Add precondition button -->
-          <div style="margin-top: 12px; padding-left: 100px">
+          <div class="add-precondition-row">
             <n-button
               @click="addPreconditionItem"
               dashed
@@ -633,7 +633,7 @@ async function handleSubmit() {
       </n-form>
 
       <template #footer>
-        <div style="display: flex; justify-content: flex-end; gap: 12px">
+        <div class="aggregate-form-footer">
           <n-button @click="handleClose">{{ t("common.cancel") }}</n-button>
           <n-button type="primary" @click="handleSubmit" :loading="loading">
             {{ group ? t("common.update") : t("common.create") }}
@@ -646,7 +646,27 @@ async function handleSubmit() {
 
 <style scoped>
 .aggregate-group-modal {
-  width: 600px;
+  width: min(720px, calc(100vw - 24px));
+}
+
+.aggregate-group-card {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 24px);
+  overflow: hidden;
+}
+
+.aggregate-group-card :deep(.n-card-header),
+.aggregate-group-card :deep(.n-card__footer) {
+  flex: 0 0 auto;
+}
+
+.aggregate-group-card :deep(.n-card__content) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 16px 10px;
 }
 
 .form-section {
@@ -709,6 +729,17 @@ async function handleSubmit() {
   color: var(--text-primary);
 }
 
+.add-precondition-row {
+  margin-top: 6px;
+  padding-left: 120px;
+}
+
+.aggregate-form-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 /* ===== CRITICAL FIX: Force compact form spacing ===== */
 /* Note: --n-feedback-height: 0 intentionally set to minimize vertical spacing.
  * AI review suggested this could hide validation feedback, but this approach is
@@ -716,7 +747,7 @@ async function handleSubmit() {
  * The compact layout is a design requirement for this admin panel.
  * Validation errors are still visible inline due to NaiveUI's internal rendering. */
 :deep(.n-form-item) {
-  margin-bottom: 8px !important;
+  margin-bottom: 4px !important;
   --n-feedback-height: 0 !important;
 }
 
@@ -756,5 +787,30 @@ async function handleSubmit() {
 
 :deep(.n-base-selection) {
   --n-height: 32px;
+}
+
+@media (min-width: 900px) {
+  .aggregate-group-modal {
+    width: min(960px, calc(100vw - 24px));
+  }
+
+  .form-section {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 16px;
+  }
+
+  .section-title,
+  .form-item-wide,
+  .preconditions-section,
+  .add-precondition-row {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 640px) {
+  .add-precondition-row {
+    padding-left: 0;
+  }
 }
 </style>

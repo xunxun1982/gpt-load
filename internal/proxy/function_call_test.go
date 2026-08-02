@@ -605,6 +605,7 @@ func TestHandleFunctionCallResponsesNormalResponseConvertsXMLToFunctionCall(t *t
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_resp>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group"})
 
 	ps := &ProxyServer{}
@@ -735,6 +736,7 @@ func TestHandleFunctionCallAnthropicNormalResponseConvertsXMLToToolUse(t *testin
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_claude>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_claude>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group"})
 
 	ps := &ProxyServer{}
@@ -784,6 +786,7 @@ func TestHandleFunctionCallResponsesStreamingResponseConvertsXMLToFunctionCall(t
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_resp>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
 
 	ps := &ProxyServer{}
@@ -933,6 +936,7 @@ func TestHandleFunctionCallAnthropicStreamingResponseConvertsXMLToToolUse(t *tes
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_claude>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_claude>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group", ChannelType: "anthropic"})
 
 	ps := &ProxyServer{}
@@ -956,7 +960,7 @@ func TestHandleFunctionCallAnthropicStreamingResponseConvertsXMLToToolUse(t *tes
 	}
 }
 
-func TestHandleFunctionCallResponsesStreamingResponseCleansMalformedXML(t *testing.T) {
+func TestHandleFunctionCallResponsesStreamingResponsePreservesMalformedXML(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	streamBody := strings.Join([]string{
@@ -980,21 +984,22 @@ func TestHandleFunctionCallResponsesStreamingResponseCleansMalformedXML(t *testi
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_resp>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
 
 	ps := &ProxyServer{}
 	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
 
 	output := w.Body.String()
-	if strings.Contains(output, "<invoke") || strings.Contains(output, "<<CALL_resp>>") {
-		t.Fatalf("expected malformed XML function call text to be removed, got %s", output)
+	if !strings.Contains(output, "<invoke") || !strings.Contains(output, "<<CALL_resp>>") {
+		t.Fatalf("expected malformed XML function call text to remain text, got %s", output)
 	}
 	if !strings.Contains(output, "event: response.completed") {
 		t.Fatalf("expected cleaned Responses stream to complete, got %s", output)
 	}
 }
 
-func TestHandleFunctionCallAnthropicStreamingResponseCleansMalformedXML(t *testing.T) {
+func TestHandleFunctionCallAnthropicStreamingResponsePreservesMalformedXML(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	streamBody := strings.Join([]string{
@@ -1018,17 +1023,18 @@ func TestHandleFunctionCallAnthropicStreamingResponseCleansMalformedXML(t *testi
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_claude>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_claude>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group", ChannelType: "anthropic"})
 
 	ps := &ProxyServer{}
 	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
 
 	output := w.Body.String()
-	if strings.Contains(output, "<invoke") || strings.Contains(output, "<<CALL_claude>>") {
-		t.Fatalf("expected malformed XML function call text to be removed, got %s", output)
+	if !strings.Contains(output, "<invoke") || !strings.Contains(output, "<<CALL_claude>>") {
+		t.Fatalf("expected malformed XML function call text to remain text, got %s", output)
 	}
-	if !strings.Contains(output, `"stop_reason":"end_turn"`) {
-		t.Fatalf("expected cleaned Anthropic stream to finish as text, got %s", output)
+	if strings.Contains(output, `"type":"tool_use"`) {
+		t.Fatalf("expected malformed Anthropic call not to execute, got %s", output)
 	}
 }
 
@@ -11673,7 +11679,7 @@ func TestHandleFunctionCallNormalResponse(t *testing.T) {
 			},
 		},
 		{
-			name: "malformed function_calls block removed",
+			name: "malformed function_calls block preserved as text",
 			responseBody: `{
 				"id": "chatcmpl-999",
 				"object": "chat.completion",
@@ -11689,7 +11695,7 @@ func TestHandleFunctionCallNormalResponse(t *testing.T) {
 				}]
 			}`,
 			triggerSignal:  "<<CALL_test>>",
-			expectModified: true,
+			expectModified: false,
 			checkFunc: func(t *testing.T, output string) {
 				var resp map[string]interface{}
 				if err := json.Unmarshal([]byte(output), &resp); err != nil {
@@ -11699,10 +11705,10 @@ func TestHandleFunctionCallNormalResponse(t *testing.T) {
 				choice := choices[0].(map[string]interface{})
 				message := choice["message"].(map[string]interface{})
 
-				// Malformed block should be removed from content
+				// Rejected protocol text remains visible and is never executed.
 				content := message["content"].(string)
-				if strings.Contains(content, "<function_calls>") {
-					t.Error("malformed <function_calls> block should be removed")
+				if !strings.Contains(content, "<function_calls>") {
+					t.Error("malformed <function_calls> block should remain text")
 				}
 
 				// Should not have tool_calls since invoke has no name attribute
@@ -11733,6 +11739,7 @@ func TestHandleFunctionCallNormalResponse(t *testing.T) {
 
 			// Set trigger signal in context
 			c.Set(ctxKeyTriggerSignal, tt.triggerSignal)
+			setTestFunctionCallSecuritySession(c, tt.triggerSignal, "web_search", "search")
 
 			// Set group for logging
 			c.Set("group", &models.Group{Name: "test-group"})
@@ -12203,7 +12210,7 @@ func TestHandleFunctionCallStreamingResponseErrorBodyReadFailureReturnsBadGatewa
 func TestHandleFunctionCallNormalResponseDecodesCompressedBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Let me search. <function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":"stop"}]}`)
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Let me search. <<CALL_norm>><function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":"stop"}]}`)
 	upstreamResp := &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(bytes.NewReader(compressGzipForFunctionCallTest(t, body))),
@@ -12219,6 +12226,7 @@ func TestHandleFunctionCallNormalResponseDecodesCompressedBody(t *testing.T) {
 	c.Writer.Header().Set("Content-Encoding", "gzip")
 	c.Writer.Header().Set("Content-Length", "123")
 	c.Set(ctxKeyTriggerSignal, "<<CALL_norm>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_norm>>", "search")
 	c.Set("group", &models.Group{Name: "test-group"})
 
 	ps := &ProxyServer{}
@@ -12353,7 +12361,7 @@ func TestHandleFunctionCallNormalResponseRejectsUnsupportedCompressedBody(t *tes
 func TestHandleFunctionCallNormalResponseClearsLengthAfterRewrite(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Run it. <function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":"stop"}]}`)
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Run it. <<CALL_norm_len>><function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":"stop"}]}`)
 	upstreamResp := &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(bytes.NewReader(body)),
@@ -12367,6 +12375,7 @@ func TestHandleFunctionCallNormalResponseClearsLengthAfterRewrite(t *testing.T) 
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Writer.Header().Set("Content-Length", "123")
 	c.Set(ctxKeyTriggerSignal, "<<CALL_norm_len>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_norm_len>>", "search")
 	c.Set("group", &models.Group{Name: "test-group"})
 
 	ps := &ProxyServer{}

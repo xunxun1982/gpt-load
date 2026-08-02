@@ -112,8 +112,7 @@ const getAvailableOptions = computed(() => {
         const isOpenAIWithCC = group.channel_type === "openai" && group.config?.cc_support === true;
         const isOpenAIResponseWithCC =
           group.channel_type === "openai-response" && group.config?.cc_support === true;
-        const isGeminiWithCC = group.channel_type === "gemini" && group.config?.cc_support === true;
-        if (!isAnthropic && !isOpenAIWithCC && !isOpenAIResponseWithCC && !isGeminiWithCC) {
+        if (!isAnthropic && !isOpenAIWithCC && !isOpenAIResponseWithCC) {
           return false;
         }
       } else if (props.aggregateGroup?.channel_type === "openai-response") {

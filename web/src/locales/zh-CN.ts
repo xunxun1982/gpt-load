@@ -169,7 +169,6 @@ export default {
     ccSupportBadge: "强制CC",
     openaiCCBadge: "OpenAI CC",
     openaiResponseCCBadge: "OpenAI Responses CC",
-    geminiCCBadge: "Gemini CC",
     codexSupportBadge: "强制Codex",
     openaiCodexBadge: "OpenAI Codex",
     anthropicCodexBadge: "Anthropic Codex",

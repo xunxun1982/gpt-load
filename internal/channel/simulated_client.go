@@ -34,7 +34,7 @@ var simulatedOpenAIBetaTokens = []string{
 }
 
 func simulatedClientMode(group *models.Group) string {
-	if group == nil || group.Config == nil {
+	if group == nil || group.ChannelType == "gemini" || group.Config == nil {
 		return simulatedClientOff
 	}
 	raw, ok := group.Config["simulated_client"]

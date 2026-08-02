@@ -222,16 +222,6 @@ func TestGetEffectiveEndpointForAggregation(t *testing.T) {
 			expected:             "/v1/messages",
 		},
 		{
-			name: "no custom endpoint - anthropic with Gemini CC",
-			subGroup: &models.Group{
-				ValidationEndpoint: "",
-				ChannelType:        "gemini",
-			},
-			aggregateChannelType: "anthropic",
-			usesClaudeEndpoint:   true,
-			expected:             "/v1/messages",
-		},
-		{
 			name: "no custom endpoint - standard OpenAI",
 			subGroup: &models.Group{
 				ValidationEndpoint: "",
@@ -305,16 +295,6 @@ func TestValidateSubGroupsAllowsAnthropicAggregateCCCompatibleChannels(t *testin
 			ChannelType: "openai-response",
 			TestModel:   "gpt-4.1-mini",
 			Upstreams:   datatypes.JSON([]byte(`[{"url":"https://api.openai.com","weight":1}]`)),
-			Config:      datatypes.JSONMap{"cc_support": true},
-		},
-		{
-			Name:        "gemini-cc",
-			DisplayName: "Gemini CC",
-			GroupType:   "standard",
-			Enabled:     true,
-			ChannelType: "gemini",
-			TestModel:   "gemini-2.0-flash-lite",
-			Upstreams:   datatypes.JSON([]byte(`[{"url":"https://generativelanguage.googleapis.com","weight":1}]`)),
 			Config:      datatypes.JSONMap{"cc_support": true},
 		},
 	}

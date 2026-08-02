@@ -41,13 +41,16 @@ type CodexContentBlock struct {
 
 // CodexTool represents a tool definition in Codex/Responses API format.
 type CodexTool struct {
-	Type        string          `json:"type"`
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
-	Strict      bool            `json:"strict,omitempty"`
-	Tools       []CodexTool     `json:"tools,omitempty"`
-	Children    []CodexTool     `json:"children,omitempty"`
+	Type         string          `json:"type"`
+	Name         string          `json:"name,omitempty"`
+	Description  string          `json:"description,omitempty"`
+	Parameters   json.RawMessage `json:"parameters,omitempty"`
+	Format       json.RawMessage `json:"format,omitempty"`
+	Strict       bool            `json:"strict,omitempty"`
+	DeferLoading *bool           `json:"defer_loading,omitempty"`
+	Execution    string          `json:"execution,omitempty"`
+	Tools        []CodexTool     `json:"tools,omitempty"`
+	Children     []CodexTool     `json:"children,omitempty"`
 }
 
 // CodexRequest represents a Codex/Responses API request.
@@ -63,8 +66,14 @@ type CodexRequest struct {
 	ToolChoice        interface{}     `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
 	Reasoning         *CodexReasoning `json:"reasoning,omitempty"`
+	StreamOptions     json.RawMessage `json:"stream_options,omitempty"`
+	ServiceTier       string          `json:"service_tier,omitempty"`
+	PromptCacheKey    string          `json:"prompt_cache_key,omitempty"`
+	Text              *CodexText      `json:"text,omitempty"`
+	ClientMetadata    json.RawMessage `json:"client_metadata,omitempty"`
 	Store             *bool           `json:"store,omitempty"`
 	Include           []string        `json:"include,omitempty"`
+	unsupportedFields []string
 }
 
 // CodexReasoning represents reasoning configuration for Codex CLI-compatible Responses requests.
@@ -74,6 +83,13 @@ type CodexRequest struct {
 type CodexReasoning struct {
 	Effort  string `json:"effort,omitempty"`  // "low", "medium", "high" (compatible with all reasoning models)
 	Summary string `json:"summary,omitempty"` // "auto", "none", "detailed"
+	Context string `json:"context,omitempty"` // "auto", "current_turn", "all_turns"
+}
+
+// CodexText represents current Responses text controls used by Codex clients.
+type CodexText struct {
+	Verbosity string          `json:"verbosity,omitempty"`
+	Format    json.RawMessage `json:"format,omitempty"`
 }
 
 // CodexOutputItem represents an output item in Codex/Responses API format.
@@ -108,7 +124,7 @@ func (item CodexOutputItem) MarshalJSON() ([]byte, error) {
 		return out, nil
 	}
 	var args any
-	if err := json.Unmarshal([]byte(item.Arguments), &args); err == nil {
+	if err := decodeCodexJSONUseNumber([]byte(item.Arguments), &args); err == nil {
 		payload["arguments"] = args
 	}
 	return json.Marshal(payload)
@@ -173,8 +189,9 @@ type CodexSummaryItem struct {
 }
 
 type TokenUsageDetails struct {
-	CachedTokens    int `json:"cached_tokens,omitempty"`
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	CachedTokens     int `json:"cached_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
 }
 
 // CodexUsage represents usage information in Codex/Responses API format.
@@ -391,28 +408,20 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	// Build input array using the Codex CLI-compatible Responses format.
 	var inputItems []interface{}
 
-	// Convert Claude system prompt to user message in input array
-	// Note: Codex CLI-compatible Responses input does not support "developer" role, only instructions.
-	// We prepend system content as a user message with clear delimiter
-	//
-	// AI REVIEW NOTE: Suggestion to merge system prompt into instructions was considered.
-	// Current design keeps them separate because:
-	// 1. instructions field contains Codex-specific behavior instructions (codexDefaultInstructions)
-	// 2. Claude's system prompt is application-specific context from the client
-	// 3. Merging could cause instruction conflicts and unpredictable behavior
-	// 4. Using delimiters makes the system context clearly distinguishable
+	// Preserve Claude's system prompt as a developer input item. Current Codex
+	// Responses requests support this role, while converting it to user text
+	// weakens the caller's instruction boundary.
 	if len(claudeReq.System) > 0 {
 		systemContent := extractSystemContent(claudeReq.System)
 		if systemContent != "" {
-			// Add system prompt as first user message with delimiter
 			inputItems = append(inputItems, map[string]interface{}{
 				"type": "message",
-				"role": "user",
+				"role": "developer",
 				"content": []map[string]interface{}{
-					{"type": "input_text", "text": "[System Instructions]\n" + systemContent + "\n[End System Instructions]"},
+					{"type": "input_text", "text": systemContent},
 				},
 			})
-			logrus.WithField("system_len", len(systemContent)).Debug("Codex CC: Added system as user message")
+			logrus.WithField("system_len", len(systemContent)).Debug("Codex CC: Added system as developer message")
 		}
 	}
 
@@ -572,7 +581,7 @@ func normalizeToolParameters(raw json.RawMessage) json.RawMessage {
 	}
 
 	var schema map[string]interface{}
-	if err := json.Unmarshal(raw, &schema); err != nil {
+	if err := decodeCodexJSONUseNumber(raw, &schema); err != nil {
 		return json.RawMessage(`{"type":"object","properties":{}}`)
 	}
 
@@ -769,7 +778,7 @@ func cleanToolCallArguments(toolName, argsStr string) string {
 
 	// Parse arguments as JSON
 	var args map[string]interface{}
-	if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
+	if err := decodeCodexJSONUseNumber([]byte(argsStr), &args); err != nil {
 		return argsStr
 	}
 
@@ -872,7 +881,7 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 				if toolName == "" {
 					continue
 				}
-				if item.Type != "custom_tool_call" && !isValidToolCallArguments(toolName, item.Arguments) {
+				if item.Type != "custom_tool_call" && !isValidCodexToolCallArguments(toolName, item.Arguments, nil) {
 					continue
 				}
 				inputJSON := codexClaudeToolInput(item, toolName)

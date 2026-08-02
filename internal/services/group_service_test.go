@@ -837,21 +837,25 @@ func TestValidateAndCleanConfigLegacyRequestTimeoutCompatibility(t *testing.T) {
 	}
 }
 
-func TestValidateAndCleanConfigRemovesForceFunctionCallForGemini(t *testing.T) {
+func TestValidateAndCleanConfigRemovesUnsupportedGeminiOptions(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
 
 	cleaned, err := svc.validateAndCleanConfig(map[string]any{
-		"force_function_call": true,
-		"cc_support":          true,
-		"codex_support":       true,
+		"force_function_call":           true,
+		"cc_support":                    true,
+		"codex_support":                 true,
+		"simulated_client":              "claude_code",
+		"simulated_claude_code_version": "2.2.0",
 	}, "gemini")
 
 	require.NoError(t, err)
 	assert.NotContains(t, cleaned, "force_function_call")
-	assert.Equal(t, true, cleaned["cc_support"])
+	assert.NotContains(t, cleaned, "cc_support")
 	assert.NotContains(t, cleaned, "codex_support")
+	assert.NotContains(t, cleaned, "simulated_client")
+	assert.NotContains(t, cleaned, "simulated_claude_code_version")
 }
 
 func TestValidateAndCleanConfigCodexSupportScope(t *testing.T) {

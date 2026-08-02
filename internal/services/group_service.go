@@ -2831,6 +2831,10 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any, channelT
 	}
 	if channelType == "gemini" {
 		delete(configMap, "force_function_call")
+		delete(configMap, "cc_support")
+		delete(configMap, "simulated_client")
+		delete(configMap, "simulated_codex_version")
+		delete(configMap, "simulated_claude_code_version")
 	}
 	if channelType == "anthropic" {
 		delete(configMap, "cc_support")

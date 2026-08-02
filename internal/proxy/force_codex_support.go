@@ -96,10 +96,10 @@ const (
 )
 
 type codexToolSpec struct {
-	Kind                 codexToolKind
-	Name                 string
-	Namespace            string
-	AllowsEmptyArguments bool
+	Kind      codexToolKind
+	Name      string
+	Namespace string
+	Execution string
 }
 
 type codexToolContext struct {
@@ -135,10 +135,9 @@ func (ctx *codexToolContext) addTool(tool CodexTool, namespace string) {
 		chatName := codexChatToolName(tool.Name, namespace)
 		if chatName != "" {
 			ctx.byChatName[chatName] = codexToolSpec{
-				Kind:                 codexToolKindFunction,
-				Name:                 tool.Name,
-				Namespace:            namespace,
-				AllowsEmptyArguments: codexToolAllowsEmptyArguments(tool),
+				Kind:      codexToolKindFunction,
+				Name:      tool.Name,
+				Namespace: namespace,
 			}
 		}
 	case "custom":
@@ -146,7 +145,9 @@ func (ctx *codexToolContext) addTool(tool CodexTool, namespace string) {
 			ctx.byChatName[tool.Name] = codexToolSpec{Kind: codexToolKindCustom, Name: tool.Name}
 		}
 	case "tool_search":
-		ctx.byChatName[codexToolSearchProxyName] = codexToolSpec{Kind: codexToolKindToolSearch, Name: codexToolSearchProxyName}
+		ctx.byChatName[codexToolSearchProxyName] = codexToolSpec{
+			Kind: codexToolKindToolSearch, Name: codexToolSearchProxyName, Execution: tool.Execution,
+		}
 	case "namespace":
 		nextNamespace := codexChatToolName(tool.Name, namespace)
 		for _, child := range codexNamespaceChildren(tool) {
@@ -155,27 +156,18 @@ func (ctx *codexToolContext) addTool(tool CodexTool, namespace string) {
 	}
 }
 
-func codexToolAllowsEmptyArguments(tool CodexTool) bool {
-	if len(tool.Parameters) == 0 || string(tool.Parameters) == "null" {
-		return true
-	}
-	var schema struct {
-		Required []string `json:"required"`
-	}
-	if err := json.Unmarshal(tool.Parameters, &schema); err != nil {
-		return false
-	}
-	return len(schema.Required) == 0
-}
-
 func isValidCodexToolCallArguments(toolName, arguments string, toolCtx *codexToolContext) bool {
 	trimmed := strings.TrimSpace(arguments)
 	if trimmed == "{}" {
-		if spec, ok := toolCtx.lookup(toolName); ok && spec.AllowsEmptyArguments {
-			return true
-		}
+		return true
 	}
 	return isValidToolCallArguments(toolName, arguments)
+}
+
+func decodeCodexJSONUseNumber(data []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	return decoder.Decode(value)
 }
 
 func (ctx *codexToolContext) chatNameFor(name, namespace string) string {
@@ -210,11 +202,86 @@ func codexNamespaceChildren(tool CodexTool) []CodexTool {
 	return tool.Children
 }
 
+func codexRequestTools(req *CodexRequest) ([]CodexTool, error) {
+	if req == nil {
+		return nil, nil
+	}
+	tools := append([]CodexTool(nil), req.Tools...)
+	inputTools, err := codexInputToolDefinitions(req.Input)
+	if err != nil {
+		return nil, err
+	}
+	return append(tools, inputTools...), nil
+}
+
+func codexInputToolDefinitions(input json.RawMessage) ([]CodexTool, error) {
+	trimmed := bytes.TrimSpace(input)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(trimmed, &items); err != nil {
+		return nil, fmt.Errorf("failed to parse Codex input items: %w", err)
+	}
+	var tools []CodexTool
+	for _, item := range items {
+		var envelope struct {
+			Type  string          `json:"type"`
+			Tools json.RawMessage `json:"tools"`
+		}
+		if err := json.Unmarshal(item, &envelope); err != nil {
+			return nil, fmt.Errorf("failed to parse Codex input item: %w", err)
+		}
+		if envelope.Type != "additional_tools" && envelope.Type != "tool_search_output" {
+			continue
+		}
+		if len(envelope.Tools) == 0 || string(envelope.Tools) == "null" {
+			continue
+		}
+		var loaded []CodexTool
+		if err := json.Unmarshal(envelope.Tools, &loaded); err != nil {
+			return nil, fmt.Errorf("failed to parse %s tools: %w", envelope.Type, err)
+		}
+		tools = append(tools, loaded...)
+	}
+	return tools, nil
+}
+
+func codexInputSystemText(input json.RawMessage) ([]string, error) {
+	var raw any
+	if err := decodeCodexJSONUseNumber(input, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse Codex input: %w", err)
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, nil
+	}
+	var text []string
+	for _, item := range items {
+		message, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		itemType, _ := message["type"].(string)
+		role, _ := message["role"].(string)
+		if (itemType == "message" || itemType == "") && (role == "system" || role == "developer") {
+			if content := codexContentText(message["content"], role); content != "" {
+				text = append(text, content)
+			}
+		}
+	}
+	return text, nil
+}
+
 func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, error) {
 	if codexReq == nil {
 		return nil, fmt.Errorf("codex request is nil")
 	}
-	toolCtx := newCodexToolContext(codexReq.Tools)
+	requestTools, err := codexRequestTools(codexReq)
+	if err != nil {
+		return nil, err
+	}
+	toolCtx := newCodexToolContext(requestTools)
 	req := &OpenAIRequest{
 		Model:             codexReq.Model,
 		Stream:            codexReq.Stream,
@@ -222,6 +289,9 @@ func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, er
 		TopP:              codexReq.TopP,
 		MaxTokens:         codexReq.MaxOutputTokens,
 		ParallelToolCalls: codexReq.ParallelToolCalls,
+	}
+	if codexReq.Reasoning != nil {
+		req.ReasoningEffort = strings.TrimSpace(codexReq.Reasoning.Effort)
 	}
 
 	if strings.TrimSpace(codexReq.Instructions) != "" {
@@ -237,9 +307,9 @@ func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, er
 	}
 	req.Messages = append(req.Messages, messages...)
 
-	if len(codexReq.Tools) > 0 {
-		req.Tools = make([]OpenAITool, 0, len(codexReq.Tools))
-		for _, tool := range codexReq.Tools {
+	if len(requestTools) > 0 {
+		req.Tools = make([]OpenAITool, 0, len(requestTools))
+		for _, tool := range requestTools {
 			appendCodexToolToOpenAIChat(&req.Tools, tool, "")
 		}
 	}
@@ -251,7 +321,11 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 	if codexReq == nil {
 		return nil, fmt.Errorf("codex request is nil")
 	}
-	toolCtx := newCodexToolContext(codexReq.Tools)
+	requestTools, err := codexRequestTools(codexReq)
+	if err != nil {
+		return nil, err
+	}
+	toolCtx := newCodexToolContext(requestTools)
 	req := &ClaudeRequest{
 		Model:       codexReq.Model,
 		Stream:      codexReq.Stream,
@@ -261,8 +335,32 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 	if codexReq.MaxOutputTokens != nil {
 		req.MaxTokens = *codexReq.MaxOutputTokens
 	}
+	if codexReq.Reasoning != nil {
+		effort := strings.ToLower(strings.TrimSpace(codexReq.Reasoning.Effort))
+		switch effort {
+		case "":
+		case "none":
+			req.Thinking = &ThinkingConfig{Type: "disabled"}
+		case "low", "medium", "high", "max":
+			req.Thinking = &ThinkingConfig{Type: "adaptive"}
+			req.OutputConfig = &ClaudeOutputConfig{Effort: effort}
+			req.Temperature = nil
+			req.TopP = nil
+		default:
+			return nil, unsupportedCodexRequestOption("reasoning.effort", codexUpstreamClaude, "effort has no equivalent Anthropic adaptive-thinking value")
+		}
+	}
+	systemText := make([]string, 0, 3)
 	if strings.TrimSpace(codexReq.Instructions) != "" {
-		req.System = marshalStringAsJSONRaw("codex_instructions", codexReq.Instructions)
+		systemText = append(systemText, codexReq.Instructions)
+	}
+	inputSystemText, err := codexInputSystemText(codexReq.Input)
+	if err != nil {
+		return nil, err
+	}
+	systemText = append(systemText, inputSystemText...)
+	if len(systemText) > 0 {
+		req.System = marshalStringAsJSONRaw("codex_instructions", strings.Join(systemText, "\n\n"))
 	}
 
 	messages, err := convertCodexInputToClaudeMessages(codexReq.Input, toolCtx)
@@ -271,13 +369,17 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 	}
 	req.Messages = messages
 
-	if len(codexReq.Tools) > 0 {
-		req.Tools = make([]ClaudeTool, 0, len(codexReq.Tools))
-		for _, tool := range codexReq.Tools {
+	if len(requestTools) > 0 {
+		req.Tools = make([]ClaudeTool, 0, len(requestTools))
+		for _, tool := range requestTools {
 			appendCodexToolToClaude(&req.Tools, tool, "")
 		}
 	}
 	req.ToolChoice = convertResponsesToolChoiceToClaude(codexReq.ToolChoice, toolCtx)
+	req.ToolChoice, err = codexClaudeToolChoiceWithParallel(req.ToolChoice, codexReq.ParallelToolCalls, len(req.Tools) > 0)
+	if err != nil {
+		return nil, err
+	}
 	return req, nil
 }
 
@@ -524,12 +626,16 @@ func codexOutputItemFromChatToolCall(callID, chatName, arguments string, toolCtx
 				Input:  codexCustomToolInputFromArguments(arguments),
 			}
 		case codexToolKindToolSearch:
+			execution := spec.Execution
+			if execution == "" {
+				execution = "client"
+			}
 			return CodexOutputItem{
 				Type:      "tool_search_call",
 				ID:        "tsc_" + strings.TrimPrefix(callID, "call_"),
 				Status:    "completed",
 				CallID:    callID,
-				Execution: "client",
+				Execution: execution,
 				Arguments: arguments,
 			}
 		case codexToolKindFunction:
@@ -556,7 +662,7 @@ func codexOutputItemFromChatToolCall(callID, chatName, arguments string, toolCtx
 
 func codexCustomToolInputFromArguments(arguments string) any {
 	var parsed map[string]any
-	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil {
+	if err := decodeCodexJSONUseNumber([]byte(arguments), &parsed); err != nil {
 		return arguments
 	}
 	if input, ok := parsed["input"]; ok {
@@ -614,7 +720,7 @@ func codexOutputTokenDetailsFromOpenAI(details *TokenUsageDetails) *TokenUsageDe
 
 func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexToolContext) ([]OpenAIMessage, error) {
 	var raw any
-	if err := json.Unmarshal(input, &raw); err != nil {
+	if err := decodeCodexJSONUseNumber(input, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse Codex input: %w", err)
 	}
 	items, ok := raw.([]any)
@@ -677,7 +783,7 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 			})
 		case "function_call_output", "custom_tool_call_output", "tool_search_output", "mcp_tool_call_output":
 			callID := stringFromMap(m, "call_id")
-			output := stringFromMap(m, "output")
+			output := codexToolOutputText(m, itemType)
 			messages = append(messages, OpenAIMessage{
 				Role:       "tool",
 				ToolCallID: callID,
@@ -690,7 +796,7 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 
 func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexToolContext) ([]ClaudeMessage, error) {
 	var raw any
-	if err := json.Unmarshal(input, &raw); err != nil {
+	if err := decodeCodexJSONUseNumber(input, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse Codex input: %w", err)
 	}
 	items, ok := raw.([]any)
@@ -711,7 +817,10 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 		switch itemType {
 		case "message", "":
 			role, _ := m["role"].(string)
-			if role == "" || role == "developer" || role == "system" {
+			if role == "developer" || role == "system" {
+				continue
+			}
+			if role == "" {
 				role = "user"
 			}
 			text := codexContentText(m["content"], role)
@@ -745,7 +854,7 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 			messages = append(messages, ClaudeMessage{Role: "assistant", Content: content})
 		case "function_call_output", "custom_tool_call_output", "tool_search_output", "mcp_tool_call_output":
 			callID := strings.TrimPrefix(stringFromMap(m, "call_id"), "call_")
-			output := stringFromMap(m, "output")
+			output := codexToolOutputText(m, itemType)
 			content, _ := json.Marshal([]ClaudeContentBlock{{
 				Type:      "tool_result",
 				ToolUseID: callID,
@@ -804,7 +913,23 @@ func stringFromMap(m map[string]any, key string) string {
 	}
 }
 
+func codexToolOutputText(item map[string]any, itemType string) string {
+	if itemType == "tool_search_output" {
+		if tools, ok := item["tools"]; ok {
+			out, err := json.Marshal(tools)
+			if err == nil {
+				return string(out)
+			}
+		}
+	}
+	return stringFromMap(item, "output")
+}
+
 func appendCodexToolToOpenAIChat(tools *[]OpenAITool, tool CodexTool, namespace string) {
+	appendCodexToolToOpenAIChatWithDescription(tools, tool, namespace, "")
+}
+
+func appendCodexToolToOpenAIChatWithDescription(tools *[]OpenAITool, tool CodexTool, namespace, namespaceDescription string) {
 	switch tool.Type {
 	case "", "function":
 		name := codexChatToolName(tool.Name, namespace)
@@ -815,7 +940,7 @@ func appendCodexToolToOpenAIChat(tools *[]OpenAITool, tool CodexTool, namespace 
 			Type: "function",
 			Function: OpenAIFunction{
 				Name:        name,
-				Description: tool.Description,
+				Description: codexNamespacedDescription(namespaceDescription, tool.Description),
 				Parameters:  normalizeToolParameters(tool.Parameters),
 			},
 		})
@@ -827,28 +952,41 @@ func appendCodexToolToOpenAIChat(tools *[]OpenAITool, tool CodexTool, namespace 
 			Type: "function",
 			Function: OpenAIFunction{
 				Name:        tool.Name,
-				Description: codexCustomToolDescription(tool),
+				Description: codexNamespacedDescription(namespaceDescription, codexCustomToolDescription(tool)),
 				Parameters:  codexCustomToolParameters(),
 			},
 		})
 	case "tool_search":
+		description := tool.Description
+		parameters := tool.Parameters
+		if description == "" {
+			description = "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task."
+		}
+		if len(parameters) == 0 || string(parameters) == "null" {
+			parameters = codexToolSearchParameters()
+		}
 		*tools = append(*tools, OpenAITool{
 			Type: "function",
 			Function: OpenAIFunction{
 				Name:        codexToolSearchProxyName,
-				Description: "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task.",
-				Parameters:  codexToolSearchParameters(),
+				Description: codexNamespacedDescription(namespaceDescription, description),
+				Parameters:  normalizeToolParameters(parameters),
 			},
 		})
 	case "namespace":
 		nextNamespace := codexChatToolName(tool.Name, namespace)
+		nextDescription := codexNamespacedDescription(namespaceDescription, tool.Description)
 		for _, child := range codexNamespaceChildren(tool) {
-			appendCodexToolToOpenAIChat(tools, child, nextNamespace)
+			appendCodexToolToOpenAIChatWithDescription(tools, child, nextNamespace, nextDescription)
 		}
 	}
 }
 
 func appendCodexToolToClaude(tools *[]ClaudeTool, tool CodexTool, namespace string) {
+	appendCodexToolToClaudeWithDescription(tools, tool, namespace, "")
+}
+
+func appendCodexToolToClaudeWithDescription(tools *[]ClaudeTool, tool CodexTool, namespace, namespaceDescription string) {
 	switch tool.Type {
 	case "", "function":
 		name := codexChatToolName(tool.Name, namespace)
@@ -857,7 +995,7 @@ func appendCodexToolToClaude(tools *[]ClaudeTool, tool CodexTool, namespace stri
 		}
 		*tools = append(*tools, ClaudeTool{
 			Name:        name,
-			Description: tool.Description,
+			Description: codexNamespacedDescription(namespaceDescription, tool.Description),
 			InputSchema: normalizeToolParameters(tool.Parameters),
 		})
 	case "custom":
@@ -866,21 +1004,40 @@ func appendCodexToolToClaude(tools *[]ClaudeTool, tool CodexTool, namespace stri
 		}
 		*tools = append(*tools, ClaudeTool{
 			Name:        tool.Name,
-			Description: codexCustomToolDescription(tool),
+			Description: codexNamespacedDescription(namespaceDescription, codexCustomToolDescription(tool)),
 			InputSchema: codexCustomToolParameters(),
 		})
 	case "tool_search":
+		description := tool.Description
+		parameters := tool.Parameters
+		if description == "" {
+			description = "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task."
+		}
+		if len(parameters) == 0 || string(parameters) == "null" {
+			parameters = codexToolSearchParameters()
+		}
 		*tools = append(*tools, ClaudeTool{
 			Name:        codexToolSearchProxyName,
-			Description: "Search and load Codex tools, plugins, connectors, and MCP namespaces for the current task.",
-			InputSchema: codexToolSearchParameters(),
+			Description: codexNamespacedDescription(namespaceDescription, description),
+			InputSchema: normalizeToolParameters(parameters),
 		})
 	case "namespace":
 		nextNamespace := codexChatToolName(tool.Name, namespace)
+		nextDescription := codexNamespacedDescription(namespaceDescription, tool.Description)
 		for _, child := range codexNamespaceChildren(tool) {
-			appendCodexToolToClaude(tools, child, nextNamespace)
+			appendCodexToolToClaudeWithDescription(tools, child, nextNamespace, nextDescription)
 		}
 	}
+}
+
+func codexNamespacedDescription(namespaceDescription, toolDescription string) string {
+	if namespaceDescription == "" {
+		return toolDescription
+	}
+	if toolDescription == "" {
+		return namespaceDescription
+	}
+	return namespaceDescription + "\n\n" + toolDescription
 }
 
 func codexCustomToolDescription(tool CodexTool) string {
@@ -972,6 +1129,336 @@ func convertResponsesToolChoiceToClaude(toolChoice any, toolCtx ...*codexToolCon
 	return nil
 }
 
+func codexClaudeToolChoiceWithParallel(toolChoice json.RawMessage, parallel *bool, hasTools bool) (json.RawMessage, error) {
+	if parallel == nil || !hasTools {
+		return toolChoice, nil
+	}
+	choice := map[string]any{"type": "auto"}
+	if len(toolChoice) > 0 {
+		if err := decodeCodexJSONUseNumber(toolChoice, &choice); err != nil || choice == nil {
+			return nil, unsupportedCodexRequestOption("tool_choice", codexUpstreamClaude, "tool_choice must be an object when parallel_tool_calls is set")
+		}
+	}
+	choice["disable_parallel_tool_use"] = !*parallel
+	return json.Marshal(choice)
+}
+
+type codexProtocolCompatibilityError struct {
+	Code     string
+	ToolType string
+	Feature  string
+	Target   string
+	Detail   string
+}
+
+func (e *codexProtocolCompatibilityError) Error() string {
+	if e.Feature != "" {
+		return fmt.Sprintf("%s: Not Supported: Codex request option %q cannot be converted to %s: %s", e.Code, e.Feature, e.Target, e.Detail)
+	}
+	return fmt.Sprintf("%s: Not Supported: Codex tool %q cannot be converted to %s: %s", e.Code, e.ToolType, e.Target, e.Detail)
+}
+
+func validateForceCodexTools(tools []CodexTool, target string) error {
+	for _, tool := range tools {
+		toolType := tool.Type
+		if toolType == "" {
+			toolType = "function"
+		}
+		switch toolType {
+		case "function":
+			if target == codexUpstreamOpenAIChat && tool.DeferLoading != nil && *tool.DeferLoading {
+				return unsupportedCodexTool(toolType, target, "defer_loading has no Chat Completions equivalent")
+			}
+		case "custom":
+			if strings.TrimSpace(tool.Name) == "" {
+				return unsupportedCodexTool(toolType, target, "name is required for reversible conversion")
+			}
+		case "namespace":
+			if err := validateForceCodexTools(codexNamespaceChildren(tool), target); err != nil {
+				return err
+			}
+		case "tool_search":
+			if tool.Execution != "client" {
+				return unsupportedCodexTool(toolType, target, "only explicit client execution is reversible")
+			}
+			if strings.TrimSpace(tool.Description) == "" || len(tool.Parameters) == 0 || string(tool.Parameters) == "null" {
+				return unsupportedCodexTool(toolType, target, "description and parameters are required for reversible conversion")
+			}
+		default:
+			return unsupportedCodexTool(toolType, target, "the gateway has no equivalent executor or result contract")
+		}
+	}
+	return nil
+}
+
+func unsupportedCodexTool(toolType, target, detail string) error {
+	return &codexProtocolCompatibilityError{
+		Code: "unsupported_tool", ToolType: toolType, Target: target, Detail: detail,
+	}
+}
+
+func unsupportedCodexRequestOption(feature, target, detail string) error {
+	return &codexProtocolCompatibilityError{
+		Code: "unsupported_request_option", Feature: feature, Target: target, Detail: detail,
+	}
+}
+
+func validateForceCodexRequestOptions(req *CodexRequest, target string) error {
+	if req == nil {
+		return fmt.Errorf("codex request is nil")
+	}
+	if len(req.unsupportedFields) > 0 {
+		return unsupportedCodexRequestOption(req.unsupportedFields[0], target, "request field is not modeled by the target protocol converter")
+	}
+	if err := validateForceCodexToolChoice(req.ToolChoice, target); err != nil {
+		return err
+	}
+	if req.Text != nil {
+		verbosity := strings.ToLower(strings.TrimSpace(req.Text.Verbosity))
+		switch verbosity {
+		case "", "medium":
+		case "low", "high":
+			if target == codexUpstreamClaude {
+				return unsupportedCodexRequestOption("text.verbosity", target, "Anthropic Messages has no equivalent response verbosity control")
+			}
+		default:
+			return unsupportedCodexRequestOption("text.verbosity", target, "expected low, medium, or high")
+		}
+	}
+	if req.Reasoning != nil {
+		context := strings.ToLower(strings.TrimSpace(req.Reasoning.Context))
+		switch context {
+		case "", "auto", "current_turn":
+		case "all_turns":
+			return unsupportedCodexRequestOption("reasoning.context", target, "all_turns state cannot be represented after protocol conversion")
+		default:
+			return unsupportedCodexRequestOption("reasoning.context", target, "expected auto, current_turn, or all_turns")
+		}
+	}
+	return nil
+}
+
+func validateForceCodexToolChoice(toolChoice any, target string) error {
+	switch value := toolChoice.(type) {
+	case nil:
+		return nil
+	case string:
+		switch value {
+		case "none", "auto", "required":
+			return nil
+		default:
+			return unsupportedCodexRequestOption("tool_choice", target, "expected none, auto, required, or a supported named tool selector")
+		}
+	case map[string]any:
+		selectorType, _ := value["type"].(string)
+		switch selectorType {
+		case "function", "custom":
+			if strings.TrimSpace(stringFromMap(value, "name")) == "" {
+				return unsupportedCodexRequestOption("tool_choice", target, selectorType+" selector requires name")
+			}
+			return nil
+		case "tool_search":
+			return nil
+		default:
+			return unsupportedCodexRequestOption("tool_choice", target, "selector type has no equivalent target-protocol contract")
+		}
+	default:
+		return unsupportedCodexRequestOption("tool_choice", target, "tool_choice must be a string or object")
+	}
+}
+
+func codexRawJSONPresent(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
+}
+
+func codexTextFormatForTarget(raw json.RawMessage, target string) (map[string]any, error) {
+	if !codexRawJSONPresent(raw) {
+		return nil, nil
+	}
+	var format map[string]any
+	if err := decodeCodexJSONUseNumber(raw, &format); err != nil || format == nil {
+		return nil, unsupportedCodexRequestOption("text.format", target, "format must be a JSON object")
+	}
+	formatType, _ := format["type"].(string)
+	if formatType == "text" {
+		return nil, nil
+	}
+	if formatType != "json_schema" {
+		return nil, unsupportedCodexRequestOption("text.format", target, "only json_schema has an equivalent output contract")
+	}
+	schema, ok := format["schema"]
+	if !ok || schema == nil {
+		return nil, unsupportedCodexRequestOption("text.format", target, "json_schema requires schema")
+	}
+	if target == codexUpstreamClaude {
+		return map[string]any{
+			"format": map[string]any{"type": "json_schema", "schema": schema},
+		}, nil
+	}
+	name, _ := format["name"].(string)
+	if strings.TrimSpace(name) == "" {
+		return nil, unsupportedCodexRequestOption("text.format", target, "Chat Completions json_schema requires name")
+	}
+	strict := false
+	if rawStrict, ok := format["strict"]; ok {
+		var valid bool
+		strict, valid = rawStrict.(bool)
+		if !valid {
+			return nil, unsupportedCodexRequestOption("text.format", target, "strict must be a boolean")
+		}
+	}
+	return map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": name, "strict": strict, "schema": schema,
+		},
+	}, nil
+}
+
+func codexChatStreamOptions(raw json.RawMessage) (map[string]any, error) {
+	if !codexRawJSONPresent(raw) {
+		return nil, nil
+	}
+	var source map[string]any
+	if err := decodeCodexJSONUseNumber(raw, &source); err != nil || source == nil {
+		return nil, unsupportedCodexRequestOption("stream_options", codexUpstreamOpenAIChat, "stream_options must be a JSON object")
+	}
+	result := make(map[string]any, 1)
+	if includeUsage, ok := source["include_usage"]; ok {
+		value, valid := includeUsage.(bool)
+		if !valid {
+			return nil, unsupportedCodexRequestOption("stream_options.include_usage", codexUpstreamOpenAIChat, "include_usage must be a boolean")
+		}
+		result["include_usage"] = value
+	}
+	return result, nil
+}
+
+type codexConvertedToolFields struct {
+	Strict       bool
+	DeferLoading *bool
+}
+
+func flattenCodexConvertedToolFields(tools []CodexTool) []codexConvertedToolFields {
+	var fields []codexConvertedToolFields
+	for _, tool := range tools {
+		if tool.Type == "namespace" {
+			fields = append(fields, flattenCodexConvertedToolFields(codexNamespaceChildren(tool))...)
+			continue
+		}
+		fields = append(fields, codexConvertedToolFields{Strict: tool.Strict, DeferLoading: tool.DeferLoading})
+	}
+	return fields
+}
+
+func marshalForceCodexOpenAIChatRequest(req *OpenAIRequest, sourceTools []CodexTool, source *CodexRequest) ([]byte, error) {
+	out, err := json.Marshal(req)
+	if err != nil {
+		return out, err
+	}
+	var payload map[string]any
+	if err := decodeCodexJSONUseNumber(out, &payload); err != nil {
+		return nil, err
+	}
+	if len(req.Tools) > 0 {
+		tools, ok := payload["tools"].([]any)
+		fields := flattenCodexConvertedToolFields(sourceTools)
+		if !ok || len(tools) != len(fields) {
+			return nil, fmt.Errorf("Codex/OpenAI tool conversion count mismatch")
+		}
+		for i, field := range fields {
+			if !field.Strict {
+				continue
+			}
+			tool, ok := tools[i].(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid converted OpenAI tool at index %d", i)
+			}
+			function, ok := tool["function"].(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid converted OpenAI function at index %d", i)
+			}
+			function["strict"] = true
+		}
+	}
+	if source != nil {
+		if source.ServiceTier != "" {
+			payload["service_tier"] = source.ServiceTier
+		}
+		if source.PromptCacheKey != "" {
+			payload["prompt_cache_key"] = source.PromptCacheKey
+		}
+		streamOptions, err := codexChatStreamOptions(source.StreamOptions)
+		if err != nil {
+			return nil, err
+		}
+		if len(streamOptions) > 0 {
+			payload["stream_options"] = streamOptions
+		}
+		if source.Text != nil {
+			if verbosity := strings.TrimSpace(source.Text.Verbosity); verbosity != "" {
+				payload["verbosity"] = strings.ToLower(verbosity)
+			}
+			responseFormat, err := codexTextFormatForTarget(source.Text.Format, codexUpstreamOpenAIChat)
+			if err != nil {
+				return nil, err
+			}
+			if responseFormat != nil {
+				payload["response_format"] = responseFormat
+			}
+		}
+	}
+	return json.Marshal(payload)
+}
+
+func marshalForceCodexClaudeRequest(req *ClaudeRequest, sourceTools []CodexTool, source *CodexRequest) ([]byte, error) {
+	out, err := json.Marshal(req)
+	if err != nil {
+		return out, err
+	}
+	var payload map[string]any
+	if err := decodeCodexJSONUseNumber(out, &payload); err != nil {
+		return nil, err
+	}
+	if len(req.Tools) > 0 {
+		tools, ok := payload["tools"].([]any)
+		fields := flattenCodexConvertedToolFields(sourceTools)
+		if !ok || len(tools) != len(fields) {
+			return nil, fmt.Errorf("Codex/Anthropic tool conversion count mismatch")
+		}
+		for i, field := range fields {
+			tool, ok := tools[i].(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("invalid converted Anthropic tool at index %d", i)
+			}
+			if field.Strict {
+				tool["strict"] = true
+			}
+			if field.DeferLoading != nil {
+				tool["defer_loading"] = *field.DeferLoading
+			}
+		}
+	}
+	if source != nil && source.Text != nil {
+		outputConfig, err := codexTextFormatForTarget(source.Text.Format, codexUpstreamClaude)
+		if err != nil {
+			return nil, err
+		}
+		if outputConfig != nil {
+			current, _ := payload["output_config"].(map[string]any)
+			if current == nil {
+				current = make(map[string]any, len(outputConfig))
+			}
+			for key, value := range outputConfig {
+				current[key] = value
+			}
+			payload["output_config"] = current
+		}
+	}
+	return json.Marshal(payload)
+}
+
 func appendParsedFunctionCallsToCodex(resp *CodexResponse, calls []functionCall) {
 	for _, call := range calls {
 		if call.Name == "" {
@@ -999,16 +1486,26 @@ func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *m
 	if err := json.Unmarshal(bodyBytes, &codexReq); err != nil {
 		return bodyBytes, false, fmt.Errorf("failed to parse Codex request: %w", err)
 	}
-	toolCtx := newCodexToolContext(codexReq.Tools)
+	requestTools, err := codexRequestTools(&codexReq)
+	if err != nil {
+		return bodyBytes, false, err
+	}
+	toolCtx := newCodexToolContext(requestTools)
 	c.Set(ctxKeyCodexToolContext, toolCtx)
 
 	switch group.ChannelType {
 	case "openai":
+		if err := validateForceCodexRequestOptions(&codexReq, codexUpstreamOpenAIChat); err != nil {
+			return bodyBytes, false, err
+		}
+		if err := validateForceCodexTools(requestTools, codexUpstreamOpenAIChat); err != nil {
+			return bodyBytes, false, err
+		}
 		chatReq, err := convertCodexRequestToOpenAIChat(&codexReq)
 		if err != nil {
 			return bodyBytes, false, err
 		}
-		out, err := json.Marshal(chatReq)
+		out, err := marshalForceCodexOpenAIChatRequest(chatReq, requestTools, &codexReq)
 		if err != nil {
 			return bodyBytes, false, err
 		}
@@ -1016,11 +1513,17 @@ func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *m
 		setCodexUpstreamFormat(c, codexUpstreamOpenAIChat)
 		return out, true, nil
 	case "anthropic":
+		if err := validateForceCodexRequestOptions(&codexReq, codexUpstreamClaude); err != nil {
+			return bodyBytes, false, err
+		}
+		if err := validateForceCodexTools(requestTools, codexUpstreamClaude); err != nil {
+			return bodyBytes, false, err
+		}
 		claudeReq, err := convertCodexRequestToClaude(&codexReq)
 		if err != nil {
 			return bodyBytes, false, err
 		}
-		out, err := json.Marshal(claudeReq)
+		out, err := marshalForceCodexClaudeRequest(claudeReq, requestTools, &codexReq)
 		if err != nil {
 			return bodyBytes, false, err
 		}

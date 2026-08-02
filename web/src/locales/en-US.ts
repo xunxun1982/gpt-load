@@ -170,7 +170,6 @@ export default {
     ccSupportBadge: "Force CC",
     openaiCCBadge: "OpenAI CC",
     openaiResponseCCBadge: "OpenAI Responses CC",
-    geminiCCBadge: "Gemini CC",
     codexSupportBadge: "Force Codex",
     openaiCodexBadge: "OpenAI Codex",
     anthropicCodexBadge: "Anthropic Codex",

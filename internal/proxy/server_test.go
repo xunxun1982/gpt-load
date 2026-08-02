@@ -45,6 +45,8 @@ type testChannelProxy struct {
 	url    string
 }
 
+const testChannelProxyIdentity = "test-upstream-identity"
+
 // recordUpstreamTestPath retains the first path without blocking unexpected retries.
 func recordUpstreamTestPath(receivedPath chan<- string, requestCount *int32, path string) {
 	atomic.AddInt32(requestCount, 1)
@@ -64,10 +66,18 @@ func requireSingleUpstreamTestPath(t *testing.T, receivedPath <-chan string, req
 
 func (p *testChannelProxy) SelectUpstreamWithClients(_ *url.URL, _ string) (*channel.UpstreamSelection, error) {
 	return &channel.UpstreamSelection{
+		Identity:     testChannelProxyIdentity,
 		URL:          p.url,
 		HTTPClient:   p.client,
 		StreamClient: p.client,
 	}, nil
+}
+
+func (p *testChannelProxy) ResolveUpstreamByIdentity(identity string, originalURL *url.URL, groupName string) (*channel.UpstreamSelection, error) {
+	if identity != testChannelProxyIdentity {
+		return nil, errors.New("upstream identity not found")
+	}
+	return p.SelectUpstreamWithClients(originalURL, groupName)
 }
 
 func (p *testChannelProxy) BuildUpstreamURL(_ *url.URL, _ string) (string, error) {
@@ -110,6 +120,26 @@ func (p *testChannelProxy) ApplyModelRedirectWithIndex(_ *http.Request, bodyByte
 
 func (p *testChannelProxy) TransformModelList(_ *http.Request, _ []byte, _ *models.Group) (map[string]any, error) {
 	return nil, nil
+}
+
+func TestTestChannelProxyRequiresMatchingUpstreamIdentity(t *testing.T) {
+	proxy := &testChannelProxy{client: &http.Client{}, url: "https://upstream.example.com/v1/models"}
+	originalURL := &url.URL{Path: "/proxy/group/v1/models"}
+
+	selected, err := proxy.SelectUpstreamWithClients(originalURL, "group")
+	require.NoError(t, err)
+	require.NotEmpty(t, selected.Identity)
+
+	selectedAgain, err := proxy.SelectUpstreamWithClients(originalURL, "group")
+	require.NoError(t, err)
+	require.Equal(t, selected.Identity, selectedAgain.Identity)
+
+	resolved, err := proxy.ResolveUpstreamByIdentity(selected.Identity, originalURL, "group")
+	require.NoError(t, err)
+	require.Equal(t, selected, resolved)
+
+	_, err = proxy.ResolveUpstreamByIdentity("wrong-identity", originalURL, "group")
+	require.Error(t, err)
 }
 
 // setupTestDB creates an in-memory SQLite database for testing (pure Go, no CGO)
@@ -1016,7 +1046,6 @@ func TestClearForceProtocolContextClearsToolState(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Set(ctxKeyCCEnabled, true)
 	c.Set(ctxKeyOpenAIResponseCC, true)
-	c.Set(ctxKeyGeminiCC, true)
 	c.Set(ctxKeyCodexEnabled, true)
 	c.Set(ctxKeyCodexUpstreamFormat, codexUpstreamOpenAIChat)
 	c.Set(ctxKeyOpenAIToolNameReverseMap, map[string]string{"short": "original"})
@@ -1028,7 +1057,6 @@ func TestClearForceProtocolContextClearsToolState(t *testing.T) {
 	for _, key := range []string{
 		ctxKeyCCEnabled,
 		ctxKeyOpenAIResponseCC,
-		ctxKeyGeminiCC,
 		ctxKeyCodexEnabled,
 		ctxKeyCodexUpstreamFormat,
 		ctxKeyOpenAIToolNameReverseMap,
@@ -1856,7 +1884,7 @@ func TestCodexAggregateAffinityCacheSkipsZeroWeightSubGroupAndRebinds(t *testing
 		Weight:          100,
 	}).Error)
 
-	createTestKey(t, db, zeroWeightSubGroup.ID, "sk-codex-zero-weight-cache", ps.encryptionSvc)
+	zeroWeightKey := createTestKey(t, db, zeroWeightSubGroup.ID, "sk-codex-zero-weight-cache", ps.encryptionSvc)
 	createTestKey(t, db, activeSubGroup.ID, "sk-codex-positive-weight-cache", ps.encryptionSvc)
 	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
 	require.NoError(t, ps.groupManager.Initialize())
@@ -1865,14 +1893,14 @@ func TestCodexAggregateAffinityCacheSkipsZeroWeightSubGroupAndRebinds(t *testing
 	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
 	require.NoError(t, err)
 	affinityKey := "zero-weight-sticky-thread"
-	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
-	ps.codexAffinityCache.set(cacheKey, zeroWeightSubGroup.ID, time.Now())
+	cacheKey := cacheTestCodexAffinityBinding(t, ps, cachedAggregate, zeroWeightSubGroup, zeroWeightKey.ID, affinityKey)
 
 	body := []byte(`{"model":"gpt-5","client_metadata":{"thread_id":"` + affinityKey + `"},"input":"ping","stream":false}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+cachedAggregate.Name+"/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("thread-id", affinityKey)
+	setTestProxyIdentity(c)
 	retryCtx := &retryContext{
 		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
 		originalBodyBytes:   body,
@@ -1884,9 +1912,9 @@ func TestCodexAggregateAffinityCacheSkipsZeroWeightSubGroupAndRebinds(t *testing
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Equal(t, "Bearer sk-codex-positive-weight-cache", <-authorization)
-	boundSubGroupID, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
+	bound, ok := ps.codexAffinityCache.getBinding(cacheKey, time.Now())
 	require.True(t, ok)
-	assert.Equal(t, activeSubGroup.ID, boundSubGroupID)
+	assert.Equal(t, activeSubGroup.ID, bound.executionGroupID)
 }
 
 func TestCodexAffinityCandidateChecksSkipDisabledAndZeroWeightSubGroups(t *testing.T) {
@@ -3700,7 +3728,7 @@ func TestExecuteRequestWithAggregateRetryUsesDefaultCodexAffinityMaxAttempts(t *
 		Weight:          1,
 	}).Error)
 
-	createTestKey(t, db, affinitySubGroup.ID, "sk-agg-affinity-sub-retry-target-a", ps.encryptionSvc)
+	affinityPrimaryKey := createTestKey(t, db, affinitySubGroup.ID, "sk-agg-affinity-sub-retry-target-a", ps.encryptionSvc)
 	createTestKey(t, db, affinitySubGroup.ID, "sk-agg-affinity-sub-retry-target-b", ps.encryptionSvc)
 	createTestKey(t, db, affinitySubGroup.ID, "sk-agg-affinity-sub-retry-target-c", ps.encryptionSvc)
 	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
@@ -3714,16 +3742,13 @@ func TestExecuteRequestWithAggregateRetryUsesDefaultCodexAffinityMaxAttempts(t *
 	require.NoError(t, err)
 
 	affinityKey := requireAffinityKeyForSubGroup(t, ps, cachedAggregate, affinitySubGroup.ID, "affinity-sub-retry")
-	ps.codexAffinityCache.set(
-		codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey),
-		affinitySubGroup.ID,
-		time.Now(),
-	)
+	cacheKey := cacheTestCodexAffinityBinding(t, ps, cachedAggregate, affinitySubGroup, affinityPrimaryKey.ID, affinityKey)
 	body := []byte(`{"model":"gpt-5","prompt_cache_key":"` + affinityKey + `","include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+	setTestProxyIdentity(c)
 
 	retryCtx := &retryContext{
 		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
@@ -3752,12 +3777,9 @@ func TestExecuteRequestWithAggregateRetryUsesDefaultCodexAffinityMaxAttempts(t *
 	assert.False(t, jsonArrayContainsStringForTest(fallbackPayload["include"], responsesEncryptedReasoning))
 	assert.False(t, jsonInputContainsReasoningItemForTest(fallbackPayload["input"]))
 
-	reboundSubGroupID, ok := ps.codexAffinityCache.get(
-		codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey),
-		time.Now(),
-	)
+	rebound, ok := ps.codexAffinityCache.getBinding(cacheKey, time.Now())
 	require.True(t, ok)
-	assert.Equal(t, fallbackSubGroup.ID, reboundSubGroupID)
+	assert.Equal(t, fallbackSubGroup.ID, rebound.executionGroupID)
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityExhaustionDoesNotCreateFailoverBudget(t *testing.T) {
@@ -3813,7 +3835,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityExhaustionDoesNotCreateFai
 		Weight:          100,
 	}).Error)
 
-	createTestKey(t, db, primarySubGroup.ID, "sk-agg-affinity-no-failover-budget", ps.encryptionSvc)
+	primaryKey := createTestKey(t, db, primarySubGroup.ID, "sk-agg-affinity-no-failover-budget", ps.encryptionSvc)
 	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
 	require.NoError(t, ps.groupManager.Initialize())
 	t.Cleanup(func() {
@@ -3825,17 +3847,13 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityExhaustionDoesNotCreateFai
 
 	const affinityKey = "no-failover-budget-session"
 	const model = "gpt-5"
-	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
-	ps.codexAffinityCache.set(
-		cacheKey,
-		primarySubGroup.ID,
-		time.Now(),
-	)
+	cacheKey := cacheTestCodexAffinityBinding(t, ps, cachedAggregate, primarySubGroup, primaryKey.ID, affinityKey)
 	body := []byte(`{"model":"` + model + `","prompt_cache_key":"` + affinityKey + `","include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+	setTestProxyIdentity(c)
 
 	retryCtx := &retryContext{
 		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
@@ -3848,7 +3866,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityExhaustionDoesNotCreateFai
 
 	require.Equal(t, http.StatusBadGateway, w.Code)
 	require.Equal(t, int32(5), atomic.LoadInt32(&attempts))
-	_, affinityRemains := ps.codexAffinityCache.get(cacheKey, time.Now())
+	_, affinityRemains := ps.codexAffinityCache.getBinding(cacheKey, time.Now())
 	assert.False(t, affinityRemains)
 	for i := 0; i < 5; i++ {
 		require.NoError(t, <-bodyReadErrors)
@@ -3914,7 +3932,8 @@ func TestExecuteRequestWithAggregateRetryCyclesAfterEveryAffinitySubGroupFails(t
 		},
 	}
 	require.NoError(t, db.Create(aggregateGroup).Error)
-	for _, subGroup := range subGroups {
+	var firstSubGroupKey *models.APIKey
+	for i, subGroup := range subGroups {
 		require.NoError(t, db.Create(&models.GroupSubGroup{
 			GroupID:         aggregateGroup.ID,
 			SubGroupID:      subGroup.ID,
@@ -3922,7 +3941,10 @@ func TestExecuteRequestWithAggregateRetryCyclesAfterEveryAffinitySubGroupFails(t
 			SubGroupEnabled: true,
 			Weight:          100,
 		}).Error)
-		createTestKey(t, db, subGroup.ID, "sk-"+subGroup.Name, ps.encryptionSvc)
+		key := createTestKey(t, db, subGroup.ID, "sk-"+subGroup.Name, ps.encryptionSvc)
+		if i == 0 {
+			firstSubGroupKey = key
+		}
 	}
 
 	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
@@ -3936,16 +3958,13 @@ func TestExecuteRequestWithAggregateRetryCyclesAfterEveryAffinitySubGroupFails(t
 
 	const affinityKey = "all-fail-session"
 	const model = "gpt-5"
-	ps.codexAffinityCache.set(
-		codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey),
-		subGroups[0].ID,
-		time.Now(),
-	)
+	cacheTestCodexAffinityBinding(t, ps, cachedAggregate, subGroups[0], firstSubGroupKey.ID, affinityKey)
 	body := []byte(`{"model":"` + model + `","prompt_cache_key":"` + affinityKey + `","include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+	setTestProxyIdentity(c)
 
 	retryCtx := &retryContext{
 		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
@@ -4028,10 +4047,11 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityFallbackWithoutClientIdent
 	fallbackSubGroup := createTestGroup(t, db, "agg-affinity-strip-fallback", "openai-response")
 	fallbackSubGroup.Upstreams = []byte(`[{"url":"` + fallbackUpstream.URL + `","weight":100}]`)
 	fallbackSubGroup.Config = map[string]any{
-		"max_retries":         0,
-		"blacklist_threshold": 100,
-		"force_stream":        true,
-		"simulated_client":    "codex",
+		"max_retries":                           0,
+		"blacklist_threshold":                   100,
+		"force_stream":                          true,
+		"simulated_client":                      "codex",
+		"responses_include_encrypted_reasoning": true,
 	}
 	fallbackSubGroup.EffectiveConfig = systemSettingsWithRetryTimeout(0, 1)
 	require.NoError(t, db.Save(fallbackSubGroup).Error)
@@ -4097,40 +4117,14 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityFallbackWithoutClientIdent
 
 	var primaryPayload map[string]any
 	require.NoError(t, json.Unmarshal(<-primaryBodies, &primaryPayload))
-	require.True(t, jsonArrayContainsStringForTest(primaryPayload["include"], responsesEncryptedReasoning))
-	require.True(t, jsonInputContainsReasoningItemForTest(primaryPayload["input"]))
+	require.False(t, jsonArrayContainsStringForTest(primaryPayload["include"], responsesEncryptedReasoning))
+	require.False(t, jsonInputContainsReasoningItemForTest(primaryPayload["input"]))
 
 	var fallbackPayload map[string]any
 	require.NoError(t, json.Unmarshal(<-fallbackBodies, &fallbackPayload))
 	assert.False(t, jsonArrayContainsStringForTest(fallbackPayload["include"], responsesEncryptedReasoning))
 	assert.True(t, jsonArrayContainsStringForTest(fallbackPayload["include"], "web_search_call.results"))
 	assert.False(t, jsonInputContainsReasoningItemForTest(fallbackPayload["input"]))
-
-	malformedAffinityKey := "affinity-strip-malformed"
-	malformedBody := []byte(`{"model":`)
-	ps.codexAffinityCache.set(
-		codexAggregateAffinityCacheKey(cachedAggregate.ID, malformedAffinityKey),
-		primarySubGroup.ID,
-		time.Now(),
-	)
-	malformedWriter := httptest.NewRecorder()
-	malformedContext, _ := gin.CreateTestContext(malformedWriter)
-	malformedContext.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(malformedBody))
-	malformedContext.Request.Header.Set("Session_ID", malformedAffinityKey)
-	malformedRetryCtx := &retryContext{
-		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
-		originalBodyBytes:   malformedBody,
-		originalPath:        malformedContext.Request.URL.Path,
-		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
-	}
-
-	ps.executeRequestWithAggregateRetry(malformedContext, nil, cachedAggregate, malformedBody, false, time.Now(), malformedRetryCtx)
-
-	require.NoError(t, <-loadFallbackKey)
-	require.NoError(t, <-bodyReadErrors)
-	require.Equal(t, http.StatusBadRequest, malformedWriter.Code)
-	assert.Equal(t, string(malformedBody), string(<-primaryBodies))
-	assert.Len(t, fallbackBodies, 0)
 }
 
 func TestStripCodexAffinityFallbackEncryptedReasoningPreservesTools(t *testing.T) {
@@ -4283,6 +4277,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcr
 		c.Request.Header.Set("thread-id", affinityKey)
 		// Session IDs intentionally differ to model a resume boundary and rule out session-only affinity.
 		c.Request.Header.Set("session-id", fmt.Sprintf("affinity-cache-session-%d", i))
+		setTestProxyIdentity(c)
 
 		retryCtx := &retryContext{
 			excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
@@ -4315,11 +4310,11 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcr
 	require.Equal(t, int32(0), atomic.LoadInt32(&firstAttempts))
 	require.Equal(t, int32(2), atomic.LoadInt32(&secondAttempts))
 
-	for i := 0; i < 2; i++ {
+	for i, wantReasoning := range []bool{false, true} {
 		var payload map[string]any
 		require.NoError(t, json.Unmarshal(<-secondBodies, &payload))
-		assert.True(t, jsonArrayContainsStringForTest(payload["include"], responsesEncryptedReasoning))
-		assert.True(t, jsonInputContainsReasoningItemForTest(payload["input"]))
+		assert.Equal(t, wantReasoning, jsonArrayContainsStringForTest(payload["include"], responsesEncryptedReasoning), "request %d", i+1)
+		assert.Equal(t, wantReasoning, jsonInputContainsReasoningItemForTest(payload["input"]), "request %d", i+1)
 	}
 	assert.Len(t, firstBodies, 0)
 }
@@ -4542,6 +4537,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCacheMissBindsOnlySuccessf
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("session-id", affinityKey)
+	setTestProxyIdentity(c)
 
 	retryCtx := &retryContext{
 		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
@@ -4567,10 +4563,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCacheMissBindsOnlySuccessf
 	assert.True(t, jsonArrayContainsStringForTest(fallbackPayload["include"], "web_search_call.results"))
 	assert.False(t, jsonInputContainsReasoningItemForTest(fallbackPayload["input"]))
 
-	cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
-	boundID, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
+	cacheKey := testCodexAffinityCacheKey(cachedAggregate.ID, affinityKey)
+	bound, ok := ps.codexAffinityCache.getBinding(cacheKey, time.Now())
 	require.True(t, ok)
-	assert.Equal(t, fallbackSubGroup.ID, boundID)
+	assert.Equal(t, fallbackSubGroup.ID, bound.executionGroupID)
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindLogicalFailure(t *testing.T) {
@@ -4960,7 +4956,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCrossProtocolFailureClears
 				Weight:          100,
 			}).Error)
 
-			createTestKey(t, db, subGroup.ID, "sk-agg-affinity-cross-protocol-"+tt.name, ps.encryptionSvc)
+			cachedKey := createTestKey(t, db, subGroup.ID, "sk-agg-affinity-cross-protocol-"+tt.name, ps.encryptionSvc)
 			require.NoError(t, ps.keyProvider.LoadKeysFromDB())
 			require.NoError(t, ps.groupManager.Initialize())
 			t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
@@ -4969,12 +4965,12 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCrossProtocolFailureClears
 			require.NoError(t, err)
 			affinityKey := "cross-protocol-session-" + tt.name
 			body := []byte(`{"model":"gpt-5","stream":false,"prompt_cache_key":"` + affinityKey + `","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
-			cacheKey := codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey)
-			ps.codexAffinityCache.set(cacheKey, subGroup.ID, time.Now())
+			cacheKey := cacheTestCodexAffinityBinding(t, ps, cachedAggregate, subGroup, cachedKey.ID, affinityKey)
 
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
+			setTestProxyIdentity(c)
 			retryCtx := &retryContext{
 				excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
 				originalBodyBytes:   body,
@@ -4986,7 +4982,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCrossProtocolFailureClears
 
 			require.Equal(t, http.StatusBadGateway, w.Code)
 			requireSingleUpstreamTestPath(t, receivedPath, &requestCount, tt.expectedPath)
-			_, ok := ps.codexAffinityCache.get(cacheKey, time.Now())
+			_, ok := ps.codexAffinityCache.getBinding(cacheKey, time.Now())
 			assert.False(t, ok)
 		})
 	}
@@ -5104,9 +5100,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 	fallbackSubGroup := createTestGroup(t, db, "agg-affinity-static-primary", "openai-response")
 	fallbackSubGroup.Upstreams = []byte(`[{"url":"` + fallbackUpstream.URL + `","weight":100}]`)
 	fallbackSubGroup.Config = map[string]any{
-		"max_retries":         0,
-		"blacklist_threshold": 100,
-		"force_non_stream":    true,
+		"max_retries":                           0,
+		"blacklist_threshold":                   100,
+		"force_non_stream":                      true,
+		"responses_include_encrypted_reasoning": true,
 	}
 	fallbackSubGroup.EffectiveConfig = systemSettingsWithRetryTimeout(0, 1)
 	require.NoError(t, db.Save(fallbackSubGroup).Error)
@@ -5139,7 +5136,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 		Weight:          5000,
 	}).Error)
 
-	createTestKey(t, db, cachedSubGroup.ID, "sk-agg-affinity-cached-primary", ps.encryptionSvc)
+	cachedKey := createTestKey(t, db, cachedSubGroup.ID, "sk-agg-affinity-cached-primary", ps.encryptionSvc)
 	createTestKey(t, db, fallbackSubGroup.ID, "sk-agg-affinity-static-primary", ps.encryptionSvc)
 	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
 	require.NoError(t, ps.groupManager.Initialize())
@@ -5152,13 +5149,14 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 
 	affinityKey := requireAffinityKeyForSubGroup(t, ps, cachedAggregate, fallbackSubGroup.ID, "affinity-cached-primary")
 	model := "gpt-5"
-	ps.codexAffinityCache.set(codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey), cachedSubGroup.ID, time.Now())
+	cacheTestCodexAffinityBinding(t, ps, cachedAggregate, cachedSubGroup, cachedKey.ID, affinityKey)
 	body := []byte(`{"model":"` + model + `","client_metadata":{"thread_id":"` + affinityKey + `"},"include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+	setTestProxyIdentity(c)
 
 	retryCtx := &retryContext{
 		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
@@ -5249,13 +5247,14 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityStaleCachedPrimaryStripsOn
 
 	affinityKey := requireAffinityKeyForSubGroup(t, ps, cachedAggregate, fallbackSubGroup.ID, "affinity-stale-primary")
 	model := "gpt-5"
-	ps.codexAffinityCache.set(codexAggregateAffinityCacheKey(cachedAggregate.ID, affinityKey), staleSubGroup.ID, time.Now())
+	cacheTestCodexAffinityBinding(t, ps, cachedAggregate, staleSubGroup, ^uint(0), affinityKey)
 	body := []byte(`{"model":"` + model + `","client_metadata":{"thread_id":"` + affinityKey + `"},"include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"ciphertext"}]}`)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
+	setTestProxyIdentity(c)
 
 	retryCtx := &retryContext{
 		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),

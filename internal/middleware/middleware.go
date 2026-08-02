@@ -273,6 +273,7 @@ func ProxyAuth(gm *services.GroupManager, requestLogService *services.RequestLog
 		_, existsInGroup := group.ProxyKeysMap[key]
 
 		if existsInEffective || existsInGroup {
+			setAuthenticatedProxyIdentity(c, key)
 			c.Next()
 			return
 		}

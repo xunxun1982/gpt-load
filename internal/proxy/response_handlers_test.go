@@ -824,6 +824,7 @@ func TestHandleCodexForcedStreamResponseAppliesFunctionCallConversion(t *testing
 	c, _ := gin.CreateTestContext(w)
 	c.Set(ctxKeyFunctionCallEnabled, true)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_forced>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_forced>>", "web_search")
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Body: io.NopCloser(strings.NewReader(

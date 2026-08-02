@@ -628,7 +628,48 @@ checkDebugMode();
 </script>
 
 <template>
-  <n-space vertical>
+  <n-space vertical class="settings-page">
+    <div v-if="settingList.length > 0" class="settings-actions">
+      <n-button
+        type="primary"
+        size="large"
+        :loading="isSaving"
+        :disabled="isSaving"
+        @click="handleSubmit"
+        style="min-width: 200px"
+      >
+        <template #icon>
+          <n-icon :component="Save" />
+        </template>
+        {{ isSaving ? t("settings.saving") : t("settings.saveSettings") }}
+      </n-button>
+      <n-button
+        type="info"
+        size="large"
+        :disabled="isSaving || isImporting"
+        @click="handleExportAll"
+        style="min-width: 200px"
+      >
+        <template #icon>
+          <n-icon :component="CloudDownloadOutline" />
+        </template>
+        {{ t("settings.exportSystem") }}
+      </n-button>
+      <n-button
+        type="warning"
+        size="large"
+        :loading="isImporting"
+        :disabled="isSaving || isImporting"
+        @click="handleSystemImportClick"
+        style="min-width: 200px"
+      >
+        <template #icon>
+          <n-icon :component="CloudUploadOutline" />
+        </template>
+        {{ isImporting ? t("settings.importing") : t("settings.importSystem") }}
+      </n-button>
+    </div>
+
     <n-form ref="formRef" :model="form" label-placement="top">
       <n-space vertical>
         <n-card
@@ -774,50 +815,6 @@ checkDebugMode();
       </n-space>
     </n-form>
 
-    <div
-      v-if="settingList.length > 0"
-      style="display: flex; justify-content: center; gap: 12px; padding-top: 12px; flex-wrap: wrap"
-    >
-      <n-button
-        type="primary"
-        size="large"
-        :loading="isSaving"
-        :disabled="isSaving"
-        @click="handleSubmit"
-        style="min-width: 200px"
-      >
-        <template #icon>
-          <n-icon :component="Save" />
-        </template>
-        {{ isSaving ? t("settings.saving") : t("settings.saveSettings") }}
-      </n-button>
-      <n-button
-        type="info"
-        size="large"
-        :disabled="isSaving || isImporting"
-        @click="handleExportAll"
-        style="min-width: 200px"
-      >
-        <template #icon>
-          <n-icon :component="CloudDownloadOutline" />
-        </template>
-        {{ t("settings.exportSystem") }}
-      </n-button>
-      <n-button
-        type="warning"
-        size="large"
-        :loading="isImporting"
-        :disabled="isSaving || isImporting"
-        @click="handleSystemImportClick"
-        style="min-width: 200px"
-      >
-        <template #icon>
-          <n-icon :component="CloudUploadOutline" />
-        </template>
-        {{ isImporting ? t("settings.importing") : t("settings.importSystem") }}
-      </n-button>
-    </div>
-
     <!-- Danger Zone: Debug Mode Only -->
     <n-card
       v-if="isDebugModeEnabled"
@@ -881,6 +878,21 @@ checkDebugMode();
   flex-direction: column;
   gap: 8px;
   width: 100%;
+}
+
+.settings-actions {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--card-color, rgba(255, 255, 255, 0.96));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
 }
 
 .retry-backoff-row {
