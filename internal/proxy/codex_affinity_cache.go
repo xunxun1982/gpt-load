@@ -96,7 +96,11 @@ func (cache *codexAffinityCache) removeExpiredTailLocked(now time.Time) {
 }
 
 func (cache *codexAffinityCache) deleteBindingIfMatches(key string, observed codexAffinityBinding) {
-	if cache == nil || key == "" || observed.generation == 0 {
+	if cache == nil || key == "" {
+		return
+	}
+	// setBinding never assigns generation zero; reject it to prevent identity-only deletion.
+	if observed.generation == 0 {
 		return
 	}
 	cache.mu.Lock()
@@ -108,6 +112,7 @@ func (cache *codexAffinityCache) deleteBindingIfMatches(key string, observed cod
 	entry := element.Value.(*codexAffinityCacheEntry)
 	if entry.binding.generation == observed.generation && entry.binding.sameIdentity(observed) {
 		if entry.resetTurnKey != "" {
+			// Keep the failed turn marked across rebinding so encrypted state cannot cross identities on that turn.
 			entry.binding = codexAffinityBinding{}
 			cache.order.MoveToFront(element)
 			return

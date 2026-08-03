@@ -40,6 +40,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// testChannelProxy is a stable-identity test double used by production-path tests.
 type testChannelProxy struct {
 	client       *http.Client
 	url          string
@@ -128,26 +129,6 @@ func (p *testChannelProxy) ApplyModelRedirectWithIndex(_ *http.Request, bodyByte
 
 func (p *testChannelProxy) TransformModelList(_ *http.Request, _ []byte, _ *models.Group) (map[string]any, error) {
 	return nil, nil
-}
-
-func TestTestChannelProxyRequiresMatchingUpstreamIdentity(t *testing.T) {
-	proxy := &testChannelProxy{client: &http.Client{}, url: "https://upstream.example.com/v1/models"}
-	originalURL := &url.URL{Path: "/proxy/group/v1/models"}
-
-	selected, err := proxy.SelectUpstreamWithClients(originalURL, "group")
-	require.NoError(t, err)
-	require.NotEmpty(t, selected.Identity)
-
-	selectedAgain, err := proxy.SelectUpstreamWithClients(originalURL, "group")
-	require.NoError(t, err)
-	require.Equal(t, selected.Identity, selectedAgain.Identity)
-
-	resolved, err := proxy.ResolveUpstreamByIdentity(selected.Identity, originalURL, "group")
-	require.NoError(t, err)
-	require.Equal(t, selected, resolved)
-
-	_, err = proxy.ResolveUpstreamByIdentity("wrong-identity", originalURL, "group")
-	require.Error(t, err)
 }
 
 // setupTestDB creates an in-memory SQLite database for testing (pure Go, no CGO)
@@ -5077,13 +5058,15 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
 
-	cachedBodies := make(chan []byte, 1)
+	cachedBodies := make(chan []byte, 2)
 	fallbackBodies := make(chan []byte, 1)
 	cachedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 		cachedBodies <- body
-		http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"invalid codex request","type":"new_api_error","param":"","code":"invalid_responses_request"}}`)
 	}))
 	t.Cleanup(cachedUpstream.Close)
 
@@ -5126,7 +5109,7 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 		Config: map[string]any{
 			"max_retries":                1,
 			"codex_affinity_enabled":     true,
-			"codex_affinity_max_retries": 1,
+			"codex_affinity_max_retries": 2,
 		},
 	}
 	require.NoError(t, db.Create(aggregateGroup).Error)
@@ -5177,10 +5160,12 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	var cachedPayload map[string]any
-	require.NoError(t, json.Unmarshal(<-cachedBodies, &cachedPayload))
-	assert.True(t, jsonArrayContainsStringForTest(cachedPayload["include"], responsesEncryptedReasoning))
-	assert.True(t, jsonInputContainsReasoningItemForTest(cachedPayload["input"]))
+	for range 2 {
+		var cachedPayload map[string]any
+		require.NoError(t, json.Unmarshal(<-cachedBodies, &cachedPayload))
+		assert.True(t, jsonArrayContainsStringForTest(cachedPayload["include"], responsesEncryptedReasoning))
+		assert.True(t, jsonInputContainsReasoningItemForTest(cachedPayload["input"]))
+	}
 
 	var fallbackPayload map[string]any
 	require.NoError(t, json.Unmarshal(<-fallbackBodies, &fallbackPayload))
@@ -6242,6 +6227,7 @@ func TestSanitizeInternalErrorRedactsURLCredentials(t *testing.T) {
 	assert.Contains(t, got.Error(), "x-goog-api-key=[REDACTED]")
 	assert.NotContains(t, got.Error(), "plain-secret")
 	assert.NotContains(t, got.Error(), "goog-secret")
+	assert.ErrorIs(t, got, raw)
 	assert.Nil(t, sanitizeInternalError(nil))
 }
 

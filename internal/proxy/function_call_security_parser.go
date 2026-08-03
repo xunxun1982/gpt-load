@@ -6,14 +6,13 @@ import (
 	"strings"
 )
 
-const (
-	strictInvokeOpen = `<invoke name="`
-	strictParamOpen  = `<parameter name="`
-)
+const strictInvokeOpen = `<invoke name="`
+const strictParamOpen = `<parameter name="`
 
 func (s *FunctionCallSession) ParseAndValidate(text string, complete bool) (FunctionCallParseResult, bool) {
+	// Unknown request values are normalized to auto; corrupted future enum values remain fail-closed.
 	if s == nil || !complete || len(text) > maxContentBufferBytes || s.Trigger == "" || s.choiceMode == functionCallChoiceNone ||
-		s.choiceMode == functionCallChoiceInvalid || strings.Count(text, s.Trigger) != 1 {
+		s.choiceMode > functionCallChoiceSpecific || strings.Count(text, s.Trigger) != 1 {
 		return FunctionCallParseResult{}, false
 	}
 	triggerAt := strings.Index(text, s.Trigger)
@@ -24,7 +23,7 @@ func (s *FunctionCallSession) ParseAndValidate(text string, complete bool) (Func
 	}
 	calls := make([]functionCall, 0, 2)
 	for strings.HasPrefix(text[cursor:], strictInvokeOpen) {
-		call, next, ok := parseStrictFunctionInvoke(text, cursor)
+		call, next, ok := parseStrictFunctionInvoke(text, cursor, s.tools)
 		if !ok || !s.validateCall(call) {
 			return FunctionCallParseResult{}, false
 		}
@@ -49,8 +48,7 @@ func (s *FunctionCallSession) ParseAndValidate(text string, complete bool) (Func
 	}
 	return FunctionCallParseResult{Calls: calls, Start: start, End: cursor}, true
 }
-
-func parseStrictFunctionInvoke(text string, start int) (functionCall, int, bool) {
+func parseStrictFunctionInvoke(text string, start int, definitions map[string]functionToolDefinition) (functionCall, int, bool) {
 	cursor := start + len(strictInvokeOpen)
 	nameEnd := strings.IndexByte(text[cursor:], '"')
 	if nameEnd <= 0 {
@@ -63,6 +61,7 @@ func parseStrictFunctionInvoke(text string, start int) (functionCall, int, bool)
 	}
 	cursor = skipFunctionCallSpace(text, cursor+1)
 	args := make(map[string]any)
+	definition := definitions[name]
 	for strings.HasPrefix(text[cursor:], strictParamOpen) {
 		cursor += len(strictParamOpen)
 		nameEnd = strings.IndexByte(text[cursor:], '"')
@@ -82,7 +81,8 @@ func parseStrictFunctionInvoke(text string, start int) (functionCall, int, bool)
 		if _, duplicate := args[paramName]; duplicate {
 			return functionCall{}, 0, false
 		}
-		value, ok := parseStrictFunctionValue(text[cursor : cursor+closeAt])
+		declaredType := functionCallDeclaredPropertyType(definition.Parameters, paramName)
+		value, ok := parseStrictFunctionValue(text[cursor:cursor+closeAt], declaredType)
 		if !ok {
 			return functionCall{}, 0, false
 		}
@@ -95,10 +95,14 @@ func parseStrictFunctionInvoke(text string, start int) (functionCall, int, bool)
 	return functionCall{Name: name, Args: args}, cursor + len("</invoke>"), true
 }
 
-func parseStrictFunctionValue(raw string) (any, bool) {
+func parseStrictFunctionValue(raw string, declaredType any) (any, bool) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return "", true
+	}
+	// Schemas without type retain JSON inference; declared constraints are validated after parsing.
+	if functionCallSchemaIncludesType(declaredType, "string") {
+		return value, true
 	}
 	if !looksLikeStrictJSON(value) {
 		return value, true
@@ -120,7 +124,6 @@ func parseStrictFunctionValue(raw string) (any, bool) {
 	}
 	return decoded, true
 }
-
 func looksLikeStrictJSON(value string) bool {
 	if value == "true" || value == "false" || value == "null" {
 		return true

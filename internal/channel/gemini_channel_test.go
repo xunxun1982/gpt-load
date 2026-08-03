@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -374,7 +375,7 @@ func TestGeminiChannel_ValidateKey_IgnoresSimulatedClaudeCodeClient(t *testing.T
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "test-key", r.URL.Query().Get("key"))
-		assert.NotEqual(t, BuildClaudeCodeUserAgent("2.2.0"), r.Header.Get("User-Agent"))
+		assert.False(t, strings.HasPrefix(r.Header.Get("User-Agent"), "claude-cli/"))
 		assert.Empty(t, r.Header.Get("Accept"))
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		assert.Empty(t, r.Header.Get("X-App"))
@@ -382,7 +383,13 @@ func TestGeminiChannel_ValidateKey_IgnoresSimulatedClaudeCodeClient(t *testing.T
 		assert.Empty(t, r.Header.Get("anthropic-beta"))
 		assert.Empty(t, r.Header.Get("Anthropic-Dangerous-Direct-Browser-Access"))
 		assert.Empty(t, r.Header.Get("X-Stainless-Lang"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Package-Version"))
+		assert.Empty(t, r.Header.Get("X-Stainless-OS"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Arch"))
 		assert.Empty(t, r.Header.Get("X-Stainless-Runtime"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Runtime-Version"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Retry-Count"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Timeout"))
 
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}`))

@@ -923,6 +923,8 @@ func TestHandleFunctionCallAnthropicStreamingResponseConvertsXMLToToolUse(t *tes
 		`event: message_stop`,
 		`data: {"type":"message_stop"}`,
 		``,
+		`data: [DONE]`,
+		``,
 	}, "\n")
 	upstreamResp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -1008,6 +1010,10 @@ func TestHandleFunctionCallAnthropicStreamingResponsePreservesMalformedXML(t *te
 		``,
 		`event: content_block_delta`,
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me search.\n<<CALL_claude>>\n<invoke><parameter name=\"query\">weather</parameter>"}}`,
+		``,
+		// Complete this stream to exercise XML validation; disconnect fail-closed has a dedicated security test.
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`,
 		``,
 		`event: message_stop`,
 		`data: {"type":"message_stop"}`,
@@ -11750,6 +11756,9 @@ func TestHandleFunctionCallNormalResponse(t *testing.T) {
 
 			// Check results
 			output := w.Body.String()
+			if modified := output != tt.responseBody; modified != tt.expectModified {
+				t.Errorf("response modified = %v, want %v", modified, tt.expectModified)
+			}
 			if tt.checkFunc != nil {
 				tt.checkFunc(t, output)
 			}

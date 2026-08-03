@@ -31,7 +31,7 @@ func TestCCProtocolContentCompatMedia(t *testing.T) {
 		parts[0]["type"], parts[1]["type"], parts[2]["type"], parts[3]["type"], parts[4]["type"],
 	})
 	require.Equal(t, "data:image/png;base64,aGVsbG8=", parts[1]["image_url"].(map[string]any)["url"])
-	require.Equal(t, "cGRm", parts[3]["file"].(map[string]any)["file_data"])
+	require.Equal(t, "data:application/pdf;base64,cGRm", parts[3]["file"].(map[string]any)["file_data"])
 	require.Contains(t, parts[4]["text"], "facts")
 }
 

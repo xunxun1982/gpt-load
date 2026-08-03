@@ -2849,7 +2849,11 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any, channelT
 		delete(configMap, "codex_affinity_enabled")
 		delete(configMap, "codex_affinity_max_retries")
 		delete(configMap, "responses_include_encrypted_reasoning")
-		delete(configMap, "responses_legacy_user_role")
+		// Force WorkBuddy conversions still consume this compatibility role setting.
+		if (channelType != "openai" && channelType != "anthropic") ||
+			!isConfigBoolEnabled(datatypes.JSONMap(configMap), "codex_support") {
+			delete(configMap, "responses_legacy_user_role")
+		}
 		delete(configMap, "codex_degradation_mitigation_enabled")
 	}
 	if isConfigBoolEnabled(datatypes.JSONMap(configMap), "cc_support") &&

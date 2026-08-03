@@ -48,7 +48,7 @@ func (ps *ProxyServer) selectFreshCodexExecution(handler channel.ChannelProxy, g
 
 func (ps *ProxyServer) resolveCodexExecution(handler channel.ChannelProxy, group *models.Group, requestURL *url.URL, routeName string, binding codexAffinityBinding) (*codexExecutionSelection, error) {
 	if !binding.valid() || binding.executionGroupID != group.ID {
-		return nil, fmt.Errorf("Codex affinity binding does not match execution group")
+		return nil, fmt.Errorf("codex affinity binding does not match execution group")
 	}
 	apiKey, err := ps.keyProvider.GetActiveKeyByID(group.ID, binding.keyID)
 	if err != nil {

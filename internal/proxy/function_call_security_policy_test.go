@@ -90,7 +90,7 @@ func TestFunctionCallSecurityUsesSchemaForNumericLookingScalars(t *testing.T) {
 		},
 	}}, "auto", true)
 
-	for _, value := range []string{"-draft", "123abc"} {
+	for _, value := range []string{"-draft", "123abc", "123", "true", "false", "null"} {
 		result, valid := stringSession.ParseAndValidate(
 			trigger+`<invoke name="A"><parameter name="q">`+value+`</parameter></invoke>`,
 			true,
@@ -112,6 +112,27 @@ func TestFunctionCallSecurityUsesSchemaForNumericLookingScalars(t *testing.T) {
 		true,
 	); valid {
 		t.Fatal("non-JSON scalar bypassed integer schema validation")
+	}
+}
+
+func TestFunctionCallSecurityTreatsUnknownToolChoiceAsUnset(t *testing.T) {
+	trigger := "<<CALL_test>>"
+	definition := functionToolDefinition{
+		Name: "A",
+		Parameters: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"q": map[string]any{"type": "string"}},
+		},
+	}
+	for _, choice := range []any{"unknown", 42, map[string]any{"type": "future"}} {
+		session := newFunctionCallSession(trigger, []functionToolDefinition{definition}, choice, true)
+		result, valid := session.ParseAndValidate(
+			trigger+`<invoke name="A"><parameter name="q">ok</parameter></invoke>`,
+			true,
+		)
+		if !valid || len(result.Calls) != 1 {
+			t.Fatalf("unknown tool_choice %#v did not match request rewrite unset behavior: %#v", choice, result)
+		}
 	}
 }
 

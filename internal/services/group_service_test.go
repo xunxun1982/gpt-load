@@ -931,29 +931,40 @@ func TestValidateAndCleanConfigResponsesOptionsScope(t *testing.T) {
 	svc := setupTestGroupService(t, db)
 
 	tests := []struct {
-		name        string
-		channelType string
-		want        bool
+		name          string
+		channelType   string
+		codexSupport  bool
+		wantResponses bool
+		wantLegacy    bool
 	}{
-		{name: "openai responses supports encrypted reasoning include", channelType: "openai-response", want: true},
-		{name: "openai unsupported", channelType: "openai", want: false},
-		{name: "anthropic unsupported", channelType: "anthropic", want: false},
-		{name: "gemini unsupported", channelType: "gemini", want: false},
+		{name: "openai responses supports response options", channelType: "openai-response", wantResponses: true, wantLegacy: true},
+		{name: "openai force WorkBuddy keeps legacy role", channelType: "openai", codexSupport: true, wantLegacy: true},
+		{name: "anthropic force WorkBuddy keeps legacy role", channelType: "anthropic", codexSupport: true, wantLegacy: true},
+		{name: "openai without WorkBuddy removes response options", channelType: "openai"},
+		{name: "anthropic without WorkBuddy removes response options", channelType: "anthropic"},
+		{name: "gemini unsupported", channelType: "gemini"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cleaned, err := svc.validateAndCleanConfig(map[string]any{
+			config := map[string]any{
 				"responses_include_encrypted_reasoning": true,
 				"responses_legacy_user_role":            true,
-			}, tt.channelType)
+			}
+			if tt.codexSupport {
+				config["codex_support"] = true
+			}
+			cleaned, err := svc.validateAndCleanConfig(config, tt.channelType)
 
 			require.NoError(t, err)
-			if tt.want {
+			if tt.wantResponses {
 				assert.Equal(t, true, cleaned["responses_include_encrypted_reasoning"])
-				assert.Equal(t, true, cleaned["responses_legacy_user_role"])
 			} else {
 				assert.NotContains(t, cleaned, "responses_include_encrypted_reasoning")
+			}
+			if tt.wantLegacy {
+				assert.Equal(t, true, cleaned["responses_legacy_user_role"])
+			} else {
 				assert.NotContains(t, cleaned, "responses_legacy_user_role")
 			}
 		})

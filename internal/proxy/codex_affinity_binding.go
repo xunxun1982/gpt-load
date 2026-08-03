@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -41,7 +42,7 @@ func codexAffinityScopedCacheKey(routeGroupID uint, proxyIdentityDigest, threadK
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func writeAffinityHashField(h interface{ Write([]byte) (int, error) }, value string) {
+func writeAffinityHashField(h io.Writer, value string) {
 	_, _ = h.Write([]byte(strconv.Itoa(len(value))))
 	_, _ = h.Write([]byte{':'})
 	_, _ = h.Write([]byte(value))

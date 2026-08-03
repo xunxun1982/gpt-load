@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	requestmiddleware "gpt-load/internal/middleware"
@@ -79,14 +80,13 @@ func setupRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handler, *model
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
 	observations := make(chan codexAffinityObservation, 2)
-	requestCount := 0
+	var requestCount atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 		observations <- codexAffinityObservation{auth: r.Header.Get("Authorization"), turn: r.Header.Get("X-Codex-Turn-State"), body: body}
-		requestCount++
 		w.Header().Set("Content-Type", "application/json")
-		if requestCount == 1 {
+		if requestCount.Add(1) == 1 {
 			http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
 			return
 		}

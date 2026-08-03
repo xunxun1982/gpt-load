@@ -152,7 +152,7 @@ func TestFunctionCallSecurityBoundsDeferredUsageTail(t *testing.T) {
 		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 		``,
 	}
-	const expectedDeferredUsageTailEvents = 16
+	const expectedDeferredUsageTailEvents = maxDeferredUsageTailEvents
 	for i := 0; i < expectedDeferredUsageTailEvents+1; i++ {
 		events = append(events,
 			fmt.Sprintf(`data: {"id":"chat_1","choices":[],"usage":{"total_tokens":%d}}`, 100+i),

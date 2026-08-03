@@ -46,6 +46,17 @@ func TestProtocolToolCompatReadsAdditionalAndToolSearchTools(t *testing.T) {
 	assert.Contains(t, output, `"name":"big_id"`)
 }
 
+func TestProtocolToolCompatDefaultsToolSearchExecutionToClient(t *testing.T) {
+	body := []byte(`{"model":"gpt-test","input":"hello","tools":[{"type":"tool_search","description":"Find tools","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}]}`)
+	for _, channelType := range []string{"openai", "anthropic"} {
+		t.Run(channelType, func(t *testing.T) {
+			out := applyForceCodexCompat(t, channelType, body)
+			tools := decodeCompatObject(t, out)["tools"].([]any)
+			require.Len(t, tools, 1)
+		})
+	}
+}
+
 func TestProtocolToolCompatDeduplicatesDiscoveredToolsAfterExplicitTools(t *testing.T) {
 	req := &CodexRequest{
 		Model: "gpt-test",

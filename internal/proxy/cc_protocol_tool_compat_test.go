@@ -41,10 +41,13 @@ func TestCCProtocolToolCompatParallelHistory(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got.Messages, 4)
 	require.Len(t, got.Messages[0].ToolCalls, 2)
+	require.Equal(t, "call_a", got.Messages[0].ToolCalls[0].ID)
+	require.Equal(t, "call_b", got.Messages[0].ToolCalls[1].ID)
 	require.Equal(t, []string{"tool", "tool", "user"}, []string{
 		got.Messages[1].Role, got.Messages[2].Role, got.Messages[3].Role,
 	})
 	require.Equal(t, "call_a", got.Messages[1].ToolCallID)
+	require.Equal(t, "call_b", got.Messages[2].ToolCallID)
 
 	var blocks []map[string]any
 	require.NoError(t, json.Unmarshal([]byte(rawMessageString(t, got.Messages[1].Content)), &blocks))
@@ -92,7 +95,7 @@ func TestCCProtocolToolCompatChoiceAndMaxTokens(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			raw := `{"model":"gpt-test","max_tokens":0,"messages":[{"role":"user","content":"hi"}],` +
-				`"tools":[{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":` + tt.choice + `}`
+				`"tools":[{"type":"custom","name":"lookup","input_schema":{"type":"object"}}],"tool_choice":` + tt.choice + `}`
 			got, err := convertClaudeToOpenAI(mustParseClaudeRequest(t, raw), nil)
 			require.NoError(t, err)
 			if tt.wantChoice != nil {
@@ -128,7 +131,7 @@ func TestCCProtocolToolCompatUnsupported(t *testing.T) {
 func TestCCProtocolRequestCompatMapsCurrentFields(t *testing.T) {
 	req := mustParseClaudeRequest(t, `{
 		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],
-		"metadata":{"user_id":"user-42"},"service_tier":"priority",
+		"metadata":{"user_id":"user-42"},"service_tier":"standard_only",
 		"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}
 	}`)
 
@@ -137,13 +140,14 @@ func TestCCProtocolRequestCompatMapsCurrentFields(t *testing.T) {
 	encoded, err := json.Marshal(got)
 	require.NoError(t, err)
 	require.Contains(t, string(encoded), `"user":"user-42"`)
-	require.Contains(t, string(encoded), `"service_tier":"priority"`)
+	require.Contains(t, string(encoded), `"service_tier":"default"`)
 	require.Contains(t, string(encoded), `"reasoning_effort":"high"`)
 }
 
 func TestCCProtocolRequestCompatRejectsKnownUnsupportedFields(t *testing.T) {
 	tests := []struct{ name, extra string }{
 		{name: "top_k", extra: `"top_k":10`},
+		{name: "unsupported service tier", extra: `"service_tier":"priority"`},
 		{name: "output format", extra: `"output_config":{"format":{"type":"json_schema","schema":{"type":"object"}}}`},
 		{name: "unknown metadata", extra: `"metadata":{"tenant":"private"}`},
 		{name: "future request field", extra: `"future_protocol_field":{"enabled":true}`},

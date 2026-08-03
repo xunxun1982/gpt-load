@@ -6,6 +6,20 @@ import (
 	"strings"
 )
 
+type codexHeaderMapping struct {
+	header      string
+	turnKey     string
+	metadataKey string
+}
+
+var codexHeaderMappings = [...]codexHeaderMapping{
+	{header: "X-Codex-Installation-Id", turnKey: "installation_id", metadataKey: "x-codex-installation-id"},
+	{header: "Session-Id", turnKey: "session_id", metadataKey: "session_id"},
+	{header: "Thread-Id", turnKey: "thread_id", metadataKey: "thread_id"},
+	{header: "X-Codex-Window-Id", turnKey: "window_id", metadataKey: "x-codex-window-id"},
+	{header: "X-Codex-Parent-Thread-Id", turnKey: "parent_thread_id", metadataKey: "x-codex-parent-thread-id"},
+}
+
 func syncCodexCompatibilityHeaders(header http.Header, body []byte) {
 	var envelope struct {
 		ClientMetadata map[string]json.RawMessage `json:"client_metadata"`
@@ -30,26 +44,12 @@ func syncCodexCompatibilityHeaders(header http.Header, body []byte) {
 		return ""
 	}
 
-	syncCodexHeader(header, "X-Codex-Installation-Id", first(
-		rawJSONString(turnMetadata, "installation_id"),
-		rawJSONString(envelope.ClientMetadata, "x-codex-installation-id"),
-	))
-	syncCodexHeader(header, "Session-Id", first(
-		rawJSONString(turnMetadata, "session_id"),
-		rawJSONString(envelope.ClientMetadata, "session_id"),
-	))
-	syncCodexHeader(header, "Thread-Id", first(
-		rawJSONString(turnMetadata, "thread_id"),
-		rawJSONString(envelope.ClientMetadata, "thread_id"),
-	))
-	syncCodexHeader(header, "X-Codex-Window-Id", first(
-		rawJSONString(turnMetadata, "window_id"),
-		rawJSONString(envelope.ClientMetadata, "x-codex-window-id"),
-	))
-	syncCodexHeader(header, "X-Codex-Parent-Thread-Id", first(
-		rawJSONString(turnMetadata, "parent_thread_id"),
-		rawJSONString(envelope.ClientMetadata, "x-codex-parent-thread-id"),
-	))
+	for _, mapping := range codexHeaderMappings {
+		syncCodexHeader(header, mapping.header, first(
+			rawJSONString(turnMetadata, mapping.turnKey),
+			rawJSONString(envelope.ClientMetadata, mapping.metadataKey),
+		))
+	}
 	syncCodexHeader(header, "X-OpenAI-Subagent", rawJSONString(envelope.ClientMetadata, "x-openai-subagent"))
 	syncCodexHeader(header, "X-Codex-Turn-Metadata", turnMetadataHeader)
 	header.Del("Session_ID")

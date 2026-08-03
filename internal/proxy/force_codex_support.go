@@ -1233,8 +1233,8 @@ func validateForceCodexTools(tools []CodexTool, target string) error {
 				return err
 			}
 		case "tool_search":
-			if tool.Execution != "client" {
-				return unsupportedCodexTool(toolType, target, "only explicit client execution is reversible")
+			if tool.Execution != "" && tool.Execution != "client" {
+				return unsupportedCodexTool(toolType, target, "only client execution is reversible")
 			}
 			if strings.TrimSpace(tool.Description) == "" || len(tool.Parameters) == 0 || string(tool.Parameters) == "null" {
 				return unsupportedCodexTool(toolType, target, "description and parameters are required for reversible conversion")

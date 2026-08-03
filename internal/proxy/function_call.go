@@ -1299,11 +1299,6 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 // when function call middleware is enabled for the request. It parses the assistant
 // message content for XML-based function calls and converts them into OpenAI-compatible
 // tool_calls in the response payload.
-//
-// NOTE: The fallback branches which write the original body back to the client are
-// intentionally kept inline instead of being extracted into a helper. This keeps the
-// control flow explicit in this hot path and avoids adding another function call
-// layer, even though automated reviews may suggest refactoring for deduplication.
 func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *http.Response) {
 	shouldCapture := shouldCaptureResponse(c)
 
@@ -1354,13 +1349,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		markResponseProcessingFailed(c)
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		}
-		if _, werr := c.Writer.Write(body); werr != nil {
-			logUpstreamError("writing response body", werr)
-		}
+		writeFunctionCallPassthrough(c, body, shouldCapture, false)
 		return
 	}
 
@@ -1368,61 +1357,31 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	triggerVal, exists := c.Get(ctxKeyTriggerSignal)
 	if !exists {
 		// No trigger signal means this request was not rewritten for function call.
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		}
-		if _, werr := c.Writer.Write(body); werr != nil {
-			logUpstreamError("writing response body", werr)
-		}
+		writeFunctionCallPassthrough(c, body, shouldCapture, resp.StatusCode < http.StatusBadRequest)
 		return
 	}
 
 	triggerSignal, ok := triggerVal.(string)
 	if !ok || triggerSignal == "" {
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		}
-		if _, werr := c.Writer.Write(body); werr != nil {
-			logUpstreamError("writing response body", werr)
-		}
+		writeFunctionCallPassthrough(c, body, shouldCapture, resp.StatusCode < http.StatusBadRequest)
 		return
 	}
 	securitySession := functionCallSessionFromContext(c, triggerSignal)
 	if securitySession == nil {
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		}
-		if _, werr := c.Writer.Write(body); werr != nil {
-			logUpstreamError("writing response body", werr)
-		}
+		writeFunctionCallPassthrough(c, body, shouldCapture, resp.StatusCode < http.StatusBadRequest)
 		return
 	}
 
 	choicesVal, ok := payload["choices"]
 	if !ok {
 		// No choices field, fallback to original payload.
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		}
-		if _, werr := c.Writer.Write(body); werr != nil {
-			logUpstreamError("writing response body", werr)
-		}
+		writeFunctionCallPassthrough(c, body, shouldCapture, false)
 		return
 	}
 
 	choices, ok := choicesVal.([]any)
 	if !ok || len(choices) == 0 {
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		}
-		if _, werr := c.Writer.Write(body); werr != nil {
-			logUpstreamError("writing response body", werr)
-		}
+		writeFunctionCallPassthrough(c, body, shouldCapture, false)
 		return
 	}
 	setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
@@ -1843,9 +1802,7 @@ func functionCallTriggerSignal(c *gin.Context) string {
 }
 
 func writeFunctionCallPassthrough(c *gin.Context, body []byte, shouldCapture bool, estimateUsage bool) {
-	if estimateUsage {
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, true)
-	}
+	setTokenUsageOrEstimateFromFullBodyIf(c, body, estimateUsage)
 	if shouldCapture {
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 	}
@@ -3180,7 +3137,7 @@ func collectAnthropicFunctionCallStreamText(c *gin.Context, events []functionCal
 	parseValid := true
 	var outputEstimate estimatedTokenCapture
 	for _, event := range events {
-		if event.Data == "" {
+		if event.Data == "" || strings.TrimSpace(event.Data) == "[DONE]" {
 			continue
 		}
 		var payload map[string]any

@@ -15,7 +15,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const { t } = useI18n();
 
-// Show badge when a supported conversion channel explicitly enables CC.
+// API normalization handles legacy values; strict boolean checking keeps strings such as "false" disabled.
 const showBadge = computed(() => {
   const { channelType, ccSupport } = props;
   return (channelType === "openai" || channelType === "openai-response") && ccSupport === true;

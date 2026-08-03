@@ -10,7 +10,6 @@ const (
 	functionCallChoiceAuto functionCallChoiceMode = iota
 	functionCallChoiceNone
 	functionCallChoiceSpecific
-	functionCallChoiceInvalid
 )
 
 // FunctionCallSession binds response parsing to the exact rewritten request.
@@ -49,12 +48,14 @@ func classifyFunctionCallChoice(choice any, choiceSet bool) (functionCallChoiceM
 		case "none":
 			return functionCallChoiceNone, ""
 		default:
-			return functionCallChoiceInvalid, ""
+			// Mirror request rewriting: unknown values are treated as unset.
+			return functionCallChoiceAuto, ""
 		}
 	}
 	value, ok := choice.(map[string]any)
 	if !ok {
-		return functionCallChoiceInvalid, ""
+		// Mirror request rewriting: unsupported Go values are treated as unset.
+		return functionCallChoiceAuto, ""
 	}
 	typeName, _ := value["type"].(string)
 	switch typeName {
@@ -77,7 +78,8 @@ func classifyFunctionCallChoice(choice any, choiceSet bool) (functionCallChoiceM
 			}
 		}
 	}
-	return functionCallChoiceInvalid, ""
+	// Unknown object shapes are also treated as an unset choice by rewriting.
+	return functionCallChoiceAuto, ""
 }
 
 func setFunctionCallSession(c *gin.Context, session *FunctionCallSession) {

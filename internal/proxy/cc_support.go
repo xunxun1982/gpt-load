@@ -605,6 +605,19 @@ func claudeOutputEffort(config *ClaudeOutputConfig) (string, error) {
 	}
 }
 
+func claudeServiceTierToOpenAI(value string) (string, error) {
+	switch value {
+	case "":
+		return "", nil
+	case "auto":
+		return "auto", nil
+	case "standard_only":
+		return "default", nil
+	default:
+		return "", ccUnsupported("service_tier", value)
+	}
+}
+
 func claudeThinkingActive(config *ThinkingConfig) (bool, error) {
 	if config == nil {
 		return false, nil
@@ -728,9 +741,18 @@ func claudeBlockToOpenAIUserPart(block ClaudeContentBlock) (map[string]any, erro
 			if filename == "" {
 				filename = "document.pdf"
 			}
+			mediaType := source.MediaType
+			if mediaType == "" {
+				mediaType = "application/pdf"
+			}
+			// OpenAI file_data requires a data URL rather than Anthropic's raw base64 payload.
+			fileData := source.Data
+			if !strings.HasPrefix(fileData, "data:") {
+				fileData = "data:" + mediaType + ";base64," + fileData
+			}
 			return map[string]any{
 				"type": "file",
-				"file": map[string]any{"file_data": source.Data, "filename": filename},
+				"file": map[string]any{"file_data": fileData, "filename": filename},
 			}, nil
 		case "text":
 			var text strings.Builder
@@ -829,13 +851,17 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 	if err != nil {
 		return nil, err
 	}
+	serviceTier, err := claudeServiceTierToOpenAI(claudeReq.ServiceTier)
+	if err != nil {
+		return nil, err
+	}
 
 	openaiReq := &OpenAIRequest{
 		Model:       claudeReq.Model,
 		Stream:      claudeReq.Stream,
 		Temperature: claudeReq.Temperature,
 		TopP:        claudeReq.TopP,
-		ServiceTier: claudeReq.ServiceTier,
+		ServiceTier: serviceTier,
 		User:        userID,
 	}
 
@@ -925,7 +951,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 	if len(claudeReq.Tools) > 0 {
 		tools := make([]OpenAITool, 0, len(claudeReq.Tools))
 		for _, tool := range claudeReq.Tools {
-			if tool.Type != "" {
+			if tool.Type != "" && tool.Type != "custom" {
 				return nil, ccUnsupported("tool type", tool.Type)
 			}
 			// Apply shortened name if available

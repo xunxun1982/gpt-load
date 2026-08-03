@@ -13,7 +13,6 @@ func (s *FunctionCallSession) validateCall(call functionCall) bool {
 	}
 	return validateFunctionCallArguments(call.Args, def.Parameters)
 }
-
 func validateFunctionCallArguments(args map[string]any, schema map[string]any) bool {
 	if schema == nil {
 		return true
@@ -37,6 +36,27 @@ func validateFunctionCallArguments(args map[string]any, schema map[string]any) b
 		}
 	}
 	return true
+}
+func functionCallDeclaredPropertyType(schema map[string]any, name string) any {
+	properties, _ := schema["properties"].(map[string]any)
+	property, _ := properties[name].(map[string]any)
+	if property == nil {
+		return nil
+	}
+	return property["type"]
+}
+func functionCallSchemaIncludesType(schemaType any, wanted string) bool {
+	switch typed := schemaType.(type) {
+	case string:
+		return typed == wanted
+	case []any:
+		for _, value := range typed {
+			if typeName, ok := value.(string); ok && typeName == wanted {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func functionCallRequiredNames(value any) []string {
