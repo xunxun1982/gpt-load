@@ -11,6 +11,7 @@ import (
 
 // UpstreamSelection contains the selected upstream information including dedicated clients.
 type UpstreamSelection struct {
+	Identity     string // Non-empty opaque identity for this active upstream configuration.
 	URL          string
 	HTTPClient   *http.Client
 	StreamClient *http.Client
@@ -24,6 +25,9 @@ type ChannelProxy interface {
 	// This method should be used instead of BuildUpstreamURL + GetHTTPClient/GetStreamClient
 	// to ensure the correct client (with the right proxy) is used for each upstream.
 	SelectUpstreamWithClients(originalURL *url.URL, groupName string) (*UpstreamSelection, error)
+
+	// ResolveUpstreamByIdentity resolves only currently active upstreams and returns clients from the current configuration.
+	ResolveUpstreamByIdentity(identity string, originalURL *url.URL, groupName string) (*UpstreamSelection, error)
 
 	// BuildUpstreamURL constructs the target URL for the upstream service.
 	// Deprecated: Use SelectUpstreamWithClients instead.

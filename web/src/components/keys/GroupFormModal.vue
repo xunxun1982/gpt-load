@@ -456,6 +456,9 @@ watch(
     if (!supportsCCSupport(newChannelType)) {
       formData.cc_support = false;
     }
+    if (!supportsSimulatedClient(newChannelType)) {
+      formData.simulated_client = "off";
+    }
     if (!supportsCodexSupport(newChannelType)) {
       formData.codex_support = false;
     }
@@ -512,7 +515,11 @@ function supportsForceFunctionCall(channelType: string): boolean {
 }
 
 function supportsCCSupport(channelType: string): boolean {
-  return channelType === "openai" || channelType === "openai-response" || channelType === "gemini";
+  return channelType === "openai" || channelType === "openai-response";
+}
+
+function supportsSimulatedClient(channelType: string): boolean {
+  return channelType !== "gemini";
 }
 
 function supportsCodexSupport(channelType: string): boolean {
@@ -644,7 +651,8 @@ function loadGroupData() {
   const normalizedSimulatedClient =
     typeof simulatedClientRaw === "string" ? simulatedClientRaw.trim().toLowerCase() : "";
   const simulatedClient =
-    normalizedSimulatedClient === "codex" || normalizedSimulatedClient === "claude_code"
+    supportsSimulatedClient(props.group.channel_type) &&
+    (normalizedSimulatedClient === "codex" || normalizedSimulatedClient === "claude_code")
       ? normalizedSimulatedClient
       : "off";
   const simulatedCodexVersionRaw = rawConfig["simulated_codex_version"];
@@ -658,7 +666,7 @@ function loadGroupData() {
       ? simulatedClaudeCodeVersionRaw.trim()
       : DEFAULT_CLAUDE_CODE_VERSION;
   const ccRaw = rawConfig["cc_support"];
-  // CC support is available for OpenAI, OpenAI Responses, and Gemini channels.
+  // CC support is available for OpenAI and OpenAI Responses channels.
   const ccSupport =
     supportsCCSupport(props.group.channel_type) && typeof ccRaw === "boolean" ? ccRaw : false;
   const codexRaw = rawConfig["codex_support"];
@@ -1480,7 +1488,7 @@ async function handleSubmit() {
       delete config["force_non_stream"];
     }
 
-    if (formData.simulated_client === "codex") {
+    if (supportsSimulatedClient(formData.channel_type) && formData.simulated_client === "codex") {
       config["simulated_client"] = "codex";
       const codexVersion = formData.simulated_codex_version.trim();
       if (codexVersion && !simpleClientVersionPattern.test(codexVersion)) {
@@ -1495,7 +1503,10 @@ async function handleSubmit() {
         delete config["simulated_codex_version"];
       }
       delete config["simulated_claude_code_version"];
-    } else if (formData.simulated_client === "claude_code") {
+    } else if (
+      supportsSimulatedClient(formData.channel_type) &&
+      formData.simulated_client === "claude_code"
+    ) {
       config["simulated_client"] = "claude_code";
       const claudeCodeVersion = formData.simulated_claude_code_version.trim();
       if (claudeCodeVersion && !simpleClientVersionPattern.test(claudeCodeVersion)) {
@@ -2253,7 +2264,11 @@ async function handleSubmit() {
                   </div>
                 </n-form-item>
 
-                <n-form-item :label="t('keys.simulatedClient')" path="simulated_client">
+                <n-form-item
+                  v-if="supportsSimulatedClient(formData.channel_type)"
+                  :label="t('keys.simulatedClient')"
+                  path="simulated_client"
+                >
                   <div class="advanced-field-stack">
                     <div class="simulated-client-row">
                       <div class="simulated-client-select">

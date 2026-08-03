@@ -203,7 +203,7 @@ func ForceStreamRequest(bodyBytes []byte) ([]byte, bool) {
 	}
 
 	var payload map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &payload); err != nil {
 		return bodyBytes, false
 	}
 

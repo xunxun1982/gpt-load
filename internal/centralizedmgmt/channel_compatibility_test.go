@@ -30,7 +30,7 @@ func TestGetCompatibleChannels(t *testing.T) {
 			format:     types.RelayFormatClaude,
 			wantNative: "anthropic",
 			// Compatible channels require cc_support enabled (runtime check)
-			wantCompatible: []string{"openai", "gemini", "openai-response"},
+			wantCompatible: []string{"openai", "openai-response"},
 		},
 		{
 			name:           "Gemini",
@@ -130,7 +130,7 @@ func TestIsChannelCompatible(t *testing.T) {
 		// Claude - native to Anthropic, compatible with others via CC (requires cc_support enabled)
 		{"Anthropic native for Claude", "anthropic", types.RelayFormatClaude, true},
 		{"OpenAI compatible for Claude", "openai", types.RelayFormatClaude, true},
-		{"Gemini compatible for Claude", "gemini", types.RelayFormatClaude, true},
+		{"Gemini NOT compatible for Claude", "gemini", types.RelayFormatClaude, false},
 		{"OpenAI Responses compatible for Claude", "openai-response", types.RelayFormatClaude, true},
 
 		// Gemini - only native
@@ -172,8 +172,8 @@ func TestGetChannelPriority(t *testing.T) {
 
 		// Compatible channels have priority 1+ (Claude format only)
 		{"OpenAI compatible for Claude", "openai", types.RelayFormatClaude, 1},
-		{"Gemini compatible for Claude", "gemini", types.RelayFormatClaude, 2},
-		{"OpenAI Responses compatible for Claude", "openai-response", types.RelayFormatClaude, 3},
+		{"OpenAI Responses compatible for Claude", "openai-response", types.RelayFormatClaude, 2},
+		{"Gemini NOT compatible for Claude", "gemini", types.RelayFormatClaude, -1},
 
 		// Incompatible channels have priority -1
 		{"Anthropic NOT compatible for chat", "anthropic", types.RelayFormatOpenAIChat, -1},

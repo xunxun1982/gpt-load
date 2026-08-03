@@ -62,14 +62,14 @@ var channelCompatibilityMap = map[types.RelayFormat]ChannelCompatibility{
 		Compatible: []string{},
 	},
 
-	// Claude format - native to Anthropic, compatible with OpenAI/Gemini/OpenAI Responses via CC support.
+	// Claude format - native to Anthropic, compatible with OpenAI/OpenAI Responses via CC support.
 	// CC support converts Claude Messages format to target channel format (one-way conversion)
 	// IMPORTANT: Compatible channels must have cc_support enabled in their group config.
 	// This static map only defines potential compatibility; actual routing requires runtime
 	// validation of the cc_support flag in SelectGroupForModel.
 	types.RelayFormatClaude: {
 		Native:     "anthropic",
-		Compatible: []string{"openai", "gemini", "openai-response"}, // Requires cc_support enabled
+		Compatible: []string{"openai", "openai-response"}, // Requires cc_support enabled
 	},
 
 	// Responses format - native to OpenAI Responses.

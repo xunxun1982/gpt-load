@@ -239,49 +239,14 @@ func (b *BaseChannel) SelectUpstreamWithClients(originalURL *url.URL, groupName 
 		"proxy_url":  sanitizedProxy,
 	}).Debug("Selected upstream with client configuration")
 
-	base := *upstream.URL
-	proxyPrefix := "/proxy/" + groupName
-	reqPath := strings.TrimPrefix(originalURL.Path, proxyPrefix)
-
-	// Ensure reqPath starts with / for proper URL resolution
-	if !strings.HasPrefix(reqPath, "/") {
-		reqPath = "/" + reqPath
-	}
-
-	// Apply path redirect rules (OpenAI only; rules list is empty for other channels)
-	reqPath = b.applyPathRedirects(reqPath)
-
-	finalURL := base
-	// Use url.JoinPath for safe path joining (Go 1.19+)
-	joinedPath, err := url.JoinPath(base.Path, reqPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to join URL paths: %w", err)
-	}
-	finalURL.Path = joinedPath
-	finalURL.RawQuery = originalURL.RawQuery
-	gatewayProxy := ""
-	if upstream.GatewayProxy != "" {
-		directURL := finalURL.String()
-		routedURL, err := buildGatewayProxyURL(upstream.GatewayProxy, b.Name, finalURL)
-		if err != nil {
-			return nil, err
-		}
-		if routedURL.String() != directURL {
-			gatewayProxy = strings.ToLower(strings.TrimSpace(upstream.GatewayProxy))
-		}
-		finalURL = routedURL
-	}
-
-	return &UpstreamSelection{
-		URL:          finalURL.String(),
-		HTTPClient:   upstream.HTTPClient,
-		StreamClient: upstream.StreamClient,
-		ProxyURL:     upstream.ProxyURL,
-		GatewayProxy: gatewayProxy,
-	}, nil
+	return b.buildUpstreamSelection(b.snapshotUpstream(upstream), originalURL, groupName)
 }
 
 func buildGatewayProxyURL(gatewayProxyID string, channelType string, target url.URL) (url.URL, error) {
+	return buildGatewayProxyURLWithSnapshot(gatewayProxyID, channelType, target, snapshotGatewayProxy(gatewayProxyID))
+}
+
+func buildGatewayProxyURLWithSnapshot(gatewayProxyID string, channelType string, target url.URL, snapshot gatewayProxySnapshot) (url.URL, error) {
 	provider, ok := gatewayProxyProviders[strings.ToLower(strings.TrimSpace(gatewayProxyID))]
 	if !ok {
 		return url.URL{}, fmt.Errorf("unsupported gateway proxy: %s", gatewayProxyID)
@@ -290,11 +255,7 @@ func buildGatewayProxyURL(gatewayProxyID string, channelType string, target url.
 	if !ok {
 		return url.URL{}, fmt.Errorf("gateway proxy %s does not support channel %s", gatewayProxyID, channelType)
 	}
-	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))
-	gatewayProxyBaseURLMu.RLock()
-	base, ok := gatewayProxyBaseURLs[trimmedID]
-	gatewayProxyBaseURLMu.RUnlock()
-	if !ok {
+	if !snapshot.enabled {
 		// A disabled gateway means all monitored candidates failed; fall back to direct upstream.
 		return target, nil
 	}
@@ -306,11 +267,11 @@ func buildGatewayProxyURL(gatewayProxyID string, channelType string, target url.
 	if targetPath == "" {
 		targetPath = "/"
 	}
-	joinedPath, err := url.JoinPath(base.Path, prefix, targetHost, targetPath)
+	joinedPath, err := url.JoinPath(snapshot.base.Path, prefix, targetHost, targetPath)
 	if err != nil {
 		return url.URL{}, fmt.Errorf("failed to build gateway proxy URL: %w", err)
 	}
-	routed := base
+	routed := snapshot.base
 	routed.Path = joinedPath
 	routed.RawQuery = target.RawQuery
 	return routed, nil
@@ -465,7 +426,7 @@ func (b *BaseChannel) ApplyModelRedirectWithIndex(req *http.Request, bodyBytes [
 	}
 
 	var requestData map[string]any
-	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &requestData); err != nil {
 		return bodyBytes, "", -1, nil
 	}
 
@@ -531,7 +492,7 @@ func (b *BaseChannel) ApplyModelRedirectWithIndex(req *http.Request, bodyBytes [
 // Supports both V1 (one-to-one) and V2 (one-to-many) rules.
 func (b *BaseChannel) TransformModelList(req *http.Request, bodyBytes []byte, group *models.Group) (map[string]any, error) {
 	var response map[string]any
-	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &response); err != nil {
 		logrus.WithError(err).Debug("Failed to parse model list response, returning empty")
 		return nil, err
 	}

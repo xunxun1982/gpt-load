@@ -2469,7 +2469,7 @@ watch(
               <n-input
                 v-model:value="siteForm.description"
                 type="textarea"
-                :autosize="{ minRows: 2, maxRows: 3 }"
+                :autosize="{ minRows: 1, maxRows: 2 }"
               />
             </n-form-item>
           </div>
@@ -2923,7 +2923,7 @@ watch(
   color: var(--n-text-color);
 }
 .site-form-modal {
-  width: min(760px, calc(100vw - 24px));
+  width: min(1040px, calc(100vw - 24px));
 }
 .logs-modal {
   width: 720px;
@@ -2944,24 +2944,24 @@ watch(
 .site-form-card :deep(.n-card__footer) {
   flex: 0 0 auto;
 }
-.site-form-card :deep(.n-card-content),
-.logs-card :deep(.n-card-content) {
+.site-form-card :deep(.n-card__content),
+.logs-card :deep(.n-card__content) {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding-right: 16px;
+  padding: 8px 16px 10px;
 }
-.site-form-card :deep(.n-card-content)::-webkit-scrollbar {
+.site-form-card :deep(.n-card__content)::-webkit-scrollbar {
   width: 5px;
 }
-.site-form-card :deep(.n-card-content)::-webkit-scrollbar-thumb {
+.site-form-card :deep(.n-card__content)::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.15);
   border-radius: 3px;
 }
 .form-section {
-  margin-bottom: 8px;
-  padding: 8px 12px;
+  margin-bottom: 6px;
+  padding: 6px 10px;
   border: 1px solid var(--n-border-color, var(--border-color));
   border-radius: 8px;
   background: var(--n-color-embedded, transparent);
@@ -3037,9 +3037,9 @@ watch(
 }
 .field-hint {
   display: block;
-  margin-top: 4px;
+  margin-top: 2px;
   font-size: 12px;
-  line-height: 1.35;
+  line-height: 1.25;
 }
 .provider-field-hint {
   color: var(--n-text-color-3, var(--text-tertiary));
@@ -3113,6 +3113,30 @@ watch(
 }
 .help-icon:hover {
   color: var(--primary-color);
+}
+@media (min-width: 900px) {
+  .site-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 10px;
+    align-items: start;
+  }
+
+  .site-form > .form-section {
+    margin-bottom: 0;
+  }
+
+  .site-form > .form-section:last-child {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 10px;
+  }
+
+  .site-form > .form-section:last-child > .section-title,
+  .site-form > .form-section:last-child > .n-text {
+    grid-column: 1 / -1;
+  }
 }
 @media (max-width: 720px) {
   .site-form-modal,

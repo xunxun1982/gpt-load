@@ -605,6 +605,7 @@ func TestHandleFunctionCallResponsesNormalResponseConvertsXMLToFunctionCall(t *t
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_resp>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group"})
 
 	ps := &ProxyServer{}
@@ -735,6 +736,7 @@ func TestHandleFunctionCallAnthropicNormalResponseConvertsXMLToToolUse(t *testin
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_claude>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_claude>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group"})
 
 	ps := &ProxyServer{}
@@ -784,6 +786,7 @@ func TestHandleFunctionCallResponsesStreamingResponseConvertsXMLToFunctionCall(t
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_resp>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
 
 	ps := &ProxyServer{}
@@ -920,6 +923,8 @@ func TestHandleFunctionCallAnthropicStreamingResponseConvertsXMLToToolUse(t *tes
 		`event: message_stop`,
 		`data: {"type":"message_stop"}`,
 		``,
+		`data: [DONE]`,
+		``,
 	}, "\n")
 	upstreamResp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -933,6 +938,7 @@ func TestHandleFunctionCallAnthropicStreamingResponseConvertsXMLToToolUse(t *tes
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_claude>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_claude>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group", ChannelType: "anthropic"})
 
 	ps := &ProxyServer{}
@@ -956,7 +962,7 @@ func TestHandleFunctionCallAnthropicStreamingResponseConvertsXMLToToolUse(t *tes
 	}
 }
 
-func TestHandleFunctionCallResponsesStreamingResponseCleansMalformedXML(t *testing.T) {
+func TestHandleFunctionCallResponsesStreamingResponsePreservesMalformedXML(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	streamBody := strings.Join([]string{
@@ -980,21 +986,22 @@ func TestHandleFunctionCallResponsesStreamingResponseCleansMalformedXML(t *testi
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_resp>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_resp>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group", ChannelType: "openai-response"})
 
 	ps := &ProxyServer{}
 	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
 
 	output := w.Body.String()
-	if strings.Contains(output, "<invoke") || strings.Contains(output, "<<CALL_resp>>") {
-		t.Fatalf("expected malformed XML function call text to be removed, got %s", output)
+	if !strings.Contains(output, "<invoke") || !strings.Contains(output, "<<CALL_resp>>") {
+		t.Fatalf("expected malformed XML function call text to remain text, got %s", output)
 	}
 	if !strings.Contains(output, "event: response.completed") {
 		t.Fatalf("expected cleaned Responses stream to complete, got %s", output)
 	}
 }
 
-func TestHandleFunctionCallAnthropicStreamingResponseCleansMalformedXML(t *testing.T) {
+func TestHandleFunctionCallAnthropicStreamingResponsePreservesMalformedXML(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	streamBody := strings.Join([]string{
@@ -1003,6 +1010,10 @@ func TestHandleFunctionCallAnthropicStreamingResponseCleansMalformedXML(t *testi
 		``,
 		`event: content_block_delta`,
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me search.\n<<CALL_claude>>\n<invoke><parameter name=\"query\">weather</parameter>"}}`,
+		``,
+		// Complete this stream to exercise XML validation; disconnect fail-closed has a dedicated security test.
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`,
 		``,
 		`event: message_stop`,
 		`data: {"type":"message_stop"}`,
@@ -1018,17 +1029,18 @@ func TestHandleFunctionCallAnthropicStreamingResponseCleansMalformedXML(t *testi
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_claude>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_claude>>", "web_search")
 	c.Set("group", &models.Group{Name: "test-group", ChannelType: "anthropic"})
 
 	ps := &ProxyServer{}
 	ps.handleFunctionCallStreamingResponse(c, upstreamResp)
 
 	output := w.Body.String()
-	if strings.Contains(output, "<invoke") || strings.Contains(output, "<<CALL_claude>>") {
-		t.Fatalf("expected malformed XML function call text to be removed, got %s", output)
+	if !strings.Contains(output, "<invoke") || !strings.Contains(output, "<<CALL_claude>>") {
+		t.Fatalf("expected malformed XML function call text to remain text, got %s", output)
 	}
-	if !strings.Contains(output, `"stop_reason":"end_turn"`) {
-		t.Fatalf("expected cleaned Anthropic stream to finish as text, got %s", output)
+	if strings.Contains(output, `"type":"tool_use"`) {
+		t.Fatalf("expected malformed Anthropic call not to execute, got %s", output)
 	}
 }
 
@@ -11673,7 +11685,7 @@ func TestHandleFunctionCallNormalResponse(t *testing.T) {
 			},
 		},
 		{
-			name: "malformed function_calls block removed",
+			name: "malformed function_calls block preserved as text",
 			responseBody: `{
 				"id": "chatcmpl-999",
 				"object": "chat.completion",
@@ -11689,7 +11701,7 @@ func TestHandleFunctionCallNormalResponse(t *testing.T) {
 				}]
 			}`,
 			triggerSignal:  "<<CALL_test>>",
-			expectModified: true,
+			expectModified: false,
 			checkFunc: func(t *testing.T, output string) {
 				var resp map[string]interface{}
 				if err := json.Unmarshal([]byte(output), &resp); err != nil {
@@ -11699,10 +11711,10 @@ func TestHandleFunctionCallNormalResponse(t *testing.T) {
 				choice := choices[0].(map[string]interface{})
 				message := choice["message"].(map[string]interface{})
 
-				// Malformed block should be removed from content
+				// Rejected protocol text remains visible and is never executed.
 				content := message["content"].(string)
-				if strings.Contains(content, "<function_calls>") {
-					t.Error("malformed <function_calls> block should be removed")
+				if !strings.Contains(content, "<function_calls>") {
+					t.Error("malformed <function_calls> block should remain text")
 				}
 
 				// Should not have tool_calls since invoke has no name attribute
@@ -11733,6 +11745,7 @@ func TestHandleFunctionCallNormalResponse(t *testing.T) {
 
 			// Set trigger signal in context
 			c.Set(ctxKeyTriggerSignal, tt.triggerSignal)
+			setTestFunctionCallSecuritySession(c, tt.triggerSignal, "web_search", "search")
 
 			// Set group for logging
 			c.Set("group", &models.Group{Name: "test-group"})
@@ -11743,6 +11756,9 @@ func TestHandleFunctionCallNormalResponse(t *testing.T) {
 
 			// Check results
 			output := w.Body.String()
+			if modified := output != tt.responseBody; modified != tt.expectModified {
+				t.Errorf("response modified = %v, want %v", modified, tt.expectModified)
+			}
 			if tt.checkFunc != nil {
 				tt.checkFunc(t, output)
 			}
@@ -11795,6 +11811,7 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Let me search. "},"finish_reason":null}]}` + "\n",
 				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<<CALL_abcd>>"},"finish_reason":null}]}` + "\n",
 				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":null}]}` + "\n",
+				`data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n",
 				`data: [DONE]` + "\n",
 			},
 			triggerSignal:        "<<CALL_abcd>>",
@@ -11942,6 +11959,7 @@ func TestHandleFunctionCallStreamingResponse(t *testing.T) {
 
 			// Set trigger signal in context
 			c.Set(ctxKeyTriggerSignal, tt.triggerSignal)
+			setTestFunctionCallSecuritySession(c, tt.triggerSignal, "search", "test")
 
 			// Set group for logging
 			c.Set("group", &models.Group{Name: "test-group"})
@@ -12203,7 +12221,7 @@ func TestHandleFunctionCallStreamingResponseErrorBodyReadFailureReturnsBadGatewa
 func TestHandleFunctionCallNormalResponseDecodesCompressedBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Let me search. <function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":"stop"}]}`)
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Let me search. <<CALL_norm>><function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":"stop"}]}`)
 	upstreamResp := &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(bytes.NewReader(compressGzipForFunctionCallTest(t, body))),
@@ -12219,6 +12237,7 @@ func TestHandleFunctionCallNormalResponseDecodesCompressedBody(t *testing.T) {
 	c.Writer.Header().Set("Content-Encoding", "gzip")
 	c.Writer.Header().Set("Content-Length", "123")
 	c.Set(ctxKeyTriggerSignal, "<<CALL_norm>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_norm>>", "search")
 	c.Set("group", &models.Group{Name: "test-group"})
 
 	ps := &ProxyServer{}
@@ -12353,7 +12372,7 @@ func TestHandleFunctionCallNormalResponseRejectsUnsupportedCompressedBody(t *tes
 func TestHandleFunctionCallNormalResponseClearsLengthAfterRewrite(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Run it. <function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":"stop"}]}`)
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Run it. <<CALL_norm_len>><function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":"stop"}]}`)
 	upstreamResp := &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(bytes.NewReader(body)),
@@ -12367,6 +12386,7 @@ func TestHandleFunctionCallNormalResponseClearsLengthAfterRewrite(t *testing.T) 
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Writer.Header().Set("Content-Length", "123")
 	c.Set(ctxKeyTriggerSignal, "<<CALL_norm_len>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_norm_len>>", "search")
 	c.Set("group", &models.Group{Name: "test-group"})
 
 	ps := &ProxyServer{}
@@ -12393,6 +12413,8 @@ func TestHandleFunctionCallStreamingResponseDecodesCompressedBody(t *testing.T) 
 		``,
 		`data: {"id":"chatcmpl-zip","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"<function_calls><invoke name=\"search\"><parameter name=\"query\">test</parameter></invoke></function_calls>"},"finish_reason":null}]}`,
 		``,
+		`data: {"id":"chatcmpl-zip","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
 		`data: [DONE]`,
 		``,
 	}, "\n")
@@ -12409,6 +12431,7 @@ func TestHandleFunctionCallStreamingResponseDecodesCompressedBody(t *testing.T) 
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set(ctxKeyTriggerSignal, "<<CALL_zip>>")
+	setTestFunctionCallSecuritySession(c, "<<CALL_zip>>", "search")
 	c.Set("group", &models.Group{Name: "test-group"})
 
 	ps := &ProxyServer{}

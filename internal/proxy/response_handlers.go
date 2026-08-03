@@ -773,7 +773,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 	logicalStatusCode, _, hasLogicalFailure := logicalStatusFromContext(c)
 	shouldEstimate := resp.StatusCode < http.StatusBadRequest && (!hasLogicalFailure || logicalStatusCode < http.StatusBadRequest)
 	setTokenUsageOrEstimateFromFullBodyIf(c, responseBody, shouldEstimate)
-	if isFunctionCallEnabled(c) && functionCallTriggerSignal(c) != "" {
+	if codexResp.terminalEventSeen && isFunctionCallEnabled(c) && functionCallTriggerSignal(c) != "" {
 		fcResp := &http.Response{
 			StatusCode: resp.StatusCode,
 			Body:       io.NopCloser(bytes.NewReader(responseBody)),

@@ -177,6 +177,10 @@ func (s *RequestLogService) Stop(ctx context.Context) {
 // Uses pooled JSON encoder for efficient memory allocation in high-frequency scenarios.
 // Implements backpressure: drops logs if pending count exceeds MaxPendingLogs to prevent memory exhaustion.
 func (s *RequestLogService) Record(log *models.RequestLog) error {
+	// Sanitize at the persistence boundary so every producer gets the same protection.
+	if log.ErrorMessage != "" {
+		log.ErrorMessage = utils.SanitizeErrorBody(log.ErrorMessage)
+	}
 	log.ID = uuid.NewString()
 	log.Timestamp = time.Now()
 

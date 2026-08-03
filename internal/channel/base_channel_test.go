@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -8,9 +9,35 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"gpt-load/internal/models"
+
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestApplyModelRedirectPreservesLargeIntegers(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"model":"alias-model","request_id":9007199254740993}`)
+	group := &models.Group{ModelRedirectMap: map[string]string{"alias-model": "real-model"}}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+
+	result, originalModel, err := (&BaseChannel{}).ApplyModelRedirect(req, body, group)
+	require.NoError(t, err)
+	require.Equal(t, "alias-model", originalModel)
+	require.Contains(t, string(result), `"request_id":9007199254740993`)
+}
+
+func TestTransformModelListPreservesLargeIntegers(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"object":"list","request_id":9007199254740993,"data":[{"id":"model-a","object":"model"}]}`)
+	result, err := (&BaseChannel{}).TransformModelList(nil, body, &models.Group{})
+	require.NoError(t, err)
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"request_id":9007199254740993`)
+}
 
 // mustParseURL is a test helper that parses a URL or panics
 func mustParseURL(rawURL string) *url.URL {

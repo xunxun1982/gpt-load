@@ -155,7 +155,7 @@ func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group
 	}
 
 	var requestData map[string]any
-	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &requestData); err != nil {
 		logrus.Warnf("failed to unmarshal request body for param override, passing through: %v", err)
 		return bodyBytes, nil
 	}
@@ -207,7 +207,7 @@ func (ps *ProxyServer) applyParallelToolCallsConfig(bodyBytes []byte, group *mod
 	}
 
 	var requestData map[string]any
-	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &requestData); err != nil {
 		logrus.Warnf("failed to unmarshal request body for parallel_tool_calls, passing through: %v", err)
 		return bodyBytes, nil
 	}
@@ -251,7 +251,7 @@ func (ps *ProxyServer) applyStreamOverrideConfig(bodyBytes []byte, group *models
 	}
 
 	var requestData map[string]any
-	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &requestData); err != nil {
 		logrus.Warnf("failed to unmarshal request body for stream override, passing through: %v", err)
 		return bodyBytes, nil
 	}
@@ -290,7 +290,7 @@ func (ps *ProxyServer) applyResponsesIncludeConfig(bodyBytes []byte, group *mode
 	}
 
 	var requestData map[string]any
-	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &requestData); err != nil {
 		logrus.Warnf("failed to unmarshal request body for Responses include config, passing through: %v", err)
 		return bodyBytes, nil
 	}
@@ -358,7 +358,7 @@ func (ps *ProxyServer) applyModelMapping(bodyBytes []byte, group *models.Group) 
 	}
 
 	var requestData map[string]any
-	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &requestData); err != nil {
 		logrus.WithError(err).Warn("Failed to unmarshal request body for model mapping, passing through")
 		return bodyBytes, originalModel
 	}

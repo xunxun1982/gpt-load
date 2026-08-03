@@ -50,3 +50,18 @@ test("simulated client defaults stay aligned with the pinned UI defaults", async
     assert.doesNotMatch(locale, new RegExp(DEFAULT_CLAUDE_CODE_VERSION.replaceAll(".", "\\.")));
   }
 });
+
+test("Gemini groups do not expose forced CC or simulated client controls", () => {
+  assert.match(
+    groupFormModal,
+    /function supportsCCSupport\(channelType: string\): boolean \{\s*return channelType === "openai" \|\| channelType === "openai-response";\s*\}/
+  );
+  assert.match(
+    groupFormModal,
+    /function supportsSimulatedClient\(channelType: string\): boolean \{\s*return channelType !== "gemini";\s*\}/
+  );
+  assert.match(
+    groupFormModal,
+    /v-if="supportsSimulatedClient\(formData\.channel_type\)"[\s\S]*t\('keys\.simulatedClient'\)/
+  );
+});

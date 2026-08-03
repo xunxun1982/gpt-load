@@ -214,17 +214,17 @@ test("managed-site modal keeps actions outside the scroll area with responsive s
   const footer = sitePanel.indexOf("<template #footer>", formEnd);
   assert.ok(formEnd > 0);
   assert.ok(footer > formEnd);
-  assert.match(sitePanel, /\.site-form-modal\s*\{\s*width:\s*min\(760px, calc\(100vw - 24px\)\)/s);
+  assert.match(sitePanel, /\.site-form-modal\s*\{\s*width:\s*min\(1040px, calc\(100vw - 24px\)\)/s);
   assert.match(sitePanel, /\.form-section\s*\{[^}]*border:/s);
   assert.match(sitePanel, /\.form-section\s*\{[^}]*border-radius:/s);
   assert.match(
     sitePanel,
-    /\.site-form-card :deep\(\.n-card-content\)[\s\S]*?\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0/s
+    /\.site-form-card :deep\(\.n-card__content\)[\s\S]*?\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0/s
   );
-  assert.doesNotMatch(sitePanel, /\.site-form-card :deep\(\.n-card__content\)/);
+  assert.doesNotMatch(sitePanel, /\.site-form-card :deep\(\.n-card-content\)/);
   assert.match(sitePanel, /v-model:value="siteForm\.sort"[\s\S]{0,100}style="width:\s*150px"/);
   assert.match(sitePanel, /siteManagement\.balanceMultiplier[\s\S]{0,120}label-width="auto"/);
-  assert.match(sitePanel, /\.form-section\s*\{[^}]*margin-bottom:\s*8px[^}]*padding:\s*8px 12px/s);
+  assert.match(sitePanel, /\.form-section\s*\{[^}]*margin-bottom:\s*6px[^}]*padding:\s*6px 10px/s);
   assert.match(sitePanel, /\.section-title\s*\{[^}]*margin:\s*0 0 4px 0/s);
   assert.match(
     sitePanel,

@@ -34,7 +34,7 @@ var simulatedOpenAIBetaTokens = []string{
 }
 
 func simulatedClientMode(group *models.Group) string {
-	if group == nil || group.Config == nil {
+	if group == nil || group.ChannelType == "gemini" || group.Config == nil {
 		return simulatedClientOff
 	}
 	raw, ok := group.Config["simulated_client"]
@@ -131,23 +131,19 @@ func ensureCodexRequestIdentity(req *http.Request) []byte {
 
 	turnMetadata := make(map[string]any)
 	turnMetadataJSON := firstNonEmptyString(
-		strings.TrimSpace(req.Header.Get("X-Codex-Turn-Metadata")),
+		req.Header.Get("X-Codex-Turn-Metadata"),
 		jsonStringValue(clientMetadata["x-codex-turn-metadata"]),
 	)
 	if turnMetadataJSON != "" {
 		metadataBytes := []byte(turnMetadataJSON)
-		if json.Valid(metadataBytes) {
-			decoder := json.NewDecoder(bytes.NewReader(metadataBytes))
-			decoder.UseNumber()
-			var decodedMetadata map[string]any
-			if err := decoder.Decode(&decodedMetadata); err == nil && decodedMetadata != nil {
-				turnMetadata = decodedMetadata
-			}
+		var decodedMetadata map[string]any
+		if err := utils.UnmarshalJSONUseNumber(metadataBytes, &decodedMetadata); err == nil && decodedMetadata != nil {
+			turnMetadata = decodedMetadata
 		}
 	}
 
 	installationID := firstNonEmptyString(
-		strings.TrimSpace(req.Header.Get("X-Codex-Installation-Id")),
+		req.Header.Get("X-Codex-Installation-Id"),
 		jsonStringValue(clientMetadata["x-codex-installation-id"]),
 		jsonStringValue(turnMetadata["installation_id"]),
 	)
@@ -155,8 +151,8 @@ func ensureCodexRequestIdentity(req *http.Request) []byte {
 		installationID = uuid.NewString()
 	}
 	sessionID := firstNonEmptyString(
-		strings.TrimSpace(req.Header.Get("Session-Id")),
-		strings.TrimSpace(req.Header.Get("Session_ID")),
+		req.Header.Get("Session-Id"),
+		req.Header.Get("Session_ID"),
 		jsonStringValue(clientMetadata["session_id"]),
 		jsonStringValue(turnMetadata["session_id"]),
 	)
@@ -164,17 +160,17 @@ func ensureCodexRequestIdentity(req *http.Request) []byte {
 		sessionID = uuid.NewString()
 	}
 	threadID := firstNonEmptyString(
-		strings.TrimSpace(req.Header.Get("Thread-Id")),
-		strings.TrimSpace(req.Header.Get("Thread_ID")),
+		req.Header.Get("Thread-Id"),
+		req.Header.Get("Thread_ID"),
 		jsonStringValue(clientMetadata["thread_id"]),
 		jsonStringValue(turnMetadata["thread_id"]),
-		strings.TrimSpace(req.Header.Get("x-client-request-id")),
+		req.Header.Get("x-client-request-id"),
 	)
 	if threadID == "" {
 		threadID = uuid.NewString()
 	}
 	windowID := firstNonEmptyString(
-		strings.TrimSpace(req.Header.Get("X-Codex-Window-Id")),
+		req.Header.Get("X-Codex-Window-Id"),
 		jsonStringValue(clientMetadata["x-codex-window-id"]),
 		jsonStringValue(turnMetadata["window_id"]),
 	)
@@ -200,7 +196,7 @@ func ensureCodexRequestIdentity(req *http.Request) []byte {
 	turnMetadata["thread_id"] = threadID
 	turnMetadata["turn_id"] = turnID
 	turnMetadata["window_id"] = windowID
-	if jsonStringValue(turnMetadata["request_kind"]) == "" {
+	if firstNonEmptyString(jsonStringValue(turnMetadata["request_kind"])) == "" {
 		turnMetadata["request_kind"] = "turn"
 	}
 	encodedTurnMetadata, err := json.Marshal(turnMetadata)
@@ -208,7 +204,11 @@ func ensureCodexRequestIdentity(req *http.Request) []byte {
 		return nil
 	}
 	turnMetadataJSON = string(encodedTurnMetadata)
-	req.Header.Set("X-Codex-Turn-Metadata", turnMetadataJSON)
+	if len(encodedTurnMetadata) <= utils.MaxForwardedMetadataHeaderBytes {
+		req.Header.Set("X-Codex-Turn-Metadata", turnMetadataJSON)
+	} else {
+		req.Header.Del("X-Codex-Turn-Metadata")
+	}
 
 	if payload == nil {
 		return nil
@@ -387,13 +387,11 @@ func readRequestJSONBody(req *http.Request) (map[string]any, bool) {
 		return nil, false
 	}
 	replaceRequestBody(req, body)
-	if len(body) == 0 || !json.Valid(body) {
+	if len(body) == 0 {
 		return nil, false
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
 	var payload map[string]any
-	if err := decoder.Decode(&payload); err != nil || payload == nil {
+	if err := utils.UnmarshalJSONUseNumber(body, &payload); err != nil || payload == nil {
 		return nil, false
 	}
 	return payload, true
@@ -421,11 +419,14 @@ func replaceRequestBody(req *http.Request, body []byte) {
 
 func jsonStringValue(value any) string {
 	text, _ := value.(string)
-	return strings.TrimSpace(text)
+	return text
 }
 
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
+		if !utils.IsValidHTTPHeaderValue(value) {
+			continue
+		}
 		if value = strings.TrimSpace(value); value != "" {
 			return value
 		}

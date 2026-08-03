@@ -307,6 +307,75 @@ func TestApplyStreamOverrideConfig(t *testing.T) {
 	})
 }
 
+func TestRequestBodyRewritersPreserveLargeIntegers(t *testing.T) {
+	ps := &ProxyServer{}
+	input := []byte(`{"model":"alias-model","tools":[{"type":"function"}],"stream":false,"include":[],"request_id":9007199254740993}`)
+
+	tests := []struct {
+		name    string
+		rewrite func([]byte) ([]byte, error)
+	}{
+		{
+			name: "parameter overrides",
+			rewrite: func(body []byte) ([]byte, error) {
+				return ps.applyParamOverrides(body, &models.Group{ParamOverrides: datatypes.JSONMap{"temperature": 0.5}})
+			},
+		},
+		{
+			name: "parallel tool calls",
+			rewrite: func(body []byte) ([]byte, error) {
+				return ps.applyParallelToolCallsConfig(body, &models.Group{Config: datatypes.JSONMap{"parallel_tool_calls": false}})
+			},
+		},
+		{
+			name: "stream override",
+			rewrite: func(body []byte) ([]byte, error) {
+				return ps.applyStreamOverrideConfig(body, &models.Group{Config: datatypes.JSONMap{"force_stream": true}}, false)
+			},
+		},
+		{
+			name: "responses include",
+			rewrite: func(body []byte) ([]byte, error) {
+				return ps.applyResponsesIncludeConfig(body, &models.Group{
+					ChannelType: "openai-response",
+					Config:      datatypes.JSONMap{"responses_include_encrypted_reasoning": true},
+				})
+			},
+		},
+		{
+			name: "model mapping",
+			rewrite: func(body []byte) ([]byte, error) {
+				result, _ := ps.applyModelMapping(body, &models.Group{ModelMappingCache: map[string]string{"alias-model": "real-model"}})
+				return result, nil
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := tt.rewrite(input)
+			if err != nil {
+				t.Fatalf("rewrite error = %v", err)
+			}
+			if !bytes.Contains(result, []byte(`"request_id":9007199254740993`)) {
+				t.Fatalf("rewrite changed the large integer: %s", result)
+			}
+		})
+	}
+}
+
+func TestStripWorkBuddyAffinityFallbackPreservesLargeIntegers(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"include":["reasoning.encrypted_content"],"request_id":9007199254740993}`)
+	result, changed, err := stripCodexAffinityFallbackEncryptedReasoning(body)
+	if err != nil {
+		t.Fatalf("stripCodexAffinityFallbackEncryptedReasoning() error = %v", err)
+	}
+	assert.True(t, changed)
+	assert.Contains(t, string(result), `"request_id":9007199254740993`)
+}
+
 func TestApplySimulatedClientHeaders(t *testing.T) {
 	t.Run("no config preserves client headers", func(t *testing.T) {
 		body := []byte(`{"model":"gpt-5","input":"hello"}`)

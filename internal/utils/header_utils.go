@@ -10,6 +10,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// MaxForwardedMetadataHeaderBytes stays within common single-header proxy limits.
+const MaxForwardedMetadataHeaderBytes = 8 * 1024
+
+// IsValidHTTPHeaderValue accepts HTAB and visible/extended bytes, matching RFC 9110 field-value rules.
+func IsValidHTTPHeaderValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if (value[i] < ' ' && value[i] != '\t') || value[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 // HeaderVariableContext holds context data for variable resolution
 type HeaderVariableContext struct {
 	ClientIP string

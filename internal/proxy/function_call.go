@@ -23,7 +23,10 @@ import (
 // maxContentBufferBytes limits how much assistant content we buffer when
 // reconstructing the XML block for function call. This avoids unbounded
 // memory growth for very long streaming responses.
-const maxContentBufferBytes = 256 * 1024
+const (
+	maxContentBufferBytes      = 256 * 1024
+	maxDeferredUsageTailEvents = 16
+)
 
 // functionCall represents a parsed tool call from the XML block.
 type functionCall struct {
@@ -958,7 +961,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	}
 
 	var req map[string]any
-	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &req); err != nil {
 		logrus.WithError(err).WithField("group", safeGroupName(group)).
 			Warn("Failed to unmarshal request body for function call rewrite")
 		return bodyBytes, "", err
@@ -1112,7 +1115,8 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	toolChoiceRequiresTools := false
 	toolChoiceIsSet := false // Distinguish "unset" from explicit valid values (incl "auto")
 	var toolChoicePrompt string
-	if toolChoiceVal, ok := req["tool_choice"]; ok && toolChoiceVal != nil {
+	toolChoiceVal, toolChoiceSet := req["tool_choice"]
+	if toolChoiceSet && toolChoiceVal != nil {
 		toolChoiceProhibitsTools = isToolUsageProhibitedByToolChoice(toolChoiceVal)
 		toolChoicePrompt = convertToolChoiceToPrompt(toolChoiceVal, toolDefs)
 		// Check if tool_choice explicitly requires tool usage
@@ -1257,6 +1261,10 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 			shouldRemove = v < minTokensForXml
 		case int64:
 			shouldRemove = v < minTokensForXml
+		case json.Number:
+			if parsed, err := v.Float64(); err == nil {
+				shouldRemove = parsed < minTokensForXml
+			}
 		}
 		if shouldRemove {
 			delete(req, "max_tokens")
@@ -1273,6 +1281,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 			Warn("Failed to marshal request after function call rewrite")
 		return bodyBytes, "", err
 	}
+	setFunctionCallSession(c, newFunctionCallSession(triggerSignal, toolDefs, toolChoiceVal, toolChoiceSet))
 
 	// Debug: log minimal info about request rewrite.
 	// Reduced logging to avoid excessive output in production
@@ -1294,11 +1303,6 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 // when function call middleware is enabled for the request. It parses the assistant
 // message content for XML-based function calls and converts them into OpenAI-compatible
 // tool_calls in the response payload.
-//
-// NOTE: The fallback branches which write the original body back to the client are
-// intentionally kept inline instead of being extracted into a helper. This keeps the
-// control flow explicit in this hot path and avoids adding another function call
-// layer, even though automated reviews may suggest refactoring for deduplication.
 func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *http.Response) {
 	shouldCapture := shouldCaptureResponse(c)
 
@@ -1347,15 +1351,9 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 
 	// Fallback: if we cannot parse JSON, behave like normal response handler.
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(body, &payload); err != nil {
 		markResponseProcessingFailed(c)
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		}
-		if _, werr := c.Writer.Write(body); werr != nil {
-			logUpstreamError("writing response body", werr)
-		}
+		writeFunctionCallPassthrough(c, body, shouldCapture, false)
 		return
 	}
 
@@ -1363,50 +1361,31 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	triggerVal, exists := c.Get(ctxKeyTriggerSignal)
 	if !exists {
 		// No trigger signal means this request was not rewritten for function call.
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		}
-		if _, werr := c.Writer.Write(body); werr != nil {
-			logUpstreamError("writing response body", werr)
-		}
+		writeFunctionCallPassthrough(c, body, shouldCapture, resp.StatusCode < http.StatusBadRequest)
 		return
 	}
 
 	triggerSignal, ok := triggerVal.(string)
 	if !ok || triggerSignal == "" {
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		}
-		if _, werr := c.Writer.Write(body); werr != nil {
-			logUpstreamError("writing response body", werr)
-		}
+		writeFunctionCallPassthrough(c, body, shouldCapture, resp.StatusCode < http.StatusBadRequest)
+		return
+	}
+	securitySession := functionCallSessionFromContext(c, triggerSignal)
+	if securitySession == nil {
+		writeFunctionCallPassthrough(c, body, shouldCapture, resp.StatusCode < http.StatusBadRequest)
 		return
 	}
 
 	choicesVal, ok := payload["choices"]
 	if !ok {
 		// No choices field, fallback to original payload.
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		}
-		if _, werr := c.Writer.Write(body); werr != nil {
-			logUpstreamError("writing response body", werr)
-		}
+		writeFunctionCallPassthrough(c, body, shouldCapture, false)
 		return
 	}
 
 	choices, ok := choicesVal.([]any)
 	if !ok || len(choices) == 0 {
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, false)
-		if shouldCapture {
-			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
-		}
-		if _, werr := c.Writer.Write(body); werr != nil {
-			logUpstreamError("writing response body", werr)
-		}
+		writeFunctionCallPassthrough(c, body, shouldCapture, false)
 		return
 	}
 	setTokenUsageOrEstimateFromFullBodyIf(c, body, resp.StatusCode < http.StatusBadRequest)
@@ -1426,7 +1405,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 
 	for i, ch := range choices {
 		chMap, ok := ch.(map[string]any)
-		if !ok {
+		if !ok || !chatFunctionCallComplete(chMap) {
 			continue
 		}
 
@@ -1447,132 +1426,40 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		if !ok || contentStr == "" {
 			continue
 		}
-
-		// Bound parsing window to avoid feeding arbitrarily large content into
-		// the XML parser. We keep only the tail of the content where the
-		// <function_calls> block is expected to appear.
-		// NOTE: Use anchored truncation to avoid missing function calls
-		// when they appear before the default tail window. Anchor on trigger signal
-		// or <function_calls> tag if present.
-		parseInput := contentStr
-		if len(parseInput) > maxContentBufferBytes {
-			start := -1
-			if triggerSignal != "" {
-				start = strings.LastIndex(parseInput, triggerSignal)
-			}
-			if start == -1 {
-				start = strings.LastIndex(parseInput, "<function_calls>")
-			}
-			if start == -1 {
-				// No anchor found, use default tail truncation
-				start = len(parseInput) - maxContentBufferBytes
-			}
-			if start < 0 {
-				start = 0
-			}
-			// Align start to rune boundary to avoid splitting UTF-8 characters
-			for start < len(parseInput) && !utf8.RuneStart(parseInput[start]) {
-				start++
-			}
-
-			// Take a bounded window forward from the anchor point
-			// NOTE: AI suggested taking window forward from anchor instead of
-			// resetting anchor to tail. This preserves the anchor context while
-			// respecting the buffer limit.
-			end := len(parseInput)
-			if end-start > maxContentBufferBytes {
-				end = start + maxContentBufferBytes
-			}
-			// Align end to rune boundary (move backward to avoid splitting UTF-8)
-			for end > start && end < len(parseInput) && !utf8.RuneStart(parseInput[end]) {
-				end--
-			}
-			parseInput = parseInput[start:end]
+		reasoningStr, _ := msg["reasoning_content"].(string)
+		if strings.Count(contentStr, triggerSignal)+strings.Count(reasoningStr, triggerSignal) != 1 {
+			continue
 		}
 
-		calls := parseFunctionCallsXML(parseInput, triggerSignal)
-
-		// Fallback: If no calls found with trigger signal, try parsing without it.
-		if len(calls) == 0 && strings.Contains(parseInput, "<function_calls>") {
-			calls = parseFunctionCallsXML(parseInput, "")
-			if len(calls) > 0 {
-				logrus.WithField("parsed_count", len(calls)).
-					Debug("Function call normal response: parsed calls using fallback (no trigger signal)")
-			}
-		}
+		parseResult, validCall := securitySession.ParseAndValidate(contentStr, true)
+		calls := parseResult.Calls
+		callSource := "content"
 
 		// Fallback: If no calls found in content, try parsing from reasoning_content.
 		// DeepSeek reasoner and similar models may output tool calls in reasoning_content
 		// instead of content field when force_function_call + CC mode is enabled.
-		if len(calls) == 0 {
-			if reasoningVal, ok := msg["reasoning_content"]; ok {
-				if reasoningStr, ok := reasoningVal.(string); ok && reasoningStr != "" {
-					// Bound parsing window for reasoning_content as well
-					reasoningInput := reasoningStr
-					if len(reasoningInput) > maxContentBufferBytes {
-						start := -1
-						if triggerSignal != "" {
-							start = strings.LastIndex(reasoningInput, triggerSignal)
-						}
-						if start == -1 {
-							start = strings.LastIndex(reasoningInput, "<function_calls>")
-						}
-						if start == -1 {
-							start = strings.LastIndex(reasoningInput, "<invoke")
-						}
-						if start == -1 {
-							start = len(reasoningInput) - maxContentBufferBytes
-						}
-						if start < 0 {
-							start = 0
-						}
-						for start < len(reasoningInput) && !utf8.RuneStart(reasoningInput[start]) {
-							start++
-						}
-						end := len(reasoningInput)
-						if end-start > maxContentBufferBytes {
-							end = start + maxContentBufferBytes
-						}
-						for end > start && end < len(reasoningInput) && !utf8.RuneStart(reasoningInput[end]) {
-							end--
-						}
-						reasoningInput = reasoningInput[start:end]
-					}
-
-					// Check if reasoning_content contains tool call indicators
-					if strings.Contains(reasoningInput, triggerSignal) || strings.Contains(reasoningInput, "<invoke") || strings.Contains(reasoningInput, "<function_calls>") {
-						calls = parseFunctionCallsXML(reasoningInput, triggerSignal)
-						if len(calls) == 0 {
-							calls = parseFunctionCallsXML(reasoningInput, "")
-						}
-						if len(calls) > 0 {
-							logrus.WithField("parsed_count", len(calls)).
-								Debug("Function call normal response: parsed calls from reasoning_content")
-						}
-					}
-				}
+		if !validCall {
+			if reasoningStr != "" && len(reasoningStr) <= maxContentBufferBytes {
+				parseResult, validCall = securitySession.ParseAndValidate(reasoningStr, true)
+				calls = parseResult.Calls
+				callSource = "reasoning_content"
 			}
 		}
 
-		if len(calls) == 0 {
-			// Diagnose why parsing failed for debugging purposes.
-			// This helps identify common issues like missing trigger signals,
-			// unclosed tags, or malformed XML structure.
-			// NOTE: parseInput is tail-truncated (maxContentBufferBytes),
-			// so NO_TRIGGER diagnostic may be a false positive if trigger was in the truncated
-			// portion. This is acceptable for debug logging purposes only.
-			// NOTE: The nil check is defensive programming - currently
-			// diagnoseFCParseError never returns nil, but keeping the check for future safety.
-			// NOTE: Gate behind DebugLevel to avoid CPU waste
-			// when debug logging is disabled.
-			if logrus.IsLevelEnabled(logrus.DebugLevel) &&
-				(triggerSignal != "" || strings.Contains(parseInput, "<function_calls>") || strings.Contains(parseInput, "<invoke")) {
-				parseErr := diagnoseFCParseError(parseInput, triggerSignal)
-				if parseErr != nil {
-					// NOTE: Add truncated flag to help identify
-					// potential false positives in NO_TRIGGER diagnostics.
-					inputTruncated := len(contentStr) > maxContentBufferBytes
-					// NOTE: Add choice_index for multi-choice correlation.
+		if !validCall || len(calls) == 0 {
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				diagnosticInput := contentStr
+				inputTruncated := len(diagnosticInput) > maxContentBufferBytes
+				if inputTruncated {
+					start := len(diagnosticInput) - maxContentBufferBytes
+					for start < len(diagnosticInput) && !utf8.RuneStart(diagnosticInput[start]) {
+						start++
+					}
+					diagnosticInput = diagnosticInput[start:]
+				}
+
+				if triggerSignal != "" || strings.Contains(diagnosticInput, "<function_calls>") || strings.Contains(diagnosticInput, "<invoke") {
+					parseErr := diagnoseFCParseError(diagnosticInput, triggerSignal)
 					logrus.WithFields(logrus.Fields{
 						"error_code":      parseErr.Code,
 						"error_message":   parseErr.Message,
@@ -1581,41 +1468,17 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 						"choice_index":    i,
 					}).Debug("Function call normal response: parsing failed with diagnostic")
 				}
-			}
 
-			// If we see a <function_calls> block but could not parse any valid calls,
-			// treat it as invalid tool XML and strip it from the visible content. This
-			// prevents downstream clients (including Claude Code) from seeing malformed
-			// <function_calls> markers without corresponding structured tool_calls.
-			// NOTE: Use contentStr for detection to avoid false negatives when
-			// parseInput is truncated and misses the <function_calls> tag.
-			if strings.Contains(contentStr, "<function_calls>") {
-				cleaned := removeFunctionCallsBlocks(contentStr, cleanupModeFull)
-				if cleaned != contentStr {
-					msg["content"] = cleaned
-					chMap["message"] = msg
-					choices[i] = chMap
-					modified = true // Mark response as modified to write cleaned content back to client
-					// Sanitize before truncate to prevent leaking truncated secrets
-					logrus.WithFields(logrus.Fields{
+				if reExecutionIntent.MatchString(diagnosticInput) && !strings.Contains(diagnosticInput, "<function_calls>") {
+					fields := logrus.Fields{
 						"trigger_signal":  triggerSignal,
-						"content_preview": utils.TruncateString(utils.SanitizeErrorBody(parseInput), 200),
-					}).Debug("Function call normal response: removed invalid <function_calls> block with no parsed tool calls")
+						"content_preview": utils.TruncateString(utils.SanitizeErrorBody(diagnosticInput), 200),
+					}
+					if fr, ok := chMap["finish_reason"].(string); ok {
+						fields["finish_reason"] = fr
+					}
+					logrus.WithFields(fields).Debug("Function call normal response: detected execution intent without tool call XML")
 				}
-			}
-
-			// Log when we detect execution intent phrases but no function_calls XML at all.
-			// NOTE: content_preview is model output and may include user-provided content.
-			// Sanitize before truncate to prevent leaking truncated secrets.
-			if reExecutionIntent.MatchString(parseInput) && !strings.Contains(parseInput, "<function_calls>") {
-				fields := logrus.Fields{
-					"trigger_signal":  triggerSignal,
-					"content_preview": utils.TruncateString(utils.SanitizeErrorBody(parseInput), 200),
-				}
-				if fr, ok := chMap["finish_reason"].(string); ok {
-					fields["finish_reason"] = fr
-				}
-				logrus.WithFields(fields).Debug("Function call normal response: detected execution intent without tool call XML")
 			}
 			continue
 		}
@@ -1656,9 +1519,12 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		}).Debug("Function call normal response: parsed tool calls for choice")
 
 		msg["tool_calls"] = toolCalls
-		// Remove function_calls XML blocks from visible content so end users
-		// only see natural language text, while AI internally processes tool calls.
-		msg["content"] = removeFunctionCallsBlocks(contentStr, cleanupModeFull)
+		if callSource == "reasoning_content" {
+			reasoning, _ := msg["reasoning_content"].(string)
+			msg["reasoning_content"] = removeValidatedFunctionCall(reasoning, parseResult)
+		} else {
+			msg["content"] = removeValidatedFunctionCall(contentStr, parseResult)
+		}
 		chMap["message"] = msg
 		chMap["finish_reason"] = "tool_calls"
 		choices[i] = chMap
@@ -1754,7 +1620,7 @@ func (ps *ProxyServer) handleFunctionCallResponsesNormalResponse(c *gin.Context,
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(body, &payload); err != nil {
 		markResponseProcessingFailed(c)
 		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), false)
 		return
@@ -1767,21 +1633,20 @@ func (ps *ProxyServer) handleFunctionCallResponsesNormalResponse(c *gin.Context,
 	}
 
 	triggerSignal := functionCallTriggerSignal(c)
-	if triggerSignal == "" {
+	securitySession := functionCallSessionFromContext(c, triggerSignal)
+	if triggerSignal == "" || securitySession == nil || !responsesFunctionCallComplete(payload) {
 		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
 		return
 	}
 
-	text := extractResponsesOutputText(payload)
-	calls := parseFunctionCallsXML(text, triggerSignal)
-	if len(calls) == 0 {
+	calls, cleaned, sourceInOutput, validCall := parseAndCleanResponsesFunctionCalls(securitySession, payload)
+	if !validCall || len(calls) == 0 {
 		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
 		return
 	}
 
-	cleaned := strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))
-	output := make([]any, 0, len(calls)+1)
-	if cleaned != "" {
+	output, _ := payload["output"].([]any)
+	if !sourceInOutput && cleaned != "" {
 		output = append(output, map[string]any{
 			"type":   "message",
 			"id":     "msg_" + utils.GenerateRandomSuffix(),
@@ -1791,9 +1656,6 @@ func (ps *ProxyServer) handleFunctionCallResponsesNormalResponse(c *gin.Context,
 				map[string]any{"type": "output_text", "text": cleaned},
 			},
 		})
-		payload["output_text"] = cleaned
-	} else {
-		delete(payload, "output_text")
 	}
 	for i, call := range calls {
 		if call.Name == "" {
@@ -1841,30 +1703,26 @@ func (ps *ProxyServer) handleFunctionCallAnthropicNormalResponse(c *gin.Context,
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(body, &payload); err != nil {
 		markResponseProcessingFailed(c)
 		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), false)
 		return
 	}
 
 	triggerSignal := functionCallTriggerSignal(c)
-	if triggerSignal == "" {
+	securitySession := functionCallSessionFromContext(c, triggerSignal)
+	if triggerSignal == "" || securitySession == nil || !anthropicFunctionCallComplete(payload) {
 		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
 		return
 	}
 
-	text := extractAnthropicTextContent(payload)
-	calls := parseFunctionCallsXML(text, triggerSignal)
-	if len(calls) == 0 {
+	calls, validCall := parseAndCleanAnthropicFunctionCalls(securitySession, payload)
+	if !validCall || len(calls) == 0 {
 		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), true)
 		return
 	}
 
-	content := make([]any, 0, len(calls)+1)
-	cleaned := strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))
-	if cleaned != "" {
-		content = append(content, map[string]any{"type": "text", "text": cleaned})
-	}
+	content, _ := payload["content"].([]any)
 	for _, call := range calls {
 		if call.Name == "" {
 			continue
@@ -1948,9 +1806,7 @@ func functionCallTriggerSignal(c *gin.Context) string {
 }
 
 func writeFunctionCallPassthrough(c *gin.Context, body []byte, shouldCapture bool, estimateUsage bool) {
-	if estimateUsage {
-		setTokenUsageOrEstimateFromFullBodyIf(c, body, true)
-	}
+	setTokenUsageOrEstimateFromFullBodyIf(c, body, estimateUsage)
 	if shouldCapture {
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 	}
@@ -2185,6 +2041,9 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	// prevEvent holds the last non-[DONE] event that we have not yet forwarded.
 	var prevEventLines []string
 	var prevEventData string
+	prevEventTerminal := false
+	var trailingEvents [][]string
+	trailingEventBytes := 0
 	seenAnyEvent := false
 	// Track whether we are inside a <function_calls> block to suppress XML from streaming output.
 	insideFunctionCalls := false
@@ -2204,6 +2063,38 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		}
 		flusher.Flush()
 		return nil
+	}
+	writeFinalAndTrailing := func(lines []string) error {
+		if err := writeEvent(lines); err != nil {
+			return err
+		}
+		for _, trailing := range trailingEvents {
+			if err := writeEvent(trailing); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	deferUsageTail := func(lines []string) {
+		eventBytes := 1
+		for _, line := range lines {
+			eventBytes += len(line)
+		}
+		if eventBytes > maxUsageTailCaptureBytes {
+			return
+		}
+		for len(trailingEvents) > 0 && (len(trailingEvents) >= maxDeferredUsageTailEvents ||
+			eventBytes > maxUsageTailCaptureBytes-trailingEventBytes) {
+			oldestBytes := 1
+			for _, line := range trailingEvents[0] {
+				oldestBytes += len(line)
+			}
+			trailingEvents[0] = nil
+			trailingEvents = trailingEvents[1:]
+			trailingEventBytes -= oldestBytes
+		}
+		trailingEvents = append(trailingEvents, append([]string(nil), lines...))
+		trailingEventBytes += eventBytes
 	}
 
 	for {
@@ -2286,13 +2177,18 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 
 		// Parse current chunk, accumulate content, and strip XML blocks in real-time.
 		var modifiedLines []string
+		usageOnlyTail := false
+		terminalChoice := false
 		if dataStr != "" {
 			setTokenUsageFromBody(c, []byte(dataStr))
 			var evt map[string]any
-			if err := json.Unmarshal([]byte(dataStr), &evt); err == nil {
-				if choicesVal, ok := evt["choices"]; ok {
-					if choices, ok := choicesVal.([]any); ok && len(choices) > 0 {
+			if err := utils.UnmarshalJSONUseNumber([]byte(dataStr), &evt); err == nil {
+				if choicesVal, hasChoices := evt["choices"]; hasChoices {
+					if choices, choicesArray := choicesVal.([]any); choicesArray && len(choices) == 0 {
+						_, usageOnlyTail = evt["usage"]
+					} else if choicesArray && len(choices) > 0 {
 						if ch, ok := choices[0].(map[string]any); ok {
+							terminalChoice = chatFunctionCallComplete(ch)
 							if deltaVal, ok := ch["delta"].(map[string]any); ok {
 								// Accumulate reasoning_content for intent detection.
 								if reasoning, ok := deltaVal["reasoning_content"].(string); ok && reasoning != "" {
@@ -2486,6 +2382,8 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 							}
 						}
 					}
+				} else {
+					_, usageOnlyTail = evt["usage"]
 				}
 				// Re-serialize with modified content for forwarding. For intermediate
 				// events we rebuild only the data: line and intentionally drop any
@@ -2507,6 +2405,14 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 			modifiedLines = rawLines
 		}
 
+		if usageOnlyTail && prevEventTerminal {
+			deferUsageTail(modifiedLines)
+			if eof {
+				break
+			}
+			continue
+		}
+
 		// Forward previous event (which has already been processed).
 		if len(prevEventLines) > 0 {
 			if err := writeEvent(prevEventLines); err != nil {
@@ -2518,6 +2424,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		// Save current event (with XML stripped) as the new previous event.
 		prevEventLines = append([]string(nil), modifiedLines...)
 		prevEventData = dataStr
+		prevEventTerminal = terminalChoice
 
 		if eof {
 			// Upstream closed after this event; stop reading further.
@@ -2545,34 +2452,15 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		}
 		setEstimatedOutputTokens(c, outputEstimate.Tokens())
 	}
-	parsedCalls := parseFunctionCallsXML(contentStr, triggerSignal)
-
-	// Fallback: If no calls found with trigger signal, try parsing without it.
-	// This handles cases where AI outputs <function_calls> directly without the trigger.
-	if len(parsedCalls) == 0 && strings.Contains(contentStr, "<function_calls>") {
-		parsedCalls = parseFunctionCallsXML(contentStr, "")
-		if len(parsedCalls) > 0 {
-			logrus.WithField("parsed_count", len(parsedCalls)).
-				Debug("Function call streaming: parsed calls using fallback (no trigger signal)")
+	securitySession := functionCallSessionFromContext(c, triggerSignal)
+	var parsedCalls []functionCall
+	if strings.Count(contentStr, triggerSignal)+strings.Count(reasoningStr, triggerSignal) == 1 {
+		parseResult, validCall := securitySession.ParseAndValidate(contentStr, prevEventTerminal)
+		if !validCall && reasoningStr != "" {
+			parseResult, validCall = securitySession.ParseAndValidate(reasoningStr, prevEventTerminal)
 		}
-	}
-
-	// Fallback: If no calls found in content, try parsing from reasoning_content.
-	// DeepSeek reasoner and similar models may output tool calls in reasoning_content
-	// instead of content field when force_function_call + CC mode is enabled.
-	// This is a known behavior where the model plans tool calls in its thinking process.
-	if len(parsedCalls) == 0 && reasoningStr != "" {
-		// First try with trigger signal
-		if strings.Contains(reasoningStr, triggerSignal) || strings.Contains(reasoningStr, "<invoke") || strings.Contains(reasoningStr, "<function_calls>") {
-			parsedCalls = parseFunctionCallsXML(reasoningStr, triggerSignal)
-			if len(parsedCalls) == 0 {
-				// Try without trigger signal
-				parsedCalls = parseFunctionCallsXML(reasoningStr, "")
-			}
-			if len(parsedCalls) > 0 {
-				logrus.WithField("parsed_count", len(parsedCalls)).
-					Debug("Function call streaming: parsed calls from reasoning_content")
-			}
+		if validCall {
+			parsedCalls = parseResult.Calls
 		}
 	}
 
@@ -2617,7 +2505,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		// No function calls detected – forward last event as-is, then [DONE].
 		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
-			if err := writeEvent(prevEventLines); err != nil {
+			if err := writeFinalAndTrailing(prevEventLines); err != nil {
 				logUpstreamError("writing stream to client", err)
 				return
 			}
@@ -2629,11 +2517,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 
 	// Modify the last event to include tool_calls and finish_reason "tool_calls".
 	var lastEvt map[string]any
-	if err := json.Unmarshal([]byte(prevEventData), &lastEvt); err != nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(prevEventData), &lastEvt); err != nil {
 		logUpstreamError("parsing last streaming event for function calls", err)
 		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
-			_ = writeEvent(prevEventLines)
+			_ = writeFinalAndTrailing(prevEventLines)
 		}
 		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 		flusher.Flush()
@@ -2644,7 +2532,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	if !ok {
 		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
-			_ = writeEvent(prevEventLines)
+			_ = writeFinalAndTrailing(prevEventLines)
 		}
 		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 		flusher.Flush()
@@ -2654,7 +2542,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	if !ok || len(choices) == 0 {
 		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
-			_ = writeEvent(prevEventLines)
+			_ = writeFinalAndTrailing(prevEventLines)
 		}
 		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 		flusher.Flush()
@@ -2691,7 +2579,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	if len(toolCalls) == 0 {
 		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
-			_ = writeEvent(prevEventLines)
+			_ = writeFinalAndTrailing(prevEventLines)
 		}
 		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 		flusher.Flush()
@@ -2721,7 +2609,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		logUpstreamError("marshalling modified streaming function call event", err)
 		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
-			_ = writeEvent(prevEventLines)
+			_ = writeFinalAndTrailing(prevEventLines)
 		}
 		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 		flusher.Flush()
@@ -2760,7 +2648,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 	}
 	finalLines = append(finalLines, "data: "+string(out)+"\n")
 	finalizeTokenEstimate()
-	if err := writeEvent(finalLines); err != nil {
+	if err := writeFinalAndTrailing(finalLines); err != nil {
 		logUpstreamError("writing modified streaming event", err)
 		return
 	}
@@ -2808,24 +2696,17 @@ func (ps *ProxyServer) handleFunctionCallResponsesStreamingBody(c *gin.Context, 
 		}
 		return
 	}
-	calls := parseFunctionCallsXML(text, triggerSignal)
-	if len(calls) == 0 && strings.Contains(text, "<function_calls>") {
-		calls = parseFunctionCallsXML(text, "")
-	}
-	if len(calls) == 0 {
-		if functionCallStreamHasProtocolMarkers(text, triggerSignal) {
-			if err := emitResponsesTextOnlyStream(c, flusher, responseID, model, strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))); err != nil {
-				logUpstreamError("writing cleaned Responses function call stream", err)
-			}
-			return
-		}
+	securitySession := functionCallSessionFromContext(c, triggerSignal)
+	parseResult, validCall := securitySession.ParseAndValidate(text, terminalSeen)
+	calls := parseResult.Calls
+	if !validCall || len(calls) == 0 {
 		if err := replayFunctionCallSSEEvents(c, events, flusher); err != nil {
 			logUpstreamError("replaying Responses function call stream", err)
 		}
 		return
 	}
 
-	cleaned := strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))
+	cleaned := strings.TrimSpace(removeValidatedFunctionCall(text, parseResult))
 	if responseID == "" {
 		responseID = "resp_" + utils.GenerateRandomSuffix()
 	}
@@ -2994,17 +2875,13 @@ func (ps *ProxyServer) handleFunctionCallAnthropicStreamingBody(c *gin.Context, 
 	}
 	events := result.Events
 
-	text, messageID, model, inputTokens, outputTokens := collectAnthropicFunctionCallStreamText(c, events)
-	calls := parseFunctionCallsXML(text, triggerSignal)
-	if len(calls) == 0 && strings.Contains(text, "<function_calls>") {
-		calls = parseFunctionCallsXML(text, "")
-	}
-	if len(calls) == 0 {
-		if functionCallStreamHasProtocolMarkers(text, triggerSignal) {
-			if err := emitAnthropicTextOnlyStream(c, flusher, messageID, model, inputTokens, outputTokens, strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))); err != nil {
-				logUpstreamError("writing cleaned Anthropic function call stream", err)
-			}
-			return
+	text, messageID, model, inputTokens, outputTokens, complete := collectAnthropicFunctionCallStreamText(c, events)
+	securitySession := functionCallSessionFromContext(c, triggerSignal)
+	parseResult, validCall := securitySession.ParseAndValidate(text, complete)
+	calls := parseResult.Calls
+	if !validCall || len(calls) == 0 {
+		if !complete {
+			markResponseProcessingFailed(c)
 		}
 		if err := replayFunctionCallSSEEvents(c, events, flusher); err != nil {
 			logUpstreamError("replaying Anthropic function call stream", err)
@@ -3034,7 +2911,7 @@ func (ps *ProxyServer) handleFunctionCallAnthropicStreamingBody(c *gin.Context, 
 	}
 
 	blockIndex := 0
-	cleaned := strings.TrimSpace(removeFunctionCallsBlocks(text, cleanupModeFull))
+	cleaned := strings.TrimSpace(removeValidatedFunctionCall(text, parseResult))
 	if cleaned != "" {
 		if err := emitAnthropicTextBlock(c, flusher, blockIndex, cleaned); err != nil {
 			logUpstreamError("writing Anthropic text block", err)
@@ -3192,16 +3069,13 @@ func collectResponsesFunctionCallStreamText(c *gin.Context, events []functionCal
 			continue
 		}
 		var payload map[string]any
-		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
+		if err := utils.UnmarshalJSONUseNumber([]byte(event.Data), &payload); err != nil {
 			markResponseProcessingFailed(c)
 			continue
 		}
 		eventType, _ := payload["type"].(string)
 		if eventType == "" {
 			eventType = event.Event
-		}
-		if eventType == "response.completed" || eventType == "response.done" || eventType == "response.failed" {
-			terminalSeen = true
 		}
 		if resp, ok := payload["response"].(map[string]any); ok {
 			if id, _ := resp["id"].(string); id != "" {
@@ -3210,7 +3084,11 @@ func collectResponsesFunctionCallStreamText(c *gin.Context, events []functionCal
 			if m, _ := resp["model"].(string); m != "" {
 				model = m
 			}
-			if eventType == "response.completed" && text.Len() == 0 {
+			if (eventType == "response.completed" || eventType == "response.done") &&
+				strings.EqualFold(stringFromJSONMap(resp, "status"), "completed") {
+				terminalSeen = true
+			}
+			if terminalSeen && text.Len() == 0 {
 				text.WriteString(extractResponsesOutputText(resp))
 			}
 			if eventType == "response.failed" || strings.EqualFold(stringFromJSONMap(resp, "status"), "failed") {
@@ -3254,19 +3132,23 @@ func responsesErrorFields(payload map[string]any) (string, string) {
 	return stringFromJSONMap(errorPayload, "code"), stringFromJSONMap(errorPayload, "message")
 }
 
-func collectAnthropicFunctionCallStreamText(c *gin.Context, events []functionCallSSEEvent) (string, string, string, int, int) {
+func collectAnthropicFunctionCallStreamText(c *gin.Context, events []functionCallSSEEvent) (string, string, string, int, int, bool) {
 	var text strings.Builder
 	messageID := ""
 	model := ""
 	inputTokens := 0
 	outputTokens := 0
+	stopReason := ""
+	messageStopSeen := false
+	parseValid := true
 	var outputEstimate estimatedTokenCapture
 	for _, event := range events {
-		if event.Data == "" {
+		if event.Data == "" || strings.TrimSpace(event.Data) == "[DONE]" {
 			continue
 		}
 		var payload map[string]any
-		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
+		if err := utils.UnmarshalJSONUseNumber([]byte(event.Data), &payload); err != nil {
+			parseValid = false
 			continue
 		}
 		eventType, _ := payload["type"].(string)
@@ -3298,15 +3180,26 @@ func collectAnthropicFunctionCallStreamText(c *gin.Context, events []functionCal
 				}
 			}
 		case "message_delta":
+			if delta, ok := payload["delta"].(map[string]any); ok {
+				if value, _ := delta["stop_reason"].(string); value != "" {
+					stopReason = value
+				}
+			}
 			if usage, ok := payload["usage"].(map[string]any); ok {
 				outputTokens = intFromAny(usage["output_tokens"])
 			}
+		case "message_stop":
+			messageStopSeen = true
+		case "error":
+			parseValid = false
 		}
 	}
 	if _, _, ok := getTokenUsage(c); !ok {
 		setEstimatedOutputTokens(c, outputEstimate.Tokens())
 	}
-	return text.String(), messageID, model, inputTokens, outputTokens
+	normalizedStopReason := strings.ToLower(strings.TrimSpace(stopReason))
+	complete := parseValid && messageStopSeen && (normalizedStopReason == "end_turn" || normalizedStopReason == "stop_sequence")
+	return text.String(), messageID, model, inputTokens, outputTokens, complete
 }
 
 func writeSSENamedJSON(c *gin.Context, flusher http.Flusher, event string, payload map[string]any) error {
@@ -8285,14 +8178,14 @@ func extractBalancedJSON(s string) string {
 // Returns the parsed value and true if successful, or nil and false if parsing fails.
 func tryParseJSON(s string) (any, bool) {
 	var jsonVal any
-	if err := json.Unmarshal([]byte(s), &jsonVal); err == nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(s), &jsonVal); err == nil {
 		return jsonVal, true
 	}
 
 	// If direct parsing fails, attempt to repair common malformed JSON patterns
 	// that appear in Claude Code output (e.g., from real-world production log)
 	repaired := repairMalformedJSON(s)
-	if err := json.Unmarshal([]byte(repaired), &jsonVal); err == nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(repaired), &jsonVal); err == nil {
 		return jsonVal, true
 	}
 
@@ -8901,7 +8794,7 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 		trimmed == "true" || trimmed == "false" || trimmed == "null" {
 		var jsonVal any
 		// First try direct parsing
-		if err := json.Unmarshal([]byte(trimmed), &jsonVal); err == nil {
+		if err := utils.UnmarshalJSONUseNumber([]byte(trimmed), &jsonVal); err == nil {
 			// If it's already a map, return directly
 			if mapVal, ok := jsonVal.(map[string]any); ok {
 				return mapVal
@@ -8913,7 +8806,7 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 		// If direct parsing fails, try repairing malformed JSON first
 		// This handles cases like {"id": "1",": "content"} (missing field name)
 		repaired := repairMalformedJSON(trimmed)
-		if err := json.Unmarshal([]byte(repaired), &jsonVal); err == nil {
+		if err := utils.UnmarshalJSONUseNumber([]byte(repaired), &jsonVal); err == nil {
 			if mapVal, ok := jsonVal.(map[string]any); ok {
 				return mapVal
 			}
@@ -9090,7 +8983,7 @@ func parseValueOrString(s string) any {
 
 	var val any
 	// First try direct parsing
-	if err := json.Unmarshal([]byte(s), &val); err == nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(s), &val); err == nil {
 		// Recursively sanitize string values within parsed JSON
 		return sanitizeJsonValue(val)
 	}
@@ -9101,7 +8994,7 @@ func parseValueOrString(s string) any {
 		firstChar := trimmed[0]
 		if firstChar == '{' || firstChar == '[' {
 			repaired := repairMalformedJSON(trimmed)
-			if err := json.Unmarshal([]byte(repaired), &val); err == nil {
+			if err := utils.UnmarshalJSONUseNumber([]byte(repaired), &val); err == nil {
 				return sanitizeJsonValue(val)
 			}
 		}
@@ -9315,10 +9208,10 @@ func extractToolCallsFromJSONContent(content string, knownTools map[string]bool)
 
 		// Try to parse the JSON object
 		var obj map[string]any
-		if err := json.Unmarshal([]byte(jsonStr), &obj); err != nil {
+		if err := utils.UnmarshalJSONUseNumber([]byte(jsonStr), &obj); err != nil {
 			// Try to repair common JSON issues
 			repairedJSON := repairMalformedJSON(jsonStr)
-			if err := json.Unmarshal([]byte(repairedJSON), &obj); err != nil {
+			if err := utils.UnmarshalJSONUseNumber([]byte(repairedJSON), &obj); err != nil {
 				logrus.WithFields(logrus.Fields{
 					"tool_name":    toolName,
 					"json_preview": utils.TruncateString(jsonStr, 200),

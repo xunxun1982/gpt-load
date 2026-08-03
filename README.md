@@ -447,6 +447,8 @@ curl -X POST http://localhost:3001/proxy/openai-response/v1/responses \
   -d '{"model": "gpt-4.1-mini", "input": "Hello"}'
 ```
 
+Claude compatibility requests preserve system prompts as `developer` messages. For legacy Responses-compatible upstreams that reject this role, enable the group option `responses_legacy_user_role`; it sends the prompt as `user` and therefore weakens instruction priority.
+
 ### 4. Gemini Interface Example
 
 Assuming a group named `gemini` was created:

@@ -103,7 +103,7 @@ func codexDegradationMitigationShouldEnable(c *gin.Context, group, originalGroup
 	}
 
 	var body map[string]any
-	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &body); err != nil {
 		return false
 	}
 	if stream, ok := body["stream"].(bool); !ok || !stream {
@@ -117,7 +117,7 @@ func codexDegradationMitigationShouldEnable(c *gin.Context, group, originalGroup
 
 func prepareCodexDegradationMitigationInitialPayload(bodyBytes []byte) ([]byte, error) {
 	var body map[string]any
-	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &body); err != nil {
 		return bodyBytes, err
 	}
 	mergeResponsesEncryptedInclude(body)
@@ -126,7 +126,7 @@ func prepareCodexDegradationMitigationInitialPayload(bodyBytes []byte) ([]byte, 
 
 func buildCodexDegradationMitigationContinuationPayload(baseBody []byte, replayTail []map[string]any, marker string) ([]byte, error) {
 	var body map[string]any
-	if err := json.Unmarshal(baseBody, &body); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(baseBody, &body); err != nil {
 		return nil, err
 	}
 
@@ -772,7 +772,7 @@ func codexMitigationParseSSEBlock(lines []string) map[string]any {
 		return nil
 	}
 	var event map[string]any
-	if err := json.Unmarshal([]byte(data), &event); err != nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(data), &event); err != nil {
 		logrus.WithError(err).Debug("Codex degradation mitigation: failed to parse SSE event")
 		return nil
 	}
@@ -1008,7 +1008,7 @@ func codexMitigationCloneMap(input map[string]any) map[string]any {
 		return nil
 	}
 	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(data, &out); err != nil {
 		return nil
 	}
 	return out

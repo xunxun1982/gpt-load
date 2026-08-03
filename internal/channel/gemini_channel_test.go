@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -369,20 +370,26 @@ func TestGeminiChannel_ValidateKey_ForceNonStreamControlsValidationStream(t *tes
 	assert.True(t, valid)
 }
 
-func TestGeminiChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testing.T) {
+func TestGeminiChannel_ValidateKey_IgnoresSimulatedClaudeCodeClient(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "test-key", r.URL.Query().Get("key"))
-		assert.Equal(t, BuildClaudeCodeUserAgent("2.2.0"), r.Header.Get("User-Agent"))
-		assert.Equal(t, "application/json", r.Header.Get("Accept"))
+		assert.False(t, strings.HasPrefix(r.Header.Get("User-Agent"), "claude-cli/"))
+		assert.Empty(t, r.Header.Get("Accept"))
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
-		assert.Equal(t, "cli", r.Header.Get("X-App"))
-		assert.Equal(t, "2023-06-01", r.Header.Get("anthropic-version"))
-		assert.Contains(t, r.Header.Get("anthropic-beta"), "claude-code-20250219")
-		assert.Equal(t, "true", r.Header.Get("Anthropic-Dangerous-Direct-Browser-Access"))
-		assert.Equal(t, "js", r.Header.Get("X-Stainless-Lang"))
-		assert.Equal(t, "node", r.Header.Get("X-Stainless-Runtime"))
+		assert.Empty(t, r.Header.Get("X-App"))
+		assert.Empty(t, r.Header.Get("anthropic-version"))
+		assert.Empty(t, r.Header.Get("anthropic-beta"))
+		assert.Empty(t, r.Header.Get("Anthropic-Dangerous-Direct-Browser-Access"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Lang"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Package-Version"))
+		assert.Empty(t, r.Header.Get("X-Stainless-OS"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Arch"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Runtime"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Runtime-Version"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Retry-Count"))
+		assert.Empty(t, r.Header.Get("X-Stainless-Timeout"))
 
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}`))
@@ -400,12 +407,16 @@ func TestGeminiChannel_ValidateKey_AppliesSimulatedClaudeCodeClient(t *testing.T
 		},
 	}
 
-	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, &models.Group{
+	group := &models.Group{
+		ChannelType: "gemini",
 		Config: datatypes.JSONMap{
 			"simulated_client":              "claude_code",
 			"simulated_claude_code_version": "2.2.0",
 		},
-	})
+	}
+	assert.False(t, IsSimulatedClientEnabled(group))
+
+	valid, err := ch.ValidateKey(context.Background(), &models.APIKey{KeyValue: "test-key"}, group)
 	assert.NoError(t, err)
 	assert.True(t, valid)
 }

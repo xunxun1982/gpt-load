@@ -4395,6 +4395,22 @@ func TestNormalizeOpenAIToolCallArguments_BashCommandWithPath(t *testing.T) {
 	}
 }
 
+func TestToolArgumentRewritersPreserveLargeIntegers(t *testing.T) {
+	t.Parallel()
+
+	input := `{"command":"python F:\\test\\script.py","nested":"{\"id\":9007199254740993}","request_id":9007199254740993}`
+	t.Run("Bash path escaping", func(t *testing.T) {
+		result := doubleEscapeWindowsPathsForBash(input)
+		require.Contains(t, result, `"request_id":9007199254740993`)
+	})
+	t.Run("generic normalization", func(t *testing.T) {
+		result, ok := normalizeOpenAIToolCallArguments("Bash", input)
+		require.True(t, ok)
+		require.Contains(t, result, `"request_id":9007199254740993`)
+		require.Contains(t, result, `"nested":{"id":9007199254740993}`)
+	})
+}
+
 // TestDoubleEscapeWindowsPathsForBash tests the doubleEscapeWindowsPathsForBash function
 // that doubles backslash escaping ONLY in the "command" field of Bash tool arguments.
 func TestDoubleEscapeWindowsPathsForBash(t *testing.T) {
@@ -5796,13 +5812,13 @@ func TestIsCCSupportEnabled(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "gemini channel with cc_support enabled",
+			name: "gemini channel ignores cc_support",
 			group: &models.Group{
 				Name:        "test",
 				ChannelType: "gemini",
 				Config:      map[string]any{"cc_support": true},
 			},
-			expected: true,
+			expected: false,
 		},
 		{
 			name: "openai channel without cc_support config",
@@ -6771,7 +6787,7 @@ func TestHelperFunctions(t *testing.T) {
 			{"openai_enabled", "openai", map[string]interface{}{"cc_support": true}, true},
 			{"openai_disabled", "openai", map[string]interface{}{"cc_support": false}, false},
 			{"openai_response_enabled", "openai-response", map[string]interface{}{"cc_support": true}, true},
-			{"gemini_enabled", "gemini", map[string]interface{}{"cc_support": true}, true},
+			{"gemini_unsupported", "gemini", map[string]interface{}{"cc_support": true}, false},
 			{"anthropic_enabled", "anthropic", map[string]interface{}{"cc_support": true}, false},
 			{"nil_group", "", nil, false},
 		}
@@ -7120,7 +7136,7 @@ func TestMoreHelperFunctions(t *testing.T) {
 			{"stop", "stop", "end_turn", false},
 			{"length", "length", "max_tokens", false},
 			{"tool_calls", "tool_calls", "tool_use", false},
-			{"content_filter", "content_filter", "end_turn", true},
+			{"content_filter", "content_filter", "refusal", false},
 			{"unknown", "unknown_reason", "end_turn", false},
 		}
 

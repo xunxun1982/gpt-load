@@ -1906,15 +1906,15 @@ func TestIsGroupCCSupportEnabled(t *testing.T) {
 			description: "OpenAI channel without cc_support config should return false",
 		},
 		{
-			name: "Gemini with cc_support enabled",
+			name: "Gemini ignores cc_support",
 			group: &models.Group{
 				ChannelType: "gemini",
 				Config: datatypes.JSONMap{
 					"cc_support": true,
 				},
 			},
-			want:        true,
-			description: "Gemini channel with cc_support=true should return true",
+			want:        false,
+			description: "Gemini channel no longer supports forced CC",
 		},
 		{
 			name: "OpenAI Responses with cc_support enabled",

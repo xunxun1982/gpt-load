@@ -12,6 +12,8 @@ func TestSanitizeErrorBody(t *testing.T) {
 	apiKeyJSON := `{"error": "invalid key", "key": "` + apiKey + `"}`
 	authKey := "s" + "k-proj-" + strings.Repeat("b", 24)
 	authHeader := "Authorization: " + authKey
+	configAuthValue := "fixture-auth-" + strings.Repeat("a", 12)
+	configEncryptionValue := "fixture-encryption-" + strings.Repeat("e", 12)
 	// Per AI review: test sk-proj-... as JSON value (not just Authorization header)
 	projKeyJSON := `{"error": "auth failed", "details": "` + authKey + `"}`
 
@@ -68,6 +70,48 @@ func TestSanitizeErrorBody(t *testing.T) {
 			input:    `{"access_token":"access-secret","refresh_token":"refresh-secret","client_secret":"client-secret","private-key":"private-secret"}`,
 			contains: []string{`"access_token": "[REDACTED]"`, `"refresh_token": "[REDACTED]"`, `"client_secret": "[REDACTED]"`, `"private-key": "[REDACTED]"`},
 			excludes: []string{"access-secret", "refresh-secret", "client-secret", "private-secret"},
+		},
+		{
+			name:     "application secret fields in json",
+			input:    `{"AUTH_KEY" : "` + configAuthValue + `","ENCRYPTION_KEY" : "` + configEncryptionValue + `"}`,
+			contains: []string{`"AUTH_KEY" : "[REDACTED]"`, `"ENCRYPTION_KEY" : "[REDACTED]"`},
+			excludes: []string{configAuthValue, configEncryptionValue},
+		},
+		{
+			name:     "application secret fields in query",
+			input:    `https://example.test/path?AUTH_KEY=` + configAuthValue + `&ENCRYPTION_KEY=` + configEncryptionValue,
+			contains: []string{"AUTH_KEY=[REDACTED]", "ENCRYPTION_KEY=[REDACTED]"},
+			excludes: []string{configAuthValue, configEncryptionValue},
+		},
+		{
+			name:     "application secret fields in assignments",
+			input:    `AUTH_KEY = "` + configAuthValue + `" ENCRYPTION_KEY: '` + configEncryptionValue + `'`,
+			contains: []string{"AUTH_KEY = [REDACTED]", "ENCRYPTION_KEY: [REDACTED]"},
+			excludes: []string{configAuthValue, configEncryptionValue},
+		},
+		{
+			name:     "escaped quote in json secret",
+			input:    `{"AUTH_KEY":"` + configAuthValue + `\"secret-suffix","message":"error"}`,
+			contains: []string{`"AUTH_KEY": "[REDACTED]"`, `"message":"error"`},
+			excludes: []string{configAuthValue, "secret-suffix"},
+		},
+		{
+			name:     "escaped quoted application secret assignment",
+			input:    `AUTH_KEY=\"` + configAuthValue + `\" ENCRYPTION_KEY=\"` + configEncryptionValue + `\"`,
+			contains: []string{"[REDACTED]"},
+			excludes: []string{configAuthValue, configEncryptionValue},
+		},
+		{
+			name:     "escaped json application secret fields",
+			input:    `payload={\"AUTH_KEY\":\"` + configAuthValue + `\",\"ENCRYPTION_KEY\":\"` + configEncryptionValue + `\"}`,
+			contains: []string{"[REDACTED]"},
+			excludes: []string{configAuthValue, configEncryptionValue},
+		},
+		{
+			name:     "unterminated quoted assignment",
+			input:    `AUTH_KEY="` + configAuthValue + "\nnext line",
+			contains: []string{"AUTH_KEY=[REDACTED]", "next line"},
+			excludes: []string{configAuthValue},
 		},
 		{
 			name:     "json encrypted content field",

@@ -15,6 +15,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCodexOutputItemMarshalPreservesLargeNestedInteger(t *testing.T) {
+	item := CodexOutputItem{
+		Type:      "tool_search_call",
+		Arguments: `{"query_id":9007199254740993}`,
+		Input:     json.RawMessage(`{"nested":{"id":9007199254740993}}`),
+	}
+
+	encoded, err := json.Marshal(item)
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"query_id":9007199254740993`)
+	require.Contains(t, string(encoded), `"id":9007199254740993`)
+	require.NotContains(t, string(encoded), "9007199254740992")
+}
+
 // TestCodexCCWindowsPathPreservation tests that Windows paths are preserved correctly
 // in Codex CC response conversion without corruption.
 func TestCodexCCWindowsPathPreservation(t *testing.T) {
