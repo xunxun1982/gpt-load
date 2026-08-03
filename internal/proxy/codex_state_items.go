@@ -34,7 +34,9 @@ func sanitizeCodexInputItems(items []json.RawMessage) (json.RawMessage, bool, er
 	if len(droppedCalls) > 0 {
 		filtered := results[:0]
 		for i, item := range results {
-			if _, drop := droppedCalls[codexCallPairKey(metas[i])]; drop {
+			_, dropCall := droppedCalls[codexCallPairKey(metas[i])]
+			_, dropOutput := droppedCalls[codexOutputPairKey(metas[i])]
+			if dropCall || dropOutput {
 				changed = true
 				continue
 			}
@@ -75,7 +77,7 @@ func sanitizeCodexInputItem(raw json.RawMessage) (json.RawMessage, bool, string,
 		return sanitizeCodexToolOutput(raw, item, meta)
 	}
 	if _, hasEncryptedContent := item["encrypted_content"]; hasEncryptedContent {
-		return nil, true, "", true, nil
+		return nil, true, codexCallPairKey(meta), true, nil
 	}
 	return raw, false, "", false, nil
 }

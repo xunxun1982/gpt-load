@@ -318,7 +318,7 @@ func stringFromJSONMap(payload map[string]any, key string) string {
 
 func stripCodexAffinityFallbackEncryptedReasoning(bodyBytes []byte) ([]byte, bool, error) {
 	var payload map[string]any
-	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &payload); err != nil {
 		return bodyBytes, false, err
 	}
 
@@ -1809,7 +1809,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	if err != nil {
 		statusCode, apiErr := mapCodexSelectionError(err, apiKey, retryCtx != nil && retryCtx.codexAffinityEnabled)
 		response.Error(c, apiErr)
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, err, isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(err), isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
 	if upstreamSelection == nil || upstreamSelection.URL == "" {
@@ -2302,7 +2302,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			bodyBytes, err = sanitizeCodexIdentityChange(c, bodyBytes, group, codexEncryptedReasoningAllowed(retryCtx))
 			if err != nil {
 				response.Error(c, app_errors.NewAPIError(app_errors.ErrInvalidJSON, "Invalid request body for Codex identity change"))
-				ps.logEarlyError(c, originalGroup, startTime, http.StatusBadRequest, err)
+				ps.logEarlyError(c, originalGroup, startTime, http.StatusBadRequest, sanitizeInternalError(err))
 				return
 			}
 		}
@@ -3368,6 +3368,10 @@ func (ps *ProxyServer) logRequest(
 
 	if finalError != nil && logEntry.ErrorMessage == "" {
 		logEntry.ErrorMessage = finalError.Error()
+	}
+	// Sanitize before the debug log and persistence boundary so neither path can expose credentials.
+	if logEntry.ErrorMessage != "" {
+		logEntry.ErrorMessage = sanitizeInternalErrorMessage(logEntry.ErrorMessage)
 	}
 
 	// Only successful final requests enter token stats; failed upstream 4xx/5xx responses are excluded.

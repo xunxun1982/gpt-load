@@ -606,7 +606,7 @@ func claudeOutputEffort(config *ClaudeOutputConfig) (string, error) {
 }
 
 func claudeServiceTierToOpenAI(value string) (string, error) {
-	switch value {
+	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "":
 		return "", nil
 	case "auto":
@@ -1041,9 +1041,7 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 			case "text":
 				textParts = append(textParts, block.Text)
 			case "thinking":
-				if block.Signature != "" {
-					return nil, ccUnsupported("content block", "thinking with opaque signature")
-				}
+				// The target has no signature field; preserve visible thinking text and drop the opaque signature.
 				if block.Thinking != "" {
 					thinkingParts = append(thinkingParts, block.Thinking)
 				}
@@ -1856,7 +1854,7 @@ func normalizeArgsGenericInPlace(args map[string]any) {
 		if (strings.HasPrefix(trimmedStr, "{") && strings.HasSuffix(trimmedStr, "}")) ||
 			(strings.HasPrefix(trimmedStr, "[") && strings.HasSuffix(trimmedStr, "]")) {
 			var jsonVal any
-			if err := json.Unmarshal([]byte(strVal), &jsonVal); err == nil {
+			if err := utils.UnmarshalJSONUseNumber([]byte(strVal), &jsonVal); err == nil {
 				args[key] = jsonVal
 				continue
 			}
@@ -2290,7 +2288,7 @@ func doubleEscapeWindowsPathsForBash(jsonStr string) string {
 
 	// Parse JSON to selectively process only the "command" field
 	var args map[string]any
-	if err := json.Unmarshal([]byte(jsonStr), &args); err != nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(jsonStr), &args); err != nil {
 		return jsonStr
 	}
 
@@ -2380,7 +2378,7 @@ func normalizeArgsEnsureSlice(args map[string]any, key string) {
 		return
 	}
 	var list []any
-	if err := json.Unmarshal([]byte(strVal), &list); err == nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(strVal), &list); err == nil {
 		args[key] = list
 		return
 	}
@@ -2400,7 +2398,7 @@ func normalizeArgsEnsureMap(args map[string]any, key string) {
 		return
 	}
 	var out map[string]any
-	if err := json.Unmarshal([]byte(strVal), &out); err == nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(strVal), &out); err == nil {
 		args[key] = out
 	}
 }
@@ -2465,7 +2463,7 @@ func normalizeTodoWriteTodos(args map[string]any) ([]map[string]any, bool) {
 		trimmedStr := strings.TrimSpace(v)
 		if trimmedStr != "" {
 			var parsed []any
-			if err := json.Unmarshal([]byte(trimmedStr), &parsed); err == nil && len(parsed) > 0 {
+			if err := utils.UnmarshalJSONUseNumber([]byte(trimmedStr), &parsed); err == nil && len(parsed) > 0 {
 				todoList = parsed
 				hasValidTodos = true
 			}
@@ -2584,6 +2582,12 @@ func normalizeTodoWriteTodos(args map[string]any) ([]map[string]any, bool) {
 				idStr = strings.TrimSpace(v)
 			case float64:
 				idStr = fmt.Sprintf("task-%d", int(v))
+			case json.Number:
+				if id, err := v.Int64(); err == nil {
+					idStr = fmt.Sprintf("task-%d", id)
+				} else if id, err := v.Float64(); err == nil {
+					idStr = fmt.Sprintf("task-%d", int(id))
+				}
 			case int:
 				idStr = fmt.Sprintf("task-%d", v)
 			default:
@@ -2616,9 +2620,9 @@ func normalizeOpenAIToolCallArguments(toolName string, arguments string) (string
 	}
 
 	var args map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(trimmed), &args); err != nil {
 		var raw any
-		if err2 := json.Unmarshal([]byte(trimmed), &raw); err2 == nil {
+		if err2 := utils.UnmarshalJSONUseNumber([]byte(trimmed), &raw); err2 == nil {
 			args = map[string]any{"value": raw}
 		} else {
 			return arguments, false

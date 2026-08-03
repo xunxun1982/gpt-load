@@ -717,6 +717,14 @@ func TestForceStreamRequest(t *testing.T) {
 	}
 }
 
+func TestForceStreamRequestPreservesLargeIntegers(t *testing.T) {
+	t.Parallel()
+
+	result, modified := ForceStreamRequest([]byte(`{"model":"gpt-test","request_id":9007199254740993}`))
+	assert.True(t, modified)
+	assert.Contains(t, string(result), `"request_id":9007199254740993`)
+}
+
 func BenchmarkOpenAIResponseChannel_ModifyRequest(b *testing.B) {
 	b.ReportAllocs()
 

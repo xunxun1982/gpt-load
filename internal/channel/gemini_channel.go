@@ -257,7 +257,7 @@ func (ch *GeminiChannel) applyNativeFormatRedirectWithIndex(req *http.Request, b
 // Supports both V1 and V2 redirect rules.
 func (ch *GeminiChannel) TransformModelList(req *http.Request, bodyBytes []byte, group *models.Group) (map[string]any, error) {
 	var response map[string]any
-	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &response); err != nil {
 		logrus.WithError(err).Debug("Failed to parse model list response, returning empty")
 		return nil, err
 	}

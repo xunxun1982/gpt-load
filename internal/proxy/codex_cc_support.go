@@ -120,7 +120,7 @@ func (item CodexOutputItem) MarshalJSON() ([]byte, error) {
 		return out, nil
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(out, &payload); err != nil {
+	if err := decodeCodexJSONUseNumber(out, &payload); err != nil {
 		return out, nil
 	}
 	var args any

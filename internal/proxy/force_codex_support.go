@@ -165,9 +165,7 @@ func isValidCodexToolCallArguments(toolName, arguments string, toolCtx *codexToo
 }
 
 func decodeCodexJSONUseNumber(data []byte, value any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	return decoder.Decode(value)
+	return utils.UnmarshalJSONUseNumber(data, value)
 }
 
 func (ctx *codexToolContext) chatNameFor(name, namespace string) string {
@@ -1236,9 +1234,7 @@ func validateForceCodexTools(tools []CodexTool, target string) error {
 			if tool.Execution != "" && tool.Execution != "client" {
 				return unsupportedCodexTool(toolType, target, "only client execution is reversible")
 			}
-			if strings.TrimSpace(tool.Description) == "" || len(tool.Parameters) == 0 || string(tool.Parameters) == "null" {
-				return unsupportedCodexTool(toolType, target, "description and parameters are required for reversible conversion")
-			}
+			// Missing description and parameters use the shared conversion defaults.
 		default:
 			return unsupportedCodexTool(toolType, target, "the gateway has no equivalent executor or result contract")
 		}

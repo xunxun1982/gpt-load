@@ -961,7 +961,7 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 	}
 
 	var req map[string]any
-	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &req); err != nil {
 		logrus.WithError(err).WithField("group", safeGroupName(group)).
 			Warn("Failed to unmarshal request body for function call rewrite")
 		return bodyBytes, "", err
@@ -1261,6 +1261,10 @@ func (ps *ProxyServer) applyFunctionCallRequestRewrite(
 			shouldRemove = v < minTokensForXml
 		case int64:
 			shouldRemove = v < minTokensForXml
+		case json.Number:
+			if parsed, err := v.Float64(); err == nil {
+				shouldRemove = parsed < minTokensForXml
+			}
 		}
 		if shouldRemove {
 			delete(req, "max_tokens")
@@ -1347,7 +1351,7 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 
 	// Fallback: if we cannot parse JSON, behave like normal response handler.
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(body, &payload); err != nil {
 		markResponseProcessingFailed(c)
 		writeFunctionCallPassthrough(c, body, shouldCapture, false)
 		return
@@ -1616,7 +1620,7 @@ func (ps *ProxyServer) handleFunctionCallResponsesNormalResponse(c *gin.Context,
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(body, &payload); err != nil {
 		markResponseProcessingFailed(c)
 		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), false)
 		return
@@ -1699,7 +1703,7 @@ func (ps *ProxyServer) handleFunctionCallAnthropicNormalResponse(c *gin.Context,
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(body, &payload); err != nil {
 		markResponseProcessingFailed(c)
 		writeFunctionCallPassthrough(c, body, shouldCaptureResponse(c), false)
 		return
@@ -2178,11 +2182,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		if dataStr != "" {
 			setTokenUsageFromBody(c, []byte(dataStr))
 			var evt map[string]any
-			if err := json.Unmarshal([]byte(dataStr), &evt); err == nil {
-				if choicesVal, ok := evt["choices"]; ok {
-					if choices, ok := choicesVal.([]any); ok && len(choices) == 0 {
+			if err := utils.UnmarshalJSONUseNumber([]byte(dataStr), &evt); err == nil {
+				if choicesVal, hasChoices := evt["choices"]; hasChoices {
+					if choices, choicesArray := choicesVal.([]any); choicesArray && len(choices) == 0 {
 						_, usageOnlyTail = evt["usage"]
-					} else if ok && len(choices) > 0 {
+					} else if choicesArray && len(choices) > 0 {
 						if ch, ok := choices[0].(map[string]any); ok {
 							terminalChoice = chatFunctionCallComplete(ch)
 							if deltaVal, ok := ch["delta"].(map[string]any); ok {
@@ -2378,6 +2382,8 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 							}
 						}
 					}
+				} else {
+					_, usageOnlyTail = evt["usage"]
 				}
 				// Re-serialize with modified content for forwarding. For intermediate
 				// events we rebuild only the data: line and intentionally drop any
@@ -2511,7 +2517,7 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 
 	// Modify the last event to include tool_calls and finish_reason "tool_calls".
 	var lastEvt map[string]any
-	if err := json.Unmarshal([]byte(prevEventData), &lastEvt); err != nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(prevEventData), &lastEvt); err != nil {
 		logUpstreamError("parsing last streaming event for function calls", err)
 		finalizeTokenEstimate()
 		if len(prevEventLines) > 0 {
@@ -3063,7 +3069,7 @@ func collectResponsesFunctionCallStreamText(c *gin.Context, events []functionCal
 			continue
 		}
 		var payload map[string]any
-		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
+		if err := utils.UnmarshalJSONUseNumber([]byte(event.Data), &payload); err != nil {
 			markResponseProcessingFailed(c)
 			continue
 		}
@@ -3141,7 +3147,7 @@ func collectAnthropicFunctionCallStreamText(c *gin.Context, events []functionCal
 			continue
 		}
 		var payload map[string]any
-		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
+		if err := utils.UnmarshalJSONUseNumber([]byte(event.Data), &payload); err != nil {
 			parseValid = false
 			continue
 		}
@@ -8172,14 +8178,14 @@ func extractBalancedJSON(s string) string {
 // Returns the parsed value and true if successful, or nil and false if parsing fails.
 func tryParseJSON(s string) (any, bool) {
 	var jsonVal any
-	if err := json.Unmarshal([]byte(s), &jsonVal); err == nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(s), &jsonVal); err == nil {
 		return jsonVal, true
 	}
 
 	// If direct parsing fails, attempt to repair common malformed JSON patterns
 	// that appear in Claude Code output (e.g., from real-world production log)
 	repaired := repairMalformedJSON(s)
-	if err := json.Unmarshal([]byte(repaired), &jsonVal); err == nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(repaired), &jsonVal); err == nil {
 		return jsonVal, true
 	}
 
@@ -8788,7 +8794,7 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 		trimmed == "true" || trimmed == "false" || trimmed == "null" {
 		var jsonVal any
 		// First try direct parsing
-		if err := json.Unmarshal([]byte(trimmed), &jsonVal); err == nil {
+		if err := utils.UnmarshalJSONUseNumber([]byte(trimmed), &jsonVal); err == nil {
 			// If it's already a map, return directly
 			if mapVal, ok := jsonVal.(map[string]any); ok {
 				return mapVal
@@ -8800,7 +8806,7 @@ func extractParameters(content string, mcpParamRe, argRe *regexp.Regexp) map[str
 		// If direct parsing fails, try repairing malformed JSON first
 		// This handles cases like {"id": "1",": "content"} (missing field name)
 		repaired := repairMalformedJSON(trimmed)
-		if err := json.Unmarshal([]byte(repaired), &jsonVal); err == nil {
+		if err := utils.UnmarshalJSONUseNumber([]byte(repaired), &jsonVal); err == nil {
 			if mapVal, ok := jsonVal.(map[string]any); ok {
 				return mapVal
 			}
@@ -8977,7 +8983,7 @@ func parseValueOrString(s string) any {
 
 	var val any
 	// First try direct parsing
-	if err := json.Unmarshal([]byte(s), &val); err == nil {
+	if err := utils.UnmarshalJSONUseNumber([]byte(s), &val); err == nil {
 		// Recursively sanitize string values within parsed JSON
 		return sanitizeJsonValue(val)
 	}
@@ -8988,7 +8994,7 @@ func parseValueOrString(s string) any {
 		firstChar := trimmed[0]
 		if firstChar == '{' || firstChar == '[' {
 			repaired := repairMalformedJSON(trimmed)
-			if err := json.Unmarshal([]byte(repaired), &val); err == nil {
+			if err := utils.UnmarshalJSONUseNumber([]byte(repaired), &val); err == nil {
 				return sanitizeJsonValue(val)
 			}
 		}
@@ -9202,10 +9208,10 @@ func extractToolCallsFromJSONContent(content string, knownTools map[string]bool)
 
 		// Try to parse the JSON object
 		var obj map[string]any
-		if err := json.Unmarshal([]byte(jsonStr), &obj); err != nil {
+		if err := utils.UnmarshalJSONUseNumber([]byte(jsonStr), &obj); err != nil {
 			// Try to repair common JSON issues
 			repairedJSON := repairMalformedJSON(jsonStr)
-			if err := json.Unmarshal([]byte(repairedJSON), &obj); err != nil {
+			if err := utils.UnmarshalJSONUseNumber([]byte(repairedJSON), &obj); err != nil {
 				logrus.WithFields(logrus.Fields{
 					"tool_name":    toolName,
 					"json_preview": utils.TruncateString(jsonStr, 200),

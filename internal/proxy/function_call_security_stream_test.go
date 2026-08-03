@@ -71,29 +71,42 @@ func TestFunctionCallSecurityCodexCollectedDisconnectDoesNotExecute(t *testing.T
 }
 
 func TestFunctionCallSecurityChatUsageTailFollowsConvertedCall(t *testing.T) {
-	ps, c, w, trigger := newFunctionCallSecurityContext(t, "openai", "/v1/chat/completions", "auto", "A")
-	callText := trigger + `<invoke name="A"><parameter name="q">test</parameter></invoke>`
-	stream := strings.Join([]string{
-		fmt.Sprintf(`data: {"id":"chat_1","choices":[{"index":0,"delta":{"content":%q},"finish_reason":null}]}`, callText),
-		``,
-		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
-		``,
-		`data: {"id":"chat_1","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`,
-		``,
-		`data: [DONE]`,
-		``,
-	}, "\n")
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       io.NopCloser(strings.NewReader(stream)),
-	}
-	ps.handleFunctionCallStreamingResponse(c, resp)
-	output := w.Body.String()
-	toolAt := strings.Index(output, `"tool_calls"`)
-	usageAt := strings.Index(output, `"total_tokens":8`)
-	if toolAt < 0 || usageAt < 0 || usageAt < toolAt {
-		t.Fatalf("expected converted call followed by usage tail: %s", output)
+	for _, usageEvent := range []struct {
+		name string
+		data string
+	}{
+		{name: "empty choices", data: `data: {"id":"chat_1","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8},"request_id":9007199254740993}`},
+		{name: "missing choices", data: `data: {"id":"chat_1","usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8},"request_id":9007199254740993}`},
+	} {
+		t.Run(usageEvent.name, func(t *testing.T) {
+			ps, c, w, trigger := newFunctionCallSecurityContext(t, "openai", "/v1/chat/completions", "auto", "A")
+			callText := trigger + `<invoke name="A"><parameter name="q">test</parameter></invoke>`
+			stream := strings.Join([]string{
+				fmt.Sprintf(`data: {"id":"chat_1","choices":[{"index":0,"delta":{"content":%q},"finish_reason":null}]}`, callText),
+				``,
+				`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				``,
+				usageEvent.data,
+				``,
+				`data: [DONE]`,
+				``,
+			}, "\n")
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(stream)),
+			}
+			ps.handleFunctionCallStreamingResponse(c, resp)
+			output := w.Body.String()
+			toolAt := strings.Index(output, `"tool_calls"`)
+			usageAt := strings.Index(output, `"total_tokens":8`)
+			if toolAt < 0 || usageAt < 0 || usageAt < toolAt {
+				t.Fatalf("expected converted call followed by usage tail: %s", output)
+			}
+			if !strings.Contains(output, `"request_id":9007199254740993`) {
+				t.Fatalf("usage tail changed the large integer: %s", output)
+			}
+		})
 	}
 }
 

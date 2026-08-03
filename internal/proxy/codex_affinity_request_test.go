@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"gpt-load/internal/models"
+	"gpt-load/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -170,6 +171,37 @@ func TestSanitizeCodexIdentityChangeBoundsTurnMetadataCompatibilityHeader(t *tes
 	require.JSONEq(t, `{"thread_id":"thread-new","parent_thread_id":"parent-new","request_kind":"turn"}`, c.Request.Header.Get("X-Codex-Turn-Metadata"))
 	require.Equal(t, "parent-new", c.Request.Header.Get("X-Codex-Parent-Thread-Id"))
 	require.Equal(t, "review", c.Request.Header.Get("X-OpenAI-Subagent"))
+}
+
+func TestSyncCodexHeaderRejectsInvalidFieldValues(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{"line\rbreak", "line\nbreak", "null\x00byte", "delete\x7fbyte"} {
+		header := http.Header{"Thread-Id": []string{"stale"}}
+		syncCodexHeader(header, "Thread-Id", value)
+		require.Empty(t, header.Get("Thread-Id"))
+	}
+
+	header := make(http.Header)
+	syncCodexHeader(header, "Thread-Id", "tab\tvalue")
+	require.Equal(t, "tab\tvalue", header.Get("Thread-Id"))
+}
+
+func TestSyncCodexCompatibilityHeadersRejectsControlsBeforeTrimming(t *testing.T) {
+	t.Parallel()
+
+	header := http.Header{"Thread-Id": []string{"stale"}}
+	syncCodexCompatibilityHeaders(header, []byte(`{"client_metadata":{"thread_id":"\ntrimmed"}}`))
+	require.Empty(t, header.Get("Thread-Id"))
+}
+
+func TestBoundedCodexTurnMetadataHeaderRejectsOversizedValue(t *testing.T) {
+	t.Parallel()
+
+	original := `{"payload":"` + strings.Repeat("x", utils.MaxForwardedMetadataHeaderBytes) + `"}`
+	var metadata map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(original), &metadata))
+	require.Empty(t, boundedCodexTurnMetadataHeader(metadata, original))
 }
 
 func mustJSONMarshal(t *testing.T, value any) []byte {

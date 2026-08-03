@@ -4395,6 +4395,22 @@ func TestNormalizeOpenAIToolCallArguments_BashCommandWithPath(t *testing.T) {
 	}
 }
 
+func TestToolArgumentRewritersPreserveLargeIntegers(t *testing.T) {
+	t.Parallel()
+
+	input := `{"command":"python F:\\test\\script.py","nested":"{\"id\":9007199254740993}","request_id":9007199254740993}`
+	t.Run("Bash path escaping", func(t *testing.T) {
+		result := doubleEscapeWindowsPathsForBash(input)
+		require.Contains(t, result, `"request_id":9007199254740993`)
+	})
+	t.Run("generic normalization", func(t *testing.T) {
+		result, ok := normalizeOpenAIToolCallArguments("Bash", input)
+		require.True(t, ok)
+		require.Contains(t, result, `"request_id":9007199254740993`)
+		require.Contains(t, result, `"nested":{"id":9007199254740993}`)
+	})
+}
+
 // TestDoubleEscapeWindowsPathsForBash tests the doubleEscapeWindowsPathsForBash function
 // that doubles backslash escaping ONLY in the "command" field of Bash tool arguments.
 func TestDoubleEscapeWindowsPathsForBash(t *testing.T) {

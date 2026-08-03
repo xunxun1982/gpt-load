@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"gpt-load/internal/utils"
 )
 
 type codexHeaderMapping struct {
@@ -61,11 +63,17 @@ func boundedCodexTurnMetadataHeader(metadata map[string]json.RawMessage, origina
 		return ""
 	}
 	if _, ok := metadata["code_mode_tool_names"]; !ok {
+		if len(original) > utils.MaxForwardedMetadataHeaderBytes {
+			return ""
+		}
 		return original
 	}
 	delete(metadata, "code_mode_tool_names")
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
+		return ""
+	}
+	if len(encoded) > utils.MaxForwardedMetadataHeaderBytes {
 		return ""
 	}
 	return string(encoded)
@@ -79,11 +87,14 @@ func rawJSONString(values map[string]json.RawMessage, key string) string {
 	if json.Unmarshal(values[key], &value) != nil {
 		return ""
 	}
+	if !utils.IsValidHTTPHeaderValue(value) {
+		return ""
+	}
 	return strings.TrimSpace(value)
 }
 
 func syncCodexHeader(header http.Header, name, value string) {
-	if value == "" {
+	if value == "" || !utils.IsValidHTTPHeaderValue(value) {
 		header.Del(name)
 		return
 	}

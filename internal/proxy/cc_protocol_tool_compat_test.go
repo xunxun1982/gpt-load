@@ -131,7 +131,7 @@ func TestCCProtocolToolCompatUnsupported(t *testing.T) {
 func TestCCProtocolRequestCompatMapsCurrentFields(t *testing.T) {
 	req := mustParseClaudeRequest(t, `{
 		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],
-		"metadata":{"user_id":"user-42"},"service_tier":"standard_only",
+		"metadata":{"user_id":"user-42"},"service_tier":" Standard_Only ",
 		"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}
 	}`)
 

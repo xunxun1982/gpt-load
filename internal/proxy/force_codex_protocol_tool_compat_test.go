@@ -47,12 +47,25 @@ func TestProtocolToolCompatReadsAdditionalAndToolSearchTools(t *testing.T) {
 }
 
 func TestProtocolToolCompatDefaultsToolSearchExecutionToClient(t *testing.T) {
-	body := []byte(`{"model":"gpt-test","input":"hello","tools":[{"type":"tool_search","description":"Find tools","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}]}`)
+	body := []byte(`{"model":"gpt-test","input":"hello","tools":[{"type":"tool_search"}]}`)
+	var req CodexRequest
+	require.NoError(t, json.Unmarshal(body, &req))
+	item := codexOutputItemFromChatToolCall("call_search", codexToolSearchProxyName, `{}`, newCodexToolContext(req.Tools))
+	require.Equal(t, "client", item.Execution)
+
 	for _, channelType := range []string{"openai", "anthropic"} {
 		t.Run(channelType, func(t *testing.T) {
 			out := applyForceCodexCompat(t, channelType, body)
-			tools := decodeCompatObject(t, out)["tools"].([]any)
-			require.Len(t, tools, 1)
+			tool := decodeCompatObject(t, out)["tools"].([]any)[0].(map[string]any)
+			schemaKey := "input_schema"
+			if channelType == "openai" {
+				tool = tool["function"].(map[string]any)
+				schemaKey = "parameters"
+			}
+			require.NotEmpty(t, tool["description"])
+			schema := tool[schemaKey].(map[string]any)
+			require.Equal(t, "object", schema["type"])
+			require.Contains(t, schema["properties"].(map[string]any), "query")
 		})
 	}
 }
@@ -85,11 +98,13 @@ func TestProtocolToolCompatPreservesStrictAcrossSupportedUpstreams(t *testing.T)
 			payload := decodeCompatObject(t, out)
 			tools := payload["tools"].([]any)
 			tool := tools[0].(map[string]any)
+			schemaKey := "input_schema"
 			if channelType == "openai" {
 				tool = tool["function"].(map[string]any)
+				schemaKey = "parameters"
 			}
 			assert.Equal(t, true, tool["strict"])
-			parameters := tool[map[bool]string{true: "parameters", false: "input_schema"}[channelType == "openai"]].(map[string]any)
+			parameters := tool[schemaKey].(map[string]any)
 			maximum := parameters["properties"].(map[string]any)["id"].(map[string]any)["maximum"].(json.Number)
 			assert.Equal(t, "9007199254740993", maximum.String())
 		})

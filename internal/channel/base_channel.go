@@ -426,7 +426,7 @@ func (b *BaseChannel) ApplyModelRedirectWithIndex(req *http.Request, bodyBytes [
 	}
 
 	var requestData map[string]any
-	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &requestData); err != nil {
 		return bodyBytes, "", -1, nil
 	}
 
@@ -492,7 +492,7 @@ func (b *BaseChannel) ApplyModelRedirectWithIndex(req *http.Request, bodyBytes [
 // Supports both V1 (one-to-one) and V2 (one-to-many) rules.
 func (b *BaseChannel) TransformModelList(req *http.Request, bodyBytes []byte, group *models.Group) (map[string]any, error) {
 	var response map[string]any
-	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &response); err != nil {
 		logrus.WithError(err).Debug("Failed to parse model list response, returning empty")
 		return nil, err
 	}

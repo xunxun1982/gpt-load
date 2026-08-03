@@ -91,6 +91,19 @@ func TestCodexDegradationMitigationContinuationPayload(t *testing.T) {
 	assert.Equal(t, "commentary", input[2].(map[string]any)["phase"])
 }
 
+func TestWorkBuddyDegradationPayloadsPreserveLargeIntegers(t *testing.T) {
+	t.Parallel()
+
+	base := []byte(`{"model":"gpt-5","stream":true,"input":[],"request_id":9007199254740993}`)
+	initial, err := prepareCodexDegradationMitigationInitialPayload(base)
+	require.NoError(t, err)
+	require.Contains(t, string(initial), `"request_id":9007199254740993`)
+
+	continuation, err := buildCodexDegradationMitigationContinuationPayload(base, nil, "Continue thinking")
+	require.NoError(t, err)
+	require.Contains(t, string(continuation), `"request_id":9007199254740993`)
+}
+
 func TestMergeResponsesEncryptedIncludeHandlesUncomparableValues(t *testing.T) {
 	t.Parallel()
 

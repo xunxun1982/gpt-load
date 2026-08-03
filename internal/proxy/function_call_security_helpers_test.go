@@ -61,6 +61,24 @@ func newFunctionCallSecurityContext(
 	return ps, c, w, trigger
 }
 
+func TestFunctionCallRequestRewritePreservesLargeIntegers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	group := &models.Group{Name: "security-test", ChannelType: "openai"}
+	c.Set("group", group)
+	body := []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"test"}],"tools":[{"type":"function","function":{"name":"A","parameters":{"type":"object"}}}],"request_id":9007199254740993}`)
+
+	rewritten, trigger, err := (&ProxyServer{}).applyFunctionCallRequestRewrite(c, group, body)
+	if err != nil || trigger == "" {
+		t.Fatalf("rewrite failed: trigger=%q err=%v", trigger, err)
+	}
+	if !bytes.Contains(rewritten, []byte(`"request_id":9007199254740993`)) {
+		t.Fatalf("rewrite changed the large integer: %s", rewritten)
+	}
+}
+
 func runFunctionCallSecurityResponse(
 	t *testing.T,
 	ps *ProxyServer,

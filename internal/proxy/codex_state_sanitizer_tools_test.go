@@ -26,7 +26,9 @@ func TestSanitizeCodexStateDomainFiltersEncryptedToolOutputs(t *testing.T) {
     {"type":"encrypted_content","encrypted_content":"cipher"}
   ]},
   {"type":"custom_tool_call","call_id":"custom-keep","name":"apply_patch","input":"patch"},
-  {"type":"custom_tool_call_output","call_id":"custom-keep","output":"Done!"}
+  {"type":"custom_tool_call_output","call_id":"custom-keep","output":"Done!"},
+  {"type":"tool_search_call","call_id":"encrypted-call","arguments":"{}","encrypted_content":"cipher"},
+  {"type":"tool_search_output","call_id":"encrypted-call","output":"portable"}
 ]}`)
 
 	got, changed, err := sanitizeCodexStateDomain(body, true)
@@ -56,6 +58,8 @@ func TestSanitizeCodexStateDomainFiltersEncryptedToolOutputs(t *testing.T) {
 	require.NotContains(t, items, `custom-drop:"custom_tool_call_output"`)
 	require.Contains(t, items, `custom-keep:"custom_tool_call"`)
 	require.Contains(t, items, `custom-keep:"custom_tool_call_output"`)
+	require.NotContains(t, items, `encrypted-call:"tool_search_call"`)
+	require.NotContains(t, items, `encrypted-call:"tool_search_output"`)
 }
 
 func TestSanitizeCodexStateDomainDropsUnpairedEncryptedOutputOnly(t *testing.T) {

@@ -34,6 +34,7 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -6229,6 +6230,70 @@ func TestSanitizeInternalErrorRedactsURLCredentials(t *testing.T) {
 	assert.NotContains(t, got.Error(), "goog-secret")
 	assert.ErrorIs(t, got, raw)
 	assert.Nil(t, sanitizeInternalError(nil))
+}
+
+func TestRequestLogBoundariesSanitizeInternalErrors(t *testing.T) {
+	rawErr := errors.New(`Post "https://upstream.example/v1/messages?key=plain-secret&x-goog-api-key=goog-secret": request canceled`)
+	check := func(t *testing.T, write func(*ProxyServer, *gin.Context, *models.Group)) {
+		memStore := store.NewMemoryStore()
+		ps := &ProxyServer{
+			requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+		}
+		group := &models.Group{ID: 1, Name: "test-group", GroupType: "standard"}
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+		write(ps, ctx, group)
+		logEntry := popRecordedRequestLog(t, memStore)
+		assert.Contains(t, logEntry.ErrorMessage, "key=[REDACTED]")
+		assert.Contains(t, logEntry.ErrorMessage, "x-goog-api-key=[REDACTED]")
+		assert.NotContains(t, logEntry.ErrorMessage, "plain-secret")
+		assert.NotContains(t, logEntry.ErrorMessage, "goog-secret")
+	}
+
+	t.Run("early error", func(t *testing.T) {
+		check(t, func(ps *ProxyServer, ctx *gin.Context, group *models.Group) {
+			ps.logEarlyError(ctx, group, time.Now(), http.StatusInternalServerError, rawErr)
+		})
+	})
+	t.Run("request error", func(t *testing.T) {
+		check(t, func(ps *ProxyServer, ctx *gin.Context, group *models.Group) {
+			ps.logRequest(ctx, group, group, nil, time.Now(), http.StatusInternalServerError, rawErr, false, "", nil, "", nil, nil, models.RequestTypeFinal)
+		})
+	})
+}
+
+func TestLogRequestSanitizesErrorBeforeDebugLogging(t *testing.T) {
+	logger := logrus.StandardLogger()
+	previousOutput := logger.Out
+	previousLevel := logger.Level
+	previousFormatter := logger.Formatter
+	var output bytes.Buffer
+	logger.SetOutput(&output)
+	logger.SetLevel(logrus.DebugLevel)
+	logger.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
+	t.Cleanup(func() {
+		logger.SetOutput(previousOutput)
+		logger.SetLevel(previousLevel)
+		logger.SetFormatter(previousFormatter)
+	})
+
+	memStore := store.NewMemoryStore()
+	ps := &ProxyServer{
+		requestLogService: services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager()),
+	}
+	group := &models.Group{ID: 1, Name: "test-group", GroupType: "standard"}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rawErr := errors.New(`upstream rejected AUTH_KEY=fixture-auth-secret ENCRYPTION_KEY=fixture-encryption-secret`)
+
+	ps.logRequest(ctx, group, group, nil, time.Now(), http.StatusInternalServerError, rawErr, false, "", nil, "", nil, nil, models.RequestTypeFinal)
+
+	logged := output.String()
+	assert.Contains(t, logged, "AUTH_KEY=[REDACTED]")
+	assert.Contains(t, logged, "ENCRYPTION_KEY=[REDACTED]")
+	assert.NotContains(t, logged, "fixture-auth-secret")
+	assert.NotContains(t, logged, "fixture-encryption-secret")
 }
 
 func TestLogRequestUsesEstimatedTokenFallbackWhenUsageMissing(t *testing.T) {

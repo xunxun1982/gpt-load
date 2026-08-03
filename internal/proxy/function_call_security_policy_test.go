@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -70,6 +71,34 @@ func TestFunctionCallSecurityPreservesLargeInteger(t *testing.T) {
 	}
 }
 
+func TestFunctionCallJSONFallbacksPreserveLargeInteger(t *testing.T) {
+	parsers := []struct {
+		name  string
+		parse func(string) (any, bool)
+	}{
+		{name: "try parse JSON", parse: tryParseJSON},
+		{name: "parse value or string", parse: func(value string) (any, bool) {
+			return parseValueOrString(value), true
+		}},
+	}
+
+	for _, tt := range parsers {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, ok := tt.parse(`{"id":9007199254740993}`)
+			if !ok {
+				t.Fatal("parser rejected valid JSON")
+			}
+			encoded, err := json.Marshal(parsed)
+			if err != nil {
+				t.Fatalf("marshal parsed JSON: %v", err)
+			}
+			if !strings.Contains(string(encoded), `"id":9007199254740993`) {
+				t.Fatalf("parser changed the large integer: %s", encoded)
+			}
+		})
+	}
+}
+
 func TestFunctionCallSecurityRejectsDuplicateTriggerAcrossMessageFields(t *testing.T) {
 	ps, c, w, trigger := newFunctionCallSecurityContext(t, "openai", "/v1/chat/completions", "auto", "A")
 	reasoning := trigger + `<invoke name="A"><parameter name="q">test</parameter></invoke>`
@@ -112,6 +141,17 @@ func TestFunctionCallSecurityUsesSchemaForNumericLookingScalars(t *testing.T) {
 		true,
 	); valid {
 		t.Fatal("non-JSON scalar bypassed integer schema validation")
+	}
+	result, valid := integerSession.ParseAndValidate(
+		trigger+`<invoke name="A"><parameter name="n">123</parameter></invoke>`,
+		true,
+	)
+	if !valid || len(result.Calls) != 1 {
+		t.Fatalf("integer schema rejected a valid number: %#v", result)
+	}
+	number, ok := result.Calls[0].Args["n"].(json.Number)
+	if !ok || number.String() != "123" {
+		t.Fatalf("integer schema did not decode a JSON number: %#v", result.Calls[0].Args["n"])
 	}
 }
 

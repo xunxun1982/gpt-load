@@ -37,7 +37,6 @@ func TestCCProtocolContentCompatMedia(t *testing.T) {
 
 func TestCCProtocolContentCompatUnsupportedBlocks(t *testing.T) {
 	tests := []struct{ name, role, block string }{
-		{name: "signed thinking", role: "assistant", block: `{"type":"thinking","thinking":"secret","signature":"opaque-secret-value"}`},
 		{name: "redacted thinking", role: "assistant", block: `{"type":"redacted_thinking","data":"opaque"}`},
 		{name: "server tool use", role: "assistant", block: `{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{}}`},
 		{name: "web search result", role: "user", block: `{"type":"web_search_tool_result","tool_use_id":"srv_1","content":[]}`},
@@ -65,7 +64,7 @@ func TestCCProtocolContentCompatPlainThinkingHistory(t *testing.T) {
 	req := mustParseClaudeRequest(t, `{
 		"model":"gpt-test","max_tokens":64,
 		"messages":[{"role":"assistant","content":[
-			{"type":"thinking","thinking":"plan"},
+			{"type":"thinking","thinking":"plan","signature":"opaque-secret-value"},
 			{"type":"tool_use","id":"call_1","name":"lookup","input":{}}
 		]}]}`)
 
@@ -75,6 +74,9 @@ func TestCCProtocolContentCompatPlainThinkingHistory(t *testing.T) {
 	require.NotNil(t, got.Messages[0].ReasoningContent)
 	require.Equal(t, "plan", *got.Messages[0].ReasoningContent)
 	require.Equal(t, "{}", got.Messages[0].ToolCalls[0].Function.Arguments)
+	encoded, err := json.Marshal(got.Messages[0])
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "opaque-secret-value")
 }
 
 func TestCCProtocolContentCompatRejectsNonTextSystem(t *testing.T) {
