@@ -30,12 +30,12 @@ test("site editor uses the available desktop width for a compact two-column form
 
   assert.match(source, /\.site-form-modal\s*\{[\s\S]*width:\s*min\(1040px,/);
   assert.match(source, /\.site-form-card\s+:deep\(\.n-card__content\)[\s\S]*overflow-y:\s*auto;/);
+  // Each form section lays its fields out on a two-column grid; rows are flattened
+  // into the grid via display: contents, and full-width fields span both columns.
   assert.match(
     source,
-    /@media \(min-width:\s*900px\)[\s\S]*\.site-form\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,/
+    /\.form-section\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/
   );
-  assert.match(
-    source,
-    /\.site-form\s*>\s*\.form-section:last-child\s*\{[\s\S]*display:\s*grid;[\s\S]*grid-template-columns:\s*repeat\(2,/
-  );
+  assert.match(source, /\.form-row\s*\{\s*display:\s*contents/);
+  assert.match(source, /\.form-item-full\s*\{[\s\S]*grid-column:\s*1\s*\/\s*-1/);
 });

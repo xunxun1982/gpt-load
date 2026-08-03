@@ -398,7 +398,7 @@ async function handleSubmit() {
         :model="formData"
         :rules="rules"
         label-placement="left"
-        label-width="120px"
+        label-width="auto"
         class="aggregate-form"
         :style="{ '--n-label-height': '32px' }"
       >
