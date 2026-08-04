@@ -3073,6 +3073,12 @@ watch(
     line-height: 1.35;
     white-space: normal;
   }
+  /* The multi-auth notice is longer than the narrow card content (en/ja are
+   * ~700-870px at 12px font); keep it wrapped instead of clipped by the
+   * card's overflow-x: hidden. Wide screens keep the single-line nowrap. */
+  .multi-auth-hint {
+    white-space: normal;
+  }
 }
 </style>
 
