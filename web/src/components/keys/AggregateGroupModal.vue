@@ -398,7 +398,7 @@ async function handleSubmit() {
         :model="formData"
         :rules="rules"
         label-placement="left"
-        label-width="120px"
+        label-width="auto"
         class="aggregate-form"
         :style="{ '--n-label-height': '32px' }"
       >
@@ -729,9 +729,12 @@ async function handleSubmit() {
   color: var(--text-primary);
 }
 
+/* The add-precondition button spans the full block width intentionally.
+ * label-width="auto" fits per-locale label widths (e.g. zh 142px / en 216px /
+ * ja 226px), so a fixed padding-left would misalign with the inputs above;
+ * full width keeps the layout locale-independent. */
 .add-precondition-row {
   margin-top: 6px;
-  padding-left: 120px;
 }
 
 .aggregate-form-footer {
@@ -808,9 +811,5 @@ async function handleSubmit() {
   }
 }
 
-@media (max-width: 640px) {
-  .add-precondition-row {
-    padding-left: 0;
-  }
-}
+
 </style>

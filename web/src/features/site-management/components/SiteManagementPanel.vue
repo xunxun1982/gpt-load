@@ -2395,7 +2395,7 @@ watch(
             <template #icon><n-icon :component="Close" /></template>
           </n-button>
         </template>
-        <n-form label-placement="left" label-width="120" size="small" class="site-form">
+        <n-form label-placement="left" label-width="auto" class="site-form">
           <div class="form-section">
             <h4 class="section-title">{{ t("siteManagement.basicInfo") }}</h4>
             <div class="form-row">
@@ -2422,23 +2422,15 @@ watch(
                 </div>
               </n-form-item>
             </div>
-            <n-form-item :label="t('siteManagement.baseUrl')" required>
+            <n-form-item :label="t('siteManagement.baseUrl')" class="form-item-full" required>
               <n-input v-model:value="siteForm.base_url" placeholder="https://example.com" />
             </n-form-item>
-            <div class="form-row form-row-compact">
-              <n-form-item
-                :label="t('siteManagement.sort')"
-                label-width="auto"
-                class="form-item-sort"
-              >
+            <div class="form-row">
+              <n-form-item :label="t('siteManagement.sort')" class="form-item-half">
                 <n-input-number v-model:value="siteForm.sort" :min="0" style="width: 150px" />
               </n-form-item>
-              <n-form-item
-                :label="t('siteManagement.balanceMultiplier')"
-                label-width="auto"
-                class="form-item-multiplier"
-              >
-                <div class="multiplier-field">
+              <n-form-item :label="t('siteManagement.balanceMultiplier')" class="form-item-half">
+                <div class="field-stack">
                   <n-input-number
                     v-model:value="siteForm.balance_multiplier"
                     :min="1"
@@ -2451,21 +2443,19 @@ watch(
                   </n-text>
                 </div>
               </n-form-item>
-              <n-form-item
-                :label="t('siteManagement.enabled')"
-                label-width="auto"
-                class="form-item-switch"
-              >
+            </div>
+            <div class="form-row">
+              <n-form-item :label="t('siteManagement.enabled')" class="form-item-half">
                 <n-switch v-model:value="siteForm.enabled" />
               </n-form-item>
+              <n-form-item :label="t('siteManagement.notes')" class="form-item-half">
+                <n-input
+                  v-model:value="siteForm.notes"
+                  :placeholder="t('siteManagement.notesPlaceholder')"
+                />
+              </n-form-item>
             </div>
-            <n-form-item :label="t('siteManagement.notes')">
-              <n-input
-                v-model:value="siteForm.notes"
-                :placeholder="t('siteManagement.notesPlaceholder')"
-              />
-            </n-form-item>
-            <n-form-item :label="t('common.description')">
+            <n-form-item :label="t('common.description')" class="form-item-full">
               <n-input
                 v-model:value="siteForm.description"
                 type="textarea"
@@ -2503,6 +2493,7 @@ watch(
             </div>
             <n-form-item
               :label="t('siteManagement.customCheckinUrl')"
+              class="form-item-full"
               :required="siteForm.site_type === 'sub2api' && siteForm.checkin_enabled"
             >
               <div class="field-stack">
@@ -2523,46 +2514,48 @@ watch(
                 </n-text>
               </div>
             </n-form-item>
-            <div class="form-row form-row-switches">
-              <n-form-item :label="t('siteManagement.checkinAvailable')" class="form-item-switch">
+            <div class="form-row">
+              <n-form-item :label="t('siteManagement.checkinAvailable')" class="form-item-half">
                 <n-switch v-model:value="siteForm.checkin_available" />
               </n-form-item>
-              <n-form-item :label="t('siteManagement.autoCheckinEnabled')" class="form-item-switch">
+              <n-form-item :label="t('siteManagement.autoCheckinEnabled')" class="form-item-half">
                 <n-switch v-model:value="siteForm.checkin_enabled" />
               </n-form-item>
             </div>
-            <n-form-item :label="t('siteManagement.proxyUrl')">
-              <n-select
-                :value="siteForm.proxy_url"
-                :options="siteProxySelectOptions"
-                :placeholder="t('siteManagement.proxyUrlPlaceholder')"
-                :loading="siteProxyPoolLoading"
-                filterable
-                clearable
-                style="width: 100%"
-                @update:value="value => updateSiteProxySelection(value as string | null)"
-              />
-            </n-form-item>
-            <n-form-item :label="t('siteManagement.bypassMethod')">
-              <div class="field-stack">
+            <div class="form-row">
+              <n-form-item :label="t('siteManagement.proxyUrl')" class="form-item-half">
                 <n-select
-                  v-model:value="siteForm.bypass_method"
-                  :options="bypassMethodOptions"
-                  class="bypass-select"
+                  :value="siteForm.proxy_url"
+                  :options="siteProxySelectOptions"
+                  :placeholder="t('siteManagement.proxyUrlPlaceholder')"
+                  :loading="siteProxyPoolLoading"
+                  filterable
+                  clearable
+                  style="width: 100%"
+                  @update:value="value => updateSiteProxySelection(value as string | null)"
                 />
-                <n-text
-                  depth="3"
-                  class="field-hint provider-field-hint"
-                  :class="{ 'warning-field-hint': siteForm.bypass_method === 'stealth' }"
-                >
-                  {{ t(bypassHintKey) }}
-                </n-text>
-              </div>
-            </n-form-item>
+              </n-form-item>
+              <n-form-item :label="t('siteManagement.bypassMethod')" class="form-item-half">
+                <div class="field-stack">
+                  <n-select
+                    v-model:value="siteForm.bypass_method"
+                    :options="bypassMethodOptions"
+                    class="bypass-select"
+                  />
+                  <n-text
+                    depth="3"
+                    class="field-hint provider-field-hint"
+                    :class="{ 'warning-field-hint': siteForm.bypass_method === 'stealth' }"
+                  >
+                    {{ t(bypassHintKey) }}
+                  </n-text>
+                </div>
+              </n-form-item>
+            </div>
           </div>
           <div class="form-section">
             <h4 class="section-title">{{ t("siteManagement.authSettings") }}</h4>
-            <n-form-item :label="t('siteManagement.authType')">
+            <n-form-item :label="t('siteManagement.authType')" class="form-item-full">
               <div class="field-stack">
                 <n-select
                   v-model:value="siteForm.auth_type"
@@ -2581,45 +2574,51 @@ watch(
               </div>
             </n-form-item>
             <!-- Access Token input (shown when access_token is selected) -->
-            <n-form-item
-              v-if="siteForm.auth_type.includes('access_token')"
-              :label="t('siteManagement.authTypeAccessToken')"
-            >
-              <n-input
-                v-model:value="authValueInputs.access_token"
-                type="password"
-                show-password-on="click"
-                :placeholder="
-                  editingSite
-                    ? t('siteManagement.authValueEditHint')
-                    : t('siteManagement.authValuePlaceholder')
-                "
-              />
-            </n-form-item>
-            <n-form-item
-              v-if="siteForm.site_type === 'sub2api' && siteForm.auth_type.includes('access_token')"
-              :label="t('siteManagement.sub2ApiRefreshToken')"
-            >
-              <div class="field-stack">
+            <div v-if="siteForm.auth_type.includes('access_token')" class="form-row">
+              <n-form-item
+                :label="t('siteManagement.authTypeAccessToken')"
+                :class="siteForm.site_type === 'sub2api' ? 'form-item-half' : 'form-item-full'"
+              >
                 <n-input
-                  v-model:value="authValueInputs.refresh_token"
+                  v-model:value="authValueInputs.access_token"
                   type="password"
                   show-password-on="click"
                   :placeholder="
                     editingSite
                       ? t('siteManagement.authValueEditHint')
-                      : t('siteManagement.sub2ApiRefreshTokenPlaceholder')
+                      : t('siteManagement.authValuePlaceholder')
                   "
                 />
-                <n-text depth="3" class="field-hint provider-field-hint">
-                  {{ t("siteManagement.sub2ApiRefreshTokenHint") }}
-                </n-text>
-              </div>
-            </n-form-item>
+              </n-form-item>
+              <n-form-item
+                v-if="
+                  siteForm.site_type === 'sub2api' && siteForm.auth_type.includes('access_token')
+                "
+                :label="t('siteManagement.sub2ApiRefreshToken')"
+                class="form-item-half"
+              >
+                <div class="field-stack">
+                  <n-input
+                    v-model:value="authValueInputs.refresh_token"
+                    type="password"
+                    show-password-on="click"
+                    :placeholder="
+                      editingSite
+                        ? t('siteManagement.authValueEditHint')
+                        : t('siteManagement.sub2ApiRefreshTokenPlaceholder')
+                    "
+                  />
+                  <n-text depth="3" class="field-hint provider-field-hint">
+                    {{ t("siteManagement.sub2ApiRefreshTokenHint") }}
+                  </n-text>
+                </div>
+              </n-form-item>
+            </div>
             <!-- Cookie input (shown when cookie is selected) -->
             <n-form-item
               v-if="siteForm.auth_type.includes('cookie')"
               :label="t('siteManagement.authTypeCookie')"
+              class="form-item-full"
             >
               <div class="field-stack">
                 <n-input
@@ -2648,13 +2647,7 @@ watch(
             <n-text
               v-if="siteForm.auth_type.length > 1"
               depth="3"
-              style="
-                font-size: 12px;
-                display: block;
-                margin-top: -4px;
-                margin-bottom: 8px;
-                color: #18a058;
-              "
+              class="multi-auth-hint"
             >
               {{ t("siteManagement.multiAuthHint") }}
             </n-text>
@@ -2944,13 +2937,19 @@ watch(
 .site-form-card :deep(.n-card__footer) {
   flex: 0 0 auto;
 }
+.site-form-card :deep(.n-card-header) {
+  padding: 10px 16px !important;
+}
+.site-form-card :deep(.n-card__footer) {
+  padding: 8px 16px !important;
+}
 .site-form-card :deep(.n-card__content),
 .logs-card :deep(.n-card__content) {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 8px 16px 10px;
+  padding: 8px 16px 6px;
 }
 .site-form-card :deep(.n-card__content)::-webkit-scrollbar {
   width: 5px;
@@ -2960,8 +2959,11 @@ watch(
   border-radius: 3px;
 }
 .form-section {
-  margin-bottom: 6px;
-  padding: 6px 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 12px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
   border: 1px solid var(--n-border-color, var(--border-color));
   border-radius: 8px;
   background: var(--n-color-embedded, transparent);
@@ -2970,11 +2972,12 @@ watch(
   margin-bottom: 0;
 }
 .section-title {
+  grid-column: 1 / -1;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
   margin: 0 0 4px 0;
-  padding-bottom: 4px;
+  padding-bottom: 2px;
   border-bottom: 1px solid var(--border-color);
 }
 .section-header {
@@ -2989,42 +2992,14 @@ watch(
   border: none;
 }
 .form-row {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
+  display: contents;
 }
 .form-item-half {
-  flex: 1;
   min-width: 0;
 }
-.form-item-third {
-  flex: 1;
+.form-item-full {
+  grid-column: 1 / -1;
   min-width: 0;
-}
-.form-item-quarter {
-  flex: 0 0 120px;
-}
-.form-item-two-thirds {
-  flex: 2;
-  min-width: 0;
-}
-.form-item-sort {
-  flex: 0 0 auto;
-}
-.form-item-multiplier {
-  flex: 1;
-  min-width: 250px;
-}
-.form-item-switch {
-  flex: 0 0 auto;
-}
-.multiplier-field {
-  flex: 1;
-  min-width: 0;
-}
-.multiplier-field :deep(.n-input-number) {
-  width: 180px;
-  max-width: 100%;
 }
 .field-stack {
   flex: 1;
@@ -3032,12 +3007,11 @@ watch(
   min-width: 0;
 }
 .bypass-select {
-  width: 240px;
-  max-width: 100%;
+  width: 100%;
 }
 .field-hint {
   display: block;
-  margin-top: 2px;
+  margin-top: 1px;
   font-size: 12px;
   line-height: 1.25;
 }
@@ -3047,34 +3021,23 @@ watch(
 .warning-field-hint {
   color: #f0a020;
 }
+.multi-auth-hint {
+  grid-column: 1 / -1;
+  display: block;
+  margin-top: -4px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  line-height: 1.25;
+  color: #18a058;
+  white-space: nowrap;
+}
 .site-form-footer {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
 }
-.form-row-switches {
-  gap: 24px;
-}
-.form-row-auth {
-  gap: 12px;
-}
-.form-item-auth-type {
-  flex: 0 0 auto;
-}
-.form-item-auth-type :deep(.n-form-item-label) {
-  width: 70px !important;
-  flex-shrink: 0;
-}
-.form-item-auth-value {
-  flex: 1;
-  min-width: 0;
-}
-.form-item-auth-value :deep(.n-form-item-label) {
-  width: 70px !important;
-  flex-shrink: 0;
-}
 .site-form :deep(.n-form-item) {
-  margin-bottom: 4px !important;
+  margin-bottom: 6px !important;
   --n-feedback-height: 0 !important;
 }
 .site-form :deep(.n-form-item-label) {
@@ -3083,103 +3046,38 @@ watch(
   color: var(--text-primary);
   display: flex;
   align-items: center;
-  height: 28px;
-  line-height: 28px;
+  height: 34px;
+  line-height: 34px;
+  white-space: nowrap;
 }
 .site-form :deep(.n-input) {
   --n-border-radius: 6px;
-  --n-height: 28px;
 }
 .site-form :deep(.n-select) {
   --n-border-radius: 6px;
 }
 .site-form :deep(.n-input-number) {
   --n-border-radius: 6px;
-  --n-height: 28px;
-}
-.site-form :deep(.n-base-selection) {
-  --n-height: 28px;
-}
-.form-label-with-tooltip {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.help-icon {
-  color: var(--text-tertiary);
-  font-size: 13px;
-  cursor: help;
-  transition: color 0.2s ease;
-}
-.help-icon:hover {
-  color: var(--primary-color);
-}
-@media (min-width: 900px) {
-  .site-form {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px 10px;
-    align-items: start;
-  }
-
-  .site-form > .form-section {
-    margin-bottom: 0;
-  }
-
-  .site-form > .form-section:last-child {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    column-gap: 10px;
-  }
-
-  .site-form > .form-section:last-child > .section-title,
-  .site-form > .form-section:last-child > .n-text {
-    grid-column: 1 / -1;
-  }
 }
 @media (max-width: 720px) {
   .site-form-modal,
   .logs-modal {
     width: 95vw !important;
   }
-  .form-row {
-    flex-direction: column;
-    gap: 0;
-  }
-  .form-row-auth {
-    flex-direction: column;
-    gap: 0;
-  }
-  .form-item-half,
-  .form-item-third,
-  .form-item-quarter,
-  .form-item-two-thirds,
-  .form-item-sort,
-  .form-item-multiplier,
-  .form-item-switch,
-  .form-item-auth-type,
-  .form-item-auth-value {
-    width: 100%;
-    flex: none;
+  .form-section {
+    grid-template-columns: 1fr;
   }
   .site-form :deep(.n-form-item-label) {
-    width: 104px !important;
     height: auto;
-    min-height: 28px;
+    min-height: 34px;
     line-height: 1.35;
     white-space: normal;
   }
-  .form-row-compact :deep(.n-form-item-label) {
-    width: auto !important;
-    margin-right: 10px;
-  }
-  .form-item-auth-type :deep(.n-form-item-label),
-  .form-item-auth-value :deep(.n-form-item-label) {
-    width: 60px !important;
-  }
-  .form-item-auth-type :deep(.n-select) {
-    width: 100% !important;
+  /* The multi-auth notice is longer than the narrow card content (en/ja are
+   * ~700-870px at 12px font); keep it wrapped instead of clipped by the
+   * card's overflow-x: hidden. Wide screens keep the single-line nowrap. */
+  .multi-auth-hint {
+    white-space: normal;
   }
 }
 </style>

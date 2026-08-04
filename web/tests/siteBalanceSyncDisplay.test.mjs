@@ -223,14 +223,15 @@ test("managed-site modal keeps actions outside the scroll area with responsive s
   );
   assert.doesNotMatch(sitePanel, /\.site-form-card :deep\(\.n-card-content\)/);
   assert.match(sitePanel, /v-model:value="siteForm\.sort"[\s\S]{0,100}style="width:\s*150px"/);
-  assert.match(sitePanel, /siteManagement\.balanceMultiplier[\s\S]{0,120}label-width="auto"/);
-  assert.match(sitePanel, /\.form-section\s*\{[^}]*margin-bottom:\s*6px[^}]*padding:\s*6px 10px/s);
+  // Sort and balance multiplier share a two-column grid row; the multiplier keeps
+  // its hint below the input via field-stack.
+  assert.match(sitePanel, /siteManagement\.sort'\)"\s*class="form-item-half"/);
+  assert.match(sitePanel, /siteManagement\.balanceMultiplier'\)"\s*class="form-item-half"/);
+  assert.match(sitePanel, /siteManagement\.balanceMultiplier[\s\S]{0,400}class="field-stack"/);
+  assert.match(sitePanel, /\.form-section\s*\{[^}]*margin-bottom:\s*10px[^}]*padding:\s*8px 12px/s);
   assert.match(sitePanel, /\.section-title\s*\{[^}]*margin:\s*0 0 4px 0/s);
-  assert.match(
-    sitePanel,
-    /\.multiplier-field :deep\(\.n-input-number\)\s*\{[^}]*width:\s*180px[^}]*max-width:\s*100%/s
-  );
-  assert.match(sitePanel, /\.site-form :deep\(\.n-form-item\)\s*\{[^}]*margin-bottom:\s*4px/s);
+  assert.match(sitePanel, /\.site-form :deep\(\.n-form-item\)\s*\{[^}]*margin-bottom:\s*6px/s);
+  assert.match(sitePanel, /label-width="auto"/);
 });
 
 test("key balance display removes upstream currency and unit text", async () => {
