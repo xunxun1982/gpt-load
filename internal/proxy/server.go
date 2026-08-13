@@ -1054,7 +1054,7 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 
 	path := c.Request.URL.Path
 	// Path is already rewritten from /claude/v1/messages/count_tokens.
-	if !strings.HasSuffix(path, "/v1/messages/count_tokens") {
+	if !isClaudeCountTokensEndpoint(path) {
 		return false
 	}
 
@@ -1081,6 +1081,10 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 	// Claude /v1/messages/count_tokens returns only input_tokens.
 	c.JSON(http.StatusOK, gin.H{"input_tokens": adjustedTokens})
 	return true
+}
+
+func isClaudeCountTokensEndpoint(path string) bool {
+	return strings.HasSuffix(path, "/v1/messages/count_tokens")
 }
 
 // handleEventLoggingBatch handles Claude Code event logging batch endpoint.
@@ -1443,7 +1447,8 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 			ccConversionExpected := isCCSupportEnabled(group) && wasClaudePath && strings.HasSuffix(c.Request.URL.Path, "/v1/messages")
 			codexConversionExpected := isCodexSupportEnabled(group) && wasCodexPath && isOpenAIResponsesCodexEndpoint(c.Request.URL.Path)
-			deferParamOverrides := shouldDeferParamOverridesForProtocolConversion(group, ccConversionExpected, codexConversionExpected)
+			deferParamOverrides := shouldDeferParamOverridesForProtocolConversion(group, ccConversionExpected, codexConversionExpected) &&
+				!isClaudeCountTokensEndpoint(c.Request.URL.Path)
 			finalBodyBytes = bodyBytesAfterMapping
 			if !deferParamOverrides {
 				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
@@ -2364,7 +2369,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	codexConversionExpected := isCodexSupportEnabled(group) &&
 		(wasCodexPath || originalGroup.ChannelType == "openai-response") &&
 		isOpenAIResponsesCodexEndpoint(rewriteCodexPathToOpenAIGeneric(c.Request.URL.Path))
-	deferParamOverrides := shouldDeferParamOverridesForProtocolConversion(group, ccConversionExpected, codexConversionExpected)
+	deferParamOverrides := shouldDeferParamOverridesForProtocolConversion(group, ccConversionExpected, codexConversionExpected) &&
+		!isClaudeCountTokensEndpoint(c.Request.URL.Path)
 	if !deferParamOverrides {
 		finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
 		if err != nil {

@@ -105,7 +105,10 @@ func TestHandleProxyForceCCStrictModelRedirectRetries(t *testing.T) {
 	var receivedModels []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedModels = append(receivedModels, payload["model"].(string))
 		requestCount++
 		w.Header().Set("Content-Type", "application/json")
@@ -154,7 +157,10 @@ func TestHandleProxyAggregateForceCCAppliesOverridesAfterConversion(t *testing.T
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedPath <- r.URL.Path
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
@@ -213,6 +219,65 @@ func TestHandleProxyAggregateForceCCAppliesOverridesAfterConversion(t *testing.T
 	require.Equal(t, "xhigh", upstreamPayload["reasoning_effort"])
 }
 
+func TestHandleProxyAggregateForceCCCountTokensAppliesOverridesBeforeInterception(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps, memStore := setupTestProxyServerWithStore(t, db)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "agg-cc-count-sub", "openai")
+	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	subGroup.Config = map[string]any{
+		"cc_support":          true,
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	subGroup.ParamOverrides = datatypes.JSONMap{"prompt": strings.Repeat("x", 4000)}
+	require.NoError(t, db.Save(subGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-force-cc-count",
+		ChannelType: "openai",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[]`),
+		Config:      map[string]any{"max_retries": 0},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      subGroup.ID,
+		SubGroupName:    subGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, subGroup.ID, "sk-agg-force-cc-count", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, memStore.Delete(activeKeysListKeyForTest(uint64(aggregateGroup.ID))))
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	body := []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"x"}]}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/claude/v1/messages/count_tokens", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: aggregateGroup.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var result struct {
+		InputTokens int `json:"input_tokens"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	assert.Greater(t, result.InputTokens, 100)
+}
+
 func TestAggregateForceCCFailureFallsBackToNativeAnthropicSubGroup(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -229,7 +294,10 @@ func TestAggregateForceCCFailureFallsBackToNativeAnthropicSubGroup(t *testing.T)
 	var attempts int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		received <- receivedRequest{path: r.URL.Path, rawQuery: r.URL.RawQuery, body: payload}
 		attempts++
 		w.Header().Set("Content-Type", "application/json")

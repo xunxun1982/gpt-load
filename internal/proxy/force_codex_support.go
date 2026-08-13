@@ -439,6 +439,8 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 		effort := codexReq.Reasoning.Effort
 		switch {
 		case effort == "":
+			// An empty effort carries no portable enable/disable signal; omit
+			// Claude thinking fields and let the target model choose its default.
 		case effort == "none":
 			req.Thinking = &ThinkingConfig{Type: "disabled"}
 		default:
@@ -927,8 +929,11 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 				}},
 			})
 		case codexToolOutputItemType(itemType):
-			flushReasoning()
 			callID := stringFromMap(m, "call_id")
+			if callID == "" {
+				continue
+			}
+			flushReasoning()
 			output := codexToolOutputText(m, itemType)
 			messages = append(messages, OpenAIMessage{
 				Role:       "tool",
@@ -1023,8 +1028,11 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 			content, _ := json.Marshal(blocks)
 			messages = append(messages, ClaudeMessage{Role: "assistant", Content: content})
 		case codexToolOutputItemType(itemType):
-			flushThinking()
 			callID := stringFromMap(m, "call_id")
+			if callID == "" {
+				continue
+			}
+			flushThinking()
 			content, _ := json.Marshal([]ClaudeContentBlock{{
 				Type:      "tool_result",
 				ToolUseID: callID,
@@ -1447,11 +1455,6 @@ func validateForceCodexRequestOptions(req *CodexRequest, target string) error {
 			return unsupportedCodexRequestOption("text.verbosity", target, "expected low, medium, or high")
 		}
 	}
-	if target == codexUpstreamClaude {
-		// Responses-only routing hints have no Anthropic wire equivalent. The
-		// target request is rebuilt from modeled Anthropic fields, so omit them
-		// instead of rejecting otherwise convertible requests.
-	}
 	if req.Reasoning != nil {
 		context := strings.ToLower(strings.TrimSpace(req.Reasoning.Context))
 		switch context {
@@ -1670,6 +1673,9 @@ func marshalForceCodexClaudeRequest(req *ClaudeRequest, sourceTools []CodexTool,
 			}
 		}
 	}
+	// Responses-only routing hints such as service_tier and prompt_cache_key
+	// have no Anthropic wire equivalent. Claude conversion rebuilds the request
+	// from modeled Anthropic fields and omits them instead of rejecting it.
 	if source != nil && source.Text != nil {
 		outputConfig, err := codexTextFormatForTarget(source.Text.Format, codexUpstreamClaude)
 		if err != nil {

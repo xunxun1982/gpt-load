@@ -210,6 +210,9 @@ func TestCCProtocolRequestCompatDoesNotDeriveEffortOrRewriteUserContent(t *testi
 	chat, err := convertClaudeToOpenAI(req, nil)
 	require.NoError(t, err)
 	assert.Empty(t, chat.ReasoningEffort)
+	chatJSON, err := json.Marshal(chat)
+	require.NoError(t, err)
+	assert.NotContains(t, string(chatJSON), `"reasoning_effort"`)
 	require.Len(t, chat.Messages, 1)
 	assert.Equal(t, "original user text", rawMessageString(t, chat.Messages[0].Content))
 
@@ -217,16 +220,59 @@ func TestCCProtocolRequestCompatDoesNotDeriveEffortOrRewriteUserContent(t *testi
 	require.NoError(t, err)
 	require.NotNil(t, codex.Reasoning)
 	assert.Empty(t, codex.Reasoning.Effort)
+	codexJSON, err := json.Marshal(codex)
+	require.NoError(t, err)
+	assert.NotContains(t, string(codexJSON), `"effort"`)
 	var input []map[string]any
 	require.NoError(t, json.Unmarshal(codex.Input, &input))
 	content := input[0]["content"].([]any)[0].(map[string]any)
 	assert.Equal(t, "original user text", content["text"])
 }
 
+func TestCCProtocolRequestCompatPreservesThinkingSummaryWithoutInventingEffort(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],
+		"thinking":{"type":"adaptive"}
+	}`)
+
+	chat, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err)
+	assert.Empty(t, chat.ReasoningEffort)
+	chatJSON, err := json.Marshal(chat)
+	require.NoError(t, err)
+	assert.NotContains(t, string(chatJSON), `"reasoning_effort"`)
+
+	codex, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	require.NotNil(t, codex.Reasoning)
+	assert.Empty(t, codex.Reasoning.Effort)
+	assert.Equal(t, "auto", codex.Reasoning.Summary)
+	codexJSON, err := json.Marshal(codex)
+	require.NoError(t, err)
+	assert.Contains(t, string(codexJSON), `"summary":"auto"`)
+	assert.NotContains(t, string(codexJSON), `"effort"`)
+}
+
 func TestCCProtocolRequestCompatConvertsDisabledThinkingSwitch(t *testing.T) {
 	req := mustParseClaudeRequest(t, `{
 		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],
 		"thinking":{"type":"disabled"}
+	}`)
+
+	chat, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "none", chat.ReasoningEffort)
+
+	codex, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	require.NotNil(t, codex.Reasoning)
+	assert.Equal(t, "none", codex.Reasoning.Effort)
+}
+
+func TestCCProtocolRequestCompatDisabledThinkingOverridesExplicitEffort(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],
+		"thinking":{"type":"disabled"},"output_config":{"effort":"future_effort_2026"}
 	}`)
 
 	chat, err := convertClaudeToOpenAI(req, nil)

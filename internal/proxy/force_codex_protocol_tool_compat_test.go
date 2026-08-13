@@ -174,6 +174,31 @@ func TestProtocolToolCompatConvertsUnknownCodexToolsThroughFunctionShell(t *test
 	assert.JSONEq(t, `[{"type":"tool_result","tool_use_id":"call_web","content":"result"}]`, string(claude.Messages[2].Content))
 }
 
+func TestProtocolToolCompatSkipsOrphanedFutureToolOutputs(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"future_tool_output","output":"orphan"},
+			{"type":"future_tool_result","call_id":"call_valid","output":{"ok":true}}
+		]`),
+	}
+
+	chat, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+	require.Len(t, chat.Messages, 1)
+	assert.Equal(t, "tool", chat.Messages[0].Role)
+	assert.Equal(t, "call_valid", chat.Messages[0].ToolCallID)
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 1)
+	var blocks []ClaudeContentBlock
+	require.NoError(t, json.Unmarshal(claude.Messages[0].Content, &blocks))
+	require.Len(t, blocks, 1)
+	assert.Equal(t, "tool_result", blocks[0].Type)
+	assert.Equal(t, "call_valid", blocks[0].ToolUseID)
+}
+
 func TestProtocolToolCompatPreservesCodexReasoningHistory(t *testing.T) {
 	req := &CodexRequest{
 		Model: "gpt-test",
@@ -197,6 +222,29 @@ func TestProtocolToolCompatPreservesCodexReasoningHistory(t *testing.T) {
 		{"type":"thinking","thinking":"plan before lookup"},
 		{"type":"tool_use","id":"call_lookup","name":"lookup","input":{}}
 	]`, string(claude.Messages[0].Content))
+}
+
+func TestProtocolToolCompatOmitsEmptyCodexEffortOnReverseConversion(t *testing.T) {
+	req := &CodexRequest{
+		Model:     "gpt-test",
+		Reasoning: &CodexReasoning{Summary: "auto"},
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+		]`),
+	}
+
+	chat, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+	chatJSON, err := json.Marshal(chat)
+	require.NoError(t, err)
+	assert.NotContains(t, string(chatJSON), `"reasoning_effort"`)
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	claudeJSON, err := json.Marshal(claude)
+	require.NoError(t, err)
+	assert.NotContains(t, string(claudeJSON), `"thinking"`)
+	assert.NotContains(t, string(claudeJSON), `"effort"`)
 }
 
 func TestProtocolToolCompatPreservesNonObjectToolPayloads(t *testing.T) {

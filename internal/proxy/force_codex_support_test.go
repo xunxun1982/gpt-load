@@ -1193,7 +1193,10 @@ func TestHandleProxyForceCodexOpenAIChatNonStreaming(t *testing.T) {
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedPath <- r.URL.Path
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
@@ -1244,7 +1247,10 @@ func TestHandleProxyForceCodexStrictModelRedirectRetriesFromSourceModel(t *testi
 	var receivedModels []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedModels = append(receivedModels, payload["model"].(string))
 		requestCount++
 		w.Header().Set("Content-Type", "application/json")
@@ -1292,7 +1298,10 @@ func TestHandleProxyForceCodexOpenAIChatCompactConvertsToChatEndpoint(t *testing
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedPath <- r.URL.Path
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
@@ -1342,7 +1351,10 @@ func TestHandleProxyForceCodexAnthropicNonStreaming(t *testing.T) {
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedPath <- r.URL.Path
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
@@ -1394,7 +1406,10 @@ func TestHandleProxyForceCodexAnthropicCompactConvertsToMessagesEndpoint(t *test
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedPath <- r.URL.Path
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
@@ -1445,7 +1460,10 @@ func TestAggregateForceCodexUsesSelectedSubGroupConfig(t *testing.T) {
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedPath <- r.URL.Path
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
@@ -1538,7 +1556,10 @@ func TestAggregateForceCodexPassthroughNativeResponsesSubGroup(t *testing.T) {
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedPath <- r.URL.Path
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
@@ -1620,7 +1641,10 @@ func TestAggregateForceCodexFailureFallsBackToNativeResponsesSubGroup(t *testing
 	var attempts int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		received <- receivedRequest{path: r.URL.Path, body: payload}
 		attempts++
 		w.Header().Set("Content-Type", "application/json")

@@ -2644,11 +2644,7 @@ watch(
               </div>
             </n-form-item>
             <!-- Multi-auth hint -->
-            <n-text
-              v-if="siteForm.auth_type.length > 1"
-              depth="3"
-              class="multi-auth-hint"
-            >
+            <n-text v-if="siteForm.auth_type.length > 1" depth="3" class="multi-auth-hint">
               {{ t("siteManagement.multiAuthHint") }}
             </n-text>
           </div>

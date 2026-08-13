@@ -540,9 +540,13 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 
 	// Explicit effort only moves between protocol field shapes. budget_tokens
 	// has no lossless Responses equivalent, so it is not converted to a guessed
-	// effort value. disabled maps to the target protocol's explicit off value.
+	// effort value. When effort is absent, leave it omitted so the upstream
+	// provider can apply its own default; empty is not a portable "auto" value.
+	// Explicitly disabled thinking maps to the target protocol's explicit off value.
 	if effort != "" || thinkingActive || thinkingDisabled {
-		if effort == "" && thinkingDisabled {
+		// Explicitly disabled thinking takes precedence over a conflicting
+		// effort value; forwarding both can re-enable reasoning or yield 400.
+		if thinkingDisabled {
 			effort = "none"
 		}
 		codexReq.Reasoning = &CodexReasoning{Effort: effort}

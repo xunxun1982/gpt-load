@@ -959,10 +959,12 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 
 	// Explicit effort only changes protocol field location. A token budget has no
 	// lossless equivalent and must not be guessed into an effort level.
-	if effort != "" {
-		openaiReq.ReasoningEffort = effort
-	} else if claudeThinkingDisabled(claudeReq.Thinking) {
+	// Explicitly disabled thinking takes precedence over a conflicting effort
+	// value; forwarding both can re-enable reasoning or yield 400 upstream.
+	if claudeThinkingDisabled(claudeReq.Thinking) {
 		openaiReq.ReasoningEffort = "none"
+	} else if effort != "" {
+		openaiReq.ReasoningEffort = effort
 	}
 	if thinkingActive {
 		logrus.WithFields(logrus.Fields{

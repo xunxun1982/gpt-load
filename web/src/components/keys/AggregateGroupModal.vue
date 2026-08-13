@@ -810,6 +810,4 @@ async function handleSubmit() {
     grid-column: 1 / -1;
   }
 }
-
-
 </style>
