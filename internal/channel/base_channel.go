@@ -65,17 +65,26 @@ func mustParseGatewayProxyBaseURL(rawBaseURL string) url.URL {
 
 // GatewayProxyBaseURL returns the current runtime base URL for a built-in gateway proxy.
 func GatewayProxyBaseURL(gatewayProxyID string) string {
+	base, ok := GatewayProxyBaseURLParsed(gatewayProxyID)
+	if !ok {
+		return ""
+	}
+	return base.String()
+}
+
+// GatewayProxyBaseURLParsed returns a value copy of the parsed runtime base URL.
+func GatewayProxyBaseURLParsed(gatewayProxyID string) (url.URL, bool) {
 	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))
 	if trimmedID == "" {
-		return ""
+		return url.URL{}, false
 	}
 	gatewayProxyBaseURLMu.RLock()
 	defer gatewayProxyBaseURLMu.RUnlock()
 	base, ok := gatewayProxyBaseURLs[trimmedID]
 	if !ok {
-		return ""
+		return url.URL{}, false
 	}
-	return base.String()
+	return base, true
 }
 
 // SetGatewayProxyBaseURL updates the runtime base URL for a built-in gateway proxy.

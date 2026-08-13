@@ -28,7 +28,10 @@ func newCodexAffinityUpstream(t *testing.T, name string, observations chan<- cod
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		observations <- codexAffinityObservation{
 			upstream: name,
 			auth:     r.Header.Get("Authorization"),
@@ -83,7 +86,10 @@ func setupRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handler, *model
 	var requestCount atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		observations <- codexAffinityObservation{auth: r.Header.Get("Authorization"), turn: r.Header.Get("X-Codex-Turn-State"), body: body}
 		w.Header().Set("Content-Type", "application/json")
 		if requestCount.Add(1) == 1 {

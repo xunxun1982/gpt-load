@@ -2580,12 +2580,14 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 
 	if deferParamOverrides {
-		finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-		if err != nil {
-			logrus.WithError(err).WithFields(logrus.Fields{
+		overriddenBody, overrideErr := ps.applyParamOverrides(finalBodyBytes, group)
+		if overrideErr != nil {
+			logrus.WithError(overrideErr).WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,
 				"sub_group":       group.Name,
 			}).Warn("Failed to apply parameter overrides after protocol conversion for sub-group")
+		} else {
+			finalBodyBytes = overriddenBody
 		}
 	}
 

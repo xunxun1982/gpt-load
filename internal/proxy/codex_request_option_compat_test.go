@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"gpt-load/internal/channel"
 	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -118,6 +120,7 @@ func TestProtocolConversionRoutesSourcePromptCacheKeyByUpstreamCapability(t *tes
 	converted := applyForceCodexCompat(t, "openai", []byte(`{
 		"model":"gpt-test","input":"hello","prompt_cache_key":"source-cache"
 	}`))
+	gatewayBaseURL := strings.TrimRight(channel.GatewayProxyBaseURL("betterclaude"), "/")
 	tests := []struct {
 		name       string
 		upstream   string
@@ -125,8 +128,8 @@ func TestProtocolConversionRoutesSourcePromptCacheKeyByUpstreamCapability(t *tes
 	}{
 		{name: "OpenAI", upstream: "https://api.openai.com/v1/chat/completions", wantCached: true},
 		{name: "Kimi Coding", upstream: "https://api.kimi.com/coding/v1/chat/completions", wantCached: true},
-		{name: "gateway OpenAI", upstream: "https://betterclau.de/openai/api.openai.com/v1/chat/completions", wantCached: true},
-		{name: "gateway Kimi Coding", upstream: "https://betterclau.de/openai/api.kimi.com/coding/v1/chat/completions", wantCached: true},
+		{name: "gateway OpenAI", upstream: gatewayBaseURL + "/openai/api.openai.com/v1/chat/completions", wantCached: true},
+		{name: "gateway Kimi Coding", upstream: gatewayBaseURL + "/openai/api.kimi.com/coding/v1/chat/completions", wantCached: true},
 		{name: "gateway-shaped path on unrelated host", upstream: "https://future.example.com/openai/api.openai.com/v1/chat/completions", wantCached: false},
 		{name: "unrelated OpenAI path", upstream: "https://future.example.com/docs/api.openai.com/v1/chat/completions", wantCached: false},
 		{name: "embedded OpenAI host segment", upstream: "https://future.example.com/openai/prefix-api.openai.com/v1/chat/completions", wantCached: false},

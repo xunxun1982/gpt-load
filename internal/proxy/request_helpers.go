@@ -24,6 +24,8 @@ const (
 	responsesEncryptedReasoning    = "reasoning.encrypted_content"
 )
 
+var promptCacheGatewayProxyIDs = [...]string{"betterclaude"}
+
 func setModelRedirectContext(c *gin.Context, originalModel string, targetIdx int, preserveOriginal bool) {
 	if originalModel == "" {
 		clearModelRedirectContext(c)
@@ -201,6 +203,14 @@ func filterProtocolConversionRequestBody(bodyBytes []byte, group *models.Group, 
 		return bodyBytes, nil
 	}
 	delete(requestData, "prompt_cache_key")
+	upstreamHost := ""
+	if parsed, err := url.Parse(strings.TrimSpace(upstreamURL)); err == nil {
+		upstreamHost = parsed.Hostname()
+	}
+	logrus.WithFields(logrus.Fields{
+		"target":        target,
+		"upstream_host": upstreamHost,
+	}).Debug("protocol conversion filter: removed unsupported prompt_cache_key")
 	return json.Marshal(requestData)
 }
 
@@ -237,9 +247,9 @@ func convertedChatUpstreamSupportsPromptCacheKey(rawURL string) bool {
 	}
 	// Built-in gateway URLs encode the original target host in the path. Keep
 	// the same conservative capability decision when such a route is selected.
-	for _, gatewayProxyID := range []string{"betterclaude"} {
-		gatewayURL, err := url.Parse(channel.GatewayProxyBaseURL(gatewayProxyID))
-		if err != nil || !sameURLOrigin(parsed, gatewayURL) {
+	for _, gatewayProxyID := range promptCacheGatewayProxyIDs {
+		gatewayURL, ok := channel.GatewayProxyBaseURLParsed(gatewayProxyID)
+		if !ok || !sameURLOrigin(parsed, &gatewayURL) {
 			continue
 		}
 		if gatewayPathTargets(path, gatewayURL.EscapedPath(), "api.openai.com") ||

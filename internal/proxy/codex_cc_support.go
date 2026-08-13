@@ -733,11 +733,20 @@ func cleanToolCallArguments(argsStr string) string {
 
 func toolResultOutput(block ClaudeContentBlock) any {
 	if len(block.Content) == 0 {
+		if block.IsError {
+			return map[string]any{"is_error": true, "content": ""}
+		}
 		return ""
 	}
 	var value any
 	if err := decodeCodexJSONUseNumber(block.Content, &value); err == nil {
+		if block.IsError {
+			return map[string]any{"is_error": true, "content": value}
+		}
 		return value
+	}
+	if block.IsError {
+		return map[string]any{"is_error": true, "content": string(block.Content)}
 	}
 	return string(block.Content)
 }

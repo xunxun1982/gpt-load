@@ -329,11 +329,11 @@ func codexToolOutputItemType(itemType string) bool {
 }
 
 func codexToolCallArguments(item map[string]any, itemType string) string {
-	if raw, ok := item["arguments"]; ok {
+	if raw, ok := item["arguments"]; ok && raw != nil {
 		return stringFromValue(raw)
 	}
 	input, ok := item["input"]
-	if !ok {
+	if !ok || input == nil {
 		return ""
 	}
 	if itemType == "custom_tool_call" {
@@ -861,10 +861,8 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 		pendingReasoning = nil
 		return &text
 	}
-	flushReasoning := func() {
-		if reasoning := takeReasoning(); reasoning != nil {
-			messages = append(messages, OpenAIMessage{Role: "assistant", ReasoningContent: reasoning})
-		}
+	discardReasoning := func() {
+		pendingReasoning = nil
 	}
 	for _, item := range items {
 		m, ok := item.(map[string]any)
@@ -890,7 +888,7 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 				role = "system"
 			}
 			if role != "assistant" {
-				flushReasoning()
+				discardReasoning()
 			}
 			message := OpenAIMessage{Role: role, Content: marshalStringAsJSONRaw("codex_message", text)}
 			if role == "assistant" {
@@ -905,13 +903,17 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 			name := stringFromMap(m, "name")
 			arguments := codexToolCallArguments(m, itemType)
 			if itemType == "custom_tool_call" {
-				inputValue := m["input"]
-				inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
-				arguments = string(inputBytes)
+				if inputValue, ok := m["input"]; ok && inputValue != nil {
+					inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
+					arguments = string(inputBytes)
+				}
 			} else if itemType == "tool_search_call" {
 				name = codexToolSearchProxyName
 			} else if len(toolCtx) > 0 && toolCtx[0] != nil {
 				name = toolCtx[0].chatNameFor(name, stringFromMap(m, "namespace"))
+			}
+			if arguments == "" {
+				arguments = "{}"
 			}
 			if callID == "" || name == "" {
 				continue
@@ -933,7 +935,7 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 			if callID == "" {
 				continue
 			}
-			flushReasoning()
+			discardReasoning()
 			output := codexToolOutputText(m, itemType)
 			messages = append(messages, OpenAIMessage{
 				Role:       "tool",
@@ -942,7 +944,7 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 			})
 		}
 	}
-	flushReasoning()
+	discardReasoning()
 	return messages, nil
 }
 
@@ -966,11 +968,8 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 		pendingThinking = nil
 		return thinking
 	}
-	flushThinking := func() {
-		if thinking := takeThinking(); len(thinking) > 0 {
-			content, _ := json.Marshal(thinking)
-			messages = append(messages, ClaudeMessage{Role: "assistant", Content: content})
-		}
+	discardThinking := func() {
+		pendingThinking = nil
 	}
 	for _, item := range items {
 		m, ok := item.(map[string]any)
@@ -996,7 +995,7 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 				continue
 			}
 			if role != "assistant" {
-				flushThinking()
+				discardThinking()
 			}
 			blocks := takeThinking()
 			blocks = append(blocks, ClaudeContentBlock{Type: "text", Text: text})
@@ -1010,9 +1009,10 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 			name := stringFromMap(m, "name")
 			arguments := codexToolCallArguments(m, itemType)
 			if itemType == "custom_tool_call" {
-				inputValue := m["input"]
-				inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
-				arguments = string(inputBytes)
+				if inputValue, ok := m["input"]; ok && inputValue != nil {
+					inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
+					arguments = string(inputBytes)
+				}
 			} else if itemType == "tool_search_call" {
 				name = codexToolSearchProxyName
 			} else if len(toolCtx) > 0 && toolCtx[0] != nil {
@@ -1035,7 +1035,7 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 			if callID == "" {
 				continue
 			}
-			flushThinking()
+			discardThinking()
 			content, _ := json.Marshal([]ClaudeContentBlock{{
 				Type:      "tool_result",
 				ToolUseID: callID,
@@ -1044,7 +1044,7 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 			messages = append(messages, ClaudeMessage{Role: "user", Content: content})
 		}
 	}
-	flushThinking()
+	discardThinking()
 	return messages, nil
 }
 

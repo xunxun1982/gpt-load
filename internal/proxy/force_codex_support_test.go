@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1259,18 +1260,18 @@ func TestHandleProxyForceCodexStrictModelRedirectRetriesFromSourceModel(t *testi
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
 
-	var requestCount int
-	var receivedModels []string
+	var requestCount atomic.Int64
+	receivedModels := make(chan string, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		receivedModels = append(receivedModels, payload["model"].(string))
-		requestCount++
+		receivedModels <- payload["model"].(string)
+		attempt := requestCount.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		if requestCount == 1 {
+		if attempt == 1 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = io.WriteString(w, `{"error":{"message":"retry"}}`)
 			return
@@ -1299,8 +1300,8 @@ func TestHandleProxyForceCodexStrictModelRedirectRetriesFromSourceModel(t *testi
 	ps.HandleProxy(c)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	require.Equal(t, 2, requestCount)
-	require.Equal(t, []string{"deepseek-v4-flash-free", "deepseek-v4-flash-free"}, receivedModels)
+	require.Equal(t, int64(2), requestCount.Load())
+	require.Equal(t, []string{"deepseek-v4-flash-free", "deepseek-v4-flash-free"}, []string{<-receivedModels, <-receivedModels})
 }
 
 func TestHandleProxyForceCodexOpenAIChatCompactConvertsToChatEndpoint(t *testing.T) {
@@ -1654,7 +1655,7 @@ func TestAggregateForceCodexFailureFallsBackToNativeResponsesSubGroup(t *testing
 		body map[string]any
 	}
 	received := make(chan receivedRequest, 2)
-	var attempts int
+	var attempts atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -1662,9 +1663,9 @@ func TestAggregateForceCodexFailureFallsBackToNativeResponsesSubGroup(t *testing
 			return
 		}
 		received <- receivedRequest{path: r.URL.Path, body: payload}
-		attempts++
+		attempt := attempts.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		if attempts == 1 {
+		if attempt == 1 {
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = io.WriteString(w, `{"error":{"message":"fail forced Codex subgroup"}}`)
 			return

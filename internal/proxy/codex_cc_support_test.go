@@ -12,8 +12,27 @@ import (
 	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestToolResultOutputPreservesErrorMarker(t *testing.T) {
+	tests := []struct {
+		name    string
+		content json.RawMessage
+		want    any
+	}{
+		{name: "empty", want: map[string]any{"is_error": true, "content": ""}},
+		{name: "JSON", content: json.RawMessage(`{"code":9007199254740993}`), want: map[string]any{"is_error": true, "content": map[string]any{"code": json.Number("9007199254740993")}}},
+		{name: "plain text", content: json.RawMessage(`failed`), want: map[string]any{"is_error": true, "content": "failed"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, toolResultOutput(ClaudeContentBlock{Content: tt.content, IsError: true}))
+		})
+	}
+}
 
 func TestCodexOutputItemMarshalPreservesLargeNestedInteger(t *testing.T) {
 	item := CodexOutputItem{

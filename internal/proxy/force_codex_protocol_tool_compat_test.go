@@ -224,6 +224,77 @@ func TestProtocolToolCompatPreservesCodexReasoningHistory(t *testing.T) {
 	]`, string(claude.Messages[0].Content))
 }
 
+func TestProtocolToolCompatNormalizesNullCodexToolArguments(t *testing.T) {
+	tests := []struct {
+		name  string
+		input json.RawMessage
+	}{
+		{
+			name:  "function arguments",
+			input: json.RawMessage(`[{"type":"function_call","call_id":"call_lookup","name":"lookup","arguments":null}]`),
+		},
+		{
+			name:  "custom input",
+			input: json.RawMessage(`[{"type":"custom_tool_call","call_id":"call_patch","name":"apply_patch","input":null}]`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &CodexRequest{Model: "gpt-test", Input: tt.input}
+
+			chat, err := convertCodexRequestToOpenAIChat(req)
+			require.NoError(t, err)
+			require.Len(t, chat.Messages, 1)
+			assert.Equal(t, "{}", chat.Messages[0].ToolCalls[0].Function.Arguments)
+
+			claude, err := convertCodexRequestToClaude(req)
+			require.NoError(t, err)
+			require.Len(t, claude.Messages, 1)
+			var blocks []ClaudeContentBlock
+			require.NoError(t, json.Unmarshal(claude.Messages[0].Content, &blocks))
+			require.Len(t, blocks, 1)
+			assert.JSONEq(t, `{}`, string(blocks[0].Input))
+		})
+	}
+}
+
+func TestProtocolToolCompatDropsOrphanReasoning(t *testing.T) {
+	inputs := map[string]json.RawMessage{
+		"trailing reasoning": json.RawMessage(`[
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"trailing plan"}]}
+		]`),
+		"reasoning before user": json.RawMessage(`[
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"prior plan"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+	}
+
+	for name, input := range inputs {
+		t.Run(name, func(t *testing.T) {
+			req := &CodexRequest{Model: "gpt-test", Input: input}
+
+			chat, err := convertCodexRequestToOpenAIChat(req)
+			require.NoError(t, err)
+
+			claude, err := convertCodexRequestToClaude(req)
+			require.NoError(t, err)
+
+			if name == "trailing reasoning" {
+				assert.Empty(t, chat.Messages)
+				assert.Empty(t, claude.Messages)
+				return
+			}
+
+			require.Len(t, chat.Messages, 1)
+			assert.Nil(t, chat.Messages[0].ReasoningContent)
+			assert.Equal(t, json.RawMessage(`"continue"`), chat.Messages[0].Content)
+			require.Len(t, claude.Messages, 1)
+			assert.JSONEq(t, `[{"type":"text","text":"continue"}]`, string(claude.Messages[0].Content))
+		})
+	}
+}
+
 func TestProtocolToolCompatOmitsEmptyCodexEffortOnReverseConversion(t *testing.T) {
 	req := &CodexRequest{
 		Model:     "gpt-test",

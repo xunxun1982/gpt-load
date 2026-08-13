@@ -121,7 +121,7 @@ func TestProtocolToolCompatCodexToClaudeConvertsUnknownResponseTool(t *testing.T
 	require.Len(t, got.Content, 1)
 	assert.Equal(t, "tool_use", got.Content[0].Type)
 	assert.Equal(t, "future_lookup", got.Content[0].Name)
-	assert.JSONEq(t, `{"id":9007199254740993}`, string(got.Content[0].Input))
+	assert.Equal(t, `{"id":9007199254740993}`, string(got.Content[0].Input))
 }
 
 func TestProtocolToolCompatCodexStreamConvertsUnknownResponseTool(t *testing.T) {
@@ -137,10 +137,9 @@ func TestProtocolToolCompatCodexStreamConvertsUnknownResponseTool(t *testing.T) 
 	assert.Equal(t, "future_lookup", events[0].ContentBlock.Name)
 }
 
-func TestProtocolToolCompatUseNumberWhenCleaningArguments(t *testing.T) {
-	got := cleanToolCallArguments(`{"cursor":9007199254740993,"allowed_domains":[]}`)
-	assert.Contains(t, got, "allowed_domains")
-	assert.Contains(t, got, "9007199254740993")
+func TestProtocolToolCompatPassesThroughToolArguments(t *testing.T) {
+	const arguments = `{"cursor":9007199254740993,"allowed_domains":[]}`
+	assert.Equal(t, arguments, cleanToolCallArguments(arguments))
 }
 
 func TestProtocolToolCompatReadsToolSearchOutputToolsForClaude(t *testing.T) {

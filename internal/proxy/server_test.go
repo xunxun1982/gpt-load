@@ -2157,7 +2157,10 @@ func TestExecuteRequestWithRetrySimulatedClaudeCodeAddsMessagesIdentity(t *testi
 	receivedSessionID := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedBody <- got
 		receivedDangerousHeader <- r.Header.Get("Anthropic-Dangerous-Direct-Browser-Access")
 		receivedSessionID <- r.Header.Get("X-Claude-Code-Session-Id")
@@ -2211,7 +2214,10 @@ func TestExecuteRequestWithRetrySimulatedCodexPreservesRequestModel(t *testing.T
 	receivedHeaders := make(chan http.Header, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedBody <- got
 		receivedUserAgent <- r.Header.Get("User-Agent")
 		receivedHeaders <- r.Header.Clone()
@@ -2347,7 +2353,10 @@ func TestHandleProxyForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedPath <- r.URL.Path
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
@@ -2393,7 +2402,10 @@ func TestHandleProxyAggregateForceCodexCompactMarksOpenAIResponseMode(t *testing
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedPath <- r.URL.Path
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
@@ -2738,7 +2750,10 @@ func TestExecuteRequestWithRetryPreservesCodexHeadersThroughTwoProxyLayers(t *te
 
 	secondLayer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		ctx, _ := gin.CreateTestContext(w)
 		ctx.Request = httptest.NewRequest(r.Method, r.URL.RequestURI(), bytes.NewReader(body))
 		ctx.Request.Header = r.Header.Clone()
@@ -2818,7 +2833,10 @@ func TestExecuteRequestWithRetrySimulatedCodexSurvivesTwoProxyLayers(t *testing.
 
 	secondLayer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		ctx, _ := gin.CreateTestContext(w)
 		ctx.Request = httptest.NewRequest(r.Method, r.URL.RequestURI(), bytes.NewReader(body))
 		ctx.Request.Header = r.Header.Clone()
@@ -3050,7 +3068,10 @@ func TestExecuteRequestWithAggregateRetryKeepsMappedBodyWhenParamOverridesFail(t
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":"chatcmpl_mapped","object":"chat.completion","created":1,"model":"real-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
@@ -3115,6 +3136,84 @@ func TestExecuteRequestWithAggregateRetryKeepsMappedBodyWhenParamOverridesFail(t
 	assert.NotContains(t, payload, "unsupported")
 }
 
+func TestExecuteRequestWithAggregateRetryKeepsConvertedBodyWhenDeferredParamOverridesFail(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		receivedBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_converted","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "agg-deferred-overrides-sub", "openai")
+	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	subGroup.Config = map[string]any{
+		"codex_support":       true,
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	require.NoError(t, db.Save(subGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-deferred-overrides",
+		ChannelType: "openai-response",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[]`),
+		Config:      map[string]any{"max_retries": 0},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      subGroup.ID,
+		SubGroupName:    subGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, subGroup.ID, "sk-agg-deferred-overrides", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+	cachedSubGroup, err := ps.groupManager.GetGroupByName(subGroup.Name)
+	require.NoError(t, err)
+	// Force the deferred override marshal to fail after Responses-to-Chat conversion.
+	cachedSubGroup.ParamOverrides = datatypes.JSONMap{"unsupported": func() {}}
+
+	body := []byte(`{"model":"gpt-test","input":"hello","stream":false}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	payload := decodeCompatObject(t, <-receivedBody)
+	assert.Contains(t, payload, "messages")
+	assert.NotContains(t, payload, "input")
+	assert.NotContains(t, payload, "unsupported")
+}
+
 func TestExecuteRequestWithAggregateRetryAppliesOnlySelectedSubGroupSimulatedClient(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -3129,7 +3228,10 @@ func TestExecuteRequestWithAggregateRetryAppliesOnlySelectedSubGroupSimulatedCli
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedUserAgent <- r.Header.Get("User-Agent")
 		receivedVersion <- r.Header.Get("Version")
 		receivedOriginator <- r.Header.Get("originator")
@@ -3399,9 +3501,15 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 	receivedHeadersCh := make(chan receivedHeaders, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		var payload map[string]any
-		require.NoError(t, json.Unmarshal(body, &payload))
+		if err := json.Unmarshal(body, &payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		_, hasCodexMetadata := payload["client_metadata"].(map[string]any)
 		metadata, _ := payload["metadata"].(map[string]any)
 		_, hasClaudeID := metadata["user_id"].(string)
@@ -3523,7 +3631,10 @@ func TestExecuteRequestWithAggregateRetryLogsSimulatedClientEnabledForSelectedSu
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
@@ -4257,7 +4368,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcr
 	secondBodies := make(chan []byte, 2)
 	firstUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		firstBodies <- body
 		atomic.AddInt32(&firstAttempts, 1)
 		w.Header().Set("Content-Type", "application/json")
@@ -4267,7 +4381,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcr
 
 	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		secondBodies <- body
 		atomic.AddInt32(&secondAttempts, 1)
 		w.Header().Set("Content-Type", "application/json")
@@ -5144,7 +5261,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 	fallbackBodies := make(chan []byte, 1)
 	cachedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		cachedBodies <- body
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -5154,7 +5274,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 
 	fallbackUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		fallbackBodies <- body
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
@@ -5265,7 +5388,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityStaleCachedPrimaryStripsOn
 	fallbackBodies := make(chan []byte, 1)
 	fallbackUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		fallbackBodies <- body
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
@@ -5367,7 +5493,10 @@ func TestExecuteRequestWithAggregateRetryWithoutCodexAffinityKeepsEncryptedReaso
 
 	fallbackUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		fallbackBodies <- body
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
