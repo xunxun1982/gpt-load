@@ -138,7 +138,7 @@ func TestProtocolToolCompatCodexStreamConvertsUnknownResponseTool(t *testing.T) 
 }
 
 func TestProtocolToolCompatUseNumberWhenCleaningArguments(t *testing.T) {
-	got := cleanToolCallArguments("WebSearch", `{"cursor":9007199254740993,"allowed_domains":[]}`)
+	got := cleanToolCallArguments(`{"cursor":9007199254740993,"allowed_domains":[]}`)
 	assert.Contains(t, got, "allowed_domains")
 	assert.Contains(t, got, "9007199254740993")
 }

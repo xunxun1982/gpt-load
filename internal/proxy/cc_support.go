@@ -1030,8 +1030,6 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 					ID: block.ID, Type: "function",
 					Function: OpenAIFunctionCall{Name: toolName, Arguments: arguments},
 				})
-			case block.Type == "redacted_thinking":
-				return nil, ccUnsupported("content block", block.Type)
 			default:
 				return nil, ccUnsupported("content block", block.Type)
 			}

@@ -194,6 +194,7 @@ func filterProtocolConversionRequestBody(bodyBytes []byte, group *models.Group, 
 
 	var requestData map[string]any
 	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &requestData); err != nil {
+		logrus.WithError(err).Warn("protocol conversion filter: unparsable body, passing through")
 		return bodyBytes, nil
 	}
 	if _, exists := requestData["prompt_cache_key"]; !exists {
@@ -236,7 +237,26 @@ func convertedChatUpstreamSupportsPromptCacheKey(rawURL string) bool {
 	}
 	// Built-in gateway URLs encode the original target host in the path. Keep
 	// the same conservative capability decision when such a route is selected.
-	return strings.Contains(path, "/api.openai.com/") || strings.Contains(path, "/api.kimi.com/coding")
+	for _, gatewayProxyID := range []string{"betterclaude"} {
+		gatewayURL, err := url.Parse(channel.GatewayProxyBaseURL(gatewayProxyID))
+		if err != nil || !sameURLOrigin(parsed, gatewayURL) {
+			continue
+		}
+		if gatewayPathTargets(path, gatewayURL.EscapedPath(), "api.openai.com") ||
+			gatewayPathTargets(path, gatewayURL.EscapedPath(), "api.kimi.com/coding") {
+			return true
+		}
+	}
+	return false
+}
+
+func sameURLOrigin(a, b *url.URL) bool {
+	return a != nil && b != nil && strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
+func gatewayPathTargets(path, basePath, target string) bool {
+	marker := strings.TrimRight(strings.ToLower(basePath), "/") + "/openai/" + target
+	return path == marker || strings.HasPrefix(path, marker+"/")
 }
 
 func protocolConversionTarget(c *gin.Context, group *models.Group) string {

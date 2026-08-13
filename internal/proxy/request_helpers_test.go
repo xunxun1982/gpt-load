@@ -12,6 +12,7 @@ import (
 	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/datatypes"
 )
@@ -88,6 +89,30 @@ func TestApplyParamOverrides(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, input, result)
 	})
+}
+
+func TestFilterProtocolConversionRequestBodyLogsMalformedJSON(t *testing.T) {
+	logHook := captureGlobalLogrusEntries(t)
+	body := []byte(`{"prompt_cache_key":`)
+
+	got, err := filterProtocolConversionRequestBody(body, nil, codexUpstreamClaude, "https://api.anthropic.com/v1/messages")
+
+	assert.NoError(t, err)
+	assert.Equal(t, body, got)
+	var matched *logrus.Entry
+	for _, entry := range logHook.AllEntries() {
+		if entry.Message == "protocol conversion filter: unparsable body, passing through" {
+			matched = entry
+			break
+		}
+	}
+	if assert.NotNil(t, matched) {
+		assert.Equal(t, logrus.WarnLevel, matched.Level)
+		loggedErr, ok := matched.Data[logrus.ErrorKey].(error)
+		if assert.True(t, ok) {
+			assert.Error(t, loggedErr)
+		}
+	}
 }
 
 func TestApplyModelMapping(t *testing.T) {

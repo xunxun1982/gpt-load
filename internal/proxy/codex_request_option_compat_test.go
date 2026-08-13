@@ -125,6 +125,12 @@ func TestProtocolConversionRoutesSourcePromptCacheKeyByUpstreamCapability(t *tes
 	}{
 		{name: "OpenAI", upstream: "https://api.openai.com/v1/chat/completions", wantCached: true},
 		{name: "Kimi Coding", upstream: "https://api.kimi.com/coding/v1/chat/completions", wantCached: true},
+		{name: "gateway OpenAI", upstream: "https://betterclau.de/openai/api.openai.com/v1/chat/completions", wantCached: true},
+		{name: "gateway Kimi Coding", upstream: "https://betterclau.de/openai/api.kimi.com/coding/v1/chat/completions", wantCached: true},
+		{name: "gateway-shaped path on unrelated host", upstream: "https://future.example.com/openai/api.openai.com/v1/chat/completions", wantCached: false},
+		{name: "unrelated OpenAI path", upstream: "https://future.example.com/docs/api.openai.com/v1/chat/completions", wantCached: false},
+		{name: "embedded OpenAI host segment", upstream: "https://future.example.com/openai/prefix-api.openai.com/v1/chat/completions", wantCached: false},
+		{name: "unrelated Kimi path", upstream: "https://future.example.com/docs/api.kimi.com/coding/v1/chat/completions", wantCached: false},
 		{name: "unknown compatible gateway", upstream: "https://future.example.com/v1/chat/completions", wantCached: false},
 	}
 
@@ -205,6 +211,10 @@ func TestProtocolConversionDefersParamOverridesOnlyForConvertedEndpoints(t *test
 	assert.True(t, shouldDeferParamOverridesForProtocolConversion(openAIResponsesGroup, true, false))
 	assert.False(t, shouldDeferParamOverridesForProtocolConversion(&models.Group{ChannelType: "openai-response"}, false, true))
 	assert.False(t, shouldDeferParamOverridesForProtocolConversion(ccGroup, false, false))
+
+	assert.True(t, aggregateClaudeConversionExpected(true, "openai-response", false))
+	assert.True(t, aggregateClaudeConversionExpected(false, "anthropic", true))
+	assert.False(t, aggregateClaudeConversionExpected(false, "anthropic", false))
 }
 
 func TestCodexRequestOptionCompatMapsStructuredOutputToAnthropic(t *testing.T) {
@@ -308,13 +318,23 @@ func TestCodexRequestOptionCompatRejectsUnknownToolChoice(t *testing.T) {
 }
 
 func TestCodexRequestOptionCompatConvertsUnknownNamedToolChoice(t *testing.T) {
-	body := []byte(`{"model":"gpt-test","input":"hello","tools":[{"type":"future_tool_2026","name":"future_lookup","parameters":{"type":"object"}}],"tool_choice":{"type":"future_tool_2026","name":"future_lookup"}}`)
+	for _, toolChoice := range []string{
+		`{"type":"future_tool_2026","name":"future_lookup"}`,
+		`{"name":"future_lookup"}`,
+	} {
+		t.Run(toolChoice, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-test","input":"hello","tools":[{"type":"future_tool_2026","name":"future_lookup","parameters":{"type":"object"}}],"tool_choice":` + toolChoice + `}`)
 
-	chat := decodeCompatObject(t, applyForceCodexCompat(t, "openai", body))
-	assert.Equal(t, "future_lookup", chat["tool_choice"].(map[string]any)["function"].(map[string]any)["name"])
+			chat := decodeCompatObject(t, applyForceCodexCompat(t, "openai", body))
+			assert.Equal(t, map[string]any{
+				"type":     "function",
+				"function": map[string]any{"name": "future_lookup"},
+			}, chat["tool_choice"])
 
-	claude := decodeCompatObject(t, applyForceCodexCompat(t, "anthropic", body))
-	assert.Equal(t, "future_lookup", claude["tool_choice"].(map[string]any)["name"])
+			claude := decodeCompatObject(t, applyForceCodexCompat(t, "anthropic", body))
+			assert.Equal(t, map[string]any{"type": "tool", "name": "future_lookup"}, claude["tool_choice"])
+		})
+	}
 }
 
 func TestCodexRequestOptionCompatMapsAnthropicReasoningAndParallelCalls(t *testing.T) {

@@ -172,11 +172,11 @@ func codexClaudeToolName(item CodexOutputItem, reverseToolNameMap map[string]str
 	return toolName
 }
 
-func codexClaudeToolInput(item CodexOutputItem, toolName string) json.RawMessage {
+func codexClaudeToolInput(item CodexOutputItem) json.RawMessage {
 	if item.Type == "custom_tool_call" {
 		return codexCustomToolClaudeInput(item.Input)
 	}
-	argsStr := cleanToolCallArguments(toolName, item.Arguments)
+	argsStr := cleanToolCallArguments(item.Arguments)
 	return codexToolArgumentsRawMessage(argsStr)
 }
 
@@ -727,7 +727,7 @@ func extractSystemContent(system json.RawMessage) string {
 
 // cleanToolCallArguments preserves tool arguments verbatim. The protocol
 // converter must not interpret or rewrite provider-specific tool payloads.
-func cleanToolCallArguments(_ string, argsStr string) string {
+func cleanToolCallArguments(argsStr string) string {
 	return argsStr
 }
 
@@ -799,22 +799,19 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 				}
 			}
 		case isCodexResponseToolCall(item):
-			if item.CallID != "" {
-				toolName := codexClaudeToolName(item, reverseToolNameMap)
-				if toolName == "" {
-					continue
-				}
-				if item.Type != "custom_tool_call" && !isValidCodexToolCallArguments(toolName, item.Arguments, nil) {
-					continue
-				}
-				inputJSON := codexClaudeToolInput(item, toolName)
-				claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
-					Type:  "tool_use",
-					ID:    item.CallID,
-					Name:  toolName,
-					Input: inputJSON,
-				})
+			toolName := codexClaudeToolName(item, reverseToolNameMap)
+			if toolName == "" {
+				continue
 			}
+			if item.Type != "custom_tool_call" && !isValidCodexToolCallArguments(toolName, item.Arguments, nil) {
+				continue
+			}
+			claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
+				Type:  "tool_use",
+				ID:    item.CallID,
+				Name:  toolName,
+				Input: codexClaudeToolInput(item),
+			})
 		case item.Type == "reasoning":
 			// Convert reasoning to thinking block.
 			// Codex CLI-compatible Responses returns reasoning in "summary" field with type "summary_text".
@@ -1160,14 +1157,13 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		s.toolInputSent = true
 	}
 	toolInputForCurrentItem := func(item CodexOutputItem) json.RawMessage {
-		toolName := codexClaudeToolName(item, s.reverseToolNameMap)
 		if item.Type == "custom_tool_call" && item.Input == nil {
 			item.Input = s.currentToolArgs.String()
 		}
 		if item.Arguments == "" {
 			item.Arguments = s.currentToolArgs.String()
 		}
-		return codexClaudeToolInput(item, toolName)
+		return codexClaudeToolInput(item)
 	}
 
 	switch event.Type {
@@ -1442,11 +1438,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 	case "response.function_call_arguments.done":
 		// Function call arguments complete
 		if event.Arguments != "" && s.openBlockType == "tool" && !s.toolInputSent {
-			toolName := s.currentToolName
-			if toolName == "" {
-				toolName = "unknown_tool"
-			}
-			appendToolInputDelta(codexToolArgumentsRawMessage(cleanToolCallArguments(toolName, event.Arguments)))
+			appendToolInputDelta(codexToolArgumentsRawMessage(cleanToolCallArguments(event.Arguments)))
 		}
 		logrus.WithField("args_len", s.currentToolArgs.Len()).Debug("Codex CC: Function call arguments done")
 

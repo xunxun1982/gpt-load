@@ -1008,6 +1008,22 @@ func TestConvertCodexRequestToClaude(t *testing.T) {
 	assert.True(t, got.Stream)
 }
 
+func TestConvertCodexRequestToClaudeUsesItemIDWhenCallIDMissing(t *testing.T) {
+	t.Parallel()
+
+	req := &CodexRequest{
+		Model: "claude-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","id":"call_from_id","name":"lookup","arguments":"{}"}
+		]`),
+	}
+
+	got, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 1)
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_from_id","name":"lookup","input":{}}]`, string(got.Messages[0].Content))
+}
+
 func TestConvertCodexRequestToClaudePreservesCodexToolKinds(t *testing.T) {
 	t.Parallel()
 

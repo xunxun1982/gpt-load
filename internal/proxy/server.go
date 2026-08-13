@@ -995,6 +995,12 @@ func shouldDeferParamOverridesForProtocolConversion(group *models.Group, ccConve
 		(codexConversion && isCodexSupportEnabled(group))
 }
 
+func aggregateClaudeConversionExpected(wasClaudePath bool, aggregateChannelType string, isMessagesEndpoint bool) bool {
+	// wasClaudePath is captured before rewriting /claude/v1; forced Claude paths
+	// remain conversion candidates until the post-rewrite endpoint check.
+	return wasClaudePath || (aggregateChannelType == "anthropic" && isMessagesEndpoint)
+}
+
 func rewriteCodexResponsesPathToUpstream(path, upstreamPath string) string {
 	if strings.HasSuffix(path, "/v1/responses/compact") {
 		return strings.TrimSuffix(path, "/v1/responses/compact") + upstreamPath
@@ -2363,22 +2369,25 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		c.Set("original_model", originalModel)
 	}
 
-	ccConversionExpected := isCCSupportEnabled(group) &&
-		(wasClaudePath || originalGroup.ChannelType == "anthropic") &&
-		(wasClaudePath || strings.HasSuffix(c.Request.URL.Path, "/v1/messages"))
+	ccConversionExpected := isCCSupportEnabled(group) && aggregateClaudeConversionExpected(
+		wasClaudePath,
+		originalGroup.ChannelType,
+		strings.HasSuffix(c.Request.URL.Path, "/v1/messages"),
+	)
 	codexConversionExpected := isCodexSupportEnabled(group) &&
 		(wasCodexPath || originalGroup.ChannelType == "openai-response") &&
 		isOpenAIResponsesCodexEndpoint(rewriteCodexPathToOpenAIGeneric(c.Request.URL.Path))
 	deferParamOverrides := shouldDeferParamOverridesForProtocolConversion(group, ccConversionExpected, codexConversionExpected) &&
 		!isClaudeCountTokensEndpoint(c.Request.URL.Path)
 	if !deferParamOverrides {
-		finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-		if err != nil {
-			logrus.WithError(err).WithFields(logrus.Fields{
+		overriddenBody, overrideErr := ps.applyParamOverrides(finalBodyBytes, group)
+		if overrideErr != nil {
+			logrus.WithError(overrideErr).WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,
 				"sub_group":       group.Name,
-			}).Warn("Failed to apply parameter overrides for sub-group, using original body")
-			finalBodyBytes = bodyBytes
+			}).Warn("Failed to apply parameter overrides for sub-group, keeping mapped body")
+		} else {
+			finalBodyBytes = overriddenBody
 		}
 	}
 
@@ -2444,8 +2453,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Clear any stale OpenAI Responses CC state from previous sub-group attempts.
 	c.Set(ctxKeyOpenAIResponseCC, false)
 	isMessagesEndpoint := strings.HasSuffix(c.Request.URL.Path, "/v1/messages")
-	shouldConvertCCForSubGroup := isCCSupportEnabled(group) && isMessagesEndpoint &&
-		(wasClaudePath || originalGroup.ChannelType == "anthropic")
+	shouldConvertCCForSubGroup := isCCSupportEnabled(group) && isMessagesEndpoint && aggregateClaudeConversionExpected(
+		wasClaudePath,
+		originalGroup.ChannelType,
+		isMessagesEndpoint,
+	)
 	if shouldConvertCCForSubGroup {
 		// Handle channel-specific CC support conversions
 		switch group.ChannelType {

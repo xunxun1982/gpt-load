@@ -437,11 +437,11 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 	}
 	if codexReq.Reasoning != nil {
 		effort := codexReq.Reasoning.Effort
-		switch {
-		case effort == "":
+		switch effort {
+		case "":
 			// An empty effort carries no portable enable/disable signal; omit
 			// Claude thinking fields and let the target model choose its default.
-		case effort == "none":
+		case "none":
 			req.Thinking = &ThinkingConfig{Type: "disabled"}
 		default:
 			req.Thinking = &ThinkingConfig{Type: "adaptive"}
@@ -1004,6 +1004,9 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 			messages = append(messages, ClaudeMessage{Role: role, Content: content})
 		case codexToolCallItemType(itemType):
 			callID := stringFromMap(m, "call_id")
+			if callID == "" {
+				callID = stringFromMap(m, "id")
+			}
 			name := stringFromMap(m, "name")
 			arguments := codexToolCallArguments(m, itemType)
 			if itemType == "custom_tool_call" {
@@ -1281,28 +1284,12 @@ func convertResponsesToolChoiceToOpenAIChat(toolChoice any, toolCtx ...*codexToo
 	case string:
 		return v
 	case map[string]any:
-		if t, _ := v["type"].(string); t != "" {
-			if name, _ := v["name"].(string); name != "" {
-				if t == "tool_search" {
-					name = codexToolSearchProxyName
-				} else if len(toolCtx) > 0 && toolCtx[0] != nil {
-					namespace, _ := v["namespace"].(string)
-					name = toolCtx[0].chatNameFor(name, namespace)
-				}
-				return map[string]any{
-					"type": "function",
-					"function": map[string]string{
-						"name": name,
-					},
-				}
-			}
-			if t == "tool_search" {
-				return map[string]any{
-					"type": "function",
-					"function": map[string]string{
-						"name": codexToolSearchProxyName,
-					},
-				}
+		if name := responsesToolChoiceName(v, toolCtx...); name != "" {
+			return map[string]any{
+				"type": "function",
+				"function": map[string]string{
+					"name": name,
+				},
 			}
 		}
 		return v
@@ -1328,24 +1315,25 @@ func convertResponsesToolChoiceToClaude(toolChoice any, toolCtx ...*codexToolCon
 		out, _ := json.Marshal(mapped)
 		return out
 	case map[string]any:
-		if t, _ := v["type"].(string); t != "" {
-			if name, _ := v["name"].(string); name != "" {
-				if t == "tool_search" {
-					name = codexToolSearchProxyName
-				} else if len(toolCtx) > 0 && toolCtx[0] != nil {
-					namespace, _ := v["namespace"].(string)
-					name = toolCtx[0].chatNameFor(name, namespace)
-				}
-				out, _ := json.Marshal(map[string]any{"type": "tool", "name": name})
-				return out
-			}
-			if t == "tool_search" {
-				out, _ := json.Marshal(map[string]any{"type": "tool", "name": codexToolSearchProxyName})
-				return out
-			}
+		if name := responsesToolChoiceName(v, toolCtx...); name != "" {
+			out, _ := json.Marshal(map[string]any{"type": "tool", "name": name})
+			return out
 		}
 	}
 	return nil
+}
+
+func responsesToolChoiceName(selector map[string]any, toolCtx ...*codexToolContext) string {
+	selectorType, _ := selector["type"].(string)
+	if selectorType == "tool_search" {
+		return codexToolSearchProxyName
+	}
+	name, _ := selector["name"].(string)
+	if name == "" || len(toolCtx) == 0 || toolCtx[0] == nil {
+		return name
+	}
+	namespace, _ := selector["namespace"].(string)
+	return toolCtx[0].chatNameFor(name, namespace)
 }
 
 func codexClaudeToolChoiceWithParallel(toolChoice json.RawMessage, parallel *bool, hasTools bool) (json.RawMessage, error) {

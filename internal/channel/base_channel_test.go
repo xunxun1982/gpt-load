@@ -238,6 +238,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 		baseURL     string
 		originalURL string
 		wantURL     string
+		wantTarget  string
 	}{
 		{
 			name:        "openai chat",
@@ -246,6 +247,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 			baseURL:     "https://api.openai.com",
 			originalURL: "/proxy/openai-group/v1/chat/completions?stream=true",
 			wantURL:     "https://betterclau.de/openai/api.openai.com/v1/chat/completions?stream=true",
+			wantTarget:  "https://api.openai.com/v1/chat/completions?stream=true",
 		},
 		{
 			name:        "openai responses",
@@ -254,6 +256,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 			baseURL:     "https://api.openai.com",
 			originalURL: "/proxy/responses-group/v1/responses",
 			wantURL:     "https://betterclau.de/openai/api.openai.com/v1/responses",
+			wantTarget:  "https://api.openai.com/v1/responses",
 		},
 		{
 			name:        "anthropic claude",
@@ -262,6 +265,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 			baseURL:     "https://api.anthropic.com",
 			originalURL: "/proxy/claude-group/v1/messages",
 			wantURL:     "https://betterclau.de/claude/api.anthropic.com/v1/messages",
+			wantTarget:  "https://api.anthropic.com/v1/messages",
 		},
 		{
 			name:        "gemini native",
@@ -270,6 +274,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 			baseURL:     "https://generativelanguage.googleapis.com",
 			originalURL: "/proxy/gemini-group/v1beta/models/gemini-2.5-flash:generateContent",
 			wantURL:     "https://betterclau.de/gemini/generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+			wantTarget:  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
 		},
 		{
 			name:        "gemini native streaming",
@@ -278,6 +283,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 			baseURL:     "https://generativelanguage.googleapis.com",
 			originalURL: "/proxy/gemini-group/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
 			wantURL:     "https://betterclau.de/gemini/generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
+			wantTarget:  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
 		},
 		{
 			name:        "preserves upstream path",
@@ -286,6 +292,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 			baseURL:     "https://api.example.com/custom/base",
 			originalURL: "/proxy/custom-group/v1/messages",
 			wantURL:     "https://betterclau.de/openai/api.example.com/custom/base/v1/messages",
+			wantTarget:  "https://api.example.com/custom/base/v1/messages",
 		},
 	}
 
@@ -311,7 +318,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 			selection, err := bc.SelectUpstreamWithClients(mustParseURL(tt.originalURL), tt.groupName)
 			require.NoError(t, err)
 			require.Equal(t, tt.wantURL, selection.URL)
-			require.Contains(t, selection.TargetURL, tt.baseURL)
+			require.Equal(t, tt.wantTarget, selection.TargetURL)
 			require.Equal(t, "betterclaude", selection.GatewayProxy)
 		})
 	}

@@ -37,6 +37,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -2293,7 +2294,10 @@ func TestExecuteRequestWithRetryForceStreamSendsStreamTrueToResponsesUpstream(t 
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedBody <- body
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "event: response.completed\n")
@@ -3034,6 +3038,81 @@ func TestExecuteRequestWithAggregateRetryUsesEffectiveStreamModeForLifecycle(t *
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&attempts))
+}
+
+func TestExecuteRequestWithAggregateRetryKeepsMappedBodyWhenParamOverridesFail(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_mapped","object":"chat.completion","created":1,"model":"real-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "agg-mapped-body-sub", "openai")
+	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	subGroup.ModelMapping = `{"alias-model":"real-model"}`
+	subGroup.Config = map[string]any{
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	require.NoError(t, db.Save(subGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-mapped-body",
+		ChannelType: "openai",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config:      map[string]any{"max_retries": 0},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      subGroup.ID,
+		SubGroupName:    subGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, subGroup.ID, "sk-agg-mapped-body", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+	cachedSubGroup, err := ps.groupManager.GetGroupByName(subGroup.Name)
+	require.NoError(t, err)
+	// Force json.Marshal to fail after model mapping without relying on malformed client JSON.
+	cachedSubGroup.ParamOverrides = datatypes.JSONMap{"unsupported": func() {}}
+
+	body := []byte(`{"model":"alias-model","stream":false}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/chat/completions", bytes.NewReader(body))
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &payload))
+	assert.Equal(t, "real-model", payload["model"])
+	assert.NotContains(t, payload, "unsupported")
 }
 
 func TestExecuteRequestWithAggregateRetryAppliesOnlySelectedSubGroupSimulatedClient(t *testing.T) {
