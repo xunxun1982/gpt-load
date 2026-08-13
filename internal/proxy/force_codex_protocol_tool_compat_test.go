@@ -139,25 +139,134 @@ func TestProtocolToolCompatConvertsCustomTools(t *testing.T) {
 	}
 }
 
-func TestProtocolToolCompatRejectsNonReversibleTools(t *testing.T) {
-	for _, toolType := range []string{
-		"web_search", "web_search_preview", "file_search", "computer", "computer_use",
-		"computer_use_preview", "code_interpreter", "image_generation", "mcp", "shell", "local_shell",
-	} {
-		for _, channelType := range []string{"openai", "anthropic"} {
-			t.Run(channelType+"_"+toolType, func(t *testing.T) {
-				tool := `{"type":"` + toolType + `","name":"unsafe"}`
-				body := []byte(`{"model":"gpt-test","input":"hello","tools":[` + tool + `]}`)
-				w := &ProxyServer{}
-				c, _ := gin.CreateTestContext(nil)
-				_, converted, err := w.applyForceCodexRequestConversion(c, &models.Group{ChannelType: channelType}, body)
-				require.Error(t, err)
-				assert.False(t, converted)
-				assert.Contains(t, err.Error(), "unsupported_tool")
-				assert.Contains(t, err.Error(), "Not Supported")
-			})
-		}
+func TestProtocolToolCompatConvertsUnknownCodexToolsThroughFunctionShell(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Tools: []CodexTool{
+			{Type: "web_search", Name: "web_search", Description: "Search", Parameters: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}}}`)},
+			{Type: "future_tool_2026", Name: "future_lookup", Description: "Future", Parameters: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"}}}`)},
+		},
+		Input: json.RawMessage(`[
+			{"type":"web_search_call","call_id":"call_web","name":"web_search","arguments":"{\"query\":\"go\"}"},
+			{"type":"future_tool_call","call_id":"call_future","name":"future_lookup","arguments":"{\"id\":9007199254740993}"},
+			{"type":"web_search_call_output","call_id":"call_web","output":"result"}
+		]`),
 	}
+
+	chat, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+	require.Len(t, chat.Tools, 2)
+	assert.Equal(t, "web_search", chat.Tools[0].Function.Name)
+	assert.Equal(t, "future_lookup", chat.Tools[1].Function.Name)
+	require.Len(t, chat.Messages, 3)
+	assert.Equal(t, "web_search", chat.Messages[0].ToolCalls[0].Function.Name)
+	assert.Equal(t, `{"id":9007199254740993}`, chat.Messages[1].ToolCalls[0].Function.Arguments)
+	assert.Equal(t, "call_web", chat.Messages[2].ToolCallID)
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Tools, 2)
+	assert.Equal(t, "web_search", claude.Tools[0].Name)
+	assert.Equal(t, "future_lookup", claude.Tools[1].Name)
+	require.Len(t, claude.Messages, 3)
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_web","name":"web_search","input":{"query":"go"}}]`, string(claude.Messages[0].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_future","name":"future_lookup","input":{"id":9007199254740993}}]`, string(claude.Messages[1].Content))
+	assert.JSONEq(t, `[{"type":"tool_result","tool_use_id":"call_web","content":"result"}]`, string(claude.Messages[2].Content))
+}
+
+func TestProtocolToolCompatPreservesCodexReasoningHistory(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"plan before lookup"}]},
+			{"type":"function_call","call_id":"call_lookup","name":"lookup","arguments":"{}"}
+		]`),
+	}
+
+	chat, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+	require.Len(t, chat.Messages, 1)
+	require.NotNil(t, chat.Messages[0].ReasoningContent)
+	assert.Equal(t, "plan before lookup", *chat.Messages[0].ReasoningContent)
+	require.Len(t, chat.Messages[0].ToolCalls, 1)
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 1)
+	assert.JSONEq(t, `[
+		{"type":"thinking","thinking":"plan before lookup"},
+		{"type":"tool_use","id":"call_lookup","name":"lookup","input":{}}
+	]`, string(claude.Messages[0].Content))
+}
+
+func TestProtocolToolCompatPreservesNonObjectToolPayloads(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"future_tool_call","call_id":"call_array","name":"future_lookup","arguments":["a",9007199254740993]},
+			{"type":"future_tool_call_output","call_id":"call_array","output":{"path":"F:\\work\\file.txt","ok":true}}
+		]`),
+	}
+
+	chat, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+	require.Len(t, chat.Messages, 2)
+	assert.Equal(t, `["a",9007199254740993]`, chat.Messages[0].ToolCalls[0].Function.Arguments)
+	chatOutput := decodeCompatObject(t, []byte(rawMessageString(t, chat.Messages[1].Content)))
+	assert.Equal(t, `F:\work\file.txt`, chatOutput["path"])
+	assert.Equal(t, true, chatOutput["ok"])
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 2)
+	var toolUse []struct {
+		Input []any `json:"input"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(claude.Messages[0].Content))
+	decoder.UseNumber()
+	require.NoError(t, decoder.Decode(&toolUse))
+	require.Len(t, toolUse, 1)
+	assert.Equal(t, "a", toolUse[0].Input[0])
+	assert.Equal(t, json.Number("9007199254740993"), toolUse[0].Input[1])
+	var toolResult []struct {
+		Content map[string]any `json:"content"`
+	}
+	decoder = json.NewDecoder(bytes.NewReader(claude.Messages[1].Content))
+	decoder.UseNumber()
+	require.NoError(t, decoder.Decode(&toolResult))
+	require.Len(t, toolResult, 1)
+	assert.Equal(t, `F:\work\file.txt`, toolResult[0].Content["path"])
+	assert.Equal(t, true, toolResult[0].Content["ok"])
+}
+
+func TestProtocolToolCompatDerivesNameForUnknownCodexToolType(t *testing.T) {
+	body := []byte(`{"model":"gpt-test","input":"hello","tools":[{"type":"web_search"}]}`)
+	for _, channelType := range []string{"openai", "anthropic"} {
+		t.Run(channelType, func(t *testing.T) {
+			out := applyForceCodexCompat(t, channelType, body)
+			tools := decodeCompatObject(t, out)["tools"].([]any)
+			tool := tools[0].(map[string]any)
+			if channelType == "openai" {
+				tool = tool["function"].(map[string]any)
+			}
+			assert.Equal(t, "web_search", tool["name"])
+		})
+	}
+}
+
+func TestProtocolToolCompatRestoresUnknownClaudeToolUseResponse(t *testing.T) {
+	toolCtx := newCodexToolContext([]CodexTool{{Type: "future_tool_2026", Name: "future_lookup"}})
+	got := convertClaudeToCodexResponse(&ClaudeResponse{
+		ID: "msg_future", Model: "gpt-test",
+		Content: []ClaudeContentBlock{{
+			Type: "server_tool_use", ID: "call_future", Name: "future_lookup", Input: json.RawMessage(`{"id":9007199254740993}`),
+		}},
+	}, toolCtx)
+	require.Len(t, got.Output, 1)
+	assert.Equal(t, "function_call", got.Output[0].Type)
+	assert.Equal(t, "call_future", got.Output[0].CallID)
+	assert.Equal(t, "future_lookup", got.Output[0].Name)
+	assert.Equal(t, `{"id":9007199254740993}`, got.Output[0].Arguments)
 }
 
 func TestProtocolToolCompatRejectsUnnamedFunctionsBeforeConversion(t *testing.T) {

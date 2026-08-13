@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -112,8 +114,6 @@ func TestCCProtocolToolCompatChoiceAndMaxTokens(t *testing.T) {
 
 func TestCCProtocolToolCompatUnsupported(t *testing.T) {
 	tests := []struct{ name, extra string }{
-		{name: "server web search", extra: `"tools":[{"type":"web_search_20260209","name":"web_search"}]`},
-		{name: "tool search", extra: `"tools":[{"type":"tool_search_tool_regex_20251119","name":"tool_search"}]`},
 		{name: "MCP connector", extra: `"mcp_servers":[{"name":"docs","url":"https://example.test"}]`},
 		{name: "server container", extra: `"container":{"id":"container_123"}`},
 	}
@@ -126,6 +126,43 @@ func TestCCProtocolToolCompatUnsupported(t *testing.T) {
 			require.True(t, strings.Contains(err.Error(), "Not Supported"), err.Error())
 		})
 	}
+}
+
+func TestCCProtocolToolCompatConvertsUnknownToolsAndBlocks(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"tools":[{"type":"web_search_20260209","name":"web_search","description":"Search","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},
+			{"type":"future_tool_2026","name":"future_lookup","input_schema":{"type":"object","properties":{"id":{"type":"integer"}}}}],
+		"messages":[
+			{"role":"assistant","content":[{"type":"server_tool_use","id":"call_web","name":"web_search","input":{"query":"go"}},{"type":"future_tool_call","id":"call_future","name":"future_lookup","input":{"id":9007199254740993}}]},
+			{"role":"user","content":[{"type":"web_search_tool_result","tool_use_id":"call_web","content":"result"},{"type":"future_tool_result","tool_use_id":"call_future","content":{"ok":true}}]}
+		]}`)
+
+	chat, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err)
+	require.Len(t, chat.Tools, 2)
+	assert.Equal(t, "web_search", chat.Tools[0].Function.Name)
+	assert.Equal(t, "future_lookup", chat.Tools[1].Function.Name)
+	require.Len(t, chat.Messages, 3)
+	require.Len(t, chat.Messages[0].ToolCalls, 2)
+	assert.Equal(t, "web_search", chat.Messages[0].ToolCalls[0].Function.Name)
+	assert.Equal(t, `{"id":9007199254740993}`, chat.Messages[0].ToolCalls[1].Function.Arguments)
+	assert.Equal(t, "call_web", chat.Messages[1].ToolCallID)
+	assert.Equal(t, "call_future", chat.Messages[2].ToolCallID)
+
+	codex, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	require.Len(t, codex.Tools, 2)
+	assert.Equal(t, "web_search", codex.Tools[0].Name)
+	assert.Equal(t, "future_lookup", codex.Tools[1].Name)
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(codex.Input, &input))
+	require.Len(t, input, 4)
+	assert.Equal(t, "web_search", input[0]["name"])
+	assert.Equal(t, "future_lookup", input[1]["name"])
+	assert.Equal(t, "call_web", input[2]["call_id"])
+	assert.Equal(t, "call_future", input[3]["call_id"])
+	assert.Equal(t, map[string]any{"ok": true}, input[3]["output"])
 }
 
 func TestCCProtocolRequestCompatMapsCurrentFields(t *testing.T) {
@@ -142,6 +179,108 @@ func TestCCProtocolRequestCompatMapsCurrentFields(t *testing.T) {
 	require.Contains(t, string(encoded), `"user":"user-42"`)
 	require.Contains(t, string(encoded), `"service_tier":"default"`)
 	require.Contains(t, string(encoded), `"reasoning_effort":"high"`)
+}
+
+func TestCCProtocolRequestCompatPreservesReasoningEffort(t *testing.T) {
+	for _, effort := range []string{"max", "xhigh", "future_effort_2026"} {
+		t.Run(effort, func(t *testing.T) {
+			req := mustParseClaudeRequest(t, `{
+				"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],
+				"thinking":{"type":"adaptive"},"output_config":{"effort":"`+effort+`"}
+			}`)
+
+			chat, err := convertClaudeToOpenAI(req, nil)
+			require.NoError(t, err)
+			assert.Equal(t, effort, chat.ReasoningEffort)
+
+			codex, err := convertClaudeToCodex(req, "", nil)
+			require.NoError(t, err)
+			require.NotNil(t, codex.Reasoning)
+			assert.Equal(t, effort, codex.Reasoning.Effort)
+		})
+	}
+}
+
+func TestCCProtocolRequestCompatDoesNotDeriveEffortOrRewriteUserContent(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"original user text"}],
+		"thinking":{"type":"enabled","budget_tokens":20000}
+	}`)
+
+	chat, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err)
+	assert.Empty(t, chat.ReasoningEffort)
+	require.Len(t, chat.Messages, 1)
+	assert.Equal(t, "original user text", rawMessageString(t, chat.Messages[0].Content))
+
+	codex, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	require.NotNil(t, codex.Reasoning)
+	assert.Empty(t, codex.Reasoning.Effort)
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(codex.Input, &input))
+	content := input[0]["content"].([]any)[0].(map[string]any)
+	assert.Equal(t, "original user text", content["text"])
+}
+
+func TestCCProtocolRequestCompatConvertsDisabledThinkingSwitch(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],
+		"thinking":{"type":"disabled"}
+	}`)
+
+	chat, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "none", chat.ReasoningEffort)
+
+	codex, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	require.NotNil(t, codex.Reasoning)
+	assert.Equal(t, "none", codex.Reasoning.Effort)
+}
+
+func TestCCProtocolToolCompatPreservesToolPayloads(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"messages":[
+			{"role":"assistant","content":[{"type":"future_tool_call","id":"call_array","name":"future_lookup","input":["a",9007199254740993]}]},
+			{"role":"user","content":[{"type":"future_tool_result","tool_use_id":"call_array","content":{"path":"F:\\work\\file.txt","ok":true}}]}
+		]}`)
+
+	chat, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err)
+	require.Len(t, chat.Messages, 2)
+	assert.Equal(t, `["a",9007199254740993]`, chat.Messages[0].ToolCalls[0].Function.Arguments)
+	chatOutput := decodeCompatObject(t, []byte(rawMessageString(t, chat.Messages[1].Content)))
+	assert.Equal(t, `F:\work\file.txt`, chatOutput["path"])
+	assert.Equal(t, true, chatOutput["ok"])
+
+	codex, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	var input []map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(codex.Input))
+	decoder.UseNumber()
+	require.NoError(t, decoder.Decode(&input))
+	require.Len(t, input, 2)
+	assert.Equal(t, `["a",9007199254740993]`, input[0]["arguments"])
+	output := input[1]["output"].(map[string]any)
+	assert.Equal(t, `F:\work\file.txt`, output["path"])
+	assert.Equal(t, true, output["ok"])
+}
+
+func TestCCProtocolToolCompatPreservesLargeIntegerToolResult(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"messages":[{"role":"user","content":[{
+			"type":"future_tool_result","tool_use_id":"call_big",
+			"content":{"id":9007199254740993}
+		}]}]
+	}`)
+
+	chat, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err)
+	require.Len(t, chat.Messages, 1)
+	assert.Equal(t, `{"id":9007199254740993}`, rawMessageString(t, chat.Messages[0].Content))
 }
 
 func TestCCProtocolRequestCompatRejectsKnownUnsupportedFields(t *testing.T) {

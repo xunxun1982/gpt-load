@@ -1041,6 +1041,7 @@ func TestClearForceProtocolContextClearsToolState(t *testing.T) {
 	c.Set(ctxKeyOpenAIToolNameReverseMap, map[string]string{"short": "original"})
 	c.Set(ctxKeyCodexToolNameReverseMap, map[string]string{"short": "original"})
 	c.Set(ctxKeyCodexToolContext, newCodexToolContext([]CodexTool{{Type: "custom", Name: "exec"}}))
+	c.Set("thinking_model_applied", true)
 
 	clearForceProtocolContext(c)
 
@@ -1052,6 +1053,7 @@ func TestClearForceProtocolContextClearsToolState(t *testing.T) {
 		ctxKeyOpenAIToolNameReverseMap,
 		ctxKeyCodexToolNameReverseMap,
 		ctxKeyCodexToolContext,
+		"thinking_model_applied",
 	} {
 		_, exists := c.Get(key)
 		assert.False(t, exists, "expected %s to be cleared", key)

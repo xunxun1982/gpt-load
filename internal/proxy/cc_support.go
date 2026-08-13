@@ -85,17 +85,6 @@ func isValidToolCallArguments(toolName, arguments string) bool {
 
 // maxContentBufferBytes is declared in function_call.go (same package proxy).
 // We keep the single source of truth there to avoid drift without adding extra files.
-const (
-	// Thinking hints injected into user messages when extended thinking is enabled.
-	// Format follows b4u2cc reference implementation using ANTML-style tags with
-	// backslash-b escape sequence. The upstream parser looks for these generic
-	// </antml> closers rather than matching the opening tag name.
-	// NOTE: The \b in the tag name is intentional - it's a marker used by some
-	// models to identify internal control tags that should not be echoed to users.
-	ThinkingHintInterleaved = "<antml\\b:thinking_mode>interleaved</antml>"
-	ThinkingHintMaxLength   = "<antml\\b:max_thinking_length>%d</antml>"
-)
-
 // clearUpstreamEncodingHeaders removes upstream transfer-related headers before
 // writing a synthesized response body for CC support. This avoids mismatches
 // between headers and the rewritten body (for example after decompression).
@@ -182,6 +171,16 @@ func isCCSupportEnabled(group *models.Group) bool {
 		return false
 	}
 	return getGroupConfigBool(group, "cc_support")
+}
+
+func isClaudeEndpointSupported(group *models.Group) bool {
+	if group == nil {
+		return false
+	}
+	if group.ChannelType == "anthropic" {
+		return true
+	}
+	return isCCSupportEnabled(group)
 }
 
 // isInterceptEventLogEnabled checks whether the intercept_event_log flag is enabled for the given group.
@@ -517,8 +516,7 @@ type OpenAIRequest struct {
 	// ParallelToolCalls is preserved when converting Responses requests to Chat Completions
 	// for the explicit /codex force endpoint.
 	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
-	// ReasoningEffort enables reasoning for models that support it (e.g., o1, o3 series).
-	// Valid values: "low", "medium", "high". Only sent when thinking is enabled.
+	// ReasoningEffort is provider-defined and is forwarded without value normalization.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	ServiceTier     string `json:"service_tier,omitempty"`
 	User            string `json:"user,omitempty"`
@@ -596,13 +594,7 @@ func claudeOutputEffort(config *ClaudeOutputConfig) (string, error) {
 	if ccRawJSONPresent(config.Format) {
 		return "", ccUnsupported("output_config field", "format")
 	}
-	effort := strings.ToLower(strings.TrimSpace(config.Effort))
-	switch effort {
-	case "", "low", "medium", "high":
-		return effort, nil
-	default:
-		return "", ccUnsupported("output_config effort", effort)
-	}
+	return config.Effort, nil
 }
 
 func claudeServiceTierToOpenAI(value string) (string, error) {
@@ -618,18 +610,13 @@ func claudeServiceTierToOpenAI(value string) (string, error) {
 	}
 }
 
-func claudeThinkingActive(config *ThinkingConfig) (bool, error) {
-	if config == nil {
-		return false, nil
-	}
-	switch strings.ToLower(strings.TrimSpace(config.Type)) {
-	case "", "disabled":
-		return false, nil
-	case "enabled", "adaptive":
-		return true, nil
-	default:
-		return false, ccUnsupported("thinking type", config.Type)
-	}
+func claudeThinkingActive(config *ThinkingConfig) bool {
+	return config != nil && strings.TrimSpace(config.Type) != "" &&
+		!strings.EqualFold(strings.TrimSpace(config.Type), "disabled")
+}
+
+func claudeThinkingDisabled(config *ThinkingConfig) bool {
+	return config != nil && strings.EqualFold(strings.TrimSpace(config.Type), "disabled")
 }
 
 func convertClaudeSystemContent(raw json.RawMessage) (string, error) {
@@ -807,14 +794,14 @@ func claudeToolResultContent(block ClaudeContentBlock) (string, error) {
 		return "", nil
 	}
 	var value any
-	if err := json.Unmarshal(block.Content, &value); err != nil {
+	if err := decodeCodexJSONUseNumber(block.Content, &value); err != nil {
 		return "", fmt.Errorf("invalid Anthropic tool_result content: %w", err)
 	}
 	if block.IsError {
 		value = map[string]any{"is_error": true, "content": value}
 	}
 	if text, ok := value.(string); ok {
-		return convertWindowsPathsInToolResult(text), nil
+		return text, nil
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -847,10 +834,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 	if err != nil {
 		return nil, err
 	}
-	thinkingActive, err := claudeThinkingActive(claudeReq.Thinking)
-	if err != nil {
-		return nil, err
-	}
+	thinkingActive := claudeThinkingActive(claudeReq.Thinking)
 	serviceTier, err := claudeServiceTierToOpenAI(claudeReq.ServiceTier)
 	if err != nil {
 		return nil, err
@@ -931,29 +915,10 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 
 	openaiReq.Messages = messages
 
-	// Inject thinking hints when extended thinking is enabled.
-	// NOTE: Only "enabled" type is currently supported. Other values like "disabled"
-	// are silently ignored to allow graceful degradation.
-	if thinkingActive {
-		for i := len(openaiReq.Messages) - 1; i >= 0; i-- {
-			if openaiReq.Messages[i].Role == "user" {
-				hint := ThinkingHintInterleaved
-				if claudeReq.Thinking.BudgetTokens > 0 {
-					hint += fmt.Sprintf(ThinkingHintMaxLength, claudeReq.Thinking.BudgetTokens)
-				}
-				openaiReq.Messages[i].Content = appendToContent(openaiReq.Messages[i].Content, hint)
-				break
-			}
-		}
-	}
-
 	// Convert tools with optional name shortening for OpenAI's 64-char limit
 	if len(claudeReq.Tools) > 0 {
 		tools := make([]OpenAITool, 0, len(claudeReq.Tools))
 		for _, tool := range claudeReq.Tools {
-			if tool.Type != "" && tool.Type != "custom" {
-				return nil, ccUnsupported("tool type", tool.Type)
-			}
 			// Apply shortened name if available
 			toolName := tool.Name
 			if toolNameShortMap != nil {
@@ -992,19 +957,17 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 	openaiReq.ToolChoice = toolChoice
 	openaiReq.ParallelToolCalls = parallelToolCalls
 
-	// Set reasoning_effort for models that support native reasoning (e.g., o1, o3 series).
-	// This is complementary to thinking hints - some models use reasoning_effort instead of ANTML tags.
-	// OpenAI Chat Completions API uses flat "reasoning_effort" field (vs Codex's nested "reasoning.effort").
+	// Explicit effort only changes protocol field location. A token budget has no
+	// lossless equivalent and must not be guessed into an effort level.
 	if effort != "" {
 		openaiReq.ReasoningEffort = effort
-	} else if thinkingActive && claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
-		openaiReq.ReasoningEffort = thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
+	} else if claudeThinkingDisabled(claudeReq.Thinking) {
+		openaiReq.ReasoningEffort = "none"
 	}
 	if thinkingActive {
 		logrus.WithFields(logrus.Fields{
-			"budget_tokens":    claudeReq.Thinking.BudgetTokens,
 			"reasoning_effort": openaiReq.ReasoningEffort,
-		}).Debug("CC: Set reasoning_effort for thinking mode")
+		}).Debug("CC: Preserved explicit reasoning effort for thinking mode")
 	}
 
 	return openaiReq, nil
@@ -1037,15 +1000,15 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 		var textParts, thinkingParts []string
 		var toolCalls []OpenAIToolCall
 		for _, block := range blocks {
-			switch block.Type {
-			case "text":
+			switch {
+			case block.Type == "text":
 				textParts = append(textParts, block.Text)
-			case "thinking":
+			case block.Type == "thinking":
 				// The target has no signature field; preserve visible thinking text and drop the opaque signature.
 				if block.Thinking != "" {
 					thinkingParts = append(thinkingParts, block.Thinking)
 				}
-			case "tool_use":
+			case isClaudeToolUseBlock(block):
 				if block.ID == "" || block.Name == "" {
 					return nil, fmt.Errorf("Anthropic tool_use requires id and name")
 				}
@@ -1053,19 +1016,19 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 				if short, ok := toolNameShortMap[block.Name]; ok {
 					toolName = short
 				}
-				arguments := strings.TrimSpace(string(block.Input))
-				if arguments == "" || arguments == "null" {
+				arguments := string(block.Input)
+				if strings.TrimSpace(arguments) == "" || strings.TrimSpace(arguments) == "null" {
 					arguments = "{}"
 				}
-				var input map[string]any
-				if err := json.Unmarshal([]byte(arguments), &input); err != nil {
-					return nil, fmt.Errorf("Anthropic tool_use input must be an object: %w", err)
+				var input any
+				if err := decodeCodexJSONUseNumber([]byte(arguments), &input); err != nil {
+					return nil, fmt.Errorf("Anthropic tool_use input must be valid JSON: %w", err)
 				}
 				toolCalls = append(toolCalls, OpenAIToolCall{
 					ID: block.ID, Type: "function",
 					Function: OpenAIFunctionCall{Name: toolName, Arguments: arguments},
 				})
-			case "redacted_thinking":
+			case block.Type == "redacted_thinking":
 				return nil, ccUnsupported("content block", block.Type)
 			default:
 				return nil, ccUnsupported("content block", block.Type)
@@ -1109,14 +1072,14 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 		return nil
 	}
 	for _, block := range blocks {
-		switch block.Type {
-		case "text", "image", "document":
+		switch {
+		case block.Type == "text" || block.Type == "image" || block.Type == "document":
 			part, err := claudeBlockToOpenAIUserPart(block)
 			if err != nil {
 				return nil, err
 			}
 			userParts = append(userParts, part)
-		case "tool_result":
+		case isClaudeToolResultBlock(block):
 			if block.ToolUseID == "" {
 				return nil, fmt.Errorf("Anthropic tool_result requires tool_use_id")
 			}
@@ -1138,6 +1101,20 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 	return result, nil
 }
 
+func isClaudeToolUseBlock(block ClaudeContentBlock) bool {
+	if block.Type == "tool_use" {
+		return true
+	}
+	return strings.HasSuffix(block.Type, "_tool_use") || strings.Contains(block.Type, "_tool_use_") || strings.HasSuffix(block.Type, "_tool_call")
+}
+
+func isClaudeToolResultBlock(block ClaudeContentBlock) bool {
+	if block.Type == "tool_result" {
+		return true
+	}
+	return strings.HasSuffix(block.Type, "_tool_result") || strings.Contains(block.Type, "_tool_result_") || strings.HasSuffix(block.Type, "_tool_output")
+}
+
 // getThinkingModel returns the thinking model configured for the group.
 // Returns empty string if not configured.
 func getThinkingModel(group *models.Group) string {
@@ -1156,43 +1133,6 @@ func getThinkingModel(group *models.Group) string {
 	default:
 		return ""
 	}
-}
-
-// thinkingBudgetToReasoningEffortOpenAI converts Claude thinking budget_tokens to OpenAI reasoning effort.
-// Returns the effort level ("low", "medium", "high") based on token budget.
-// This is used for OpenAI models that support native reasoning (e.g., o1, o3, o4-mini, GPT-5 series).
-//
-// COMPATIBILITY NOTE: We intentionally use only "low", "medium", "high" values for maximum compatibility.
-// While newer models (GPT-5.2) support additional levels like "minimal", "none", and "xhigh", these are
-// not universally supported across all reasoning models:
-// - o1, o3, o3-mini, o4-mini: only support "low", "medium", "high"
-// - GPT-5, GPT-5-mini, GPT-5-nano: support "none", "minimal", "low", "medium", "high"
-// - GPT-5.2: supports "none", "minimal", "low", "medium", "high", "xhigh"
-// Using unsupported values would cause API errors. The three-level mapping provides safe coverage
-// for all reasoning models while still offering meaningful differentiation.
-//
-// AI REVIEW NOTE: Suggestion to use proportional allocation (budgetTokens/maxTokens) was rejected.
-// OpenAI's reasoning_effort is an independent parameter controlling reasoning depth, NOT a proportion
-// of max_tokens. Per OpenAI API docs, it accepts discrete values that control how many reasoning
-// tokens the model generates internally. Claude's budget_tokens represents user's expected thinking
-// depth, which maps naturally to OpenAI's effort levels using absolute thresholds.
-// Reference: https://platform.openai.com/docs/guides/reasoning
-func thinkingBudgetToReasoningEffortOpenAI(budgetTokens int) string {
-	// Mapping based on typical token budgets:
-	// - low: < 1000 tokens (quick responses)
-	// - medium: 1000-10000 tokens (default, balanced)
-	// - high: > 10000 tokens (deep reasoning)
-	// NOTE: We don't use "xhigh" (GPT-5.2 only) or "minimal"/"none" (GPT-5+ only) for compatibility.
-	if budgetTokens <= 0 {
-		return "medium" // Default when not specified
-	}
-	if budgetTokens < 1000 {
-		return "low"
-	}
-	if budgetTokens > 10000 {
-		return "high"
-	}
-	return "medium"
 }
 
 // applyCCRequestConversionDirect converts Claude request to OpenAI format directly.

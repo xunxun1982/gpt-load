@@ -1,8 +1,8 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"gpt-load/internal/models"
@@ -82,7 +82,7 @@ func TestProtocolToolCompatCanUseLegacyUserRoleForClaudeSystem(t *testing.T) {
 	assert.Equal(t, "user", input[1]["role"])
 }
 
-func TestProtocolToolCompatEmitsExplicitFalseStrictForClaudeTools(t *testing.T) {
+func TestProtocolToolCompatDoesNotInventStrictForClaudeTools(t *testing.T) {
 	got, err := convertClaudeToCodex(&ClaudeRequest{
 		Model: "gpt-test",
 		Tools: []ClaudeTool{{
@@ -95,7 +95,7 @@ func TestProtocolToolCompatEmitsExplicitFalseStrictForClaudeTools(t *testing.T) 
 	require.NoError(t, err)
 	payload := decodeCompatObject(t, encoded)
 	tool := payload["tools"].([]any)[0].(map[string]any)
-	assert.Equal(t, false, tool["strict"])
+	assert.NotContains(t, tool, "strict")
 }
 
 func TestProtocolToolCompatKeepsZeroArgumentToolCall(t *testing.T) {
@@ -107,12 +107,39 @@ func TestProtocolToolCompatKeepsZeroArgumentToolCall(t *testing.T) {
 	}, nil)
 	require.Len(t, got.Content, 1)
 	assert.Equal(t, "tool_use", got.Content[0].Type)
+	assert.Equal(t, "call_empty", got.Content[0].ID)
 	assert.JSONEq(t, `{}`, string(got.Content[0].Input))
+}
+
+func TestProtocolToolCompatCodexToClaudeConvertsUnknownResponseTool(t *testing.T) {
+	got := convertCodexToClaudeResponse(&CodexResponse{
+		ID: "resp_test", Status: "completed", Model: "gpt-test",
+		Output: []CodexOutputItem{{
+			Type: "future_tool_call", CallID: "call_future", Name: "future_lookup", Arguments: `{"id":9007199254740993}`,
+		}},
+	}, nil)
+	require.Len(t, got.Content, 1)
+	assert.Equal(t, "tool_use", got.Content[0].Type)
+	assert.Equal(t, "future_lookup", got.Content[0].Name)
+	assert.JSONEq(t, `{"id":9007199254740993}`, string(got.Content[0].Input))
+}
+
+func TestProtocolToolCompatCodexStreamConvertsUnknownResponseTool(t *testing.T) {
+	state := newCodexStreamState(nil)
+	events := state.processCodexStreamEvent(&CodexStreamEvent{
+		Type: "response.output_item.added",
+		Item: &CodexOutputItem{Type: "future_tool_call", CallID: "call_future", Name: "future_lookup"},
+	})
+	require.Len(t, events, 1)
+	require.NotNil(t, events[0].ContentBlock)
+	assert.Equal(t, "tool_use", events[0].ContentBlock.Type)
+	assert.Equal(t, "call_future", events[0].ContentBlock.ID)
+	assert.Equal(t, "future_lookup", events[0].ContentBlock.Name)
 }
 
 func TestProtocolToolCompatUseNumberWhenCleaningArguments(t *testing.T) {
 	got := cleanToolCallArguments("WebSearch", `{"cursor":9007199254740993,"allowed_domains":[]}`)
-	assert.NotContains(t, got, "allowed_domains")
+	assert.Contains(t, got, "allowed_domains")
 	assert.Contains(t, got, "9007199254740993")
 }
 
@@ -126,9 +153,12 @@ func TestProtocolToolCompatReadsToolSearchOutputToolsForClaude(t *testing.T) {
 	var blocks []ClaudeContentBlock
 	require.NoError(t, json.Unmarshal(got.Messages[0].Content, &blocks))
 	require.Len(t, blocks, 1)
-	var output string
-	require.NoError(t, json.Unmarshal(blocks[0].Content, &output))
-	assert.True(t, strings.Contains(output, `"name":"loaded"`), output)
+	var output []map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(blocks[0].Content))
+	decoder.UseNumber()
+	require.NoError(t, decoder.Decode(&output))
+	require.Len(t, output, 1)
+	assert.Equal(t, "loaded", output[0]["name"])
 }
 
 func TestCodexRequestOptionCompatRejectsUnmodeledTopLevelFields(t *testing.T) {

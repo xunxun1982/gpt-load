@@ -108,11 +108,12 @@ func TestApplyCodexCCRequestConversionStoresModelRedirectTargetIndex(t *testing.
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	body := []byte(`{"model":"virtual-model","messages":[{"role":"user","content":"hello"}]}`)
 	group := &models.Group{
-		ID:          42,
-		Name:        "responses-group",
-		ChannelType: "openai-response",
-		GroupType:   "standard",
-		Config:      map[string]any{"cc_support": true},
+		ID:                  42,
+		Name:                "responses-group",
+		ChannelType:         "openai-response",
+		GroupType:           "standard",
+		Config:              map[string]any{"cc_support": true},
+		ModelRedirectStrict: true,
 		ModelRedirectMapV2: map[string]*models.ModelRedirectRuleV2{
 			"virtual-model": {
 				Targets: []models.ModelRedirectTarget{
@@ -698,8 +699,8 @@ func TestConvertClaudeToCodex(t *testing.T) {
 				if req.Reasoning == nil {
 					t.Fatal("expected reasoning to be set")
 				}
-				if req.Reasoning.Effort == "" {
-					t.Error("expected reasoning effort to be set")
+				if req.Reasoning.Effort != "" {
+					t.Errorf("expected budget_tokens not to derive effort, got %s", req.Reasoning.Effort)
 				}
 				if req.Reasoning.Summary != "auto" {
 					t.Errorf("expected reasoning summary auto, got %s", req.Reasoning.Summary)

@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 )
 
 type failAfterWriteResponseWriter struct {
@@ -998,9 +999,9 @@ func TestConvertCodexRequestToClaude(t *testing.T) {
 	assert.Equal(t, "user", got.Messages[0].Role)
 	assert.JSONEq(t, `[{"type":"text","text":"Read file"}]`, string(got.Messages[0].Content))
 	assert.Equal(t, "assistant", got.Messages[1].Role)
-	assert.JSONEq(t, `[{"type":"tool_use","id":"read","name":"read_file","input":{"path":"README.md"}}]`, string(got.Messages[1].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_read","name":"read_file","input":{"path":"README.md"}}]`, string(got.Messages[1].Content))
 	assert.Equal(t, "user", got.Messages[2].Role)
-	assert.JSONEq(t, `[{"type":"tool_result","tool_use_id":"read","content":"content"}]`, string(got.Messages[2].Content))
+	assert.JSONEq(t, `[{"type":"tool_result","tool_use_id":"call_read","content":"content"}]`, string(got.Messages[2].Content))
 	require.Len(t, got.Tools, 1)
 	assert.Equal(t, "read_file", got.Tools[0].Name)
 	assert.JSONEq(t, `{"type":"tool","name":"read_file"}`, string(got.ToolChoice))
@@ -1042,9 +1043,9 @@ func TestConvertCodexRequestToClaudePreservesCodexToolKinds(t *testing.T) {
 	assert.JSONEq(t, `{"type":"tool","name":"tool_search"}`, string(got.ToolChoice))
 
 	require.Len(t, got.Messages, 3)
-	assert.JSONEq(t, `[{"type":"tool_use","id":"custom","name":"apply_patch","input":{"input":"*** Begin Patch"}}]`, string(got.Messages[0].Content))
-	assert.JSONEq(t, `[{"type":"tool_use","id":"search","name":"tool_search","input":{"query":"gmail"}}]`, string(got.Messages[1].Content))
-	assert.JSONEq(t, `[{"type":"tool_use","id":"ns","name":"mcp__gmail__send_email","input":{"to":"a@example.com"}}]`, string(got.Messages[2].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_custom","name":"apply_patch","input":{"input":"*** Begin Patch"}}]`, string(got.Messages[0].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_search","name":"tool_search","input":{"query":"gmail"}}]`, string(got.Messages[1].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_ns","name":"mcp__gmail__send_email","input":{"to":"a@example.com"}}]`, string(got.Messages[2].Content))
 }
 
 func TestConvertCodexRequestToClaudePreservesNestedNamespaces(t *testing.T) {
@@ -1076,7 +1077,7 @@ func TestConvertCodexRequestToClaudePreservesNestedNamespaces(t *testing.T) {
 	require.Len(t, got.Tools, 1)
 	assert.Equal(t, "root__child__run", got.Tools[0].Name)
 	require.Len(t, got.Messages, 1)
-	assert.JSONEq(t, `[{"type":"tool_use","id":"nested","name":"root__child__run","input":{"value":1}}]`, string(got.Messages[0].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_nested","name":"root__child__run","input":{"value":1}}]`, string(got.Messages[0].Content))
 }
 
 func TestConvertCodexRequestToClaudeDefaultsInvalidToolArguments(t *testing.T) {
@@ -1095,10 +1096,10 @@ func TestConvertCodexRequestToClaudeDefaultsInvalidToolArguments(t *testing.T) {
 	got, err := convertCodexRequestToClaude(req)
 	require.NoError(t, err)
 	require.Len(t, got.Messages, 4)
-	assert.JSONEq(t, `[{"type":"tool_use","id":"empty","name":"empty_args","input":{}}]`, string(got.Messages[0].Content))
-	assert.JSONEq(t, `[{"type":"tool_use","id":"invalid","name":"invalid_args","input":{}}]`, string(got.Messages[1].Content))
-	assert.JSONEq(t, `[{"type":"tool_use","id":"array","name":"array_args","input":{}}]`, string(got.Messages[2].Content))
-	assert.JSONEq(t, `[{"type":"tool_use","id":"string","name":"string_args","input":{}}]`, string(got.Messages[3].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_empty","name":"empty_args","input":{}}]`, string(got.Messages[0].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_invalid","name":"invalid_args","input":{}}]`, string(got.Messages[1].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_array","name":"array_args","input":[]}]`, string(got.Messages[2].Content))
+	assert.JSONEq(t, `[{"type":"tool_use","id":"call_string","name":"string_args","input":"foo"}]`, string(got.Messages[3].Content))
 }
 
 func TestConvertClaudeResponseToCodex(t *testing.T) {
@@ -1132,7 +1133,7 @@ func TestConvertClaudeResponseToCodex(t *testing.T) {
 	assert.Equal(t, "message", got.Output[0].Type)
 	assert.Equal(t, "Need a file.", got.Output[0].Content[0].Text)
 	assert.Equal(t, "function_call", got.Output[1].Type)
-	assert.Equal(t, "call_read", got.Output[1].CallID)
+	assert.Equal(t, "read", got.Output[1].CallID)
 	assert.Equal(t, "read_file", got.Output[1].Name)
 	require.NotNil(t, got.Usage)
 	assert.Equal(t, 20, got.Usage.TotalTokens)
@@ -1230,6 +1231,54 @@ func TestHandleProxyForceCodexOpenAIChatNonStreaming(t *testing.T) {
 	assert.Equal(t, "function_call", got.Output[0].Type)
 	assert.Equal(t, "call_lookup", got.Output[0].CallID)
 	assert.Equal(t, "lookup_time", got.Output[0].Name)
+}
+
+func TestHandleProxyForceCodexStrictModelRedirectRetriesFromSourceModel(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	var requestCount int
+	var receivedModels []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		receivedModels = append(receivedModels, payload["model"].(string))
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		if requestCount == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"error":{"message":"retry"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_retry","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	group := createTestGroup(t, db, "force-codex-strict-redirect", "openai")
+	group.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	group.Config = map[string]any{"codex_support": true, "max_retries": 1, "blacklist_threshold": 100}
+	group.ModelRedirectRulesV2 = datatypes.JSON(`{"deepseek-v4-flash":{"targets":[{"model":"deepseek-v4-flash-free","weight":100}]}}`)
+	group.ModelRedirectStrict = true
+	require.NoError(t, db.Save(group).Error)
+	createTestKey(t, db, group.ID, "sk-force-codex-strict-redirect", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	body := []byte(`{"model":"deepseek-v4-flash","input":"hello","stream":false}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+group.Name+"/codex/v1/responses", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: group.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.Equal(t, 2, requestCount)
+	require.Equal(t, []string{"deepseek-v4-flash-free", "deepseek-v4-flash-free"}, receivedModels)
 }
 
 func TestHandleProxyForceCodexOpenAIChatCompactConvertsToChatEndpoint(t *testing.T) {
@@ -1330,7 +1379,7 @@ func TestHandleProxyForceCodexAnthropicNonStreaming(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	require.Len(t, got.Output, 1)
 	assert.Equal(t, "function_call", got.Output[0].Type)
-	assert.Equal(t, "call_read", got.Output[0].CallID)
+	assert.Equal(t, "read", got.Output[0].CallID)
 	assert.Equal(t, "read_file", got.Output[0].Name)
 }
 
@@ -1411,6 +1460,7 @@ func TestAggregateForceCodexUsesSelectedSubGroupConfig(t *testing.T) {
 		"max_retries":         0,
 		"blacklist_threshold": 100,
 	}
+	subGroup.ParamOverrides = datatypes.JSONMap{"reasoning_effort": "xhigh"}
 	require.NoError(t, db.Save(subGroup).Error)
 
 	aggregateGroup := &models.Group{
@@ -1442,7 +1492,7 @@ func TestAggregateForceCodexUsesSelectedSubGroupConfig(t *testing.T) {
 	body := []byte(`{"model":"gpt-test","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":false}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/codex/v1/responses", bytes.NewReader(body))
 	c.Set(ctxKeyCCEnabled, true)
 	c.Set(ctxKeyOriginalFormat, "claude")
 	c.Set(ctxKeyOpenAIResponseCC, true)
@@ -1468,6 +1518,7 @@ func TestAggregateForceCodexUsesSelectedSubGroupConfig(t *testing.T) {
 	require.NoError(t, json.Unmarshal(<-receivedBody, &upstreamPayload))
 	assert.Contains(t, upstreamPayload, "messages")
 	assert.NotContains(t, upstreamPayload, "input")
+	assert.Equal(t, "xhigh", upstreamPayload["reasoning_effort"])
 
 	var got CodexResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
@@ -1552,6 +1603,107 @@ func TestAggregateForceCodexPassthroughNativeResponsesSubGroup(t *testing.T) {
 	assert.Contains(t, upstreamPayload, "input")
 	assert.NotContains(t, upstreamPayload, "messages")
 	assert.JSONEq(t, `{"id":"resp_native","object":"response","created_at":123,"model":"gpt-test","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"native ok"}]}]}`, w.Body.String())
+}
+
+func TestAggregateForceCodexFailureFallsBackToNativeResponsesSubGroup(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	type receivedRequest struct {
+		path string
+		body map[string]any
+	}
+	received := make(chan receivedRequest, 2)
+	var attempts int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		received <- receivedRequest{path: r.URL.Path, body: payload}
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		if attempts == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"error":{"message":"fail forced Codex subgroup"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"resp_native_fallback","object":"response","created_at":123,"model":"gpt-test","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"native fallback ok"}]}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	forcedSubGroup := createTestGroup(t, db, "agg-codex-fail-forced", "openai")
+	forcedSubGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	forcedSubGroup.Config = map[string]any{
+		"codex_support":       true,
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	require.NoError(t, db.Save(forcedSubGroup).Error)
+
+	nativeSubGroup := createTestGroup(t, db, "agg-codex-pass-native", "openai-response")
+	nativeSubGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	nativeSubGroup.Config = map[string]any{
+		"max_retries":         0,
+		"force_non_stream":    true,
+		"blacklist_threshold": 100,
+	}
+	require.NoError(t, db.Save(nativeSubGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-codex-force-to-native",
+		ChannelType: "openai-response",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[]`),
+		Config:      map[string]any{"max_retries": 1, "sub_max_retries": 0},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	for _, subGroup := range []*models.Group{forcedSubGroup, nativeSubGroup} {
+		require.NoError(t, db.Create(&models.GroupSubGroup{
+			GroupID:         aggregateGroup.ID,
+			SubGroupID:      subGroup.ID,
+			SubGroupName:    subGroup.Name,
+			SubGroupEnabled: true,
+			Weight:          100,
+		}).Error)
+		createTestKey(t, db, subGroup.ID, "sk-"+subGroup.Name, ps.encryptionSvc)
+	}
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+	body := []byte(`{"model":"gpt-test","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":false}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/codex/v1/responses", bytes.NewReader(body))
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+		forcedSubGroupID:    forcedSubGroup.ID,
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	first := <-received
+	second := <-received
+	assert.Equal(t, "/v1/chat/completions", first.path)
+	assert.Contains(t, first.body, "messages")
+	assert.NotContains(t, first.body, "input")
+	assert.Equal(t, "/v1/responses", second.path)
+	assert.Contains(t, second.body, "input")
+	assert.NotContains(t, second.body, "messages")
+	assert.False(t, isCCEnabled(c))
+	assert.True(t, isCodexEnabled(c))
+	assert.Equal(t, codexUpstreamResponses, getCodexUpstreamFormat(c))
+	assert.False(t, isFunctionCallEnabled(c))
+	assert.JSONEq(t, `{"id":"resp_native_fallback","object":"response","created_at":123,"model":"gpt-test","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"native fallback ok"}]}]}`, w.Body.String())
 }
 
 func TestCollectClaudeStreamToResponseKeepsSparseUnclosedBlocks(t *testing.T) {

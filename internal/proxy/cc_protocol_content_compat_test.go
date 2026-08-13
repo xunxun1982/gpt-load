@@ -38,12 +38,6 @@ func TestCCProtocolContentCompatMedia(t *testing.T) {
 func TestCCProtocolContentCompatUnsupportedBlocks(t *testing.T) {
 	tests := []struct{ name, role, block string }{
 		{name: "redacted thinking", role: "assistant", block: `{"type":"redacted_thinking","data":"opaque"}`},
-		{name: "server tool use", role: "assistant", block: `{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{}}`},
-		{name: "web search result", role: "user", block: `{"type":"web_search_tool_result","tool_use_id":"srv_1","content":[]}`},
-		{name: "MCP tool use", role: "assistant", block: `{"type":"mcp_tool_use","id":"mcp_1","name":"read","input":{}}`},
-		{name: "MCP tool result", role: "user", block: `{"type":"mcp_tool_result","tool_use_id":"mcp_1","content":[]}`},
-		{name: "tool search result", role: "user", block: `{"type":"tool_search_tool_result","tool_use_id":"srv_2","content":[]}`},
-		{name: "code execution result", role: "user", block: `{"type":"code_execution_tool_result","tool_use_id":"srv_3","content":{}}`},
 		{name: "container upload", role: "user", block: `{"type":"container_upload","file_id":"file_1"}`},
 		{name: "PDF URL", role: "user", block: `{"type":"document","source":{"type":"url","url":"https://example.test/a.pdf"}}`},
 		{name: "image file ID", role: "user", block: `{"type":"image","source":{"type":"file","file_id":"file_1"}}`},
@@ -77,6 +71,25 @@ func TestCCProtocolContentCompatPlainThinkingHistory(t *testing.T) {
 	encoded, err := json.Marshal(got.Messages[0])
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "opaque-secret-value")
+}
+
+func TestCCProtocolContentCompatPreservesThinkingHistoryForCodex(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"messages":[{"role":"assistant","content":[
+			{"type":"thinking","thinking":"plan before lookup"},
+			{"type":"tool_use","id":"call_lookup","name":"lookup","input":{}}
+		]}]}`)
+
+	got, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(got.Input, &input))
+	require.Len(t, input, 2)
+	require.Equal(t, "reasoning", input[0]["type"])
+	require.Equal(t, "plan before lookup", input[0]["summary"].([]any)[0].(map[string]any)["text"])
+	require.Equal(t, "function_call", input[1]["type"])
+	require.Equal(t, "call_lookup", input[1]["call_id"])
 }
 
 func TestCCProtocolContentCompatRejectsNonTextSystem(t *testing.T) {

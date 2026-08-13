@@ -311,6 +311,7 @@ func TestSelectUpstreamWithClientsAppliesGatewayProxy(t *testing.T) {
 			selection, err := bc.SelectUpstreamWithClients(mustParseURL(tt.originalURL), tt.groupName)
 			require.NoError(t, err)
 			require.Equal(t, tt.wantURL, selection.URL)
+			require.Contains(t, selection.TargetURL, tt.baseURL)
 			require.Equal(t, "betterclaude", selection.GatewayProxy)
 		})
 	}

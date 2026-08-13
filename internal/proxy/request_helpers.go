@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -150,7 +152,7 @@ func appendUnique(values *[]string, value string) {
 }
 
 func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group) ([]byte, error) {
-	if len(group.ParamOverrides) == 0 || len(bodyBytes) == 0 {
+	if group == nil || len(group.ParamOverrides) == 0 || len(bodyBytes) == 0 {
 		return bodyBytes, nil
 	}
 
@@ -180,6 +182,82 @@ func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group
 	}
 
 	return json.Marshal(requestData)
+}
+
+func filterProtocolConversionRequestBody(bodyBytes []byte, group *models.Group, target, upstreamURL string) ([]byte, error) {
+	if len(bodyBytes) == 0 || !protocolConversionShouldRemovePromptCacheKey(group, target, upstreamURL) {
+		return bodyBytes, nil
+	}
+	if !bytes.Contains(bodyBytes, []byte(`"prompt_cache_key"`)) {
+		return bodyBytes, nil
+	}
+
+	var requestData map[string]any
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &requestData); err != nil {
+		return bodyBytes, nil
+	}
+	if _, exists := requestData["prompt_cache_key"]; !exists {
+		return bodyBytes, nil
+	}
+	delete(requestData, "prompt_cache_key")
+	return json.Marshal(requestData)
+}
+
+func protocolConversionShouldRemovePromptCacheKey(group *models.Group, target, upstreamURL string) bool {
+	if target == codexUpstreamClaude {
+		return true
+	}
+	if target != codexUpstreamOpenAIChat {
+		return false
+	}
+	if group != nil {
+		switch strings.ToLower(getGroupConfigString(group, "prompt_cache_routing")) {
+		case "enabled", "enable", "true", "1", "yes", "on":
+			return false
+		case "disabled", "disable", "false", "0", "no", "off":
+			return true
+		}
+	}
+	return !convertedChatUpstreamSupportsPromptCacheKey(upstreamURL)
+}
+
+func convertedChatUpstreamSupportsPromptCacheKey(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	path := strings.ToLower(parsed.EscapedPath())
+	if host == "api.openai.com" {
+		return true
+	}
+	if host == "api.kimi.com" && (path == "/coding" || strings.HasPrefix(path, "/coding/")) {
+		return true
+	}
+	// Built-in gateway URLs encode the original target host in the path. Keep
+	// the same conservative capability decision when such a route is selected.
+	return strings.Contains(path, "/api.openai.com/") || strings.Contains(path, "/api.kimi.com/coding")
+}
+
+func protocolConversionTarget(c *gin.Context, group *models.Group) string {
+	if c == nil || group == nil {
+		return ""
+	}
+	if isOpenAIResponseCCMode(c) {
+		return codexUpstreamResponses
+	}
+	if isCCEnabled(c) {
+		if group.ChannelType == "openai" {
+			return codexUpstreamOpenAIChat
+		}
+		if group.ChannelType == "openai-response" {
+			return codexUpstreamResponses
+		}
+	}
+	if isCodexEnabled(c) {
+		return getCodexUpstreamFormat(c)
+	}
+	return ""
 }
 
 // applyParallelToolCallsConfig applies the parallel_tool_calls configuration to the request.

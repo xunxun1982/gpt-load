@@ -517,6 +517,7 @@ type retryContext struct {
 	attemptCount                   int           // Current attempt count (aggregate-level sub-group switches)
 	originalBodyBytes              []byte        // Original request body (before any sub-group mapping)
 	originalPath                   string        // Original request path (for CC support restoration)
+	originalRawQuery               string        // Original request query (for per-sub-group protocol handling)
 	subGroupKeyRetryMap            map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
 	forcedSubGroupID               uint          // Keeps key-level retries on the selected sub-group until its retry budget is exhausted
 	codexAffinityKey               string        // Stable Codex affinity key for this aggregate request
@@ -622,17 +623,18 @@ func safeProxyURL(proxyURL *string) string {
 	return parsedURL.String()
 }
 
-// restoreOriginalPath restores the original request path for retry attempts.
+// restoreOriginalPath restores the original request path and query for retry attempts.
 // This is used by aggregate retry logic to ensure each sub-group can apply its
 // own CC support and path rewriting without inheriting state from previous
 // attempts.
 func restoreOriginalPath(c *gin.Context, retryCtx *retryContext) {
-	if retryCtx == nil {
+	if c == nil || c.Request == nil || c.Request.URL == nil || retryCtx == nil {
 		return
 	}
 	if retryCtx.originalPath != "" && c.Request.URL.Path != retryCtx.originalPath {
 		c.Request.URL.Path = retryCtx.originalPath
 	}
+	c.Request.URL.RawQuery = retryCtx.originalRawQuery
 }
 
 // clearForceProtocolContext prevents one aggregate sub-group attempt from
@@ -651,6 +653,7 @@ func clearForceProtocolContext(c *gin.Context) {
 	delete(c.Keys, ctxKeyCodexToolContext)
 	delete(c.Keys, ctxKeyFunctionCallEnabled)
 	delete(c.Keys, ctxKeyTriggerSignal)
+	delete(c.Keys, "thinking_model_applied")
 	delete(c.Keys, "cc_was_claude_path")
 	delete(c.Keys, "codex_was_codex_path")
 }
@@ -982,6 +985,16 @@ func isOpenAIResponsesCodexEndpoint(path string) bool {
 		strings.HasSuffix(path, "/v1/responses/compact")
 }
 
+// shouldDeferParamOverridesForProtocolConversion keeps channel overrides on the
+// final upstream protocol when a forced Claude/Codex request will be converted.
+func shouldDeferParamOverridesForProtocolConversion(group *models.Group, ccConversion, codexConversion bool) bool {
+	if group == nil {
+		return false
+	}
+	return (ccConversion && isCCSupportEnabled(group)) ||
+		(codexConversion && isCodexSupportEnabled(group))
+}
+
 func rewriteCodexResponsesPathToUpstream(path, upstreamPath string) string {
 	if strings.HasSuffix(path, "/v1/responses/compact") {
 		return strings.TrimSuffix(path, "/v1/responses/compact") + upstreamPath
@@ -1266,6 +1279,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			excludedSubGroups:   make(map[uint]bool, len(originalGroup.SubGroups)),
 			attemptCount:        0,
 			originalPath:        c.Request.URL.Path, // Save original path for retry restoration
+			originalRawQuery:    c.Request.URL.RawQuery,
 			subGroupKeyRetryMap: make(map[uint]int, len(originalGroup.SubGroups)),
 		}
 	}
@@ -1312,6 +1326,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		retryCtx = &retryContext{
 			originalBodyBytes: bodyBytes,
 			originalPath:      c.Request.URL.Path,
+			originalRawQuery:  c.Request.URL.RawQuery,
 		}
 		bodyBytes, err = ps.prepareStandardCodexAffinity(c, channelHandler, originalGroup, bodyBytes, retryCtx)
 		if err != nil {
@@ -1372,7 +1387,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	// Handle CC support path rewriting for all requests (including GET)
 	// This must happen before body processing to ensure correct path for upstream
 	wasClaudePath := isClaudePath(c.Request.URL.Path, group.Name)
-	if isCCSupportEnabled(group) && wasClaudePath {
+	if isClaudeEndpointSupported(group) && wasClaudePath {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
 
@@ -1380,7 +1395,9 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 		// Sanitize query parameters for CC support (e.g., remove beta=true)
 		// These are Claude-specific and should not be passed to OpenAI-style upstreams
-		sanitizeCCQueryParams(c.Request.URL)
+		if isCCSupportEnabled(group) {
+			sanitizeCCQueryParams(c.Request.URL)
+		}
 		c.Set("cc_was_claude_path", true)
 		logrus.WithFields(logrus.Fields{
 			"group":           group.Name,
@@ -1424,10 +1441,16 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				c.Set("original_model", originalModel)
 			}
 
-			finalBodyBytes, err = ps.applyParamOverrides(bodyBytesAfterMapping, group)
-			if err != nil {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides: %v", err)))
-				return
+			ccConversionExpected := isCCSupportEnabled(group) && wasClaudePath && strings.HasSuffix(c.Request.URL.Path, "/v1/messages")
+			codexConversionExpected := isCodexSupportEnabled(group) && wasCodexPath && isOpenAIResponsesCodexEndpoint(c.Request.URL.Path)
+			deferParamOverrides := shouldDeferParamOverridesForProtocolConversion(group, ccConversionExpected, codexConversionExpected)
+			finalBodyBytes = bodyBytesAfterMapping
+			if !deferParamOverrides {
+				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+				if err != nil {
+					response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides: %v", err)))
+					return
+				}
 			}
 
 			// Handle Claude count_tokens endpoint (CC only).
@@ -1456,13 +1479,6 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 						return
 					} else if converted {
 						finalBodyBytes = convertedBody
-						// Re-apply param overrides after CC conversion to allow overriding
-						// converted parameters (e.g., reasoning.effort for OpenAI Responses API).
-						// This enables users to force specific values like {"reasoning": {"effort": "xhigh"}}.
-						finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-						if err != nil {
-							logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI Responses CC conversion")
-						}
 						// Rewrite path from /v1/messages to /v1/responses for OpenAI Responses
 						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/responses", 1)
 						logrus.WithFields(logrus.Fields{
@@ -1483,12 +1499,6 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 						return
 					} else if converted {
 						finalBodyBytes = convertedBody
-						// Re-apply param overrides after CC conversion to allow overriding
-						// converted parameters (e.g., reasoning_effort for OpenAI API).
-						finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-						if err != nil {
-							logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI CC conversion")
-						}
 						// Rewrite path from /v1/messages to /v1/chat/completions
 						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
 						logrus.WithFields(logrus.Fields{
@@ -1516,10 +1526,6 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 					return
 				} else if converted {
 					finalBodyBytes = convertedBody
-					finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-					if err != nil {
-						logrus.WithError(err).Warn("Failed to re-apply param overrides after Codex conversion")
-					}
 					switch group.ChannelType {
 					case "openai":
 						c.Request.URL.Path = rewriteCodexResponsesPathToUpstream(c.Request.URL.Path, "/v1/chat/completions")
@@ -1531,6 +1537,14 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 						"channel_type": group.ChannelType,
 						"new_path":     c.Request.URL.Path,
 					}).Debug("Force Codex: converted Responses request to upstream format")
+				}
+			}
+
+			if deferParamOverrides {
+				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+				if err != nil {
+					response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides after protocol conversion: %v", err)))
+					return
 				}
 			}
 
@@ -1841,7 +1855,8 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	finalBodyBytes := bodyBytes
 	var originalModel string
 	var targetIdx int = -1
-	if !isCCEnabled(c) {
+	_, modelRedirectAlreadyApplied := c.Get(ctxKeyModelRedirectSourceModel)
+	if !isCCEnabled(c) && !modelRedirectAlreadyApplied {
 		var err error
 		finalBodyBytes, originalModel, targetIdx, err = channelHandler.ApplyModelRedirectWithIndex(req, bodyBytes, group)
 		if err != nil {
@@ -1890,6 +1905,28 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 			bodyBytes = rewrittenBody
 		}
 		req.Header.Set("Connection", "Keep-Alive")
+	}
+
+	// Apply protocol-specific compatibility filtering only to this dispatch
+	// attempt. Keep bodyBytes unchanged so a retry can re-evaluate the selected
+	// upstream's capabilities.
+	if target := protocolConversionTarget(c, group); target == codexUpstreamOpenAIChat || target == codexUpstreamClaude {
+		upstreamURL := upstreamSelection.TargetURL
+		if upstreamURL == "" {
+			upstreamURL = upstreamSelection.URL
+		}
+		filteredBody, filterErr := filterProtocolConversionRequestBody(bodyBytes, group, target, upstreamURL)
+		if filterErr != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply protocol compatibility: %v", filterErr)))
+			return
+		}
+		if !bytes.Equal(filteredBody, bodyBytes) {
+			req.Body = io.NopCloser(bytes.NewReader(filteredBody))
+			req.ContentLength = int64(len(filteredBody))
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(filteredBody)), nil
+			}
+		}
 	}
 
 	removeAcceptEncodingForProxyParsing(req, c, group)
@@ -2311,6 +2348,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Store current sub-group ID for failure handling
 	c.Set("current_sub_group_id", subGroupID)
 	clearModelRedirectContext(c)
+	// Capture the original aggregate path before any sub-group rewrite.
+	wasClaudePath := isClaudePath(c.Request.URL.Path, originalGroup.Name)
+	wasCodexPath := isCodexPath(c.Request.URL.Path, originalGroup.Name)
 
 	// Apply model mapping for the selected sub-group
 	finalBodyBytes, originalModel := ps.applyModelMapping(bodyBytes, group)
@@ -2318,14 +2358,22 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		c.Set("original_model", originalModel)
 	}
 
-	// Apply parameter overrides for the selected sub-group
-	finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-	if err != nil {
-		logrus.WithError(err).WithFields(logrus.Fields{
-			"aggregate_group": originalGroup.Name,
-			"sub_group":       group.Name,
-		}).Warn("Failed to apply parameter overrides for sub-group, using original body")
-		finalBodyBytes = bodyBytes
+	ccConversionExpected := isCCSupportEnabled(group) &&
+		(wasClaudePath || originalGroup.ChannelType == "anthropic") &&
+		(wasClaudePath || strings.HasSuffix(c.Request.URL.Path, "/v1/messages"))
+	codexConversionExpected := isCodexSupportEnabled(group) &&
+		(wasCodexPath || originalGroup.ChannelType == "openai-response") &&
+		isOpenAIResponsesCodexEndpoint(rewriteCodexPathToOpenAIGeneric(c.Request.URL.Path))
+	deferParamOverrides := shouldDeferParamOverridesForProtocolConversion(group, ccConversionExpected, codexConversionExpected)
+	if !deferParamOverrides {
+		finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to apply parameter overrides for sub-group, using original body")
+			finalBodyBytes = bodyBytes
+		}
 	}
 
 	// Handle Claude count_tokens endpoint for aggregate sub-group (CC only).
@@ -2345,14 +2393,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	c.Set(ctxKeyCCEnabled, false)
 	c.Set(ctxKeyCodexEnabled, false)
 	c.Set(ctxKeyCodexUpstreamFormat, "")
-	// Use originalGroup.Name for path check since request path is /proxy/{aggregate_group}/claude/v1/...
-	wasClaudePath := isClaudePath(c.Request.URL.Path, originalGroup.Name)
-	wasCodexPath := isCodexPath(c.Request.URL.Path, originalGroup.Name)
+	// Use the captured original path booleans for this sub-group.
 
 	// Handle CC support path rewriting for sub-groups
 	// This rewrites /claude/ paths to standard OpenAI paths. For groups named "claude",
 	// OpenAI-style paths like /proxy/claude/v1/messages are not treated as CC paths.
-	if isCCSupportEnabled(group) && wasClaudePath {
+	if isClaudeEndpointSupported(group) && wasClaudePath {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
 
@@ -2360,7 +2406,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 		// Sanitize query parameters for CC support (e.g., remove beta=true)
 		// These are Claude-specific and should not be passed to OpenAI-style upstreams
-		sanitizeCCQueryParams(c.Request.URL)
+		if isCCSupportEnabled(group) {
+			sanitizeCCQueryParams(c.Request.URL)
+		}
 		c.Set("cc_was_claude_path", true)
 		logrus.WithFields(logrus.Fields{
 			"aggregate_group": originalGroup.Name,
@@ -2443,12 +2491,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				logrus.WithFields(outFields).Debug("OpenAI Responses CC: Conversion completed for aggregate sub-group")
 
 				finalBodyBytes = convertedBody
-				// Re-apply param overrides after CC conversion to allow overriding
-				// converted parameters (e.g., reasoning.effort for OpenAI Responses API).
-				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-				if err != nil {
-					logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI Responses CC conversion for sub-group")
-				}
 				// Rewrite path from /v1/messages to /v1/responses for OpenAI Responses
 				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/responses", 1)
 				logrus.WithFields(logrus.Fields{
@@ -2473,12 +2515,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				return
 			} else if converted {
 				finalBodyBytes = convertedBody
-				// Re-apply param overrides after CC conversion to allow overriding
-				// converted parameters (e.g., reasoning_effort for OpenAI API).
-				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-				if err != nil {
-					logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI CC conversion for sub-group")
-				}
 				// Rewrite path from /v1/messages to /v1/chat/completions
 				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
 				logrus.WithFields(logrus.Fields{
@@ -2510,10 +2546,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			return
 		} else if converted {
 			finalBodyBytes = convertedBody
-			finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-			if err != nil {
-				logrus.WithError(err).Warn("Failed to re-apply param overrides after Codex conversion for sub-group")
-			}
 			switch group.ChannelType {
 			case "openai":
 				c.Request.URL.Path = rewriteCodexResponsesPathToUpstream(c.Request.URL.Path, "/v1/chat/completions")
@@ -2526,6 +2558,16 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				"channel_type":    group.ChannelType,
 				"new_path":        c.Request.URL.Path,
 			}).Debug("Force Codex: converted Responses request for sub-group")
+		}
+	}
+
+	if deferParamOverrides {
+		finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to apply parameter overrides after protocol conversion for sub-group")
 		}
 	}
 
@@ -2765,6 +2807,27 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			finalBodyBytes = rewrittenBody
 		}
 		req.Header.Set("Connection", "Keep-Alive")
+	}
+
+	// Filter only the body sent by this attempt; retries rebuild the converted
+	// body and can select an upstream with a different capability contract.
+	if target := protocolConversionTarget(c, group); target == codexUpstreamOpenAIChat || target == codexUpstreamClaude {
+		upstreamURL := upstreamSelection.TargetURL
+		if upstreamURL == "" {
+			upstreamURL = upstreamSelection.URL
+		}
+		filteredBody, filterErr := filterProtocolConversionRequestBody(finalBodyBytes, group, target, upstreamURL)
+		if filterErr != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply protocol compatibility: %v", filterErr)))
+			return
+		}
+		if !bytes.Equal(filteredBody, finalBodyBytes) {
+			req.Body = io.NopCloser(bytes.NewReader(filteredBody))
+			req.ContentLength = int64(len(filteredBody))
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(filteredBody)), nil
+			}
+		}
 	}
 
 	removeAcceptEncodingForProxyParsing(req, c, group)
