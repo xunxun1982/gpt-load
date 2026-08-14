@@ -1349,7 +1349,10 @@ func responsesToolChoiceName(selector map[string]any, toolCtx ...*codexToolConte
 	if selectorType == "tool_search" {
 		return codexToolSearchProxyName
 	}
-	name, _ := selector["name"].(string)
+	// Use stringFromMap to stay consistent with validateForceCodexToolChoice:
+	// a non-string name (e.g. name:123) passes validation serialized as JSON
+	// text and must not silently drop tool_choice during conversion.
+	name := stringFromMap(selector, "name")
 	if name == "" || len(toolCtx) == 0 || toolCtx[0] == nil {
 		return name
 	}

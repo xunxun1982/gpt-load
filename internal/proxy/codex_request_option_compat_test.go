@@ -322,21 +322,27 @@ func TestCodexRequestOptionCompatRejectsUnknownToolChoice(t *testing.T) {
 }
 
 func TestCodexRequestOptionCompatConvertsUnknownNamedToolChoice(t *testing.T) {
-	for _, toolChoice := range []string{
-		`{"type":"future_tool_2026","name":"future_lookup"}`,
-		`{"name":"future_lookup"}`,
+	for _, tt := range []struct {
+		toolChoice string
+		wantName   string
+	}{
+		{`{"type":"future_tool_2026","name":"future_lookup"}`, "future_lookup"},
+		{`{"name":"future_lookup"}`, "future_lookup"},
+		// Non-string names pass validation via stringFromMap and must keep the
+		// same name during conversion (regression for dropped tool_choice).
+		{`{"type":"future_tool_2026","name":123}`, "123"},
 	} {
-		t.Run(toolChoice, func(t *testing.T) {
-			body := []byte(`{"model":"gpt-test","input":"hello","tools":[{"type":"future_tool_2026","name":"future_lookup","parameters":{"type":"object"}}],"tool_choice":` + toolChoice + `}`)
+		t.Run(tt.toolChoice, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-test","input":"hello","tools":[{"type":"future_tool_2026","name":"future_lookup","parameters":{"type":"object"}}],"tool_choice":` + tt.toolChoice + `}`)
 
 			chat := decodeCompatObject(t, applyForceCodexCompat(t, "openai", body))
 			assert.Equal(t, map[string]any{
 				"type":     "function",
-				"function": map[string]any{"name": "future_lookup"},
+				"function": map[string]any{"name": tt.wantName},
 			}, chat["tool_choice"])
 
 			claude := decodeCompatObject(t, applyForceCodexCompat(t, "anthropic", body))
-			assert.Equal(t, map[string]any{"type": "tool", "name": "future_lookup"}, claude["tool_choice"])
+			assert.Equal(t, map[string]any{"type": "tool", "name": tt.wantName}, claude["tool_choice"])
 		})
 	}
 }
