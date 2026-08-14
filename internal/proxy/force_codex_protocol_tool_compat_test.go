@@ -259,20 +259,97 @@ func TestProtocolToolCompatNormalizesNullCodexToolArguments(t *testing.T) {
 	}
 }
 
+func TestProtocolToolCompatNormalizesNullToolArgumentsForClaude(t *testing.T) {
+	// JSON null, blank and invalid arguments normalize to an empty object;
+	// valid non-object payloads (arrays/scalars) stay verbatim per the
+	// passthrough contract locked by PreservesNonObjectToolPayloads and
+	// DefaultsInvalidToolArguments (the Anthropic object-input wrapping from
+	// the AI review was rejected there).
+	directTests := []struct {
+		name      string
+		arguments string
+		want      string
+	}{
+		{name: "object preserved", arguments: `{"a":1}`, want: `{"a":1}`},
+		{name: "array preserved verbatim", arguments: `[1,2]`, want: `[1,2]`},
+		{name: "null stays empty object", arguments: `null`, want: `{}`},
+		{name: "blank stays empty object", arguments: `   `, want: `{}`},
+		{name: "invalid stays empty object", arguments: `not json`, want: `{}`},
+	}
+	for _, tt := range directTests {
+		t.Run("direct/"+tt.name, func(t *testing.T) {
+			assert.JSONEq(t, tt.want, string(codexToolArgumentsRawMessage(tt.arguments)))
+		})
+	}
+
+	// Codex response tool call with null arguments must produce an empty
+	// object for the Claude tool_use block.
+	got := convertCodexToClaudeResponse(&CodexResponse{
+		ID: "resp_test", Status: "completed", Model: "gpt-test",
+		Output: []CodexOutputItem{{
+			Type: "function_call", CallID: "call_null", Name: "list_items", Arguments: `null`,
+		}},
+	}, nil)
+	require.Len(t, got.Content, 1)
+	assert.JSONEq(t, `{}`, string(got.Content[0].Input))
+}
+
+func TestProtocolToolCompatNormalizesNullClaudeToolInputToCodex(t *testing.T) {
+	// Request conversion: Claude tool_use with blank/null input must produce
+	// valid "{}" arguments for Codex, matching the OpenAI conversion.
+	req := &ClaudeRequest{
+		Model: "gpt-test",
+		Messages: []ClaudeMessage{{
+			Role: "assistant",
+			Content: json.RawMessage(`[
+				{"type":"tool_use","id":"call_null","name":"lookup","input":null}
+			]`),
+		}},
+	}
+	got, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(got.Input, &input))
+	require.Len(t, input, 1)
+	assert.Equal(t, "{}", input[0]["arguments"])
+
+	// Response conversion: the same normalization applies when a Claude
+	// upstream response carries a tool_use block.
+	resp := convertClaudeToCodexResponse(&ClaudeResponse{
+		ID: "msg_null", Model: "gpt-test",
+		Content: []ClaudeContentBlock{{
+			Type: "tool_use", ID: "call_null", Name: "lookup", Input: json.RawMessage(`null`),
+		}},
+	}, nil)
+	require.Len(t, resp.Output, 1)
+	assert.Equal(t, "{}", resp.Output[0].Arguments)
+}
+
 func TestProtocolToolCompatDropsOrphanReasoning(t *testing.T) {
-	inputs := map[string]json.RawMessage{
-		"trailing reasoning": json.RawMessage(`[
+	tests := []struct {
+		name      string
+		input     json.RawMessage
+		wantEmpty bool
+	}{
+		{
+			name: "trailing reasoning",
+			input: json.RawMessage(`[
 			{"type":"reasoning","summary":[{"type":"summary_text","text":"trailing plan"}]}
 		]`),
-		"reasoning before user": json.RawMessage(`[
+			wantEmpty: true,
+		},
+		{
+			name: "reasoning before user",
+			input: json.RawMessage(`[
 			{"type":"reasoning","summary":[{"type":"summary_text","text":"prior plan"}]},
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
 		]`),
+		},
 	}
 
-	for name, input := range inputs {
-		t.Run(name, func(t *testing.T) {
-			req := &CodexRequest{Model: "gpt-test", Input: input}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &CodexRequest{Model: "gpt-test", Input: tt.input}
 
 			chat, err := convertCodexRequestToOpenAIChat(req)
 			require.NoError(t, err)
@@ -280,7 +357,7 @@ func TestProtocolToolCompatDropsOrphanReasoning(t *testing.T) {
 			claude, err := convertCodexRequestToClaude(req)
 			require.NoError(t, err)
 
-			if name == "trailing reasoning" {
+			if tt.wantEmpty {
 				assert.Empty(t, chat.Messages)
 				assert.Empty(t, claude.Messages)
 				return

@@ -120,6 +120,7 @@ func TestProtocolToolCompatCodexToClaudeConvertsUnknownResponseTool(t *testing.T
 	}, nil)
 	require.Len(t, got.Content, 1)
 	assert.Equal(t, "tool_use", got.Content[0].Type)
+	assert.Equal(t, "call_future", got.Content[0].ID)
 	assert.Equal(t, "future_lookup", got.Content[0].Name)
 	assert.Equal(t, `{"id":9007199254740993}`, string(got.Content[0].Input))
 }

@@ -678,7 +678,14 @@ func convertClaudeToCodexResponse(claudeResp *ClaudeResponse, toolCtxOpt ...*cod
 			}
 		case isClaudeToolUseBlock(block):
 			if block.ID != "" && block.Name != "" {
-				resp.Output = append(resp.Output, codexOutputItemFromChatToolCall(block.ID, block.Name, string(block.Input), toolCtx))
+				argsStr := string(block.Input)
+				// Normalize blank or JSON null input to "{}" like the request
+				// conversion (convertClaudeMessageToCodexFormatWithToolMap), so
+				// Codex clients always receive valid JSON arguments.
+				if trimmed := strings.TrimSpace(argsStr); trimmed == "" || trimmed == "null" {
+					argsStr = "{}"
+				}
+				resp.Output = append(resp.Output, codexOutputItemFromChatToolCall(block.ID, block.Name, argsStr, toolCtx))
 			}
 		}
 	}
@@ -790,6 +797,17 @@ func codexCustomToolInputString(input any) string {
 	}
 }
 
+// codexToolArgumentsRawMessage converts Codex tool arguments into a Claude
+// tool_use input. Blank or invalid arguments become an empty object; JSON null
+// keeps the existing "arguments:null means no arguments" empty-object
+// semantics (see CodexOutputItem.UnmarshalJSON). Valid non-object payloads
+// (arrays and scalars) are preserved verbatim because the protocol converter
+// must not reinterpret or rewrite provider-specific tool payloads (see
+// cleanToolCallArguments). Per AI review, Anthropic requires tool_use.input to
+// be a JSON object; wrapping arrays/scalars under {"input": ...} was rejected
+// because existing tests lock the verbatim passthrough contract for non-object
+// payloads (TestProtocolToolCompatPreservesNonObjectToolPayloads and
+// TestConvertCodexRequestToClaudeDefaultsInvalidToolArguments).
 func codexToolArgumentsRawMessage(arguments string) json.RawMessage {
 	arguments = strings.TrimSpace(arguments)
 	if arguments == "" {
@@ -800,7 +818,10 @@ func codexToolArgumentsRawMessage(arguments string) json.RawMessage {
 	if err := decodeCodexJSONUseNumber([]byte(arguments), &parsed); err != nil {
 		return json.RawMessage(`{}`)
 	}
-
+	if parsed == nil {
+		// JSON null means no arguments; keep the existing empty-object semantics.
+		return json.RawMessage(`{}`)
+	}
 	return json.RawMessage(arguments)
 }
 

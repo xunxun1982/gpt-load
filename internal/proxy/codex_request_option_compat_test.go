@@ -121,6 +121,7 @@ func TestProtocolConversionRoutesSourcePromptCacheKeyByUpstreamCapability(t *tes
 		"model":"gpt-test","input":"hello","prompt_cache_key":"source-cache"
 	}`))
 	gatewayBaseURL := strings.TrimRight(channel.GatewayProxyBaseURL("betterclaude"), "/")
+	require.NotEmpty(t, gatewayBaseURL, "gateway proxy base URL must be registered for this test")
 	tests := []struct {
 		name       string
 		upstream   string

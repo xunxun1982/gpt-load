@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 
@@ -70,6 +71,18 @@ func GatewayProxyBaseURL(gatewayProxyID string) string {
 		return ""
 	}
 	return base.String()
+}
+
+// GatewayProxyProviderIDs returns the sorted IDs of all registered built-in
+// gateway proxies, derived from the provider registry. The registry is static
+// at runtime, so callers may cache the result at package initialization.
+func GatewayProxyProviderIDs() []string {
+	ids := make([]string, 0, len(gatewayProxyProviders))
+	for id := range gatewayProxyProviders {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // GatewayProxyBaseURLParsed returns a value copy of the parsed runtime base URL.

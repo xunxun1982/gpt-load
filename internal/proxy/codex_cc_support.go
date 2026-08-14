@@ -658,6 +658,12 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 				toolName = short
 			}
 			argsStr := string(block.Input)
+			// Normalize blank or JSON null input to "{}" so Codex clients never
+			// receive the literal "null" as arguments, matching the OpenAI
+			// conversion semantics (convertClaudeMessageToOpenAI).
+			if trimmed := strings.TrimSpace(argsStr); trimmed == "" || trimmed == "null" {
+				argsStr = "{}"
+			}
 			toolCalls = append(toolCalls, map[string]interface{}{
 				"type":      "function_call",
 				"id":        "fc_" + block.ID,

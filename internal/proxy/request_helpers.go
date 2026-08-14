@@ -24,7 +24,12 @@ const (
 	responsesEncryptedReasoning    = "reasoning.encrypted_content"
 )
 
-var promptCacheGatewayProxyIDs = [...]string{"betterclaude"}
+// promptCacheGatewayProxyIDs lists the built-in gateway proxies whose routes
+// keep the original target host in the path, so prompt-cache capability
+// detection can reuse the runtime gateway base URL. Derived from the channel
+// provider registry to stay synchronized when a built-in gateway is added or
+// removed; runtime base URL changes still take effect immediately.
+var promptCacheGatewayProxyIDs = channel.GatewayProxyProviderIDs()
 
 func setModelRedirectContext(c *gin.Context, originalModel string, targetIdx int, preserveOriginal bool) {
 	if originalModel == "" {
@@ -214,6 +219,15 @@ func filterProtocolConversionRequestBody(bodyBytes []byte, group *models.Group, 
 	return json.Marshal(requestData)
 }
 
+// protocolConversionShouldRemovePromptCacheKey decides whether prompt_cache_key
+// must be removed for the given conversion target. For the OpenAI Chat target,
+// the group option "prompt_cache_routing" overrides automatic detection:
+//
+//	"enabled"/"enable"/"true"/"1"/"yes"/"on"  keep the key regardless of upstream
+//	"disabled"/"disable"/"false"/"0"/"no"/"off" remove the key regardless of upstream
+//	any other value falls back to upstream capability detection
+//
+// The option is read case-insensitively via getGroupConfigString.
 func protocolConversionShouldRemovePromptCacheKey(group *models.Group, target, upstreamURL string) bool {
 	if target == codexUpstreamClaude {
 		return true
