@@ -139,8 +139,11 @@ func TestProtocolToolCompatCodexStreamConvertsUnknownResponseTool(t *testing.T) 
 }
 
 func TestProtocolToolCompatPassesThroughToolArguments(t *testing.T) {
+	// Caller-level: the conversion path must preserve exact arguments,
+	// including large integers that float64 decoding would corrupt.
 	const arguments = `{"cursor":9007199254740993,"allowed_domains":[]}`
-	assert.Equal(t, arguments, cleanToolCallArguments(arguments))
+	got := codexClaudeToolInput(CodexOutputItem{Type: "function_call", Arguments: arguments})
+	assert.Equal(t, arguments, string(got))
 }
 
 func TestProtocolToolCompatReadsToolSearchOutputToolsForClaude(t *testing.T) {

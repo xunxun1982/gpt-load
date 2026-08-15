@@ -1105,14 +1105,21 @@ func isClaudeToolUseBlock(block ClaudeContentBlock) bool {
 	if block.Type == "tool_use" {
 		return true
 	}
-	return strings.HasSuffix(block.Type, "_tool_use") || strings.Contains(block.Type, "_tool_use_") || strings.HasSuffix(block.Type, "_tool_call")
+	// Suffix forms cover Anthropic namespaced variants (server_tool_use,
+	// future_tool_call). Substring matching would also capture unrelated
+	// error-qualified variants (e.g. mcp_tool_use_error) that must fall
+	// through to the unsupported-block handling.
+	return strings.HasSuffix(block.Type, "_tool_use") || strings.HasSuffix(block.Type, "_tool_call")
 }
 
 func isClaudeToolResultBlock(block ClaudeContentBlock) bool {
 	if block.Type == "tool_result" {
 		return true
 	}
-	return strings.HasSuffix(block.Type, "_tool_result") || strings.Contains(block.Type, "_tool_result_") || strings.HasSuffix(block.Type, "_tool_output")
+	// Same policy as isClaudeToolUseBlock: accept namespaced suffix forms
+	// (web_search_tool_result, code_execution_tool_result) but not their
+	// error variants (*_tool_result_error).
+	return strings.HasSuffix(block.Type, "_tool_result") || strings.HasSuffix(block.Type, "_tool_output")
 }
 
 // getThinkingModel returns the thinking model configured for the group.

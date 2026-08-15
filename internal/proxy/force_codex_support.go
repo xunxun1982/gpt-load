@@ -802,8 +802,8 @@ func codexCustomToolInputString(input any) string {
 // keeps the existing "arguments:null means no arguments" empty-object
 // semantics (see CodexOutputItem.UnmarshalJSON). Valid non-object payloads
 // (arrays and scalars) are preserved verbatim because the protocol converter
-// must not reinterpret or rewrite provider-specific tool payloads (see
-// cleanToolCallArguments). Per AI review, Anthropic requires tool_use.input to
+// must not reinterpret or rewrite provider-specific tool payloads. Per AI
+// review, Anthropic requires tool_use.input to
 // be a JSON object; wrapping arrays/scalars under {"input": ...} was rejected
 // because existing tests lock the verbatim passthrough contract for non-object
 // payloads (TestProtocolToolCompatPreservesNonObjectToolPayloads and
@@ -902,14 +902,17 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 				role = "user"
 			}
 			text := codexContentText(m["content"], role)
+			// Non-assistant boundaries discard pending reasoning even when the
+			// message text is empty and the item is skipped, so reasoning never
+			// leaks across a user/system boundary.
+			if role != "assistant" {
+				discardReasoning()
+			}
 			if text == "" {
 				continue
 			}
 			if role == "developer" {
 				role = "system"
-			}
-			if role != "assistant" {
-				discardReasoning()
 			}
 			message := OpenAIMessage{Role: role, Content: marshalStringAsJSONRaw("codex_message", text)}
 			if role == "assistant" {
@@ -936,6 +939,9 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 			if arguments == "" {
 				arguments = "{}"
 			}
+			// A skipped tool call keeps pending reasoning: it belongs to the
+			// assistant turn and attaches to the next assistant item instead of
+			// being lost (unlike the user-boundary tool-output discard above).
 			if callID == "" || name == "" {
 				continue
 			}
@@ -952,11 +958,13 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 				}},
 			})
 		case codexToolOutputItemType(itemType):
+			// Discard before the call_id check: a tool-output boundary must
+			// clear pending reasoning even when the item itself is invalid.
+			discardReasoning()
 			callID := stringFromMap(m, "call_id")
 			if callID == "" {
 				continue
 			}
-			discardReasoning()
 			output := codexToolOutputText(m, itemType)
 			messages = append(messages, OpenAIMessage{
 				Role:       "tool",
@@ -1005,18 +1013,20 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 			}
 		case itemType == "message" || itemType == "":
 			role, _ := m["role"].(string)
-			if role == "developer" || role == "system" {
-				continue
-			}
 			if role == "" {
 				role = "user"
 			}
 			text := codexContentText(m["content"], role)
-			if text == "" {
-				continue
-			}
+			// Non-assistant boundaries discard pending thinking even when the
+			// message text is empty or the role is skipped (system/developer).
 			if role != "assistant" {
 				discardThinking()
+			}
+			if role == "developer" || role == "system" {
+				continue
+			}
+			if text == "" {
+				continue
 			}
 			blocks := takeThinking()
 			blocks = append(blocks, ClaudeContentBlock{Type: "text", Text: text})
@@ -1039,6 +1049,9 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 			} else if len(toolCtx) > 0 && toolCtx[0] != nil {
 				name = toolCtx[0].chatNameFor(name, stringFromMap(m, "namespace"))
 			}
+			// A skipped tool call keeps pending thinking: it belongs to the
+			// assistant turn and attaches to the next assistant item instead of
+			// being lost (unlike the user-boundary tool-output discard above).
 			if callID == "" || name == "" {
 				continue
 			}
@@ -1052,11 +1065,13 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 			content, _ := json.Marshal(blocks)
 			messages = append(messages, ClaudeMessage{Role: "assistant", Content: content})
 		case codexToolOutputItemType(itemType):
+			// Discard before the call_id check: a tool-output boundary must
+			// clear pending thinking even when the item itself is invalid.
+			discardThinking()
 			callID := stringFromMap(m, "call_id")
 			if callID == "" {
 				continue
 			}
-			discardThinking()
 			content, _ := json.Marshal([]ClaudeContentBlock{{
 				Type:      "tool_result",
 				ToolUseID: callID,

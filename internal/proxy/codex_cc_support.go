@@ -176,8 +176,9 @@ func codexClaudeToolInput(item CodexOutputItem) json.RawMessage {
 	if item.Type == "custom_tool_call" {
 		return codexCustomToolClaudeInput(item.Input)
 	}
-	argsStr := cleanToolCallArguments(item.Arguments)
-	return codexToolArgumentsRawMessage(argsStr)
+	// Tool arguments pass through verbatim: the converter must not interpret
+	// provider-specific payloads (large integers survive as exact JSON text).
+	return codexToolArgumentsRawMessage(item.Arguments)
 }
 
 func isCodexResponseToolCall(item CodexOutputItem) bool {
@@ -564,10 +565,6 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	return codexReq, nil
 }
 
-func codexCallIDFromClaudeToolID(id string) string {
-	return id
-}
-
 // normalizeToolParameters ensures tool parameters have valid JSON schema structure.
 // Returns a valid JSON schema with at least type and properties fields.
 func normalizeToolParameters(raw json.RawMessage) json.RawMessage {
@@ -664,19 +661,20 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 			if trimmed := strings.TrimSpace(argsStr); trimmed == "" || trimmed == "null" {
 				argsStr = "{}"
 			}
-			toolCalls = append(toolCalls, map[string]interface{}{
-				"type":      "function_call",
-				"id":        "fc_" + block.ID,
-				"call_id":   codexCallIDFromClaudeToolID(block.ID),
-				"name":      toolName,
-				"arguments": argsStr,
-			})
-		case isClaudeToolResultBlock(block):
-			toolResults = append(toolResults, map[string]interface{}{
-				"type":    "function_call_output",
-				"call_id": codexCallIDFromClaudeToolID(block.ToolUseID),
-				"output":  toolResultOutput(block),
-			})
+	// Claude tool ids are used verbatim as Codex call ids.
+	toolCalls = append(toolCalls, map[string]interface{}{
+		"type":      "function_call",
+		"id":        "fc_" + block.ID,
+		"call_id":   block.ID,
+		"name":      toolName,
+		"arguments": argsStr,
+	})
+	case isClaudeToolResultBlock(block):
+		toolResults = append(toolResults, map[string]interface{}{
+			"type":    "function_call_output",
+			"call_id": block.ToolUseID,
+			"output":  toolResultOutput(block),
+		})
 		}
 	}
 
@@ -729,12 +727,6 @@ func extractSystemContent(system json.RawMessage) string {
 		return sb.String()
 	}
 	return ""
-}
-
-// cleanToolCallArguments preserves tool arguments verbatim. The protocol
-// converter must not interpret or rewrite provider-specific tool payloads.
-func cleanToolCallArguments(argsStr string) string {
-	return argsStr
 }
 
 func toolResultOutput(block ClaudeContentBlock) any {
@@ -1452,8 +1444,9 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 	case "response.function_call_arguments.done":
 		// Function call arguments complete
+		// Pass through verbatim; see codexClaudeToolInput for the contract.
 		if event.Arguments != "" && s.openBlockType == "tool" && !s.toolInputSent {
-			appendToolInputDelta(codexToolArgumentsRawMessage(cleanToolCallArguments(event.Arguments)))
+			appendToolInputDelta(codexToolArgumentsRawMessage(event.Arguments))
 		}
 		logrus.WithField("args_len", s.currentToolArgs.Len()).Debug("Codex CC: Function call arguments done")
 
