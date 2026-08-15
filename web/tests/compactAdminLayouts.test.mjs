@@ -29,7 +29,7 @@ test("site editor uses the available desktop width for a compact two-column form
   const source = readSource("../src/features/site-management/components/SiteManagementPanel.vue");
 
   assert.match(source, /\.site-form-modal\s*\{[\s\S]*width:\s*min\(1040px,/);
-  assert.match(source, /\.site-form-card\s+:deep\(\.n-card__content\)[\s\S]*overflow-y:\s*auto;/);
+  assert.match(source, /\.site-form-card\s+:deep\(\.n-card-content\)[\s\S]*overflow-y:\s*auto;/);
   // Each form section lays its fields out on a two-column grid; rows are flattened
   // into the grid via display: contents, and full-width fields span both columns.
   assert.match(

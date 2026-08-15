@@ -41,6 +41,11 @@ type ProxyURLResolver interface {
 	ResolveProxyURL(ctx context.Context, raw string) (string, error)
 }
 
+// ProxyURLBatchResolver optionally resolves multiple proxy-pool references in one bounded query.
+type ProxyURLBatchResolver interface {
+	ResolveProxyURLs(ctx context.Context, refs []string) (map[string]string, error)
+}
+
 // NewSystemSettingsManager creates a new, uninitialized SystemSettingsManager.
 func NewSystemSettingsManager() *SystemSettingsManager {
 	return &SystemSettingsManager{}
@@ -388,6 +393,66 @@ func (sm *SystemSettingsManager) ResolveRuntimeProxyURL(ctx context.Context, raw
 	if resolved == "" {
 		logrus.Warn("Proxy pool reference resolved to an empty proxy URL")
 		return trimmed
+	}
+	return resolved
+}
+
+// ResolveRuntimeProxyURLs resolves distinct proxy-pool references as one batch when supported.
+// Failed or missing resolutions remain references so outbound clients fail closed.
+func (sm *SystemSettingsManager) ResolveRuntimeProxyURLs(ctx context.Context, refs []string) map[string]string {
+	resolved := make(map[string]string, len(refs))
+	pending := make([]string, 0, len(refs))
+	for _, raw := range refs {
+		ref := strings.TrimSpace(raw)
+		if ref == "" || !utils.IsProxyPoolRef(ref) {
+			resolved[ref] = ref
+			continue
+		}
+		if _, exists := resolved[ref]; exists {
+			continue
+		}
+		resolved[ref] = ref
+		pending = append(pending, ref)
+	}
+	if len(pending) == 0 {
+		return resolved
+	}
+	if sm.proxyURLResolver == nil {
+		logrus.WithField("reference_count", len(pending)).Warn("Proxy pool references cannot be resolved because no resolver is configured")
+		return resolved
+	}
+
+	var (
+		batch map[string]string
+		err   error
+	)
+	if batchResolver, ok := sm.proxyURLResolver.(ProxyURLBatchResolver); ok {
+		batch, err = batchResolver.ResolveProxyURLs(ctx, pending)
+	} else {
+		batch = make(map[string]string, len(pending))
+		for _, ref := range pending {
+			batch[ref], err = sm.proxyURLResolver.ResolveProxyURL(ctx, ref)
+			if err != nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		logrus.WithError(err).WithField("reference_count", len(pending)).Warn("Failed to resolve proxy pool references")
+		return resolved
+	}
+
+	missing := 0
+	for _, ref := range pending {
+		value := strings.TrimSpace(batch[ref])
+		if value == "" {
+			missing++
+			continue
+		}
+		resolved[ref] = value
+	}
+	if missing > 0 {
+		logrus.WithField("missing_count", missing).Warn("Some proxy pool references could not be resolved")
 	}
 	return resolved
 }

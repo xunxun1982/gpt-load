@@ -18,7 +18,7 @@ import (
 func TestClaudeCodeUserAgent(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "2.1.220", DefaultClaudeCodeVersion)
+	assert.Equal(t, "2.1.233", DefaultClaudeCodeVersion)
 	// Test that the constant is defined and has the expected format
 	assert.NotEmpty(t, ClaudeCodeUserAgent)
 	assert.Equal(t, BuildClaudeCodeUserAgent(DefaultClaudeCodeVersion), ClaudeCodeUserAgent)

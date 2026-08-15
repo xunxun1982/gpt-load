@@ -10,7 +10,8 @@ export type ManagedSiteType =
   | "one-hub"
   | "done-hub"
   | "anyrouter"
-  | "brand";
+  | "brand"
+  | "commercial";
 // Single auth values recognized by the backend
 export type SingleAuthType = "none" | "access_token" | "cookie";
 // Auth type can be a single value or comma-separated multiple values

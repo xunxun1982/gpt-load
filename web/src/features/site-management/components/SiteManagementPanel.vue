@@ -80,6 +80,7 @@ import {
   ref,
   watch,
   type HTMLAttributes,
+  type VNodeChild,
 } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
@@ -187,10 +188,22 @@ const baseSiteTypeOptions = computed<SelectOption[]>(() => [
   { label: t("siteManagement.siteTypeWong"), value: "wong-gongyi" },
   { label: t("siteManagement.siteTypeAnyrouter"), value: "anyrouter" },
   { label: t("siteManagement.siteTypeBrand"), value: "brand" },
+  { label: t("siteManagement.siteTypeCommercial"), value: "commercial" },
   { label: t("siteManagement.siteTypeOther"), value: "unknown" },
 ]);
 
 const siteTypeOptions = baseSiteTypeOptions;
+
+const capabilitylessSiteTypes = new Set<ManagedSiteType>([
+  "unknown",
+  "brand",
+  "commercial",
+  "Veloera",
+]);
+
+function isCapabilitylessSiteType(siteType: ManagedSiteType): boolean {
+  return capabilitylessSiteTypes.has(siteType);
+}
 
 const siteProxySelectOptions = computed<SelectOption[]>(() => {
   const options: SelectOption[] = [
@@ -225,30 +238,28 @@ const authTypeOptions = computed(() => {
 });
 
 const siteCapabilityHintKey = computed(() => {
+  if (isCapabilitylessSiteType(siteForm.site_type)) {
+    return "siteManagement.capabilitylessHint";
+  }
   switch (siteForm.site_type) {
     case "sub2api":
       return "siteManagement.sub2ApiCapabilityHint";
     case "anyrouter":
       return "siteManagement.anyrouterCapabilityHint";
-    case "brand":
-    case "unknown":
-    case "Veloera":
-      return "siteManagement.capabilitylessHint";
     default:
       return "siteManagement.newApiCapabilityHint";
   }
 });
 
 const siteUserIDHintKey = computed(() => {
+  if (isCapabilitylessSiteType(siteForm.site_type)) {
+    return "";
+  }
   switch (siteForm.site_type) {
     case "sub2api":
       return "siteManagement.sub2ApiUserIDHint";
     case "anyrouter":
       return "siteManagement.anyrouterUserIDHint";
-    case "brand":
-    case "unknown":
-    case "Veloera":
-      return "";
     default:
       return "siteManagement.genericUserIDHint";
   }
@@ -272,11 +283,7 @@ const siteSpecificAuthHintKey = computed(() => {
 
 const bypassMethodOptions = computed(() => {
   const noneOption = { label: t("siteManagement.bypassMethodNone"), value: "" };
-  if (
-    siteForm.site_type === "brand" ||
-    siteForm.site_type === "unknown" ||
-    siteForm.site_type === "Veloera"
-  ) {
+  if (isCapabilitylessSiteType(siteForm.site_type)) {
     return [noneOption];
   }
   return [noneOption, { label: t("siteManagement.bypassMethodStealth"), value: "stealth" }];
@@ -581,7 +588,7 @@ function updateSiteType(siteType: ManagedSiteType) {
     siteForm.auth_type = siteForm.auth_type.filter(authType => authType === "access_token");
     return;
   }
-  if (siteType === "brand" || siteType === "unknown") {
+  if (isCapabilitylessSiteType(siteType)) {
     siteForm.bypass_method = "";
   }
 }
@@ -922,6 +929,21 @@ function statusTag(status: ManagedSiteDTO["last_checkin_status"]) {
 function getSiteTypeLabel(type: string) {
   const label = siteTypeOptions.value.find(o => o.value === type)?.label;
   return typeof label === "string" ? label : type;
+}
+
+function renderSiteTypeTag(type: string, size: "small" | "tiny" = "small") {
+  return h(
+    NTag,
+    { size, bordered: false, type: type === "commercial" ? "warning" : undefined },
+    () => getSiteTypeLabel(type)
+  );
+}
+
+function renderSiteTypeOptionLabel(option: SelectOption): VNodeChild {
+  if (option.value === "commercial") {
+    return renderSiteTypeTag("commercial", "tiny");
+  }
+  return typeof option.label === "string" ? option.label : String(option.value ?? "");
 }
 
 /**
@@ -1313,8 +1335,7 @@ const columns = computed<DataTableColumns<ManagedSiteDTO>>(() => [
     width: 80,
     align: "center",
     titleAlign: "center",
-    render: row =>
-      h(NTag, { size: "small", bordered: false }, () => getSiteTypeLabel(row.site_type)),
+    render: row => renderSiteTypeTag(row.site_type),
   },
   {
     title: t("siteManagement.balance"),
@@ -2395,7 +2416,7 @@ watch(
             <template #icon><n-icon :component="Close" /></template>
           </n-button>
         </template>
-        <n-form label-placement="left" label-width="auto" class="site-form">
+        <n-form label-placement="left" label-width="auto" class="site-form" size="small">
           <div class="form-section">
             <h4 class="section-title">{{ t("siteManagement.basicInfo") }}</h4>
             <div class="form-row">
@@ -2410,6 +2431,7 @@ watch(
                   <n-select
                     :value="siteForm.site_type"
                     :options="siteTypeOptions"
+                    :render-label="renderSiteTypeOptionLabel"
                     @update:value="updateSiteType"
                   />
                   <n-text
@@ -2934,23 +2956,23 @@ watch(
   flex: 0 0 auto;
 }
 .site-form-card :deep(.n-card-header) {
-  padding: 10px 16px !important;
+  padding: 8px 14px !important;
 }
 .site-form-card :deep(.n-card__footer) {
-  padding: 8px 16px !important;
+  padding: 6px 14px !important;
 }
-.site-form-card :deep(.n-card__content),
-.logs-card :deep(.n-card__content) {
+.site-form-card :deep(.n-card-content),
+.logs-card :deep(.n-card-content) {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 8px 16px 6px;
+  padding: 5px 14px 4px;
 }
-.site-form-card :deep(.n-card__content)::-webkit-scrollbar {
+.site-form-card :deep(.n-card-content)::-webkit-scrollbar {
   width: 5px;
 }
-.site-form-card :deep(.n-card__content)::-webkit-scrollbar-thumb {
+.site-form-card :deep(.n-card-content)::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.15);
   border-radius: 3px;
 }
@@ -2958,8 +2980,8 @@ watch(
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: 12px;
-  margin-bottom: 10px;
-  padding: 8px 12px;
+  margin-bottom: 6px;
+  padding: 5px 10px;
   border: 1px solid var(--n-border-color, var(--border-color));
   border-radius: 8px;
   background: var(--n-color-embedded, transparent);
@@ -2972,15 +2994,15 @@ watch(
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
-  margin: 0 0 4px 0;
-  padding-bottom: 2px;
+  margin: 0 0 2px 0;
+  padding-bottom: 1px;
   border-bottom: 1px solid var(--border-color);
 }
 .section-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 .section-header .section-title {
   margin: 0;
@@ -3021,7 +3043,7 @@ watch(
   grid-column: 1 / -1;
   display: block;
   margin-top: -4px;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   font-size: 12px;
   line-height: 1.25;
   color: #18a058;
@@ -3033,7 +3055,7 @@ watch(
   gap: 10px;
 }
 .site-form :deep(.n-form-item) {
-  margin-bottom: 6px !important;
+  margin-bottom: 2px !important;
   --n-feedback-height: 0 !important;
 }
 .site-form :deep(.n-form-item-label) {
@@ -3042,8 +3064,8 @@ watch(
   color: var(--text-primary);
   display: flex;
   align-items: center;
-  height: 34px;
-  line-height: 34px;
+  height: 30px;
+  line-height: 30px;
   white-space: nowrap;
 }
 .site-form :deep(.n-input) {
@@ -3065,7 +3087,7 @@ watch(
   }
   .site-form :deep(.n-form-item-label) {
     height: auto;
-    min-height: 34px;
+    min-height: 30px;
     line-height: 1.35;
     white-space: normal;
   }

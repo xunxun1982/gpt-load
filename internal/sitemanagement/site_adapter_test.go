@@ -86,6 +86,11 @@ func TestResolveManagedSiteAdapterCapabilities(t *testing.T) {
 			wantAdapter: false,
 		},
 		{
+			name:        "commercial has no managed adapter",
+			siteType:    SiteTypeCommercial,
+			wantAdapter: false,
+		},
+		{
 			name:        "unknown has no managed adapter",
 			siteType:    SiteTypeUnknown,
 			wantAdapter: false,
@@ -139,5 +144,9 @@ func TestResolveSiteCapabilitiesLogsUnregisteredSiteType(t *testing.T) {
 
 	hook.Reset()
 	_ = resolveSiteCapabilities(SiteTypeUnknown)
+	assert.Nil(t, hook.LastEntry())
+
+	hook.Reset()
+	_ = resolveSiteCapabilities(SiteTypeCommercial)
 	assert.Nil(t, hook.LastEntry())
 }

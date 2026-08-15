@@ -696,6 +696,66 @@ func TestCreateGroupRejectsGatewayProxyWithUpstreamProxy(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestUpdateGroupRefreshesCachedUpstreamProxyModeImmediately(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	group, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:        "proxy-mode-switch",
+		GroupType:   "standard",
+		Upstreams:   json.RawMessage(`[{"url":"https://api.anthropic.com","weight":100,"gateway_proxy":"betterclaude"}]`),
+		ChannelType: "anthropic",
+		TestModel:   "claude-3-haiku-20240307",
+	})
+	require.NoError(t, err)
+
+	// Stop the listener so the test observes only the synchronous local refresh.
+	svc.groupManager.Stop(context.Background())
+	svc.settingsManager.SetProxyURLResolver(groupManagerProxyResolverStub{})
+	manualProxyRef := "proxy-pool:1"
+	manualProxyURL := "http://proxy.example.com:8080"
+	updated, err := svc.UpdateGroup(context.Background(), group.ID, GroupUpdateParams{
+		HasUpstreams: true,
+		Upstreams:    json.RawMessage(`[{"url":"https://api.anthropic.com","weight":100,"proxy_url":"` + manualProxyRef + `"}]`),
+	})
+	require.NoError(t, err)
+
+	var upstreams []struct {
+		ProxyURL     *string `json:"proxy_url,omitempty"`
+		GatewayProxy string  `json:"gateway_proxy,omitempty"`
+	}
+	require.NoError(t, json.Unmarshal(updated.Upstreams, &upstreams))
+	require.Len(t, upstreams, 1)
+	require.NotNil(t, upstreams[0].ProxyURL)
+	assert.Equal(t, manualProxyRef, *upstreams[0].ProxyURL)
+
+	cached, err := svc.groupManager.GetGroupByID(group.ID)
+	require.NoError(t, err)
+	var cachedUpstreams []struct {
+		ProxyURL     *string `json:"proxy_url,omitempty"`
+		GatewayProxy string  `json:"gateway_proxy,omitempty"`
+	}
+	require.NoError(t, json.Unmarshal(cached.Upstreams, &cachedUpstreams))
+	require.Len(t, cachedUpstreams, 1)
+	require.NotNil(t, cachedUpstreams[0].ProxyURL)
+	assert.Equal(t, manualProxyURL, *cachedUpstreams[0].ProxyURL)
+	assert.Empty(t, cachedUpstreams[0].GatewayProxy)
+
+	updated, err = svc.UpdateGroup(context.Background(), group.ID, GroupUpdateParams{
+		HasUpstreams: true,
+		Upstreams:    json.RawMessage(`[{"url":"https://api.anthropic.com","weight":100,"gateway_proxy":"betterclaude"}]`),
+	})
+	require.NoError(t, err)
+	cached, err = svc.groupManager.GetGroupByID(group.ID)
+	require.NoError(t, err)
+	cachedUpstreams = nil
+	require.NoError(t, json.Unmarshal(cached.Upstreams, &cachedUpstreams))
+	require.Len(t, cachedUpstreams, 1)
+	assert.Nil(t, cachedUpstreams[0].ProxyURL)
+	assert.Equal(t, "betterclaude", cachedUpstreams[0].GatewayProxy)
+}
+
 func TestUpdateGroupSavesProxyPoolSelectedConfigProxy(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)

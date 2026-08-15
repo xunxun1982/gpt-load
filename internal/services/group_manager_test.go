@@ -20,6 +20,25 @@ func (groupManagerProxyResolverStub) ResolveProxyURL(_ context.Context, raw stri
 	return "", nil
 }
 
+type groupManagerBatchProxyResolverStub struct {
+	singleCalls int
+	batchCalls  int
+}
+
+func (s *groupManagerBatchProxyResolverStub) ResolveProxyURL(_ context.Context, raw string) (string, error) {
+	s.singleCalls++
+	return "single://" + raw, nil
+}
+
+func (s *groupManagerBatchProxyResolverStub) ResolveProxyURLs(_ context.Context, refs []string) (map[string]string, error) {
+	s.batchCalls++
+	resolved := make(map[string]string, len(refs))
+	for _, ref := range refs {
+		resolved[ref] = "http://" + ref + ".example.com:8080"
+	}
+	return resolved, nil
+}
+
 func TestGroupManagerResolveUpstreamProxyReferencesPreservesGatewayProxy(t *testing.T) {
 	t.Parallel()
 
@@ -47,4 +66,27 @@ func TestGroupManagerResolveUpstreamProxyReferencesPreservesGatewayProxy(t *test
 	require.NotNil(t, upstreams[0].ProxyURL)
 	assert.Equal(t, "http://proxy.example.com:8080", *upstreams[0].ProxyURL)
 	assert.Equal(t, "betterclaude", upstreams[1].GatewayProxy)
+}
+
+func TestGroupManagerResolveUpstreamProxyReferencesBatchesDistinctReferences(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`[
+		{"url":"https://api-a.example.com","weight":100,"proxy_url":"proxy-pool:1"},
+		{"url":"https://api-b.example.com","weight":100,"proxy_url":"proxy-pool:2"}
+	]`)
+	resolver := &groupManagerBatchProxyResolverStub{}
+	settingsManager := config.NewSystemSettingsManager()
+	settingsManager.SetProxyURLResolver(resolver)
+
+	resolved := (&GroupManager{settingsManager: settingsManager}).resolveUpstreamProxyReferences(
+		context.Background(),
+		raw,
+		make(map[string]string),
+	)
+
+	assert.Equal(t, 1, resolver.batchCalls)
+	assert.Zero(t, resolver.singleCalls)
+	assert.Contains(t, string(resolved), `"proxy_url":"http://proxy-pool:1.example.com:8080"`)
+	assert.Contains(t, string(resolved), `"proxy_url":"http://proxy-pool:2.example.com:8080"`)
 }

@@ -9,7 +9,8 @@ const (
 	SiteTypeOneHub     = "one-hub"
 	SiteTypeDoneHub    = "done-hub"
 	SiteTypeAnyrouter  = "anyrouter"
-	SiteTypeBrand      = "brand" // Label-only type, no special checkin logic
+	SiteTypeBrand      = "brand"      // Label-only type, no special checkin logic
+	SiteTypeCommercial = "commercial" // Paid-site label only; it does not imply provider capabilities.
 	SiteTypeUnknown    = "unknown"
 )
 

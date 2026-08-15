@@ -176,6 +176,22 @@ test("site auth hints explain AnyRouter user ID and browser-bound cookies", () =
   assert.doesNotMatch(jaSiteLocale, /AnyRouter[^\n]*ユーザーIDは空欄/);
 });
 
+test("commercial site type is positioned between Brand and Other and uses an explicit warning tag", () => {
+  assert.match(siteManagementApi, /ManagedSiteType[\s\S]*\| "commercial"/);
+  assert.match(
+    panel,
+    /siteTypeBrand[\s\S]*value: "brand"[\s\S]*siteTypeCommercial[\s\S]*value: "commercial"[\s\S]*siteTypeOther[\s\S]*value: "unknown"/
+  );
+  assert.match(panel, /function renderSiteTypeTag[\s\S]*type === "commercial" \? "warning"/);
+  assert.match(panel, /render: row => renderSiteTypeTag\(row\.site_type\)/);
+  assert.match(panel, /:render-label="renderSiteTypeOptionLabel"/);
+  assert.match(panel, /capabilitylessSiteTypes[\s\S]*"brand"[\s\S]*"commercial"[\s\S]*"Veloera"/);
+  assert.match(panel, /function isCapabilitylessSiteType/);
+  for (const locale of [zhSiteLocale, enSiteLocale, jaSiteLocale]) {
+    assert.match(locale, /siteTypeCommercial:/);
+  }
+});
+
 test("provider-specific required fields are validated before submit", () => {
   assert.match(panel, /siteManagement\.anyrouterUserIDRequired/);
   assert.match(panel, /siteManagement\.anyrouterCookieRequired/);
