@@ -859,21 +859,57 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 		openaiReq.MaxTokens = &effectiveMaxTokens
 	}
 
+	// Claude Code may (non-conformingly) place system prompts inside messages
+	// with role "system". Merge those into the leading system message instead
+	// of failing the conversion; OpenAI requires system to be the first
+	// message when present.
+	var inlineSystemParts []string
+	var convertedMessages []OpenAIMessage
+	for _, msg := range claudeReq.Messages {
+		if msg.Role == "system" {
+			text, err := claudeMessageSystemText(msg)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert Claude message: %w", err)
+			}
+			if text != "" {
+				inlineSystemParts = append(inlineSystemParts, text)
+			}
+			continue
+		}
+		openaiMsg, err := convertClaudeMessageToOpenAI(msg, toolNameShortMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
+		}
+		convertedMessages = append(convertedMessages, openaiMsg...)
+	}
+
 	// Convert system message
-	messages := make([]OpenAIMessage, 0, len(claudeReq.Messages)+1)
+	systemContent := ""
 	if len(claudeReq.System) > 0 {
-		systemContent, err := convertClaudeSystemContent(claudeReq.System)
+		var err error
+		systemContent, err = convertClaudeSystemContent(claudeReq.System)
 		if err != nil {
 			return nil, err
 		}
+	}
+	if len(inlineSystemParts) > 0 {
+		inlineSystem := strings.Join(inlineSystemParts, "\n\n")
 		if systemContent != "" {
-			contentJSON := marshalStringAsJSONRaw("system", systemContent)
-			messages = append(messages, OpenAIMessage{
-				Role:    "system",
-				Content: contentJSON,
-			})
+			systemContent += "\n\n" + inlineSystem
+		} else {
+			systemContent = inlineSystem
 		}
 	}
+
+	messages := make([]OpenAIMessage, 0, len(convertedMessages)+1)
+	if systemContent != "" {
+		contentJSON := marshalStringAsJSONRaw("system", systemContent)
+		messages = append(messages, OpenAIMessage{
+			Role:    "system",
+			Content: contentJSON,
+		})
+	}
+	messages = append(messages, convertedMessages...)
 
 	// Treat prompt as a single user message when no explicit messages are provided.
 	if len(claudeReq.Messages) == 0 && strings.TrimSpace(claudeReq.Prompt) != "" {
@@ -883,15 +919,6 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 			Role:    "user",
 			Content: contentJSON,
 		})
-	}
-
-	// Convert messages
-	for _, msg := range claudeReq.Messages {
-		openaiMsg, err := convertClaudeMessageToOpenAI(msg, toolNameShortMap)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
-		}
-		messages = append(messages, openaiMsg...)
 	}
 
 	// Some upstream providers (including GLM chat-completion) require that the
@@ -973,6 +1000,27 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 	}
 
 	return openaiReq, nil
+}
+
+// claudeMessageSystemText extracts the text of a Claude message that carries
+// role "system" (a non-conforming but real-world placement of system prompts
+// used by Claude Code). Non-text blocks are skipped; returns "" when empty.
+func claudeMessageSystemText(msg ClaudeMessage) (string, error) {
+	var contentStr string
+	if err := json.Unmarshal(msg.Content, &contentStr); err == nil {
+		return contentStr, nil
+	}
+	var blocks []ClaudeContentBlock
+	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+		return "", fmt.Errorf("failed to parse content blocks: %w", err)
+	}
+	var textParts []string
+	for _, block := range blocks {
+		if block.Type == "text" {
+			textParts = append(textParts, block.Text)
+		}
+	}
+	return strings.Join(textParts, "\n"), nil
 }
 
 // convertClaudeMessageToOpenAI converts a single Claude message to OpenAI format.

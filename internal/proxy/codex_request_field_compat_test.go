@@ -182,3 +182,22 @@ func TestCodexRequestOptionCompatRejectsUnmodeledTopLevelFields(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexRequestOptionCompatStripsUnmodeledOfficialFields(t *testing.T) {
+	// Official Responses API fields without a conversion target are recognized
+	// and stripped instead of failing: previous_response_id only carries
+	// upstream cache identity, truncation/metadata/user have no Chat or Claude
+	// equivalent.
+	body := []byte(`{"model":"gpt-test","input":"hello","stream":false,
+		"previous_response_id":"resp_old","truncation":"disabled",
+		"user":"u-1","metadata":{"session_id":"s-1"}}`)
+	for _, target := range []string{"openai", "anthropic"} {
+		t.Run(target, func(t *testing.T) {
+			payload := decodeCompatObject(t, applyForceCodexCompat(t, target, body))
+			require.NotContains(t, payload, "previous_response_id")
+			require.NotContains(t, payload, "truncation")
+			require.NotContains(t, payload, "user")
+			require.NotContains(t, payload, "metadata")
+		})
+	}
+}

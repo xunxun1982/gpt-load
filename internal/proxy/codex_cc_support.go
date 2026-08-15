@@ -421,23 +421,55 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	// Build input array using the Codex CLI-compatible Responses format.
 	var inputItems []interface{}
 
-	// Preserve Claude's system prompt as a developer input item by default.
-	if len(claudeReq.System) > 0 {
-		systemContent := extractSystemContent(claudeReq.System)
-		if systemContent != "" {
-			systemRole := "developer"
-			if getGroupConfigBool(group, "responses_legacy_user_role") {
-				systemRole = "user"
+	// Claude Code may (non-conformingly) place system prompts inside messages
+	// with role "system"; merge them into the system item below instead of
+	// emitting a raw system message (which some Responses upstreams reject).
+	var inlineSystemParts []string
+	var convertedInputs []interface{}
+	for _, msg := range claudeReq.Messages {
+		if msg.Role == "system" {
+			text, err := claudeMessageSystemText(msg)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert Claude message: %w", err)
 			}
-			inputItems = append(inputItems, map[string]interface{}{
-				"type": "message",
-				"role": systemRole,
-				"content": []map[string]interface{}{
-					{"type": "input_text", "text": systemContent},
-				},
-			})
-			logrus.WithFields(logrus.Fields{"system_len": len(systemContent), "role": systemRole}).Debug("Codex CC: Added system message")
+			if text != "" {
+				inlineSystemParts = append(inlineSystemParts, text)
+			}
+			continue
 		}
+		converted, err := convertClaudeMessageToCodexFormatWithToolMap(msg, toolNameShortMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
+		}
+		convertedInputs = append(convertedInputs, converted...)
+	}
+
+	// Preserve Claude's system prompt as a developer input item by default.
+	systemContent := ""
+	if len(claudeReq.System) > 0 {
+		systemContent = extractSystemContent(claudeReq.System)
+	}
+	if len(inlineSystemParts) > 0 {
+		inlineSystem := strings.Join(inlineSystemParts, "\n\n")
+		if systemContent != "" {
+			systemContent += "\n\n" + inlineSystem
+		} else {
+			systemContent = inlineSystem
+		}
+	}
+	if systemContent != "" {
+		systemRole := "developer"
+		if getGroupConfigBool(group, "responses_legacy_user_role") {
+			systemRole = "user"
+		}
+		inputItems = append(inputItems, map[string]interface{}{
+			"type": "message",
+			"role": systemRole,
+			"content": []map[string]interface{}{
+				{"type": "input_text", "text": systemContent},
+			},
+		})
+		logrus.WithFields(logrus.Fields{"system_len": len(systemContent), "role": systemRole}).Debug("Codex CC: Added system message")
 	}
 
 	// Handle prompt-only requests
@@ -451,14 +483,7 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 		})
 	}
 
-	// Convert messages with tool name mapping
-	for _, msg := range claudeReq.Messages {
-		converted, err := convertClaudeMessageToCodexFormatWithToolMap(msg, toolNameShortMap)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
-		}
-		inputItems = append(inputItems, converted...)
-	}
+	inputItems = append(inputItems, convertedInputs...)
 
 	// Marshal input items
 	inputBytes, err := json.Marshal(inputItems)

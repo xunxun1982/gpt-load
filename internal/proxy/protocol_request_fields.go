@@ -10,6 +10,11 @@ var codexKnownRequestFields = map[string]struct{}{
 	"temperature": {}, "top_p": {}, "stream": {}, "tools": {}, "tool_choice": {},
 	"parallel_tool_calls": {}, "reasoning": {}, "stream_options": {}, "service_tier": {},
 	"prompt_cache_key": {}, "text": {}, "client_metadata": {}, "store": {}, "include": {},
+	// Official Responses API fields without a lossy-free target mapping.
+	// They are recognized so conversion strips them instead of failing:
+	// previous_response_id only carries upstream cache identity, truncation
+	// and metadata have no Chat/Claude equivalent, and user is transport-only.
+	"metadata": {}, "previous_response_id": {}, "truncation": {}, "user": {},
 }
 
 var claudeKnownRequestFields = map[string]struct{}{
@@ -17,6 +22,11 @@ var claudeKnownRequestFields = map[string]struct{}{
 	"max_tokens_to_sample": {}, "temperature": {}, "top_k": {}, "top_p": {}, "stream": {},
 	"tools": {}, "stop_sequences": {}, "tool_choice": {}, "mcp_servers": {}, "metadata": {},
 	"container": {}, "thinking": {}, "output_config": {}, "service_tier": {},
+	// Official Anthropic Messages API (incl. beta) fields with no Chat
+	// Completions equivalent. Claude Code sends context_management (server-side
+	// compaction) on every request; these are recognized and stripped rather
+	// than rejecting the conversion.
+	"context_management": {}, "cache_control": {}, "compaction_control": {}, "diagnostics": {},
 }
 
 func captureUnsupportedJSONFields(data []byte, known map[string]struct{}) ([]string, error) {

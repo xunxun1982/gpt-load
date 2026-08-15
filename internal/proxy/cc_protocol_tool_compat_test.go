@@ -165,6 +165,63 @@ func TestCCProtocolToolCompatConvertsUnknownToolsAndBlocks(t *testing.T) {
 	assert.Equal(t, map[string]any{"ok": true}, input[3]["output"])
 }
 
+func TestCCProtocolRequestCompatStripsContextManagementFields(t *testing.T) {
+	// context_management and sibling beta fields are official Anthropic
+	// Messages API parameters with no Chat Completions equivalent; they are
+	// recognized and stripped instead of rejecting the conversion.
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],
+		"context_management":{"edits":[{"type":"compact_20260112"}]},
+		"compaction_control":{"type":"off"},
+		"diagnostics":{"enabled":true},
+		"cache_control":{"type":"ephemeral"}
+	}`)
+	got, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err)
+	encoded, err := json.Marshal(got)
+	require.NoError(t, err)
+	payload := decodeCompatObject(t, encoded)
+	require.NotContains(t, payload, "context_management")
+	require.NotContains(t, payload, "compaction_control")
+	require.NotContains(t, payload, "diagnostics")
+	require.NotContains(t, payload, "cache_control")
+}
+
+func TestCCProtocolRequestCompatMergesInlineSystemMessages(t *testing.T) {
+	// Claude Code may place system prompts inside messages with role "system";
+	// they are merged into the leading system message instead of failing.
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"system":"top-level system",
+		"messages":[
+			{"role":"system","content":"inline system one"},
+			{"role":"user","content":"hi"}
+		]
+	}`)
+	got, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 2)
+	require.Equal(t, "system", got.Messages[0].Role)
+	require.Contains(t, string(got.Messages[0].Content), "top-level system")
+	require.Contains(t, string(got.Messages[0].Content), "inline system one")
+	require.Equal(t, "user", got.Messages[1].Role)
+
+	// Inline-only case: no top-level system field, block-based content.
+	req2 := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"messages":[
+			{"role":"system","content":[{"type":"text","text":"inline via blocks"}]},
+			{"role":"assistant","content":"ok"}
+		]
+	}`)
+	got2, err := convertClaudeToOpenAI(req2, nil)
+	require.NoError(t, err)
+	require.Len(t, got2.Messages, 2)
+	require.Equal(t, "system", got2.Messages[0].Role)
+	require.Contains(t, string(got2.Messages[0].Content), "inline via blocks")
+	require.Equal(t, "assistant", got2.Messages[1].Role)
+}
+
 func TestCCProtocolRequestCompatMapsCurrentFields(t *testing.T) {
 	req := mustParseClaudeRequest(t, `{
 		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],

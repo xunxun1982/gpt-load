@@ -92,6 +92,31 @@ func TestCCProtocolContentCompatPreservesThinkingHistoryForCodex(t *testing.T) {
 	require.Equal(t, "call_lookup", input[1]["call_id"])
 }
 
+func TestCCProtocolContentCompatMergesInlineSystemMessagesForCodex(t *testing.T) {
+	// Claude Code may place system prompts inside messages with role "system";
+	// they are merged into the leading developer item instead of being emitted
+	// as a raw system message (which some Responses upstreams reject).
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"system":"top-level system",
+		"messages":[
+			{"role":"system","content":"inline system one"},
+			{"role":"user","content":"hi"}
+		]
+	}`)
+
+	got, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(got.Input, &input))
+	require.Len(t, input, 2)
+	require.Equal(t, "developer", input[0]["role"])
+	systemText := input[0]["content"].([]any)[0].(map[string]any)["text"].(string)
+	require.Contains(t, systemText, "top-level system")
+	require.Contains(t, systemText, "inline system one")
+	require.Equal(t, "user", input[1]["role"])
+}
+
 func TestCCProtocolContentCompatRejectsNonTextSystem(t *testing.T) {
 	req := mustParseClaudeRequest(t, `{
 		"model":"gpt-test","max_tokens":64,
