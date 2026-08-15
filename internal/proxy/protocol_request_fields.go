@@ -10,11 +10,16 @@ var codexKnownRequestFields = map[string]struct{}{
 	"temperature": {}, "top_p": {}, "stream": {}, "tools": {}, "tool_choice": {},
 	"parallel_tool_calls": {}, "reasoning": {}, "stream_options": {}, "service_tier": {},
 	"prompt_cache_key": {}, "text": {}, "client_metadata": {}, "store": {}, "include": {},
-	// Official Responses API fields without a lossy-free target mapping.
-	// They are recognized so conversion strips them instead of failing:
-	// previous_response_id only carries upstream cache identity, truncation
-	// and metadata have no Chat/Claude equivalent, and user is transport-only.
-	"metadata": {}, "previous_response_id": {}, "truncation": {}, "user": {},
+	// Official Responses API advisory fields without a lossy-free target
+	// mapping. metadata, truncation and user are transport-only annotations,
+	// so they are recognized and stripped instead of failing.
+	//
+	// previous_response_id is deliberately NOT recognized: the Responses API
+	// uses it to reference server-side conversation state ("manage prior
+	// response context" per OpenAI docs), so silently dropping it during
+	// conversion would make the target answer as a fresh conversation. The
+	// strict field validator therefore rejects it (fail-closed).
+	"metadata": {}, "truncation": {}, "user": {},
 }
 
 var claudeKnownRequestFields = map[string]struct{}{

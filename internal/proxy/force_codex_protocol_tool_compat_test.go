@@ -200,8 +200,13 @@ func TestProtocolToolCompatSkipsOrphanedFutureToolOutputs(t *testing.T) {
 }
 
 func TestProtocolToolCompatPreservesCodexReasoningHistory(t *testing.T) {
+	// Thinking must be explicitly enabled on the request for reasoning
+	// summaries to be attached: Anthropic rejects thinking blocks when
+	// extended thinking is off. When thinking is not enabled the summaries
+	// are omitted (see TestCodexInputToClaudeMessagesGatesThinkingOnRequest).
 	req := &CodexRequest{
-		Model: "gpt-test",
+		Model:     "gpt-test",
+		Reasoning: &CodexReasoning{Effort: "adaptive"},
 		Input: json.RawMessage(`[
 			{"type":"reasoning","summary":[{"type":"summary_text","text":"plan before lookup"}]},
 			{"type":"function_call","call_id":"call_lookup","name":"lookup","arguments":"{}"}
@@ -489,6 +494,32 @@ func applyForceCodexCompat(t *testing.T, channelType string, body []byte) []byte
 	require.NoError(t, err)
 	require.True(t, converted)
 	return out
+}
+
+func TestCodexInputToClaudeMessagesGatesThinkingOnRequest(t *testing.T) {
+	// Codex reasoning summaries carry no Anthropic signature; the Messages API
+	// only accepts thinking blocks when extended thinking is enabled on the
+	// request. Summaries must be omitted when thinking is not active.
+	input := json.RawMessage(`[
+		{"type":"reasoning","summary":[{"type":"summary_text","text":"draft plan"}]},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}
+	]`)
+
+	messages, err := convertCodexInputToClaudeMessages(input, false)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	var blocks []ClaudeContentBlock
+	require.NoError(t, json.Unmarshal(messages[0].Content, &blocks))
+	require.Len(t, blocks, 1)
+	assert.Equal(t, "text", blocks[0].Type)
+
+	messages, err = convertCodexInputToClaudeMessages(input, true)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.NoError(t, json.Unmarshal(messages[0].Content, &blocks))
+	require.Len(t, blocks, 2)
+	assert.Equal(t, "thinking", blocks[0].Type)
+	assert.Equal(t, "text", blocks[1].Type)
 }
 
 func decodeCompatObject(t *testing.T, data []byte) map[string]any {

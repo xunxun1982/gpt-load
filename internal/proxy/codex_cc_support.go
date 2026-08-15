@@ -695,6 +695,13 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 		"arguments": argsStr,
 	})
 	case isClaudeToolResultBlock(block):
+		// Anthropic only allows tool_result blocks in user messages; an
+		// assistant-role tool result is non-conformant input. Reject it
+		// explicitly so it is not silently collected and then dropped by the
+		// assistant branch below (mirroring convertClaudeMessageToOpenAI).
+		if msg.Role == "assistant" {
+			return nil, fmt.Errorf("Anthropic tool_result block %q is not valid in an assistant message", block.Type)
+		}
 		toolResults = append(toolResults, map[string]interface{}{
 			"type":    "function_call_output",
 			"call_id": block.ToolUseID,

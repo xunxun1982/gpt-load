@@ -405,4 +405,25 @@ func TestCCProtocolRequestCompatRejectsKnownUnsupportedFields(t *testing.T) {
 	}
 }
 
+func TestCCProtocolToolCompatRejectsAssistantToolResultBlocks(t *testing.T) {
+	// Anthropic only allows tool_result blocks in user messages. An assistant
+	// message carrying one is non-conformant input; both converters must
+	// reject it explicitly instead of silently dropping it (Codex) or
+	// reporting a generic unsupported block (Chat).
+	msg := ClaudeMessage{
+		Role: "assistant",
+		Content: json.RawMessage(`[
+			{"type":"web_search_tool_result","tool_use_id":"call_web","content":"result"},
+			{"type":"text","text":"assistant text"}
+		]`),
+	}
+	_, err := convertClaudeMessageToOpenAI(msg, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "assistant message")
+
+	_, err = convertClaudeMessageToCodexFormatWithToolMap(msg, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "assistant message")
+}
+
 func ccBoolPtr(value bool) *bool { return &value }

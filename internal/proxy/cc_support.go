@@ -1078,6 +1078,12 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 					ID: block.ID, Type: "function",
 					Function: OpenAIFunctionCall{Name: toolName, Arguments: arguments},
 				})
+			case isClaudeToolResultBlock(block):
+				// Anthropic only allows tool_result blocks in user messages, so an
+				// assistant-role tool result is non-conformant input with no OpenAI
+				// equivalent. Reject it explicitly instead of the generic default,
+				// keeping the same policy as the Codex converter.
+				return nil, ccUnsupported("content block in assistant message", block.Type)
 			default:
 				return nil, ccUnsupported("content block", block.Type)
 			}

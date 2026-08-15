@@ -1928,6 +1928,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		}
 		filteredBody, filterErr := filterProtocolConversionRequestBody(bodyBytes, group, target, upstreamURL)
 		if filterErr != nil {
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, fmt.Errorf("failed to apply protocol compatibility: %v", filterErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply protocol compatibility: %v", filterErr)))
 			return
 		}
@@ -2382,6 +2383,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if !deferParamOverrides {
 		overriddenBody, overrideErr := ps.applyParamOverrides(finalBodyBytes, group)
 		if overrideErr != nil {
+			// Intentional divergence from the standard path (which fails fast):
+			// an aggregate request must not fail entirely because one sub-group
+			// could not apply overrides - the already-mapped body is a valid
+			// request and other sub-groups may still succeed. Behavior is locked
+			// by TestExecuteRequestWithAggregateRetryKeepsMappedBodyWhenParamOverridesFail.
 			logrus.WithError(overrideErr).WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,
 				"sub_group":       group.Name,
@@ -2582,6 +2588,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if deferParamOverrides {
 		overriddenBody, overrideErr := ps.applyParamOverrides(finalBodyBytes, group)
 		if overrideErr != nil {
+			// Same intentional divergence as the non-deferred branch above: keep
+			// the protocol-converted body so this sub-group attempt still runs.
+			// Locked by TestExecuteRequestWithAggregateRetryKeepsConvertedBodyWhenDeferredParamOverridesFail.
 			logrus.WithError(overrideErr).WithFields(logrus.Fields{
 				"aggregate_group": originalGroup.Name,
 				"sub_group":       group.Name,
@@ -2838,6 +2847,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 		filteredBody, filterErr := filterProtocolConversionRequestBody(finalBodyBytes, group, target, upstreamURL)
 		if filterErr != nil {
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, fmt.Errorf("failed to apply protocol compatibility for sub-group: %v", filterErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply protocol compatibility: %v", filterErr)))
 			return
 		}

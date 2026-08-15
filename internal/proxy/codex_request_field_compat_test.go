@@ -184,20 +184,35 @@ func TestCodexRequestOptionCompatRejectsUnmodeledTopLevelFields(t *testing.T) {
 }
 
 func TestCodexRequestOptionCompatStripsUnmodeledOfficialFields(t *testing.T) {
-	// Official Responses API fields without a conversion target are recognized
-	// and stripped instead of failing: previous_response_id only carries
-	// upstream cache identity, truncation/metadata/user have no Chat or Claude
-	// equivalent.
+	// Official Responses API advisory fields without a conversion target are
+	// recognized and stripped instead of failing: metadata, truncation and
+	// user are transport-only annotations. previous_response_id is NOT here:
+	// it references server-side conversation state and is rejected instead
+	// (see TestCodexRequestOptionCompatRejectsPreviousResponseID).
 	body := []byte(`{"model":"gpt-test","input":"hello","stream":false,
-		"previous_response_id":"resp_old","truncation":"disabled",
+		"truncation":"disabled",
 		"user":"u-1","metadata":{"session_id":"s-1"}}`)
 	for _, target := range []string{"openai", "anthropic"} {
 		t.Run(target, func(t *testing.T) {
 			payload := decodeCompatObject(t, applyForceCodexCompat(t, target, body))
-			require.NotContains(t, payload, "previous_response_id")
 			require.NotContains(t, payload, "truncation")
 			require.NotContains(t, payload, "user")
 			require.NotContains(t, payload, "metadata")
 		})
 	}
+}
+
+func TestCodexRequestOptionCompatRejectsPreviousResponseID(t *testing.T) {
+	// previous_response_id makes the Responses API reuse server-side
+	// conversation state ("manage prior response context" per OpenAI docs).
+	// Chat Completions and Claude targets cannot resolve that reference, and
+	// silently dropping it would answer as a fresh conversation, so the strict
+	// field validator must fail closed instead.
+	body := []byte(`{"model":"gpt-test","input":"hello","previous_response_id":"resp_old"}`)
+	c, _ := gin.CreateTestContext(nil)
+	_, converted, err := (&ProxyServer{}).applyForceCodexRequestConversion(c, &models.Group{ChannelType: "openai"}, body)
+	require.Error(t, err)
+	assert.False(t, converted)
+	assert.Contains(t, err.Error(), "unsupported_request_option")
+	assert.Contains(t, err.Error(), "Not Supported")
 }

@@ -463,7 +463,7 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 		req.System = marshalStringAsJSONRaw("codex_instructions", strings.Join(systemText, "\n\n"))
 	}
 
-	messages, err := convertCodexInputToClaudeMessages(codexReq.Input, toolCtx)
+	messages, err := convertCodexInputToClaudeMessages(codexReq.Input, claudeThinkingActive(req.Thinking), toolCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -977,7 +977,7 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 	return messages, nil
 }
 
-func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexToolContext) ([]ClaudeMessage, error) {
+func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bool, toolCtx ...*codexToolContext) ([]ClaudeMessage, error) {
 	var raw any
 	if err := decodeCodexJSONUseNumber(input, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse Codex input: %w", err)
@@ -1008,8 +1008,16 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 		itemType, _ := m["type"].(string)
 		switch {
 		case itemType == "reasoning":
-			if text := codexReasoningText(m); text != "" {
-				pendingThinking = append(pendingThinking, ClaudeContentBlock{Type: "thinking", Thinking: text})
+			// Anthropic only accepts assistant thinking blocks when extended
+			// thinking is enabled on the request, and multi-turn history must
+			// carry the original unmodified signature. Codex reasoning
+			// summaries carry no signature, so attach them only when thinking
+			// is explicitly active; otherwise omit them rather than risk a
+			// 400 from the upstream.
+			if thinkingEnabled {
+				if text := codexReasoningText(m); text != "" {
+					pendingThinking = append(pendingThinking, ClaudeContentBlock{Type: "thinking", Thinking: text})
+				}
 			}
 		case itemType == "message" || itemType == "":
 			role, _ := m["role"].(string)
