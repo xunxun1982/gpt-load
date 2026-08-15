@@ -1170,8 +1170,8 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		s.syncChildGroupKeysAfterCommit(ctx, childGroupsNeedingKeyUpdate, newParentFirstKey, oldParentFirstKey)
 	}
 
-	if params.HasUpstreams {
-		s.groupManager.RefreshCachedUpstreams(ctx, group.ID, group.Upstreams)
+	if params.HasUpstreams || group.Name != oldName {
+		s.groupManager.RefreshCachedUpstreams(ctx, group.ID, group.Name, group.Upstreams)
 	}
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")

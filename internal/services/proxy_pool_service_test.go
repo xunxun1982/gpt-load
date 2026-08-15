@@ -67,9 +67,13 @@ func TestProxyPoolServiceResolveProxyURLsUsesSingleBatchQuery(t *testing.T) {
 	require.NoError(t, err)
 
 	queryCount := 0
-	require.NoError(t, svc.db.Callback().Query().Before("gorm:query").Register("test:count_proxy_batch_queries", func(*gorm.DB) {
+	const callbackName = "test:count_proxy_batch_queries"
+	require.NoError(t, svc.db.Callback().Query().Before("gorm:query").Register(callbackName, func(*gorm.DB) {
 		queryCount++
 	}))
+	t.Cleanup(func() {
+		require.NoError(t, svc.db.Callback().Query().Remove(callbackName))
+	})
 
 	firstRef := utils.BuildProxyPoolItemRef(first.ID)
 	secondRef := utils.BuildProxyPoolItemRef(second.ID)

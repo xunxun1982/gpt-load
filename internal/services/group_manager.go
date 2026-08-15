@@ -13,6 +13,7 @@ import (
 	"gpt-load/internal/utils"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -176,11 +177,12 @@ func (gm *GroupManager) Initialize() error {
 			ByID:   make(map[uint]*models.Group, len(groups)),
 		}
 		proxyResolveCache := make(map[string]string)
-		gm.preloadUpstreamProxyReferences(context.Background(), groups, proxyResolveCache)
+		preloadCtx, preloadCancel := context.WithTimeout(context.Background(), getDBLookupTimeout())
+		gm.preloadUpstreamProxyReferences(preloadCtx, groups, proxyResolveCache)
 		for _, group := range groups {
 			g := *group
 			g.EffectiveConfig = gm.settingsManager.GetEffectiveConfig(g.Config)
-			g.Upstreams = gm.resolveUpstreamProxyReferences(context.Background(), g.Upstreams, proxyResolveCache)
+			g.Upstreams = gm.resolveUpstreamProxyReferences(preloadCtx, g.Upstreams, proxyResolveCache)
 			statusMatcher, err := failover.ParseStatusCodeMatcher(g.EffectiveConfig.FailoverStatusCodes)
 			if err != nil {
 				logrus.WithError(err).WithField("group_name", g.Name).Warn("Invalid failover status code pattern, using default")
@@ -264,6 +266,7 @@ func (gm *GroupManager) Initialize() error {
 			cache.ByName[g.Name] = &g
 			cache.ByID[g.ID] = &g
 		}
+		preloadCancel()
 
 		return cache, nil
 	}
@@ -327,7 +330,7 @@ func (gm *GroupManager) Invalidate() error {
 // RefreshCachedUpstreams makes an upstream edit visible to local requests before
 // the cross-instance invalidation is delivered. Copy-on-write keeps readers that
 // already hold the previous group snapshot race-free.
-func (gm *GroupManager) RefreshCachedUpstreams(ctx context.Context, groupID uint, upstreams []byte) {
+func (gm *GroupManager) RefreshCachedUpstreams(ctx context.Context, groupID uint, groupName string, upstreams []byte) {
 	if gm.syncer == nil {
 		return
 	}
@@ -340,6 +343,7 @@ func (gm *GroupManager) RefreshCachedUpstreams(ctx context.Context, groupID uint
 		}
 
 		updated := *cached
+		updated.Name = groupName
 		updated.Upstreams = append(updated.Upstreams[:0:0], resolvedUpstreams...)
 		nextByID := make(map[uint]*models.Group, len(current.ByID))
 		for id, group := range current.ByID {
@@ -350,6 +354,10 @@ func (gm *GroupManager) RefreshCachedUpstreams(ctx context.Context, groupID uint
 			nextByName[name] = group
 		}
 		nextByID[groupID] = &updated
+		if cached.Name != updated.Name {
+			// Remove the old route immediately so a rename cannot briefly serve a stale snapshot.
+			delete(nextByName, cached.Name)
+		}
 		nextByName[updated.Name] = &updated
 		return groupCache{ByName: nextByName, ByID: nextByID}
 	})
@@ -377,6 +385,7 @@ func (gm *GroupManager) Stop(ctx context.Context) {
 }
 
 func (gm *GroupManager) resolveUpstreamProxyReferences(ctx context.Context, upstreams []byte, cache map[string]string) []byte {
+	// This substring guard intentionally tolerates false positives: they cost one bounded JSON parse only.
 	if gm.settingsManager == nil || !bytes.Contains(upstreams, []byte("proxy-pool:")) {
 		return upstreams
 	}
@@ -384,37 +393,25 @@ func (gm *GroupManager) resolveUpstreamProxyReferences(ctx context.Context, upst
 	if err := json.Unmarshal(upstreams, &defs); err != nil {
 		return upstreams
 	}
-	pending := make([]string, 0, len(defs))
-	seen := make(map[string]struct{}, len(defs))
-	for i := range defs {
-		if defs[i].ProxyURL == nil || !utils.IsProxyPoolRef(*defs[i].ProxyURL) {
-			continue
-		}
-		ref := *defs[i].ProxyURL
-		if _, cached := cache[ref]; cached {
-			continue
-		}
-		if _, duplicate := seen[ref]; duplicate {
-			continue
-		}
-		seen[ref] = struct{}{}
-		pending = append(pending, ref)
-	}
+	pending := collectUpstreamProxyReferences(defs, cache)
 	for ref, resolved := range gm.settingsManager.ResolveRuntimeProxyURLs(ctx, pending) {
 		cache[ref] = resolved
 	}
 	changed := false
 	for i := range defs {
-		if defs[i].ProxyURL == nil || !utils.IsProxyPoolRef(*defs[i].ProxyURL) {
+		if defs[i].ProxyURL == nil {
 			continue
 		}
-		ref := *defs[i].ProxyURL
+		ref := strings.TrimSpace(*defs[i].ProxyURL)
+		if !utils.IsProxyPoolRef(ref) {
+			continue
+		}
 		resolved := cache[ref]
 		if resolved == "" {
-			defs[i].ProxyURL = nil
-		} else {
-			defs[i].ProxyURL = &resolved
+			// Preserve the reference so a resolver/cache anomaly fails closed instead of routing directly.
+			resolved = ref
 		}
+		defs[i].ProxyURL = &resolved
 		changed = true
 	}
 	if !changed {
@@ -425,6 +422,29 @@ func (gm *GroupManager) resolveUpstreamProxyReferences(ctx context.Context, upst
 		return upstreams
 	}
 	return resolvedUpstreams
+}
+
+func collectUpstreamProxyReferences(defs []groupUpstreamDefinition, known map[string]string) []string {
+	refs := make([]string, 0, len(defs))
+	seen := make(map[string]struct{}, len(defs))
+	for i := range defs {
+		if defs[i].ProxyURL == nil {
+			continue
+		}
+		ref := strings.TrimSpace(*defs[i].ProxyURL)
+		if !utils.IsProxyPoolRef(ref) {
+			continue
+		}
+		if _, exists := known[ref]; exists {
+			continue
+		}
+		if _, duplicate := seen[ref]; duplicate {
+			continue
+		}
+		seen[ref] = struct{}{}
+		refs = append(refs, ref)
+	}
+	return refs
 }
 
 func (gm *GroupManager) preloadUpstreamProxyReferences(ctx context.Context, groups []*models.Group, cache map[string]string) {
@@ -441,16 +461,11 @@ func (gm *GroupManager) preloadUpstreamProxyReferences(ctx context.Context, grou
 		if err := json.Unmarshal(group.Upstreams, &defs); err != nil {
 			continue
 		}
-		for i := range defs {
-			if defs[i].ProxyURL == nil || !utils.IsProxyPoolRef(*defs[i].ProxyURL) {
-				continue
+		for _, ref := range collectUpstreamProxyReferences(defs, nil) {
+			if _, duplicate := seen[ref]; !duplicate {
+				seen[ref] = struct{}{}
+				refs = append(refs, ref)
 			}
-			ref := *defs[i].ProxyURL
-			if _, exists := seen[ref]; exists {
-				continue
-			}
-			seen[ref] = struct{}{}
-			refs = append(refs, ref)
 		}
 	}
 	for ref, resolved := range gm.settingsManager.ResolveRuntimeProxyURLs(ctx, refs) {

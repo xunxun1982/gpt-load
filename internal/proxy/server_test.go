@@ -2070,6 +2070,43 @@ func TestExecuteRequestWithRetryWaitsConfiguredDelayBeforeRetry(t *testing.T) {
 	assert.GreaterOrEqual(t, attemptTimes[1].Sub(attemptTimes[0]), 70*time.Millisecond)
 }
 
+func TestExecuteRequestWithRetryLogsEachAttemptDuration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	ps.requestLogService = services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager())
+
+	group := createTestGroup(t, db, "retry-duration-standard", "openai")
+	group.EffectiveConfig = systemSettingsWithRetryTimeout(1, 0)
+	group.EffectiveConfig.RetryDelayMs = 150
+	createTestKey(t, db, group.ID, "sk-retry-duration-1", ps.encryptionSvc)
+	createTestKey(t, db, group.ID, "sk-retry-duration-2", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+
+	var attempts atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if attempts.Add(1) == 1 {
+			http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
+			return
+		}
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := []byte(`{"model":"gpt-test"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/retry-duration-standard/v1/chat/completions", bytes.NewReader(body))
+	ps.executeRequestWithRetry(c, &testChannelProxy{client: upstream.Client(), url: upstream.URL}, group, group, body, false, time.Now(), 0)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	first := popRecordedRequestLog(t, memStore)
+	second := popRecordedRequestLog(t, memStore)
+	assert.Less(t, first.Duration, int64(100))
+	assert.Less(t, second.Duration, int64(100))
+}
+
 func TestExecuteRequestWithRetryKeepsRetryDelayInsideNonStreamTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -3334,6 +3371,8 @@ func TestExecuteRequestWithAggregateRetryWaitsBeforeSameSubGroupKeyRetry(t *test
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	ps.requestLogService = services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager())
 
 	var mu sync.Mutex
 	attemptTimes := make([]time.Time, 0, 2)
@@ -3407,6 +3446,10 @@ func TestExecuteRequestWithAggregateRetryWaitsBeforeSameSubGroupKeyRetry(t *test
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, attemptTimes, 2)
 	assert.GreaterOrEqual(t, attemptTimes[1].Sub(attemptTimes[0]), 70*time.Millisecond)
+	firstLog := popRecordedRequestLog(t, memStore)
+	secondLog := popRecordedRequestLog(t, memStore)
+	assert.Less(t, firstLog.Duration, int64(100))
+	assert.Less(t, secondLog.Duration, int64(100))
 }
 
 func TestExecuteRequestWithAggregateRetryKeepsSubGroupDelayInsideNonStreamTimeout(t *testing.T) {
@@ -6170,6 +6213,10 @@ func TestSetRateLimitPressureContextForAttempt(t *testing.T) {
 	setRateLimitPressureContextForAttempt(ctx, nil, now)
 	_, exists = ctx.Get(ctxKeyRateLimitPressure)
 	assert.False(t, exists)
+
+	assert.NotPanics(t, func() {
+		setRateLimitPressureContextForAttempt(nil, resp, now)
+	})
 }
 
 func TestRecordDynamicWeightMetricsUsesRetryAfterPressureAfterConsecutive429Threshold(t *testing.T) {

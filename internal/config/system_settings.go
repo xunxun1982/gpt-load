@@ -438,6 +438,14 @@ func (sm *SystemSettingsManager) ResolveRuntimeProxyURLs(ctx context.Context, re
 		}
 	}
 	if err != nil {
+		if _, isBatchResolver := sm.proxyURLResolver.(ProxyURLBatchResolver); !isBatchResolver {
+			// Preserve successful non-batch resolutions; unresolved entries keep their references below.
+			for ref, value := range batch {
+				if value = strings.TrimSpace(value); value != "" {
+					resolved[ref] = value
+				}
+			}
+		}
 		logrus.WithError(err).WithField("reference_count", len(pending)).Warn("Failed to resolve proxy pool references")
 		return resolved
 	}

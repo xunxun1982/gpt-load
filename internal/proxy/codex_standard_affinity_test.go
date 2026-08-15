@@ -106,6 +106,30 @@ func TestHandleProxyStandardCodexAffinityFailureStripsEncryptedStateBeforeRetry(
 	require.NotEqual(t, first.auth, second.auth)
 }
 
+func TestHandleProxyStandardCodexAffinityRetriesLeadingEncryptedContentFailure(t *testing.T) {
+	handler, group, observations := setupStreamingRetryingStandardCodexAffinityGroup(t)
+	body := []byte(`{
+  "model":"gpt-5","stream":true,"include":["reasoning.encrypted_content"],
+  "input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"cipher"}]
+}`)
+
+	require.Equal(t, http.StatusOK, runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "old-turn", body).Code)
+	warmup := <-observations
+	require.NotContains(t, string(warmup.body), "reasoning.encrypted_content")
+
+	response := runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "old-turn", body)
+	first := <-observations
+	second := <-observations
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.NotContains(t, response.Body.String(), "response.failed")
+	require.Contains(t, response.Body.String(), "response.completed")
+	require.NotEqual(t, first.auth, second.auth)
+	require.Contains(t, string(first.body), "reasoning.encrypted_content")
+	require.NotContains(t, string(second.body), "reasoning.encrypted_content")
+	require.NotContains(t, string(second.body), `"type":"reasoning"`)
+}
+
 func TestHandleProxyStandardCodexAffinitySeparatesProxyKeys(t *testing.T) {
 	handler, group, observations := setupStandardCodexAffinityGroup(t, true, nil)
 	body := []byte(`{"model":"gpt-5","input":"hello","stream":false}`)

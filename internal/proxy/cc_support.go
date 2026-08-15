@@ -1424,7 +1424,8 @@ func mapStatusToClaudeErrorType(statusCode int) string {
 		return "not_found_error"
 	case statusCode == 429:
 		return "rate_limit_error"
-	case statusCode == 502 || statusCode == 503:
+	case statusCode == 502 || statusCode == 503 || statusCode == 529:
+		// Anthropic documents 529 as overloaded_error; keep proxy-generated errors protocol-correct.
 		return "overloaded_error"
 	case statusCode >= 500 && statusCode < 600:
 		return "api_error"

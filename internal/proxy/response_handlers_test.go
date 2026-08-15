@@ -348,6 +348,156 @@ func TestHandleNormalResponseRecordsLargeCompressedResponsesFailure(t *testing.T
 	assert.Equal(t, http.StatusBadGateway, statusCode)
 }
 
+func TestRetryableStreamProbeDetectsLeadingFailureAndReplaysSuccess(t *testing.T) {
+	t.Parallel()
+
+	t.Run("leading failure", func(t *testing.T) {
+		resp := &http.Response{
+			Body: io.NopCloser(strings.NewReader("event: response.failed\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"rate limit exceeded\"}}}\n\n")),
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+
+		statusCode, message, failed := retryableStreamProbe(resp)
+
+		require.True(t, failed)
+		assert.Equal(t, http.StatusTooManyRequests, statusCode)
+		assert.Contains(t, message, "rate limit")
+		replayed, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(replayed), "response.failed")
+	})
+
+	t.Run("successful prefix is replayed", func(t *testing.T) {
+		const stream = "event: response.created\n" +
+			"data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n"
+		resp := &http.Response{
+			Body:   io.NopCloser(strings.NewReader(stream)),
+			Header: http.Header{"Content-Type": []string{"text/event-stream; charset=utf-8"}},
+		}
+
+		_, _, failed := retryableStreamProbe(resp)
+		replayed, err := io.ReadAll(resp.Body)
+
+		require.NoError(t, err)
+		assert.False(t, failed)
+		assert.Equal(t, stream, string(replayed))
+	})
+
+	t.Run("failure after response prelude is retryable", func(t *testing.T) {
+		const stream = "event: response.created\n" +
+			"data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n" +
+			"event: response.in_progress\n" +
+			"data: {\"type\":\"response.in_progress\",\"response\":{\"status\":\"in_progress\"}}\n\n" +
+			"event: response.failed\n" +
+			"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"rate limit exceeded\"}}}\n\n"
+		resp := &http.Response{
+			Body:   io.NopCloser(strings.NewReader(stream)),
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+
+		statusCode, _, failed := retryableStreamProbe(resp)
+		replayed, err := io.ReadAll(resp.Body)
+
+		require.NoError(t, err)
+		assert.True(t, failed)
+		assert.Equal(t, http.StatusTooManyRequests, statusCode)
+		assert.Equal(t, stream, string(replayed))
+	})
+
+	t.Run("Claude message prelude and ping remain retryable", func(t *testing.T) {
+		const stream = "event: message_start\n" +
+			"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"content\":[]}}\n\n" +
+			"event: ping\n" +
+			"data: {\"type\":\"ping\"}\n\n" +
+			"event: error\n" +
+			"data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"temporary capacity limit\"}}\n\n"
+		resp := &http.Response{
+			Body:   io.NopCloser(strings.NewReader(stream)),
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+
+		statusCode, message, failed := retryableStreamProbe(resp)
+
+		require.True(t, failed)
+		assert.Equal(t, http.StatusTooManyRequests, statusCode)
+		assert.Contains(t, message, "temporary capacity")
+		replayed, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, stream, string(replayed))
+	})
+
+	t.Run("OpenAI Chat rate limit error maps to 429", func(t *testing.T) {
+		const stream = "data: {\"error\":{\"type\":\"rate_limit_error\",\"message\":\"requests are temporarily limited\"}}\n\n"
+		resp := &http.Response{
+			Body:   io.NopCloser(strings.NewReader(stream)),
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+
+		statusCode, _, failed := retryableStreamProbe(resp)
+
+		require.True(t, failed)
+		assert.Equal(t, http.StatusTooManyRequests, statusCode)
+	})
+
+	t.Run("Gemini numeric resource exhaustion maps to 429", func(t *testing.T) {
+		const stream = "data: {\"error\":{\"code\":429,\"message\":\"Resource exhausted\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n"
+		resp := &http.Response{
+			Body:   io.NopCloser(strings.NewReader(stream)),
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+
+		statusCode, _, failed := retryableStreamProbe(resp)
+
+		require.True(t, failed)
+		assert.Equal(t, http.StatusTooManyRequests, statusCode)
+	})
+
+	t.Run("failure after content delta is not retryable", func(t *testing.T) {
+		const stream = "event: response.created\n" +
+			"data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n" +
+			"event: response.output_text.delta\n" +
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n" +
+			"event: response.failed\n" +
+			"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"rate limit exceeded\"}}}\n\n"
+		resp := &http.Response{
+			Body:   io.NopCloser(strings.NewReader(stream)),
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+
+		_, _, failed := retryableStreamProbe(resp)
+		replayed, err := io.ReadAll(resp.Body)
+
+		require.NoError(t, err)
+		assert.False(t, failed)
+		assert.Equal(t, stream, string(replayed))
+	})
+}
+
+func BenchmarkRetryableStreamProbe(b *testing.B) {
+	stream := "event: response.created\n" +
+		"data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n"
+	b.ReportAllocs()
+	for range b.N {
+		resp := &http.Response{
+			Body:   io.NopCloser(strings.NewReader(stream)),
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+		_, _, _ = retryableStreamProbe(resp)
+	}
+}
+
+func BenchmarkRetryableStreamProbeNonSSE(b *testing.B) {
+	resp := &http.Response{
+		Body:   http.NoBody,
+		Header: http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
+	}
+	b.ReportAllocs()
+	for range b.N {
+		_, _, _ = retryableStreamProbe(resp)
+	}
+}
+
 func TestHandleNormalResponseRecordsIdentityEncodedResponsesFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

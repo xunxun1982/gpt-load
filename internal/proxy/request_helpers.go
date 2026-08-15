@@ -74,10 +74,17 @@ func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Gro
 	return false
 }
 
-func removeAcceptEncodingForProxyParsing(req *http.Request, c *gin.Context, group *models.Group) {
-	if req == nil || !shouldRemoveAcceptEncodingForProxyParsing(c, group) {
+func upstreamResponseMayBeEventStream(c *gin.Context, isStream bool) bool {
+	return isStream || isOpenAIResponseForcedStream(c) || codexDegradationMitigationEnabled(c)
+}
+
+func removeAcceptEncodingForProxyParsing(req *http.Request, c *gin.Context, group *models.Group, upstreamMayStream bool) {
+	if req == nil || (!upstreamMayStream && !shouldRemoveAcceptEncodingForProxyParsing(c, group)) {
 		return
 	}
+	// The retry probe must inspect the upstream SSE bytes before anything is sent
+	// downstream. Removing the client encoding request lets net/http transparently
+	// decode gzip and keeps this protocol check consistent across every channel.
 	req.Header.Del("Accept-Encoding")
 }
 

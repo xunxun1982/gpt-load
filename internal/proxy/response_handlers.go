@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -24,6 +25,7 @@ const maxResponseCaptureBytes = 65000
 const (
 	maxUsageTailCaptureBytes     = maxResponseCaptureBytes
 	maxCodexStreamLineBytes      = 1 * 1024 * 1024
+	maxRetryableStreamProbeBytes = 64 * 1024
 	maxCodexStreamCollectBytes   = 8 * 1024 * 1024
 	errCodexStreamCollectorLimit = "codex forced stream collector exceeded size limit"
 )
@@ -93,13 +95,103 @@ func (w *limitedResponseCaptureWriter) String() string {
 }
 
 type sseLogicalFailureCapture struct {
-	pending      []byte
-	statusCode   int
-	errorCode    string
-	errorMessage string
-	terminalSeen bool
-	unverified   bool
-	disabled     bool
+	pending             []byte
+	statusCode          int
+	errorCode           string
+	errorMessage        string
+	meaningfulSeen      bool
+	firstSemanticFailed bool
+	terminalSeen        bool
+	unverified          bool
+	disabled            bool
+}
+
+type replayReadCloser struct {
+	reader io.Reader
+	closer io.Closer
+}
+
+func (r *replayReadCloser) Read(p []byte) (int, error) { return r.reader.Read(p) }
+func (r *replayReadCloser) Close() error               { return r.closer.Close() }
+
+func isEventStreamResponse(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	mediaType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";")
+	return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
+}
+
+// retryableStreamProbe buffers only the leading SSE event. A logical failure can
+// be retried safely only before any meaningful event has reached the downstream.
+func retryableStreamProbe(resp *http.Response) (int, string, bool) {
+	if resp == nil || resp.Body == nil || !isEventStreamResponse(resp) {
+		return 0, "", false
+	}
+	reader := bufio.NewReaderSize(resp.Body, 4*1024)
+	prefix := make([]byte, 0, 4*1024)
+	var capture sseLogicalFailureCapture
+	buf := make([]byte, 4*1024)
+	for len(prefix) < maxRetryableStreamProbeBytes {
+		remaining := maxRetryableStreamProbeBytes - len(prefix)
+		n, err := reader.Read(buf[:min(len(buf), remaining)])
+		if n > 0 {
+			prefix = append(prefix, buf[:n]...)
+			_, _ = capture.Write(buf[:n])
+		}
+		if err != nil {
+			capture.Finish()
+		}
+		if capture.meaningfulSeen || capture.terminalSeen {
+			// Prelude events are buffered without committing the response. Any content,
+			// unknown event, or terminal event closes the retry window before forwarding.
+			break
+		}
+		if err != nil {
+			break
+		}
+	}
+	originalBody := resp.Body
+	resp.Body = &replayReadCloser{reader: io.MultiReader(bytes.NewReader(prefix), reader), closer: originalBody}
+	return capture.statusCode, strings.TrimSpace(capture.errorMessage), capture.firstSemanticFailed
+}
+
+func isRetryableSSEPrelude(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "response.created", "response.queued", "response.in_progress", "message_start", "ping":
+		// These events carry only request/message metadata or a heartbeat. Buffering
+		// them keeps retries safe because no assistant content reached downstream.
+		return true
+	default:
+		return false
+	}
+}
+
+func isRetryableSSEDataPrelude(data []byte, eventType string) bool {
+	if isRetryableSSEPrelude(eventType) {
+		return true
+	}
+	// OpenAI Chat's first chunk can contain only the assistant role and omit
+	// `type`. It is metadata rather than generated content, so a following
+	// leading error remains safe to retry. Content/tool deltas close the window.
+	if strings.TrimSpace(eventType) != "" {
+		return false
+	}
+	choices := gjson.GetBytes(data, "choices")
+	if !choices.IsArray() || len(choices.Array()) == 0 {
+		return false
+	}
+	delta := choices.Get("0.delta")
+	if !delta.IsObject() || strings.TrimSpace(delta.Get("role").String()) == "" {
+		return false
+	}
+	for _, field := range []string{"content", "tool_calls", "function_call", "refusal"} {
+		value := delta.Get(field)
+		if value.Exists() && !strings.EqualFold(strings.TrimSpace(value.Raw), "null") && value.String() != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *tailUsageCapture) Write(p []byte) (int, error) {
@@ -187,7 +279,11 @@ func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
 	if len(data) == 0 {
 		return
 	}
+	isFirstSemantic := !p.meaningfulSeen
 	eventType := strings.TrimSpace(gjson.GetBytes(data, "type").String())
+	if !isRetryableSSEDataPrelude(data, eventType) {
+		p.meaningfulSeen = true
+	}
 	responseStatus := strings.TrimSpace(gjson.GetBytes(data, "response.status").String())
 	if eventType == "response.completed" || eventType == "response.done" || eventType == "response.failed" {
 		p.terminalSeen = true
@@ -195,6 +291,9 @@ func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
 	topLevelError := gjson.GetBytes(data, "error")
 	if !topLevelError.IsObject() && eventType != "response.failed" && !strings.EqualFold(responseStatus, "failed") {
 		return
+	}
+	if isFirstSemantic {
+		p.firstSemanticFailed = true
 	}
 	errorCode := strings.TrimSpace(gjson.GetBytes(data, "error.code").String())
 	if errorCode == "" {
@@ -208,6 +307,7 @@ func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
 		errorMessage = strings.TrimSpace(gjson.GetBytes(data, "response.error.message").String())
 	}
 	p.recordFailure(errorCode, errorMessage)
+	p.terminalSeen = true
 }
 
 func (p *sseLogicalFailureCapture) Finish() {
@@ -237,13 +337,13 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 	if len(data) == 0 {
 		return
 	}
-
 	var payload struct {
 		Type  string `json:"type"`
 		Error *struct {
-			Code    string `json:"code"`
+			Code    any    `json:"code"`
 			Message string `json:"message"`
 			Type    string `json:"type"`
+			Status  string `json:"status"`
 		} `json:"error,omitempty"`
 		Response *struct {
 			Status string `json:"status"`
@@ -255,8 +355,13 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 		} `json:"response,omitempty"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
+		p.meaningfulSeen = true
 		p.unverified = true
 		return
+	}
+	isFirstSemantic := !p.meaningfulSeen
+	if !isRetryableSSEDataPrelude(data, payload.Type) {
+		p.meaningfulSeen = true
 	}
 	if payload.Type == "response.completed" || payload.Type == "response.done" || payload.Type == "response.failed" {
 		p.terminalSeen = true
@@ -265,9 +370,15 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 	errorCode := ""
 	errorMessage := ""
 	if payload.Error != nil {
-		errorCode = strings.TrimSpace(payload.Error.Code)
+		errorCode = strings.TrimSpace(fmt.Sprint(payload.Error.Code))
+		if errorCode == "<nil>" {
+			errorCode = ""
+		}
 		if errorCode == "" {
 			errorCode = strings.TrimSpace(payload.Error.Type)
+		}
+		if errorCode == "" {
+			errorCode = strings.TrimSpace(payload.Error.Status)
 		}
 		errorMessage = strings.TrimSpace(payload.Error.Message)
 	}
@@ -284,23 +395,30 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 	if !isFailed {
 		return
 	}
+	if isFirstSemantic {
+		p.firstSemanticFailed = true
+	}
 
 	p.recordFailure(errorCode, errorMessage)
+	p.terminalSeen = true
 }
 
 func (p *sseLogicalFailureCapture) recordFailure(errorCode, errorMessage string) {
-	statusCode := http.StatusBadGateway
-	lowerCode := strings.ToLower(errorCode)
-	lowerMessage := strings.ToLower(errorMessage)
-	if lowerCode == "rate_limit_exceeded" || strings.Contains(lowerMessage, "concurrency limit exceeded") || strings.Contains(lowerMessage, "rate limit") {
-		statusCode = http.StatusTooManyRequests
-	}
-
-	p.statusCode = statusCode
+	p.statusCode = logicalFailureStatusCode(errorCode, errorMessage)
 	p.errorCode = errorCode
 	if errorMessage != "" {
 		p.errorMessage = errorMessage
 	}
+}
+
+func logicalFailureStatusCode(errorCode, errorMessage string) int {
+	lowerCode := strings.ToLower(strings.TrimSpace(errorCode))
+	lowerMessage := strings.ToLower(errorMessage)
+	if lowerCode == "429" || lowerCode == "rate_limit_exceeded" || lowerCode == "rate_limit_error" || lowerCode == "resource_exhausted" ||
+		strings.Contains(lowerMessage, "concurrency limit exceeded") || strings.Contains(lowerMessage, "rate limit") {
+		return http.StatusTooManyRequests
+	}
+	return http.StatusBadGateway
 }
 
 func setLogicalFailureContext(c *gin.Context, statusCode int, errorCode, errorMessage string) {
@@ -461,11 +579,7 @@ func setResponsesLogicalFailure(c *gin.Context, status, errorCode, errorMessage 
 	if !strings.EqualFold(strings.TrimSpace(status), "failed") {
 		return
 	}
-	statusCode := http.StatusBadGateway
-	if strings.EqualFold(errorCode, "rate_limit_exceeded") {
-		statusCode = http.StatusTooManyRequests
-	}
-	setLogicalFailureContext(c, statusCode, errorCode, errorMessage)
+	setLogicalFailureContext(c, logicalFailureStatusCode(errorCode, errorMessage), errorCode, errorMessage)
 }
 
 func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Response) {
@@ -736,8 +850,8 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 	// Check for Codex error in response
 	if codexResp.Error != nil {
 		statusCode := resp.StatusCode
-		if strings.EqualFold(codexResp.Status, "failed") && strings.EqualFold(codexResp.Error.Code, "rate_limit_exceeded") {
-			statusCode = http.StatusTooManyRequests
+		if strings.EqualFold(codexResp.Status, "failed") {
+			statusCode = logicalFailureStatusCode(codexResp.Error.Code, codexResp.Error.Message)
 		} else if statusCode < http.StatusBadRequest {
 			statusCode = http.StatusBadGateway
 		}

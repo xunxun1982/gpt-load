@@ -6648,6 +6648,12 @@ func TestGitBashPathConversion(t *testing.T) {
 }
 
 // TestHandleCCNormalResponse tests non-streaming response conversion
+func TestMapStatusToClaudeErrorTypeMaps529ToOverloaded(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "overloaded_error", mapStatusToClaudeErrorType(529))
+}
+
 func TestHandleCCNormalResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

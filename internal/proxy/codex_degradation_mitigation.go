@@ -809,10 +809,7 @@ func codexMitigationResponseReader(resp *http.Response) (io.Reader, io.Closer, e
 }
 
 func codexMitigationIsSSE(resp *http.Response) bool {
-	if resp == nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
+	return isEventStreamResponse(resp)
 }
 
 func codexMitigationEventType(event map[string]any) string {
