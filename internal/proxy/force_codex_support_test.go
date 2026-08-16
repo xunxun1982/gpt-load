@@ -650,7 +650,7 @@ data: [DONE]
 	assert.Contains(t, out, `"message":"try later"`)
 	statusCode, message, failed := logicalStatusFromContext(c)
 	require.True(t, failed)
-	assert.Equal(t, http.StatusBadGateway, statusCode)
+	assert.Equal(t, 529, statusCode)
 	assert.Equal(t, "try later", message)
 }
 

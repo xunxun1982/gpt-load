@@ -1947,15 +1947,12 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 				"timeout_seconds": timeoutDuration.Seconds(),
 			}).Warn("Codex CC: SSE read timeout, upstream did not send data")
 			// Send error event to client
-			// NOTE: Using "api_error" instead of "timeout_error" per Claude API documentation.
-			// Claude's standard error types are: invalid_request_error, authentication_error,
-			// permission_error, not_found_error, request_too_large, rate_limit_error, api_error,
-			// overloaded_error. "timeout_error" is not a standard type, so we use "api_error"
-			// which maps to HTTP 500 for unexpected server-side failures including timeouts.
+			// Anthropic documents timeout_error as HTTP 504. Preserve that protocol
+			// distinction so clients can classify this transient failure correctly.
 			errorEvent := ClaudeStreamEvent{
 				Type: "error",
 				Error: &ClaudeError{
-					Type:    "api_error",
+					Type:    "timeout_error",
 					Message: fmt.Sprintf("Upstream did not respond within %.0f seconds", timeoutDuration.Seconds()),
 				},
 			}

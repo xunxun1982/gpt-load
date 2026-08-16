@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
@@ -359,7 +360,6 @@ func TestRetryableStreamProbeDetectsLeadingFailureAndReplaysSuccess(t *testing.T
 		}
 
 		statusCode, message, failed := retryableStreamProbe(resp)
-
 		require.True(t, failed)
 		assert.Equal(t, http.StatusTooManyRequests, statusCode)
 		assert.Contains(t, message, "rate limit")
@@ -453,6 +453,79 @@ func TestRetryableStreamProbeDetectsLeadingFailureAndReplaysSuccess(t *testing.T
 		assert.Equal(t, http.StatusTooManyRequests, statusCode)
 	})
 
+	t.Run("Gemini transport fragments are reassembled before parsing", func(t *testing.T) {
+		resp := &http.Response{
+			Body: io.NopCloser(io.MultiReader(
+				strings.NewReader("data: {"),
+				strings.NewReader(`"error":{"code":429,`),
+				strings.NewReader(`"message":"Resource exhausted",`),
+				strings.NewReader(`"status":"RESOURCE_EXHAUSTED"}}`+"\n\n"),
+			)),
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+
+		statusCode, _, failed := retryableStreamProbe(resp)
+
+		require.True(t, failed)
+		assert.Equal(t, http.StatusTooManyRequests, statusCode)
+	})
+
+	t.Run("Anthropic overload and timeout preserve official status", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			errorType  string
+			statusCode int
+		}{
+			{name: "overload", errorType: "overloaded_error", statusCode: 529},
+			{name: "timeout", errorType: "timeout_error", statusCode: http.StatusGatewayTimeout},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				stream := fmt.Sprintf("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":%q,\"message\":\"temporary failure\"}}\n\n", tt.errorType)
+				resp := &http.Response{
+					Body:   io.NopCloser(strings.NewReader(stream)),
+					Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+				}
+
+				statusCode, _, failed := retryableStreamProbe(resp)
+
+				require.True(t, failed)
+				assert.Equal(t, tt.statusCode, statusCode)
+			})
+		}
+	})
+
+	t.Run("OpenAI top-level error event maps to 429", func(t *testing.T) {
+		const stream = "event: error\n" +
+			"data: {\"type\":\"error\",\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached\",\"param\":null,\"sequence_number\":1}\n\n"
+		resp := &http.Response{
+			Body:   io.NopCloser(strings.NewReader(stream)),
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+
+		statusCode, message, failed := retryableStreamProbe(resp)
+
+		require.True(t, failed)
+		assert.Equal(t, http.StatusTooManyRequests, statusCode)
+		assert.Equal(t, "Rate limit reached", message)
+	})
+
+	t.Run("response incomplete is not retried", func(t *testing.T) {
+		const stream = "event: response.incomplete\n" +
+			"data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n"
+		resp := &http.Response{
+			Body:   io.NopCloser(strings.NewReader(stream)),
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+
+		_, _, failed := retryableStreamProbe(resp)
+		replayed, err := io.ReadAll(resp.Body)
+
+		require.NoError(t, err)
+		assert.False(t, failed)
+		assert.Equal(t, stream, string(replayed))
+	})
+
 	t.Run("failure after content delta is not retryable", func(t *testing.T) {
 		const stream = "event: response.created\n" +
 			"data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n" +
@@ -472,6 +545,67 @@ func TestRetryableStreamProbeDetectsLeadingFailureAndReplaysSuccess(t *testing.T
 		assert.False(t, failed)
 		assert.Equal(t, stream, string(replayed))
 	})
+
+	t.Run("probe limit closes retry window and preserves the stream", func(t *testing.T) {
+		prelude := strings.Repeat("event: ping\ndata: {\"type\":\"ping\"}\n\n", maxRetryableStreamProbeBytes/32)
+		stream := prelude + "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"late failure\"}}\n\n"
+		resp := &http.Response{
+			Body:   io.NopCloser(strings.NewReader(stream)),
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+
+		_, _, failed := retryableStreamProbe(resp)
+		replayed, err := io.ReadAll(resp.Body)
+
+		require.NoError(t, err)
+		assert.False(t, failed)
+		assert.Equal(t, stream, string(replayed))
+	})
+
+	t.Run("compressed stream is replayed byte-for-byte", func(t *testing.T) {
+		decoded := []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"compressed failure\"}}\n\n")
+		compressed := compressGzipForResponseHandlerTest(t, decoded)
+		resp := &http.Response{
+			Body: io.NopCloser(bytes.NewReader(compressed)),
+			Header: http.Header{
+				"Content-Type":     []string{"text/event-stream"},
+				"Content-Encoding": []string{"gzip"},
+			},
+		}
+
+		_, _, failed := retryableStreamProbe(resp)
+		replayed, err := io.ReadAll(resp.Body)
+
+		require.NoError(t, err)
+		assert.False(t, failed)
+		assert.Equal(t, compressed, replayed)
+
+		gin.SetMode(gin.TestMode)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		resp.Body = io.NopCloser(bytes.NewReader(replayed))
+		ps := &ProxyServer{}
+		ps.handleStreamingResponse(c, resp)
+
+		statusCode, _, logicalFailure := logicalStatusFromContext(c)
+		require.True(t, logicalFailure)
+		assert.Equal(t, http.StatusTooManyRequests, statusCode)
+		assert.Equal(t, compressed, w.Body.Bytes())
+	})
+}
+
+func TestSSELogicalFailureCaptureOversizedStatusFallback(t *testing.T) {
+	t.Parallel()
+
+	body := `data: {"error":{"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"},"padding":"` +
+		strings.Repeat("x", maxCodexStreamLineBytes) + `"}`
+	var capture sseLogicalFailureCapture
+	_, err := capture.Write([]byte(body))
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusTooManyRequests, capture.statusCode)
+	assert.True(t, capture.firstSemanticFailed)
 }
 
 func BenchmarkRetryableStreamProbe(b *testing.B) {
@@ -582,6 +716,28 @@ func TestHandleStreamingResponseTreatsCompletedEventAsSuccessBeforeEOF(t *testin
 	_, processingFailed := c.Get(ctxKeyResponseProcessingFailed)
 	assert.False(t, processingFailed)
 	assert.Contains(t, w.Body.String(), `"type":"response.completed"`)
+}
+
+func TestHandleStreamingResponseTreatsIncompleteEventAsNonFailingTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte("event: response.incomplete\n" +
+		"data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_incomplete\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       &dataAndErrorReadCloser{data: body},
+	}
+
+	ps := &ProxyServer{}
+	ps.handleStreamingResponse(c, resp)
+
+	_, processingFailed := c.Get(ctxKeyResponseProcessingFailed)
+	assert.False(t, processingFailed)
+	_, _, logicalFailure := logicalStatusFromContext(c)
+	assert.False(t, logicalFailure)
+	assert.Equal(t, body, w.Body.Bytes())
 }
 
 func TestHandleStreamingResponseTreatsIdentityCompletedEventAsSuccessBeforeEOF(t *testing.T) {

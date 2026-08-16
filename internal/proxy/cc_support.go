@@ -1424,6 +1424,8 @@ func mapStatusToClaudeErrorType(statusCode int) string {
 		return "not_found_error"
 	case statusCode == 429:
 		return "rate_limit_error"
+	case statusCode == 504:
+		return "timeout_error"
 	case statusCode == 502 || statusCode == 503 || statusCode == 529:
 		// Anthropic documents 529 as overloaded_error; keep proxy-generated errors protocol-correct.
 		return "overloaded_error"
@@ -1448,6 +1450,8 @@ func apiErrorTypeToClaudeErrorType(errorType string) string {
 		return "rate_limit_error"
 	case "overloaded_error":
 		return "overloaded_error"
+	case "timeout_error":
+		return "timeout_error"
 	case "server_error", "internal_error":
 		return "api_error"
 	default:
@@ -4237,15 +4241,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				logrus.WithError(err).Warn("CC: SSE read timeout, sending error to client")
 				isErrorRecovery = true
 				// Send error event to client
-				// NOTE: Using "api_error" instead of "timeout_error" per Claude API documentation.
-				// Claude's standard error types are: invalid_request_error, authentication_error,
-				// permission_error, not_found_error, request_too_large, rate_limit_error, api_error,
-				// overloaded_error. "timeout_error" is not a standard type, so we use "api_error"
-				// which maps to HTTP 500 for unexpected server-side failures including timeouts.
+				// Anthropic documents timeout_error as HTTP 504. Preserve that protocol
+				// distinction so clients can classify this transient failure correctly.
 				errorEvent := ClaudeStreamEvent{
 					Type: "error",
 					Error: &ClaudeError{
-						Type:    "api_error",
+						Type:    "timeout_error",
 						Message: "Upstream did not respond within the expected time. The model may be processing a complex request.",
 					},
 				}

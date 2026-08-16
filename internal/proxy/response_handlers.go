@@ -124,6 +124,9 @@ func isEventStreamResponse(resp *http.Response) bool {
 
 // retryableStreamProbe buffers only the leading SSE event. A logical failure can
 // be retried safely only before any meaningful event has reached the downstream.
+// Do not detach Body.Read behind a probe-only timer: net/http response bodies have
+// no portable, non-destructive per-read deadline. Abandoning that read would race
+// the downstream reader or retain a goroutine until the request lifecycle expires.
 func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 	if resp == nil || resp.Body == nil || !isEventStreamResponse(resp) {
 		return 0, "", false
@@ -152,6 +155,8 @@ func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 		}
 	}
 	originalBody := resp.Body
+	// Replay is intentional: the selected response handler must independently parse
+	// the complete stream for usage, logging, and terminal-state accounting.
 	resp.Body = &replayReadCloser{reader: io.MultiReader(bytes.NewReader(prefix), reader), closer: originalBody}
 	return capture.statusCode, strings.TrimSpace(capture.errorMessage), capture.firstSemanticFailed
 }
@@ -285,11 +290,11 @@ func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
 		p.meaningfulSeen = true
 	}
 	responseStatus := strings.TrimSpace(gjson.GetBytes(data, "response.status").String())
-	if eventType == "response.completed" || eventType == "response.done" || eventType == "response.failed" {
+	if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" || eventType == "response.failed" {
 		p.terminalSeen = true
 	}
-	topLevelError := gjson.GetBytes(data, "error")
-	if !topLevelError.IsObject() && eventType != "response.failed" && !strings.EqualFold(responseStatus, "failed") {
+	nestedError := gjson.GetBytes(data, "error")
+	if !nestedError.IsObject() && eventType != "error" && eventType != "response.failed" && !strings.EqualFold(responseStatus, "failed") {
 		return
 	}
 	if isFirstSemantic {
@@ -300,11 +305,20 @@ func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
 		errorCode = strings.TrimSpace(gjson.GetBytes(data, "error.type").String())
 	}
 	if errorCode == "" {
+		errorCode = strings.TrimSpace(gjson.GetBytes(data, "error.status").String())
+	}
+	if errorCode == "" {
 		errorCode = strings.TrimSpace(gjson.GetBytes(data, "response.error.code").String())
+	}
+	if errorCode == "" && eventType == "error" {
+		errorCode = strings.TrimSpace(gjson.GetBytes(data, "code").String())
 	}
 	errorMessage := strings.TrimSpace(gjson.GetBytes(data, "error.message").String())
 	if errorMessage == "" {
 		errorMessage = strings.TrimSpace(gjson.GetBytes(data, "response.error.message").String())
+	}
+	if errorMessage == "" && eventType == "error" {
+		errorMessage = strings.TrimSpace(gjson.GetBytes(data, "message").String())
 	}
 	p.recordFailure(errorCode, errorMessage)
 	p.terminalSeen = true
@@ -355,6 +369,9 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 		} `json:"response,omitempty"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
+		// pending already reassembles transport reads up to a newline. Do not guess
+		// across invalid newline-delimited JSON records: combining separate SSE data
+		// can manufacture a false error after semantic output and cause a duplicate retry.
 		p.meaningfulSeen = true
 		p.unverified = true
 		return
@@ -363,7 +380,7 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 	if !isRetryableSSEDataPrelude(data, payload.Type) {
 		p.meaningfulSeen = true
 	}
-	if payload.Type == "response.completed" || payload.Type == "response.done" || payload.Type == "response.failed" {
+	if payload.Type == "response.completed" || payload.Type == "response.done" || payload.Type == "response.incomplete" || payload.Type == "response.failed" {
 		p.terminalSeen = true
 	}
 
@@ -390,8 +407,16 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 			errorMessage = strings.TrimSpace(payload.Response.Error.Message)
 		}
 	}
+	if payload.Type == "error" {
+		if errorCode == "" {
+			errorCode = strings.TrimSpace(gjson.GetBytes(data, "code").String())
+		}
+		if errorMessage == "" {
+			errorMessage = strings.TrimSpace(gjson.GetBytes(data, "message").String())
+		}
+	}
 
-	isFailed := payload.Error != nil || payload.Type == "response.failed" || (payload.Response != nil && strings.EqualFold(strings.TrimSpace(payload.Response.Status), "failed"))
+	isFailed := payload.Error != nil || payload.Type == "error" || payload.Type == "response.failed" || (payload.Response != nil && strings.EqualFold(strings.TrimSpace(payload.Response.Status), "failed"))
 	if !isFailed {
 		return
 	}
@@ -414,8 +439,17 @@ func (p *sseLogicalFailureCapture) recordFailure(errorCode, errorMessage string)
 func logicalFailureStatusCode(errorCode, errorMessage string) int {
 	lowerCode := strings.ToLower(strings.TrimSpace(errorCode))
 	lowerMessage := strings.ToLower(errorMessage)
-	if lowerCode == "429" || lowerCode == "rate_limit_exceeded" || lowerCode == "rate_limit_error" || lowerCode == "resource_exhausted" ||
-		strings.Contains(lowerMessage, "concurrency limit exceeded") || strings.Contains(lowerMessage, "rate limit") {
+	switch lowerCode {
+	case "429", "rate_limit_exceeded", "rate_limit_error", "resource_exhausted":
+		return http.StatusTooManyRequests
+	case "529", "overloaded_error":
+		// Anthropic documents overloaded_error as HTTP 529, including SSE errors
+		// that arrive after the initial successful HTTP response.
+		return 529
+	case "504", "timeout_error":
+		return http.StatusGatewayTimeout
+	}
+	if strings.Contains(lowerMessage, "concurrency limit exceeded") || strings.Contains(lowerMessage, "rate limit") {
 		return http.StatusTooManyRequests
 	}
 	return http.StatusBadGateway

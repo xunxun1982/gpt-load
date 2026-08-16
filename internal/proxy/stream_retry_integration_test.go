@@ -145,6 +145,19 @@ func TestHandleProxyRetriesLeadingChannelStreamFailures(t *testing.T) {
 	}
 }
 
+func TestHandleProxyReturnsFinalLogicalStreamFailureAfterRetryExhaustion(t *testing.T) {
+	const failure = "event: error\n" +
+		"data: {\"type\":\"error\",\"code\":\"rate_limit_exceeded\",\"message\":\"temporary request rate limit\"}\n\n"
+	handler, group, requestCount := setupChannelStreamRetryGroup(t, "openai", false, failure, failure)
+
+	response := runStreamRetryRequest(t, handler, group.Name, "/v1/chat/completions",
+		`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
+
+	require.Equal(t, http.StatusTooManyRequests, response.Code)
+	require.Equal(t, int32(2), requestCount.Load())
+	require.Contains(t, response.Body.String(), "temporary request rate limit")
+}
+
 func setupChannelStreamRetryGroup(t *testing.T, channelType string, aggregate bool, firstStream, successStream string) (http.Handler, *models.Group, *atomic.Int32) {
 	t.Helper()
 

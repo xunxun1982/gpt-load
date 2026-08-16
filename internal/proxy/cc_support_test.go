@@ -6654,6 +6654,13 @@ func TestMapStatusToClaudeErrorTypeMaps529ToOverloaded(t *testing.T) {
 	assert.Equal(t, "overloaded_error", mapStatusToClaudeErrorType(529))
 }
 
+func TestClaudeErrorTypeMappingsPreserveTimeout(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "timeout_error", mapStatusToClaudeErrorType(http.StatusGatewayTimeout))
+	assert.Equal(t, "timeout_error", apiErrorTypeToClaudeErrorType("timeout_error"))
+}
+
 func TestHandleCCNormalResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
