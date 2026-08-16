@@ -86,10 +86,31 @@ func TestCCProtocolContentCompatPreservesThinkingHistoryForCodex(t *testing.T) {
 	var input []map[string]any
 	require.NoError(t, json.Unmarshal(got.Input, &input))
 	require.Len(t, input, 2)
-	require.Equal(t, "reasoning", input[0]["type"])
-	require.Equal(t, "plan before lookup", input[0]["summary"].([]any)[0].(map[string]any)["text"])
+	require.Equal(t, "message", input[0]["type"])
+	require.Equal(t, "assistant", input[0]["role"])
+	content := input[0]["content"].([]any)
+	require.Len(t, content, 1)
+	require.Equal(t, "output_text", content[0].(map[string]any)["type"])
+	require.Equal(t, "plan before lookup", content[0].(map[string]any)["text"])
 	require.Equal(t, "function_call", input[1]["type"])
 	require.Equal(t, "call_lookup", input[1]["call_id"])
+}
+
+func TestCCProtocolContentCompatReplaysValidEncryptedReasoningForCodex(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"messages":[{"role":"assistant","content":[
+			{"type":"thinking","id":"rs_1","thinking":"plan","encrypted_content":"enc_1"}
+		]}]}`)
+
+	got, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(got.Input, &input))
+	require.Len(t, input, 1)
+	require.Equal(t, "reasoning", input[0]["type"])
+	require.Equal(t, "rs_1", input[0]["id"])
+	require.Equal(t, "enc_1", input[0]["encrypted_content"])
 }
 
 func TestCCProtocolContentCompatMergesInlineSystemMessagesForCodex(t *testing.T) {

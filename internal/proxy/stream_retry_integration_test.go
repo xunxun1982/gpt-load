@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +31,8 @@ func TestHandleProxyRetriesLeadingRateLimitStreamFailure(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			handler, group, requestCount := setupLeadingRateLimitStreamRetryGroup(t, tc.aggregate)
+			// Keep force_non_stream disabled: enabling it would bypass the forced
+			// upstream-stream conversion that this standard case must exercise.
 			body := []byte(fmt.Sprintf(`{"model":"gpt-5","stream":%t,"input":"hello"}`, tc.stream))
 
 			response := runCodexAffinityRequest(t, handler, group.Name, "proxy-a", "thread-rate-limit", "", body)
@@ -40,7 +43,9 @@ func TestHandleProxyRetriesLeadingRateLimitStreamFailure(t *testing.T) {
 			if tc.stream {
 				require.Contains(t, response.Body.String(), "response.completed")
 			} else {
-				require.Contains(t, response.Body.String(), `"status":"completed"`)
+				var payload map[string]any
+				require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
+				require.Equal(t, "completed", payload["status"])
 			}
 		})
 	}

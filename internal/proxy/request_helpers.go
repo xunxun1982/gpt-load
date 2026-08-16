@@ -75,6 +75,9 @@ func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Gro
 }
 
 func upstreamResponseMayBeEventStream(c *gin.Context, isStream bool) bool {
+	// retryableStreamProbe inspects every successful streaming response, across
+	// all supported channels and regardless of the remaining retry budget. Keep
+	// compression disabled here so it never receives client-negotiated gzip bytes.
 	return isStream || isOpenAIResponseForcedStream(c) || codexDegradationMitigationEnabled(c)
 }
 

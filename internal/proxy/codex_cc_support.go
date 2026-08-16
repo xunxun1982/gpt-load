@@ -654,7 +654,9 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 		return nil, fmt.Errorf("failed to parse content blocks: %w", err)
 	}
 
-	// Separate different block types while preserving reasoning as its own item.
+	// Separate block types. Claude thinking history has no Responses reasoning ID
+	// or encrypted_content, so replay it as assistant text instead of inventing an
+	// invalid reasoning item for store:false requests.
 	var textParts []string
 	var reasoningItems []interface{}
 	var toolCalls []interface{}
@@ -666,14 +668,17 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 			textParts = append(textParts, block.Text)
 		case block.Type == "thinking":
 			if block.Thinking != "" {
-				reasoningItems = append(reasoningItems, map[string]interface{}{
-					"type":   "reasoning",
-					"status": "completed",
-					"summary": []map[string]interface{}{{
-						"type": "summary_text",
-						"text": block.Thinking,
-					}},
-				})
+				if block.ID != "" && block.EncryptedContent != "" {
+					reasoningItems = append(reasoningItems, map[string]interface{}{
+						"type":              "reasoning",
+						"id":                block.ID,
+						"encrypted_content": block.EncryptedContent,
+						"status":            "completed",
+						"summary":           []map[string]interface{}{{"type": "summary_text", "text": block.Thinking}},
+					})
+				} else {
+					textParts = append(textParts, block.Thinking)
+				}
 			}
 		case isClaudeToolUseBlock(block):
 			// Apply shortened name if needed
@@ -688,27 +693,27 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 			if trimmed := strings.TrimSpace(argsStr); trimmed == "" || trimmed == "null" {
 				argsStr = "{}"
 			}
-	// Claude tool ids are used verbatim as Codex call ids.
-	toolCalls = append(toolCalls, map[string]interface{}{
-		"type":      "function_call",
-		"id":        "fc_" + block.ID,
-		"call_id":   block.ID,
-		"name":      toolName,
-		"arguments": argsStr,
-	})
-	case isClaudeToolResultBlock(block):
-		// Anthropic only allows tool_result blocks in user messages; an
-		// assistant-role tool result is non-conformant input. Reject it
-		// explicitly so it is not silently collected and then dropped by the
-		// assistant branch below (mirroring convertClaudeMessageToOpenAI).
-		if msg.Role == "assistant" {
-			return nil, fmt.Errorf("Anthropic tool_result block %q is not valid in an assistant message", block.Type)
-		}
-		toolResults = append(toolResults, map[string]interface{}{
-			"type":    "function_call_output",
-			"call_id": block.ToolUseID,
-			"output":  toolResultOutput(block),
-		})
+			// Claude tool ids are used verbatim as Codex call ids.
+			toolCalls = append(toolCalls, map[string]interface{}{
+				"type":      "function_call",
+				"id":        "fc_" + block.ID,
+				"call_id":   block.ID,
+				"name":      toolName,
+				"arguments": argsStr,
+			})
+		case isClaudeToolResultBlock(block):
+			// Anthropic only allows tool_result blocks in user messages; an
+			// assistant-role tool result is non-conformant input. Reject it
+			// explicitly so it is not silently collected and then dropped by the
+			// assistant branch below (mirroring convertClaudeMessageToOpenAI).
+			if msg.Role == "assistant" {
+				return nil, fmt.Errorf("Anthropic tool_result block %q is not valid in an assistant message", block.Type)
+			}
+			toolResults = append(toolResults, map[string]interface{}{
+				"type":    "function_call_output",
+				"call_id": block.ToolUseID,
+				"output":  toolResultOutput(block),
+			})
 		}
 	}
 
@@ -1352,8 +1357,8 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				closeOpenBlock()
 				s.currentToolID = event.Item.CallID
 				s.currentToolName = codexClaudeToolName(*event.Item, s.reverseToolNameMap)
-				if s.currentToolID == "" || s.currentToolName == "" {
-					logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Skipping tool item with missing ID or name")
+				if s.currentToolName == "" {
+					logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Skipping tool item with unresolved name")
 					return events
 				}
 				s.currentToolArgs.Reset()

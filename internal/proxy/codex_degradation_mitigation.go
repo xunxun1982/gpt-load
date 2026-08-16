@@ -809,7 +809,12 @@ func codexMitigationResponseReader(resp *http.Response) (io.Reader, io.Closer, e
 }
 
 func codexMitigationIsSSE(resp *http.Response) bool {
-	return isEventStreamResponse(resp)
+	if resp == nil {
+		return false
+	}
+	// Preserve the mitigation's historical compatibility with upstream proxies
+	// that prefix the standard SSE media type.
+	return strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
 }
 
 func codexMitigationEventType(event map[string]any) string {

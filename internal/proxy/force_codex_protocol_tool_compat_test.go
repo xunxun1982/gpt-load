@@ -538,6 +538,22 @@ func TestProtocolToolCompatRejectsUnnamedFunctionsBeforeConversion(t *testing.T)
 	}
 }
 
+func TestProtocolToolCompatRejectsUnnamedFunctionHiddenByDuplicate(t *testing.T) {
+	for _, channelType := range []string{"openai", "anthropic"} {
+		t.Run(channelType, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-test","input":"hello","tools":[` +
+				`{"type":"function","name":"function","parameters":{"type":"object"}},` +
+				`{"type":"function","parameters":{"type":"object"}}]}`)
+			c, _ := gin.CreateTestContext(nil)
+			_, converted, err := (&ProxyServer{}).applyForceCodexRequestConversion(c, &models.Group{ChannelType: channelType}, body)
+			require.Error(t, err)
+			assert.False(t, converted)
+			assert.Contains(t, err.Error(), "unsupported_tool")
+			assert.Contains(t, err.Error(), "name is required")
+		})
+	}
+}
+
 func applyForceCodexCompat(t *testing.T, channelType string, body []byte) []byte {
 	t.Helper()
 	c, _ := gin.CreateTestContext(nil)

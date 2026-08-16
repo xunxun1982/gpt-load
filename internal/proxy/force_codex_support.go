@@ -220,6 +220,16 @@ func codexNamespaceChildren(tool CodexTool) []CodexTool {
 }
 
 func codexRequestTools(req *CodexRequest) ([]CodexTool, error) {
+	candidates, err := codexRequestToolCandidates(req)
+	if err != nil {
+		return nil, err
+	}
+	return deduplicateCodexToolCandidates(candidates), nil
+}
+
+// codexRequestToolCandidates returns the original definitions before name-based
+// deduplication so conversion validation cannot be bypassed by an earlier name.
+func codexRequestToolCandidates(req *CodexRequest) ([]CodexTool, error) {
 	if req == nil {
 		return nil, nil
 	}
@@ -228,16 +238,21 @@ func codexRequestTools(req *CodexRequest) ([]CodexTool, error) {
 		return nil, err
 	}
 	total := len(req.Tools) + len(inputTools)
-	seen := make(map[string]struct{}, total)
-	tools := make([]CodexTool, 0, total)
-	for _, candidates := range [...][]CodexTool{req.Tools, inputTools} {
-		for _, tool := range candidates {
-			if filtered, ok := deduplicateCodexTool(tool, "", seen); ok {
-				tools = append(tools, filtered)
-			}
+	candidates := make([]CodexTool, 0, total)
+	candidates = append(candidates, req.Tools...)
+	candidates = append(candidates, inputTools...)
+	return candidates, nil
+}
+
+func deduplicateCodexToolCandidates(candidates []CodexTool) []CodexTool {
+	seen := make(map[string]struct{}, len(candidates))
+	tools := make([]CodexTool, 0, len(candidates))
+	for _, tool := range candidates {
+		if filtered, ok := deduplicateCodexTool(tool, "", seen); ok {
+			tools = append(tools, filtered)
 		}
 	}
-	return tools, nil
+	return tools
 }
 
 func deduplicateCodexTool(tool CodexTool, namespace string, seen map[string]struct{}) (CodexTool, bool) {
@@ -1783,10 +1798,11 @@ func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *m
 	if err := json.Unmarshal(bodyBytes, &codexReq); err != nil {
 		return bodyBytes, false, fmt.Errorf("failed to parse Codex request: %w", err)
 	}
-	requestTools, err := codexRequestTools(&codexReq)
+	originalTools, err := codexRequestToolCandidates(&codexReq)
 	if err != nil {
 		return bodyBytes, false, err
 	}
+	requestTools := deduplicateCodexToolCandidates(originalTools)
 	toolCtx := newCodexToolContext(requestTools)
 	c.Set(ctxKeyCodexToolContext, toolCtx)
 
@@ -1795,7 +1811,7 @@ func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *m
 		if err := validateForceCodexRequestOptions(&codexReq, codexUpstreamOpenAIChat); err != nil {
 			return bodyBytes, false, err
 		}
-		if err := validateForceCodexTools(requestTools, codexUpstreamOpenAIChat); err != nil {
+		if err := validateForceCodexTools(originalTools, codexUpstreamOpenAIChat); err != nil {
 			return bodyBytes, false, err
 		}
 		chatReq, err := convertCodexRequestToOpenAIChat(&codexReq)
@@ -1813,7 +1829,7 @@ func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *m
 		if err := validateForceCodexRequestOptions(&codexReq, codexUpstreamClaude); err != nil {
 			return bodyBytes, false, err
 		}
-		if err := validateForceCodexTools(requestTools, codexUpstreamClaude); err != nil {
+		if err := validateForceCodexTools(originalTools, codexUpstreamClaude); err != nil {
 			return bodyBytes, false, err
 		}
 		claudeReq, err := convertCodexRequestToClaude(&codexReq)

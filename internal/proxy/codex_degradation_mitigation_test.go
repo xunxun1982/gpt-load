@@ -62,6 +62,31 @@ func TestCodexDegradationMitigationShouldEnable(t *testing.T) {
 	assert.False(t, codexDegradationMitigationShouldEnable(c, nonCodex, nonCodex, body, true))
 }
 
+func TestCodexMitigationIsSSEPreservesCompatibleContentTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		contentType string
+		want        bool
+	}{
+		{name: "nil response", want: false},
+		{name: "standard", contentType: "text/event-stream; charset=utf-8", want: true},
+		{name: "case insensitive", contentType: "TEXT/EVENT-STREAM", want: true},
+		{name: "compatible vendor prefix", contentType: "application/text/event-stream", want: true},
+		{name: "json", contentType: "application/json", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resp *http.Response
+			if tt.name != "nil response" {
+				resp = &http.Response{Header: http.Header{"Content-Type": []string{tt.contentType}}}
+			}
+			assert.Equal(t, tt.want, codexMitigationIsSSE(resp))
+		})
+	}
+}
+
 func TestCodexDegradationMitigationContinuationPayload(t *testing.T) {
 	t.Parallel()
 

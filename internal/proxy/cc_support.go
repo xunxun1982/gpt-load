@@ -362,19 +362,22 @@ type ClaudeMessage struct {
 
 // ClaudeContentBlock represents a content block in Claude format.
 type ClaudeContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	Thinking  string          `json:"thinking,omitempty"`
-	Signature string          `json:"signature,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"`
-	Source    json.RawMessage `json:"source,omitempty"`
-	Title     string          `json:"title,omitempty"`
-	Context   string          `json:"context,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	// EncryptedContent is accepted for Responses reasoning replay when a client
+	// provides the original opaque reasoning item metadata.
+	EncryptedContent string          `json:"encrypted_content,omitempty"`
+	ID               string          `json:"id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Input            json.RawMessage `json:"input,omitempty"`
+	ToolUseID        string          `json:"tool_use_id,omitempty"`
+	Content          json.RawMessage `json:"content,omitempty"`
+	Source           json.RawMessage `json:"source,omitempty"`
+	Title            string          `json:"title,omitempty"`
+	Context          string          `json:"context,omitempty"`
+	IsError          bool            `json:"is_error,omitempty"`
 }
 
 // ClaudeTool represents a tool definition in Claude format.
