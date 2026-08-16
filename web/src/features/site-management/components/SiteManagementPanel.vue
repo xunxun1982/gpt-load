@@ -205,6 +205,12 @@ function isCapabilitylessSiteType(siteType: ManagedSiteType): boolean {
   return capabilitylessSiteTypes.has(siteType);
 }
 
+function normalizeManagedSiteType(
+  siteType: ManagedSiteType | "" | null | undefined
+): ManagedSiteType {
+  return siteType || "unknown";
+}
+
 const siteProxySelectOptions = computed<SelectOption[]>(() => {
   const options: SelectOption[] = [
     { label: t("siteManagement.proxyUrlPlaceholder"), value: "" },
@@ -537,6 +543,7 @@ function openCreateSite() {
 
 function openEditSite(site: ManagedSiteDTO) {
   editingSite.value = site;
+  const siteType = normalizeManagedSiteType(site.site_type);
 
   // Parse auth_type (can be comma-separated string)
   const authTypes = site.auth_type
@@ -554,7 +561,7 @@ function openEditSite(site: ManagedSiteDTO) {
     balance_multiplier: site.balance_multiplier || 1,
     enabled: site.enabled,
     base_url: site.base_url,
-    site_type: site.site_type,
+    site_type: siteType,
     user_id: site.user_id,
     checkin_page_url: site.checkin_page_url,
     checkin_available: site.checkin_available,
@@ -562,7 +569,7 @@ function openEditSite(site: ManagedSiteDTO) {
     custom_checkin_url: site.custom_checkin_url,
     use_proxy: site.use_proxy,
     proxy_url: site.use_proxy ? site.proxy_url : "",
-    bypass_method: site.bypass_method,
+    bypass_method: isCapabilitylessSiteType(siteType) ? "" : site.bypass_method,
     auth_type: authTypes,
   });
   authValueInputs.access_token = "";

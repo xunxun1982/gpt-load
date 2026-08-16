@@ -989,6 +989,8 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 	// Explicitly disabled thinking takes precedence over a conflicting effort
 	// value; forwarding both can re-enable reasoning or yield 400 upstream.
 	if claudeThinkingDisabled(claudeReq.Thinking) {
+		// Do not gate explicit disable by model name: upstream model sets are dynamic,
+		// while omitting the field can silently restore the provider's reasoning default.
 		openaiReq.ReasoningEffort = "none"
 	} else if effort != "" {
 		openaiReq.ReasoningEffort = effort

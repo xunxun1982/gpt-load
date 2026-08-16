@@ -71,6 +71,31 @@ func TestGroupManagerResolveUpstreamProxyReferencesPreservesGatewayProxy(t *test
 	assert.Equal(t, "betterclaude", upstreams[1].GatewayProxy)
 }
 
+func TestGroupManagerResolveUpstreamProxyReferencesPreservesUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`[{
+		"url":"https://api.example.com",
+		"weight":100,
+		"proxy_url":"proxy-pool:1",
+		"future_field":{"enabled":true},
+		"request_id":9007199254740993
+	}]`)
+	settingsManager := config.NewSystemSettingsManager()
+	settingsManager.SetProxyURLResolver(groupManagerProxyResolverStub{})
+
+	resolved := (&GroupManager{settingsManager: settingsManager}).resolveUpstreamProxyReferences(
+		context.Background(), raw, make(map[string]string),
+	)
+
+	var upstreams []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(resolved, &upstreams))
+	require.Len(t, upstreams, 1)
+	assert.JSONEq(t, `{"enabled":true}`, string(upstreams[0]["future_field"]))
+	assert.Equal(t, "9007199254740993", string(upstreams[0]["request_id"]))
+	assert.Equal(t, `"http://proxy.example.com:8080"`, string(upstreams[0]["proxy_url"]))
+}
+
 func TestGroupManagerResolveUpstreamProxyReferencesBatchesDistinctReferences(t *testing.T) {
 	t.Parallel()
 

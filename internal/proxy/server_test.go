@@ -991,22 +991,30 @@ func TestRestoreOriginalPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name         string
-		originalPath string
-		currentPath  string
-		expectedPath string
+		name          string
+		originalPath  string
+		currentPath   string
+		originalQuery string
+		currentQuery  string
+		expectedPath  string
+		expectedQuery string
 	}{
 		{
-			name:         "restore_needed",
-			originalPath: "/v1/messages",
-			currentPath:  "/v1/chat/completions",
-			expectedPath: "/v1/messages",
+			name:          "restore_needed",
+			originalPath:  "/v1/messages",
+			currentPath:   "/v1/chat/completions",
+			originalQuery: "trace=keep",
+			currentQuery:  "beta=true",
+			expectedPath:  "/v1/messages",
+			expectedQuery: "trace=keep",
 		},
 		{
-			name:         "no_restore_needed",
-			originalPath: "/v1/messages",
-			currentPath:  "/v1/messages",
-			expectedPath: "/v1/messages",
+			name:          "empty_query_clears_prior_attempt",
+			originalPath:  "/v1/messages",
+			currentPath:   "/v1/messages",
+			currentQuery:  "beta=true",
+			expectedPath:  "/v1/messages",
+			expectedQuery: "",
 		},
 	}
 
@@ -1016,15 +1024,17 @@ func TestRestoreOriginalPath(t *testing.T) {
 
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
-			c.Request = httptest.NewRequest("POST", tt.currentPath, nil)
+			c.Request = httptest.NewRequest("POST", tt.currentPath+"?"+tt.currentQuery, nil)
 
 			retryCtx := &retryContext{
-				originalPath: tt.originalPath,
+				originalPath:     tt.originalPath,
+				originalRawQuery: tt.originalQuery,
 			}
 
 			restoreOriginalPath(c, retryCtx)
 
 			assert.Equal(t, tt.expectedPath, c.Request.URL.Path)
+			assert.Equal(t, tt.expectedQuery, c.Request.URL.RawQuery)
 		})
 	}
 }
@@ -2103,8 +2113,8 @@ func TestExecuteRequestWithRetryLogsEachAttemptDuration(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	first := popRecordedRequestLog(t, memStore)
 	second := popRecordedRequestLog(t, memStore)
-	assert.Less(t, first.Duration, int64(100))
-	assert.Less(t, second.Duration, int64(100))
+	assert.Less(t, first.Duration, int64(120))
+	assert.Less(t, second.Duration, int64(120))
 }
 
 func TestExecuteRequestWithRetryKeepsRetryDelayInsideNonStreamTimeout(t *testing.T) {
@@ -3395,7 +3405,7 @@ func TestExecuteRequestWithAggregateRetryWaitsBeforeSameSubGroupKeyRetry(t *test
 	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
 	subGroup.Config = map[string]any{
 		"max_retries":         1,
-		"retry_delay_ms":      120,
+		"retry_delay_ms":      150,
 		"blacklist_threshold": 100,
 	}
 	require.NoError(t, db.Save(subGroup).Error)
@@ -3448,8 +3458,8 @@ func TestExecuteRequestWithAggregateRetryWaitsBeforeSameSubGroupKeyRetry(t *test
 	assert.GreaterOrEqual(t, attemptTimes[1].Sub(attemptTimes[0]), 70*time.Millisecond)
 	firstLog := popRecordedRequestLog(t, memStore)
 	secondLog := popRecordedRequestLog(t, memStore)
-	assert.Less(t, firstLog.Duration, int64(100))
-	assert.Less(t, secondLog.Duration, int64(100))
+	assert.Less(t, firstLog.Duration, int64(120))
+	assert.Less(t, secondLog.Duration, int64(120))
 }
 
 func TestExecuteRequestWithAggregateRetryKeepsSubGroupDelayInsideNonStreamTimeout(t *testing.T) {

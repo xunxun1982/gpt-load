@@ -384,6 +384,28 @@ func TestRetryableStreamProbeDetectsLeadingFailureAndReplaysSuccess(t *testing.T
 		assert.Equal(t, stream, string(replayed))
 	})
 
+	t.Run("probe read error is replayed to the response handler", func(t *testing.T) {
+		const stream = "event: ping\n" +
+			"data: {\"type\":\"ping\"}\n\n"
+		resp := &http.Response{
+			Body:   &dataAndErrorReadCloser{data: []byte(stream)},
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+
+		_, _, failed := retryableStreamProbe(resp)
+		require.False(t, failed)
+
+		gin.SetMode(gin.TestMode)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		(&ProxyServer{}).handleStreamingResponse(c, resp)
+
+		assert.Equal(t, stream, w.Body.String())
+		_, processingFailed := c.Get(ctxKeyResponseProcessingFailed)
+		assert.True(t, processingFailed)
+	})
+
 	t.Run("failure after response prelude is retryable", func(t *testing.T) {
 		const stream = "event: response.created\n" +
 			"data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n" +
@@ -593,6 +615,61 @@ func TestRetryableStreamProbeDetectsLeadingFailureAndReplaysSuccess(t *testing.T
 		assert.Equal(t, http.StatusTooManyRequests, statusCode)
 		assert.Equal(t, compressed, w.Body.Bytes())
 	})
+}
+
+func TestSSELogicalFailureCapturePreservesNumericErrorCodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "top-level error",
+			data: `data: {"type":"error","error":{"code":9007199254740993,"message":"failed"}}` + "\n",
+		},
+		{
+			name: "nested response error",
+			data: `data: {"type":"response.failed","response":{"status":"failed","error":{"code":9007199254740993,"message":"failed"}}}` + "\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capture sseLogicalFailureCapture
+			_, err := capture.Write([]byte(tt.data))
+
+			require.NoError(t, err)
+			assert.Equal(t, "9007199254740993", capture.errorCode)
+		})
+	}
+}
+
+func TestSSELogicalFailureCaptureClassifiesEquivalentNumericCodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		code       string
+		wantStatus int
+	}{
+		{name: "decimal rate limit", code: "429.0", wantStatus: http.StatusTooManyRequests},
+		{name: "exponent rate limit", code: "4.29e2", wantStatus: http.StatusTooManyRequests},
+		{name: "decimal overloaded", code: "529.00", wantStatus: 529},
+		{name: "exponent timeout", code: "5.04e2", wantStatus: http.StatusGatewayTimeout},
+		{name: "nearby high precision value", code: "429.0000000000000001", wantStatus: http.StatusBadGateway},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capture sseLogicalFailureCapture
+			_, err := capture.Write([]byte(`data: {"type":"error","error":{"code":` + tt.code + `,"message":"failed"}}` + "\n"))
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.code, capture.errorCode)
+			assert.Equal(t, tt.wantStatus, capture.statusCode)
+		})
+	}
 }
 
 func TestSSELogicalFailureCaptureOversizedStatusFallback(t *testing.T) {

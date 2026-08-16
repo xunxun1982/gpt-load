@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"strings"
 
@@ -111,6 +112,19 @@ type replayReadCloser struct {
 	closer io.Closer
 }
 
+type replayErrorReader struct {
+	err error
+}
+
+func (r *replayErrorReader) Read(_ []byte) (int, error) {
+	if r.err == nil {
+		return 0, io.EOF
+	}
+	err := r.err
+	r.err = nil
+	return 0, err
+}
+
 func (r *replayReadCloser) Read(p []byte) (int, error) { return r.reader.Read(p) }
 func (r *replayReadCloser) Close() error               { return r.closer.Close() }
 
@@ -137,6 +151,7 @@ func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 	reader := bufio.NewReaderSize(resp.Body, 4*1024)
 	prefix := make([]byte, 0, 4*1024)
 	var capture sseLogicalFailureCapture
+	var probeErr error
 	buf := make([]byte, 4*1024)
 	for len(prefix) < maxRetryableStreamProbeBytes {
 		remaining := maxRetryableStreamProbeBytes - len(prefix)
@@ -147,6 +162,9 @@ func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 		}
 		if err != nil {
 			capture.Finish()
+			if !errors.Is(err, io.EOF) {
+				probeErr = err
+			}
 		}
 		if capture.meaningfulSeen || capture.terminalSeen {
 			// Prelude events are buffered without committing the response. Any content,
@@ -161,7 +179,13 @@ func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 	originalBody := resp.Body
 	// Replay is intentional: the selected response handler must independently parse
 	// the complete stream for usage, logging, and terminal-state accounting.
-	resp.Body = &replayReadCloser{reader: io.MultiReader(bytes.NewReader(prefix), reader), closer: originalBody}
+	replayReaders := []io.Reader{bytes.NewReader(prefix)}
+	if probeErr != nil {
+		// The probe consumed this read error; replay it once after the buffered prefix.
+		replayReaders = append(replayReaders, &replayErrorReader{err: probeErr})
+	}
+	replayReaders = append(replayReaders, reader)
+	resp.Body = &replayReadCloser{reader: io.MultiReader(replayReaders...), closer: originalBody}
 	return capture.statusCode, strings.TrimSpace(capture.errorMessage), capture.firstSemanticFailed
 }
 
@@ -366,13 +390,13 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 		Response *struct {
 			Status string `json:"status"`
 			Error  *struct {
-				Code    string `json:"code"`
+				Code    any    `json:"code"`
 				Message string `json:"message"`
 				Type    string `json:"type"`
 			} `json:"error,omitempty"`
 		} `json:"response,omitempty"`
 	}
-	if err := json.Unmarshal(data, &payload); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(data, &payload); err != nil {
 		// pending already reassembles transport reads up to a newline. Do not guess
 		// across invalid newline-delimited JSON records: combining separate SSE data
 		// can manufacture a false error after semantic output and cause a duplicate retry.
@@ -391,10 +415,7 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 	errorCode := ""
 	errorMessage := ""
 	if payload.Error != nil {
-		errorCode = strings.TrimSpace(fmt.Sprint(payload.Error.Code))
-		if errorCode == "<nil>" {
-			errorCode = ""
-		}
+		errorCode = responseErrorCodeString(payload.Error.Code)
 		if errorCode == "" {
 			errorCode = strings.TrimSpace(payload.Error.Type)
 		}
@@ -405,7 +426,7 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 	}
 	if payload.Response != nil && payload.Response.Error != nil {
 		if errorCode == "" {
-			errorCode = strings.TrimSpace(payload.Response.Error.Code)
+			errorCode = responseErrorCodeString(payload.Response.Error.Code)
 		}
 		if errorMessage == "" {
 			errorMessage = strings.TrimSpace(payload.Response.Error.Message)
@@ -432,6 +453,19 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 	p.terminalSeen = true
 }
 
+func responseErrorCodeString(value any) string {
+	switch code := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(code)
+	case json.Number:
+		return strings.TrimSpace(code.String())
+	default:
+		return strings.TrimSpace(fmt.Sprint(code))
+	}
+}
+
 func (p *sseLogicalFailureCapture) recordFailure(errorCode, errorMessage string) {
 	p.statusCode = logicalFailureStatusCode(errorCode, errorMessage)
 	p.errorCode = errorCode
@@ -453,10 +487,35 @@ func logicalFailureStatusCode(errorCode, errorMessage string) int {
 	case "504", "timeout_error":
 		return http.StatusGatewayTimeout
 	}
+	if statusCode := equivalentNumericLogicalFailureStatusCode(lowerCode); statusCode != 0 {
+		return statusCode
+	}
 	if strings.Contains(lowerMessage, "concurrency limit exceeded") || strings.Contains(lowerMessage, "rate limit") {
 		return http.StatusTooManyRequests
 	}
 	return http.StatusBadGateway
+}
+
+func equivalentNumericLogicalFailureStatusCode(errorCode string) int {
+	// JSON numbers may use decimal or exponent notation. Compare exactly so a
+	// nearby high-precision value is never rounded into a retryable status code.
+	if !json.Valid([]byte(errorCode)) {
+		return 0
+	}
+	numericCode, ok := new(big.Rat).SetString(errorCode)
+	if !ok || !numericCode.IsInt() || !numericCode.Num().IsInt64() {
+		return 0
+	}
+	switch numericCode.Num().Int64() {
+	case http.StatusTooManyRequests:
+		return http.StatusTooManyRequests
+	case 529:
+		return 529
+	case http.StatusGatewayTimeout:
+		return http.StatusGatewayTimeout
+	default:
+		return 0
+	}
 }
 
 func setLogicalFailureContext(c *gin.Context, statusCode int, errorCode, errorMessage string) {

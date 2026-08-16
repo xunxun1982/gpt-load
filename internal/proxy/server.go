@@ -649,6 +649,7 @@ func restoreOriginalPath(c *gin.Context, retryCtx *retryContext) {
 	if retryCtx.originalPath != "" && c.Request.URL.Path != retryCtx.originalPath {
 		c.Request.URL.Path = retryCtx.originalPath
 	}
+	// An empty captured query is meaningful and must clear query state from a prior attempt.
 	c.Request.URL.RawQuery = retryCtx.originalRawQuery
 }
 
@@ -2078,6 +2079,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 					writeRetryLifecycleError(c, statusCode, ctxErr)
 					return
 				}
+				// Keep the current body: model redirect and request sanitization were already applied.
 				ps.executeRequestWithRetryLifecycle(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount, lifecycleCtx, retryCtx)
 				return
 			}
@@ -2115,6 +2117,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		if retryCtx != nil && retryCtx.codexAffinityEnabled {
 			ps.degradeCodexAffinity(retryCtx)
 		}
+		// Keep the current body so a retry cannot fall back to the pre-redirect model.
 		ps.executeRequestWithRetryLifecycle(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount+1, lifecycleCtx, retryCtx)
 		return
 	}

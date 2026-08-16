@@ -103,6 +103,7 @@ func setupRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handler, *model
 	group := createTestGroup(t, db, "standard-affinity-retry", "openai-response")
 	group.ProxyKeys = "proxy-a"
 	group.Upstreams = []byte(fmt.Sprintf(`[{"url":%q,"weight":100}]`, upstream.URL))
+	group.ModelRedirectRules = map[string]any{"gpt-source": "gpt-target"}
 	group.Config = map[string]any{
 		"max_retries":                           1,
 		"blacklist_threshold":                   100,

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -104,6 +105,21 @@ func TestHandleProxyStandardCodexAffinityFailureStripsEncryptedStateBeforeRetry(
 	require.NotContains(t, string(second.body), "reasoning.encrypted_content")
 	require.Contains(t, string(second.body), "web_search_call.results")
 	require.NotEqual(t, first.auth, second.auth)
+}
+
+func TestHandleProxyStandardCodexAffinityPreservesRedirectedModelAcrossRetry(t *testing.T) {
+	handler, group, observations := setupRetryingStandardCodexAffinityGroup(t)
+	body := []byte(`{"model":"gpt-source","input":"hello","stream":false}`)
+
+	require.Equal(t, http.StatusOK, runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "", body).Code)
+	first := <-observations
+	second := <-observations
+
+	for _, observation := range []codexAffinityObservation{first, second} {
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(observation.body, &payload))
+		require.Equal(t, "gpt-target", payload["model"])
+	}
 }
 
 func TestHandleProxyStandardCodexAffinityRetriesLeadingEncryptedContentFailure(t *testing.T) {

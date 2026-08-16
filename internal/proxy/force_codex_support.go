@@ -1040,7 +1040,6 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 				}
 			}
 		case itemType == "message" || itemType == "":
-			flushToolBlocks()
 			role, _ := m["role"].(string)
 			if role == "" {
 				role = "user"
@@ -1049,6 +1048,7 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 			// Non-assistant boundaries discard pending thinking even when the
 			// message text is empty or the role is skipped (system/developer).
 			if role != "assistant" {
+				flushToolBlocks()
 				discardThinking()
 			}
 			if role == "developer" || role == "system" {
@@ -1059,6 +1059,10 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 			}
 			blocks := takeThinking()
 			blocks = append(blocks, ClaudeContentBlock{Type: "text", Text: text})
+			if role == "assistant" {
+				appendToolBlocks(role, blocks...)
+				continue
+			}
 			content, _ := json.Marshal(blocks)
 			messages = append(messages, ClaudeMessage{Role: role, Content: content})
 		case codexToolCallItemType(itemType):

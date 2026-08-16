@@ -49,10 +49,31 @@ type groupCache struct {
 }
 
 type groupUpstreamDefinition struct {
-	URL          string  `json:"url"`
-	Weight       int     `json:"weight"`
-	ProxyURL     *string `json:"proxy_url,omitempty"`
-	GatewayProxy string  `json:"gateway_proxy,omitempty"`
+	ProxyURL *string
+	fields   map[string]json.RawMessage
+}
+
+func (d *groupUpstreamDefinition) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &d.fields); err != nil {
+		return err
+	}
+	if rawProxyURL, ok := d.fields["proxy_url"]; ok {
+		if err := json.Unmarshal(rawProxyURL, &d.ProxyURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d groupUpstreamDefinition) MarshalJSON() ([]byte, error) {
+	if d.ProxyURL != nil {
+		encodedProxyURL, err := json.Marshal(*d.ProxyURL)
+		if err != nil {
+			return nil, err
+		}
+		d.fields["proxy_url"] = encodedProxyURL
+	}
+	return json.Marshal(d.fields)
 }
 
 // GroupManager manages the caching of group data.

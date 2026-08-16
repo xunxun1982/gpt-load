@@ -573,6 +573,8 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 		// Explicitly disabled thinking takes precedence over a conflicting
 		// effort value; forwarding both can re-enable reasoning or yield 400.
 		if thinkingDisabled {
+			// Model names are provider-defined and dynamic; preserve the explicit
+			// disable intent instead of guessing support from a stale local list.
 			effort = "none"
 		}
 		codexReq.Reasoning = &CodexReasoning{Effort: effort}
