@@ -108,6 +108,23 @@ func TestResolveRuntimeProxyURLsNonBatchFailureKeepsPartialSuccess(t *testing.T)
 	assert.Equal(t, "proxy-pool:2", resolved["proxy-pool:2"])
 }
 
+func TestResolveRuntimeProxyURLsContinuesAfterFailure(t *testing.T) {
+	t.Parallel()
+
+	resolver := &sequenceProxyURLResolver{
+		values: map[string]string{"proxy-pool:2": "http://proxy.example.com:8080"},
+		errors: map[string]error{"proxy-pool:1": errors.New("missing proxy")},
+	}
+	manager := NewSystemSettingsManager()
+	manager.SetProxyURLResolver(resolver)
+
+	resolved := manager.ResolveRuntimeProxyURLs(context.Background(), []string{"proxy-pool:1", "proxy-pool:2"})
+
+	assert.Equal(t, []string{"proxy-pool:1", "proxy-pool:2"}, resolver.calls)
+	assert.Equal(t, "proxy-pool:1", resolved["proxy-pool:1"])
+	assert.Equal(t, "http://proxy.example.com:8080", resolved["proxy-pool:2"])
+}
+
 func setupSystemSettingsTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 

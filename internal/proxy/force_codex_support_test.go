@@ -1059,10 +1059,12 @@ func TestConvertCodexRequestToClaudePreservesCodexToolKinds(t *testing.T) {
 	assert.Equal(t, "mcp__gmail__send_email", got.Tools[2].Name)
 	assert.JSONEq(t, `{"type":"tool","name":"tool_search"}`, string(got.ToolChoice))
 
-	require.Len(t, got.Messages, 3)
-	assert.JSONEq(t, `[{"type":"tool_use","id":"call_custom","name":"apply_patch","input":{"input":"*** Begin Patch"}}]`, string(got.Messages[0].Content))
-	assert.JSONEq(t, `[{"type":"tool_use","id":"call_search","name":"tool_search","input":{"query":"gmail"}}]`, string(got.Messages[1].Content))
-	assert.JSONEq(t, `[{"type":"tool_use","id":"call_ns","name":"mcp__gmail__send_email","input":{"to":"a@example.com"}}]`, string(got.Messages[2].Content))
+	require.Len(t, got.Messages, 1)
+	assert.JSONEq(t, `[
+		{"type":"tool_use","id":"call_custom","name":"apply_patch","input":{"input":"*** Begin Patch"}},
+		{"type":"tool_use","id":"call_search","name":"tool_search","input":{"query":"gmail"}},
+		{"type":"tool_use","id":"call_ns","name":"mcp__gmail__send_email","input":{"to":"a@example.com"}}
+	]`, string(got.Messages[0].Content))
 }
 
 func TestConvertCodexRequestToClaudePreservesNestedNamespaces(t *testing.T) {
@@ -1112,11 +1114,13 @@ func TestConvertCodexRequestToClaudeDefaultsInvalidToolArguments(t *testing.T) {
 
 	got, err := convertCodexRequestToClaude(req)
 	require.NoError(t, err)
-	require.Len(t, got.Messages, 4)
-	assert.JSONEq(t, `[{"type":"tool_use","id":"call_empty","name":"empty_args","input":{}}]`, string(got.Messages[0].Content))
-	assert.JSONEq(t, `[{"type":"tool_use","id":"call_invalid","name":"invalid_args","input":{}}]`, string(got.Messages[1].Content))
-	assert.JSONEq(t, `[{"type":"tool_use","id":"call_array","name":"array_args","input":[]}]`, string(got.Messages[2].Content))
-	assert.JSONEq(t, `[{"type":"tool_use","id":"call_string","name":"string_args","input":"foo"}]`, string(got.Messages[3].Content))
+	require.Len(t, got.Messages, 1)
+	assert.JSONEq(t, `[
+		{"type":"tool_use","id":"call_empty","name":"empty_args","input":{}},
+		{"type":"tool_use","id":"call_invalid","name":"invalid_args","input":{}},
+		{"type":"tool_use","id":"call_array","name":"array_args","input":[]},
+		{"type":"tool_use","id":"call_string","name":"string_args","input":"foo"}
+	]`, string(got.Messages[0].Content))
 }
 
 func TestConvertClaudeResponseToCodex(t *testing.T) {

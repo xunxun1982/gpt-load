@@ -168,10 +168,40 @@ func TestProtocolToolCompatConvertsUnknownCodexToolsThroughFunctionShell(t *test
 	require.Len(t, claude.Tools, 2)
 	assert.Equal(t, "web_search", claude.Tools[0].Name)
 	assert.Equal(t, "future_lookup", claude.Tools[1].Name)
-	require.Len(t, claude.Messages, 3)
-	assert.JSONEq(t, `[{"type":"tool_use","id":"call_web","name":"web_search","input":{"query":"go"}}]`, string(claude.Messages[0].Content))
-	assert.JSONEq(t, `[{"type":"tool_use","id":"call_future","name":"future_lookup","input":{"id":9007199254740993}}]`, string(claude.Messages[1].Content))
-	assert.JSONEq(t, `[{"type":"tool_result","tool_use_id":"call_web","content":"result"}]`, string(claude.Messages[2].Content))
+	require.Len(t, claude.Messages, 2)
+	assert.JSONEq(t, `[
+		{"type":"tool_use","id":"call_web","name":"web_search","input":{"query":"go"}},
+		{"type":"tool_use","id":"call_future","name":"future_lookup","input":{"id":9007199254740993}}
+	]`, string(claude.Messages[0].Content))
+	assert.JSONEq(t, `[{"type":"tool_result","tool_use_id":"call_web","content":"result"}]`, string(claude.Messages[1].Content))
+}
+
+func TestProtocolToolCompatAggregatesConsecutiveClaudeToolBlocks(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_a","name":"lookup_a","arguments":"{}"},
+			{"type":"function_call","call_id":"call_b","name":"lookup_b","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_a","output":"a"},
+			{"type":"function_call_output","call_id":"call_b","output":"b"}
+		]`),
+	}
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 2)
+	assert.Equal(t, "assistant", claude.Messages[0].Role)
+	assert.Equal(t, "user", claude.Messages[1].Role)
+
+	var assistantBlocks []ClaudeContentBlock
+	require.NoError(t, json.Unmarshal(claude.Messages[0].Content, &assistantBlocks))
+	require.Len(t, assistantBlocks, 2)
+	assert.Equal(t, []string{"call_a", "call_b"}, []string{assistantBlocks[0].ID, assistantBlocks[1].ID})
+
+	var userBlocks []ClaudeContentBlock
+	require.NoError(t, json.Unmarshal(claude.Messages[1].Content, &userBlocks))
+	require.Len(t, userBlocks, 2)
+	assert.Equal(t, []string{"call_a", "call_b"}, []string{userBlocks[0].ToolUseID, userBlocks[1].ToolUseID})
 }
 
 func TestProtocolToolCompatSkipsOrphanedFutureToolOutputs(t *testing.T) {

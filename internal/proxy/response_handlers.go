@@ -127,6 +127,9 @@ func isEventStreamResponse(resp *http.Response) bool {
 // Do not detach Body.Read behind a probe-only timer: net/http response bodies have
 // no portable, non-destructive per-read deadline. Abandoning that read would race
 // the downstream reader or retain a goroutine until the request lifecycle expires.
+// Prelude and heartbeat bytes intentionally remain in the replay body rather than
+// being written here: a direct write would commit the downstream response and close
+// the retry window, while also bypassing protocol conversion and duplicating replay.
 func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 	if resp == nil || resp.Body == nil || !isEventStreamResponse(resp) {
 		return 0, "", false
@@ -147,7 +150,8 @@ func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 		}
 		if capture.meaningfulSeen || capture.terminalSeen {
 			// Prelude events are buffered without committing the response. Any content,
-			// unknown event, or terminal event closes the retry window before forwarding.
+			// unknown event, or terminal event closes the retry window before forwarding;
+			// the selected handler then forwards/translates the replay exactly once.
 			break
 		}
 		if err != nil {

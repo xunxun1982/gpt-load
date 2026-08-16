@@ -742,7 +742,7 @@ func TestUpdateGroupRefreshesCachedUpstreamProxyModeImmediately(t *testing.T) {
 	assert.Equal(t, manualProxyURL, *cachedUpstreams[0].ProxyURL)
 	assert.Empty(t, cachedUpstreams[0].GatewayProxy)
 
-	updated, err = svc.UpdateGroup(context.Background(), group.ID, GroupUpdateParams{
+	_, err = svc.UpdateGroup(context.Background(), group.ID, GroupUpdateParams{
 		HasUpstreams: true,
 		Upstreams:    json.RawMessage(`[{"url":"https://api.anthropic.com","weight":100,"gateway_proxy":"betterclaude"}]`),
 	})

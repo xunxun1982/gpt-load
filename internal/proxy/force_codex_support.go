@@ -992,6 +992,8 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 	}
 	messages := make([]ClaudeMessage, 0, len(items))
 	var pendingThinking []ClaudeContentBlock
+	var pendingToolBlocks []ClaudeContentBlock
+	pendingToolRole := ""
 	takeThinking := func() []ClaudeContentBlock {
 		thinking := pendingThinking
 		pendingThinking = nil
@@ -999,6 +1001,24 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 	}
 	discardThinking := func() {
 		pendingThinking = nil
+	}
+	flushToolBlocks := func() {
+		if len(pendingToolBlocks) == 0 {
+			return
+		}
+		content, _ := json.Marshal(pendingToolBlocks)
+		messages = append(messages, ClaudeMessage{Role: pendingToolRole, Content: content})
+		pendingToolBlocks = nil
+		pendingToolRole = ""
+	}
+	appendToolBlocks := func(role string, blocks ...ClaudeContentBlock) {
+		if pendingToolRole != "" && pendingToolRole != role {
+			flushToolBlocks()
+		}
+		if pendingToolRole == "" {
+			pendingToolRole = role
+		}
+		pendingToolBlocks = append(pendingToolBlocks, blocks...)
 	}
 	for _, item := range items {
 		m, ok := item.(map[string]any)
@@ -1020,6 +1040,7 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 				}
 			}
 		case itemType == "message" || itemType == "":
+			flushToolBlocks()
 			role, _ := m["role"].(string)
 			if role == "" {
 				role = "user"
@@ -1070,24 +1091,25 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 				Name:  name,
 				Input: codexToolArgumentsRawMessage(arguments),
 			})
-			content, _ := json.Marshal(blocks)
-			messages = append(messages, ClaudeMessage{Role: "assistant", Content: content})
+			appendToolBlocks("assistant", blocks...)
 		case codexToolOutputItemType(itemType):
 			// Discard before the call_id check: a tool-output boundary must
 			// clear pending thinking even when the item itself is invalid.
 			discardThinking()
 			callID := stringFromMap(m, "call_id")
 			if callID == "" {
+				flushToolBlocks()
 				continue
 			}
-			content, _ := json.Marshal([]ClaudeContentBlock{{
+			blocks := []ClaudeContentBlock{{
 				Type:      "tool_result",
 				ToolUseID: callID,
 				Content:   codexToolOutputRawMessage(m, itemType),
-			}})
-			messages = append(messages, ClaudeMessage{Role: "user", Content: content})
+			}}
+			appendToolBlocks("user", blocks...)
 		}
 	}
+	flushToolBlocks()
 	discardThinking()
 	return messages, nil
 }

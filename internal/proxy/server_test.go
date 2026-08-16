@@ -6520,6 +6520,59 @@ func TestRequestLogBoundariesSanitizeInternalErrors(t *testing.T) {
 	})
 }
 
+func TestHandleProxyLogsParamOverrideFailures(t *testing.T) {
+	tests := []struct {
+		name        string
+		channelType string
+		path        string
+		body        string
+		config      map[string]any
+	}{
+		{
+			name:        "standard override",
+			channelType: "openai",
+			path:        "/v1/chat/completions",
+			body:        `{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`,
+		},
+		{
+			name:        "deferred override",
+			channelType: "openai",
+			path:        "/codex/v1/responses",
+			body:        `{"model":"gpt-test","input":"hello"}`,
+			config:      map[string]any{"codex_support": true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			ps, memStore := setupTestProxyServerWithStore(t, db)
+			group := createTestGroup(t, db, "override-log-"+strings.ReplaceAll(tt.name, " ", "-"), tt.channelType)
+			for key, value := range tt.config {
+				group.Config[key] = value
+			}
+			require.NoError(t, db.Save(group).Error)
+			require.NoError(t, ps.groupManager.Initialize())
+			t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+			cachedGroup, err := ps.groupManager.GetGroupByName(group.Name)
+			require.NoError(t, err)
+			cachedGroup.ParamOverrides = datatypes.JSONMap{"unsupported": func() {}}
+
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Params = gin.Params{{Key: "group_name", Value: group.Name}}
+			c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+group.Name+tt.path, strings.NewReader(tt.body))
+
+			ps.HandleProxy(c)
+
+			require.Equal(t, http.StatusInternalServerError, w.Code, w.Body.String())
+			logEntry := popRecordedRequestLog(t, memStore)
+			assert.Equal(t, http.StatusInternalServerError, logEntry.StatusCode)
+			assert.Contains(t, logEntry.ErrorMessage, "unsupported type")
+		})
+	}
+}
+
 func TestLogRequestSanitizesErrorBeforeDebugLogging(t *testing.T) {
 	logger := logrus.StandardLogger()
 	previousOutput := logger.Out

@@ -1475,6 +1475,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
 				if err != nil {
 					response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides: %v", err)))
+					ps.logEarlyError(c, group, startTime, http.StatusInternalServerError, err)
 					return
 				}
 			}
@@ -1570,6 +1571,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
 				if err != nil {
 					response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides after protocol conversion: %v", err)))
+					ps.logEarlyError(c, group, startTime, http.StatusInternalServerError, err)
 					return
 				}
 			}

@@ -66,8 +66,8 @@ func (s *CacheSyncer[T]) Get() T {
 // may still be referenced after Get returns.
 func (s *CacheSyncer[T]) Update(transform func(T) T) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cache = transform(s.cache)
-	s.mu.Unlock()
 }
 
 // Invalidate publishes a notification to all instances to reload their cache.

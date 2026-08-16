@@ -629,3 +629,27 @@ func TestAfterReloadHookError(t *testing.T) {
 		syncer.Stop()
 	}
 }
+
+func TestUpdateUnlocksAfterTransformPanic(t *testing.T) {
+	syncer := &CacheSyncer[int]{cache: 1}
+
+	func() {
+		defer func() {
+			require.NotNil(t, recover())
+		}()
+		syncer.Update(func(int) int { panic("transform panic") })
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		syncer.Update(func(value int) int { return value + 1 })
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		assert.Equal(t, 2, syncer.Get())
+	case <-time.After(time.Second):
+		t.Fatal("CacheSyncer.Update left the mutex locked after a panic")
+	}
+}

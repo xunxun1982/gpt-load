@@ -431,10 +431,16 @@ func (sm *SystemSettingsManager) ResolveRuntimeProxyURLs(ctx context.Context, re
 	} else {
 		batch = make(map[string]string, len(pending))
 		for _, ref := range pending {
-			batch[ref], err = sm.proxyURLResolver.ResolveProxyURL(ctx, ref)
-			if err != nil {
-				break
+			value, resolveErr := sm.proxyURLResolver.ResolveProxyURL(ctx, ref)
+			if resolveErr != nil {
+				// Keep resolving later references so one stale pool entry does not
+				// hide valid entries in the same bounded batch.
+				if err == nil {
+					err = resolveErr
+				}
+				continue
 			}
+			batch[ref] = value
 		}
 	}
 	if err != nil {
