@@ -1766,6 +1766,10 @@ func TestAggregateForceCodexFailureFallsBackToNativeResponsesSubGroup(t *testing
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	// Assert the upstream attempt count before draining the observation
+	// channel: an unexpected extra attempt must fail here instead of being
+	// dropped by the non-blocking send above.
+	require.Equal(t, int64(2), attempts.Load())
 	first := <-received
 	second := <-received
 	assert.Equal(t, "/v1/chat/completions", first.path)

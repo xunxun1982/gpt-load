@@ -31,7 +31,13 @@ var claudeKnownRequestFields = map[string]struct{}{
 	// Completions equivalent. Claude Code sends context_management (server-side
 	// compaction) on every request; these are recognized and stripped rather
 	// than rejecting the conversion.
-	"context_management": {}, "cache_control": {}, "compaction_control": {}, "diagnostics": {},
+	//
+	// compaction_control is deliberately NOT recognized: per Anthropic docs and
+	// SDK sources it is a deprecated client-side tool_runner option (stripped
+	// from the request before it is sent), not a top-level Messages API field.
+	// A request carrying it therefore fails closed instead of silently dropping
+	// an invalid field.
+	"context_management": {}, "cache_control": {}, "diagnostics": {},
 }
 
 func captureUnsupportedJSONFields(data []byte, known map[string]struct{}) ([]string, error) {

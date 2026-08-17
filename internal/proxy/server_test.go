@@ -3697,6 +3697,10 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 
 	require.Equal(t, http.StatusOK, w.Code)
+	// Assert the upstream attempt count before draining the observation
+	// channel: an unexpected extra attempt must fail here instead of being
+	// dropped by the non-blocking send above.
+	require.Equal(t, int32(2), atomic.LoadInt32(&attempts))
 	got := []receivedHeaders{<-receivedHeadersCh, <-receivedHeadersCh}
 	want := []receivedHeaders{
 		{

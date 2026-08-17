@@ -172,7 +172,6 @@ func TestCCProtocolRequestCompatStripsContextManagementFields(t *testing.T) {
 	req := mustParseClaudeRequest(t, `{
 		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],
 		"context_management":{"edits":[{"type":"compact_20260112"}]},
-		"compaction_control":{"type":"off"},
 		"diagnostics":{"enabled":true},
 		"cache_control":{"type":"ephemeral"}
 	}`)
@@ -182,9 +181,21 @@ func TestCCProtocolRequestCompatStripsContextManagementFields(t *testing.T) {
 	require.NoError(t, err)
 	payload := decodeCompatObject(t, encoded)
 	require.NotContains(t, payload, "context_management")
-	require.NotContains(t, payload, "compaction_control")
 	require.NotContains(t, payload, "diagnostics")
 	require.NotContains(t, payload, "cache_control")
+}
+
+func TestCCProtocolRequestCompatRejectsCompactionControlField(t *testing.T) {
+	// compaction_control is a deprecated client-side SDK tool_runner option
+	// (removed from the request before it is sent), not a top-level Messages
+	// API field; a request carrying it must fail closed instead of silently
+	// dropping the invalid field.
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],
+		"compaction_control":{"type":"off"}
+	}`)
+	_, err := convertClaudeToOpenAI(req, nil)
+	require.Error(t, err)
 }
 
 func TestCCProtocolRequestCompatMergesInlineSystemMessages(t *testing.T) {

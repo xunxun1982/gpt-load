@@ -385,6 +385,27 @@ func isSSETerminalSentinel(line []byte) bool {
 	return bytes.Equal(bytes.TrimSpace(line[len("data:"):]), []byte("[DONE]"))
 }
 
+func isTerminalResponseEventType(eventType string) bool {
+	switch eventType {
+	case "response.completed", "response.done", "response.incomplete", "response.failed":
+		return true
+	default:
+		return false
+	}
+}
+
+// upstreamEOFFailureFields fills the sentinel code/message used when the
+// upstream stream ends without a meaningful or terminal event.
+func upstreamEOFFailureFields(errorCode, errorMessage string) (string, string) {
+	if errorCode == "" {
+		errorCode = "upstream_eof"
+	}
+	if errorMessage == "" {
+		errorMessage = "upstream_eof"
+	}
+	return errorCode, errorMessage
+}
+
 func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
 	if isSSETerminalSentinel(line) {
 		p.terminalSeen = true
@@ -400,7 +421,7 @@ func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
 		p.meaningfulSeen = true
 	}
 	responseStatus := strings.TrimSpace(gjson.GetBytes(data, "response.status").String())
-	if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" || eventType == "response.failed" {
+	if isTerminalResponseEventType(eventType) {
 		p.terminalSeen = true
 	}
 	isUpstreamEOF := isResponseIncompleteUpstreamEOF(data, eventType)
@@ -413,12 +434,7 @@ func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
 	}
 	errorCode, errorMessage := responseFailureFields(data, eventType)
 	if isUpstreamEOF {
-		if errorCode == "" {
-			errorCode = "upstream_eof"
-		}
-		if errorMessage == "" {
-			errorMessage = "upstream_eof"
-		}
+		errorCode, errorMessage = upstreamEOFFailureFields(errorCode, errorMessage)
 	}
 	p.recordFailure(errorCode, errorMessage)
 	p.terminalSeen = true
@@ -484,19 +500,14 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 	if !isRetryableSSEDataPrelude(data, payload.Type) {
 		p.meaningfulSeen = true
 	}
-	if payload.Type == "response.completed" || payload.Type == "response.done" || payload.Type == "response.incomplete" || payload.Type == "response.failed" {
+	if isTerminalResponseEventType(payload.Type) {
 		p.terminalSeen = true
 	}
 
 	errorCode, errorMessage := responseFailureFields(data, payload.Type)
 	isUpstreamEOF := isResponseIncompleteUpstreamEOF(data, payload.Type)
 	if isUpstreamEOF {
-		if errorCode == "" {
-			errorCode = "upstream_eof"
-		}
-		if errorMessage == "" {
-			errorMessage = "upstream_eof"
-		}
+		errorCode, errorMessage = upstreamEOFFailureFields(errorCode, errorMessage)
 	}
 
 	isFailed := payload.Error != nil || payload.Type == "error" || payload.Type == "response.failed" || (payload.Response != nil && strings.EqualFold(strings.TrimSpace(payload.Response.Status), "failed")) || isUpstreamEOF

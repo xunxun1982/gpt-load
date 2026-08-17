@@ -172,8 +172,16 @@ func TestHandleProxyAggregateForceCCAppliesOverridesAfterConversion(t *testing.T
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		receivedPath <- r.URL.Path
-		receivedBody <- body
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// requestCount assertion below instead of hanging the handler goroutine.
+		select {
+		case receivedPath <- r.URL.Path:
+		default:
+		}
+		select {
+		case receivedBody <- body:
+		default:
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":"chatcmpl_agg_cc","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
 	}))
@@ -384,6 +392,10 @@ func TestAggregateForceCCFailureFallsBackToNativeAnthropicSubGroup(t *testing.T)
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	// Assert the upstream attempt count before draining the observation
+	// channel: a missing attempt must fail here instead of blocking the
+	// receives, and an unexpected extra attempt must not be dropped silently.
+	require.Equal(t, int64(2), attempts.Load())
 	first := <-received
 	second := <-received
 	assert.Equal(t, "/v1/chat/completions", first.path)

@@ -69,6 +69,10 @@ func TestHandleProxyAggregateCodexAffinityRetriesLeadingEncryptedContentFailureC
 	require.NotContains(t, string(warmup.body), "reasoning.encrypted_content")
 
 	response := runCodexAffinityRequest(t, router, parent.Name, "proxy-a", "thread-aggregate", "", body)
+	// Exactly one warmup, one failed and one retried attempt reached upstream.
+	// Assert before draining the observation channel so a missing attempt
+	// fails here instead of blocking on the receives below.
+	require.Equal(t, int32(3), requests.Load())
 	failed := <-observations
 	retried := <-observations
 	require.Equal(t, http.StatusOK, response.Code)
@@ -77,8 +81,6 @@ func TestHandleProxyAggregateCodexAffinityRetriesLeadingEncryptedContentFailureC
 	require.Contains(t, string(failed.body), "reasoning.encrypted_content")
 	require.NotContains(t, string(retried.body), "reasoning.encrypted_content")
 	require.NotEqual(t, failed.auth, retried.auth)
-	// Exactly one warmup, one failed and one retried attempt reached upstream.
-	require.Equal(t, int32(3), requests.Load())
 }
 
 func TestHandleProxyAggregateCodexAffinityReusesExactExecutionBinding(t *testing.T) {
