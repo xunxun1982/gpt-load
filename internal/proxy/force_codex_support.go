@@ -1008,6 +1008,8 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 	messages := make([]ClaudeMessage, 0, len(items))
 	var pendingThinking []ClaudeContentBlock
 	var pendingToolBlocks []ClaudeContentBlock
+	var pendingUserToolResults []ClaudeContentBlock
+	var pendingUserTextBlocks []ClaudeContentBlock
 	pendingToolRole := ""
 	takeThinking := func() []ClaudeContentBlock {
 		thinking := pendingThinking
@@ -1018,6 +1020,15 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 		pendingThinking = nil
 	}
 	flushToolBlocks := func() {
+		if pendingToolRole == "user" {
+			if len(pendingUserToolResults) == 0 && len(pendingUserTextBlocks) == 0 {
+				return
+			}
+			pendingToolBlocks = append(pendingToolBlocks, pendingUserToolResults...)
+			pendingToolBlocks = append(pendingToolBlocks, pendingUserTextBlocks...)
+			pendingUserToolResults = nil
+			pendingUserTextBlocks = nil
+		}
 		if len(pendingToolBlocks) == 0 {
 			return
 		}
@@ -1032,6 +1043,18 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 		}
 		if pendingToolRole == "" {
 			pendingToolRole = role
+		}
+		if role == "user" {
+			// Anthropic requires all tool_result blocks before user text. Keep two
+			// append-only slices so final ordering is stable without O(n²) inserts.
+			for _, block := range blocks {
+				if block.Type == "tool_result" {
+					pendingUserToolResults = append(pendingUserToolResults, block)
+				} else {
+					pendingUserTextBlocks = append(pendingUserTextBlocks, block)
+				}
+			}
+			return
 		}
 		pendingToolBlocks = append(pendingToolBlocks, blocks...)
 	}

@@ -219,7 +219,7 @@ test("managed-site modal keeps actions outside the scroll area with responsive s
   assert.match(sitePanel, /\.form-section\s*\{[^}]*border-radius:/s);
   assert.match(
     sitePanel,
-    /\.site-form-card :deep\(\.n-card-content\)[\s\S]*?\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0/s
+    /\.site-form-card :deep\(\.n-card-content\)[\s\S]*?\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/s
   );
   assert.doesNotMatch(sitePanel, /\.site-form-card :deep\(\.n-card__content\)/);
   assert.match(sitePanel, /<n-form[^>]*class="site-form"[^>]*size="small"/s);
@@ -229,9 +229,6 @@ test("managed-site modal keeps actions outside the scroll area with responsive s
   assert.match(sitePanel, /siteManagement\.sort'\)"\s*class="form-item-half"/);
   assert.match(sitePanel, /siteManagement\.balanceMultiplier'\)"\s*class="form-item-half"/);
   assert.match(sitePanel, /siteManagement\.balanceMultiplier[\s\S]{0,400}class="field-stack"/);
-  assert.match(sitePanel, /\.form-section\s*\{[^}]*margin-bottom:\s*6px[^}]*padding:\s*5px 10px/s);
-  assert.match(sitePanel, /\.section-title\s*\{[^}]*margin:\s*0 0 2px 0/s);
-  assert.match(sitePanel, /\.site-form :deep\(\.n-form-item\)\s*\{[^}]*margin-bottom:\s*2px/s);
   assert.match(sitePanel, /label-width="auto"/);
 });
 

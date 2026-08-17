@@ -66,14 +66,21 @@ func (d *groupUpstreamDefinition) UnmarshalJSON(data []byte) error {
 }
 
 func (d groupUpstreamDefinition) MarshalJSON() ([]byte, error) {
+	fields := d.fields
 	if d.ProxyURL != nil {
 		encodedProxyURL, err := json.Marshal(*d.ProxyURL)
 		if err != nil {
 			return nil, err
 		}
-		d.fields["proxy_url"] = encodedProxyURL
+		fields = make(map[string]json.RawMessage, len(d.fields)+1)
+		for key, value := range d.fields {
+			fields[key] = value
+		}
+		// Keep the parsed definition immutable: callers may marshal it repeatedly
+		// while cache refreshes retain the original raw fields.
+		fields["proxy_url"] = encodedProxyURL
 	}
-	return json.Marshal(d.fields)
+	return json.Marshal(fields)
 }
 
 // GroupManager manages the caching of group data.

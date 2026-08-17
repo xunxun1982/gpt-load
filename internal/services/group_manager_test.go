@@ -96,6 +96,33 @@ func TestGroupManagerResolveUpstreamProxyReferencesPreservesUnknownFields(t *tes
 	assert.Equal(t, `"http://proxy.example.com:8080"`, string(upstreams[0]["proxy_url"]))
 }
 
+func TestGroupUpstreamDefinitionMarshalJSONDoesNotMutateFields(t *testing.T) {
+	t.Parallel()
+
+	originalProxyURL := json.RawMessage(`"proxy-pool:1"`)
+	fields := map[string]json.RawMessage{
+		"proxy_url": originalProxyURL,
+		"weight":    json.RawMessage(`100`),
+	}
+	resolvedProxyURL := "http://proxy.example.com:8080"
+
+	encoded, err := json.Marshal(groupUpstreamDefinition{
+		ProxyURL: &resolvedProxyURL,
+		fields:   fields,
+	})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"proxy_url":"http://proxy.example.com:8080","weight":100}`, string(encoded))
+	assert.Equal(t, originalProxyURL, fields["proxy_url"])
+
+	encoded, err = json.Marshal(groupUpstreamDefinition{ProxyURL: &resolvedProxyURL})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"proxy_url":"http://proxy.example.com:8080"}`, string(encoded))
+
+	encoded, err = json.Marshal(groupUpstreamDefinition{})
+	require.NoError(t, err)
+	assert.Equal(t, "null", string(encoded))
+}
+
 func TestGroupManagerResolveUpstreamProxyReferencesBatchesDistinctReferences(t *testing.T) {
 	t.Parallel()
 

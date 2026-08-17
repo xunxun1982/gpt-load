@@ -422,11 +422,10 @@ func (sm *SystemSettingsManager) ResolveRuntimeProxyURLs(ctx context.Context, re
 		return resolved
 	}
 
-	var (
-		batch map[string]string
-		err   error
-	)
-	if batchResolver, ok := sm.proxyURLResolver.(ProxyURLBatchResolver); ok {
+	batchResolver, isBatchResolver := sm.proxyURLResolver.(ProxyURLBatchResolver)
+	var batch map[string]string
+	var err error
+	if isBatchResolver {
 		batch, err = batchResolver.ResolveProxyURLs(ctx, pending)
 	} else {
 		batch = make(map[string]string, len(pending))
@@ -444,7 +443,7 @@ func (sm *SystemSettingsManager) ResolveRuntimeProxyURLs(ctx context.Context, re
 		}
 	}
 	if err != nil {
-		if _, isBatchResolver := sm.proxyURLResolver.(ProxyURLBatchResolver); !isBatchResolver {
+		if !isBatchResolver {
 			// Preserve successful non-batch resolutions; unresolved entries keep their references below.
 			for ref, value := range batch {
 				if value = strings.TrimSpace(value); value != "" {

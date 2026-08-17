@@ -222,6 +222,21 @@ func TestCCProtocolRequestCompatMergesInlineSystemMessages(t *testing.T) {
 	require.Equal(t, "assistant", got2.Messages[1].Role)
 }
 
+func TestCCProtocolRequestCompatCollectsInlineSystemMessagesInOrder(t *testing.T) {
+	messages := []ClaudeMessage{
+		{Role: "user", Content: json.RawMessage(`"first"`)},
+		{Role: "system", Content: json.RawMessage(`"one"`)},
+		{Role: "system", Content: json.RawMessage(`[{"type":"text","text":"two"}]`)},
+		{Role: "assistant", Content: json.RawMessage(`"last"`)},
+	}
+
+	inlineSystem, nonSystem, err := collectInlineClaudeSystemMessages(messages)
+	require.NoError(t, err)
+	assert.Equal(t, "one\n\ntwo", inlineSystem)
+	require.Len(t, nonSystem, 2)
+	assert.Equal(t, []string{"user", "assistant"}, []string{nonSystem[0].Role, nonSystem[1].Role})
+}
+
 func TestCCProtocolRequestCompatMapsCurrentFields(t *testing.T) {
 	req := mustParseClaudeRequest(t, `{
 		"model":"gpt-test","max_tokens":64,"messages":[{"role":"user","content":"hi"}],

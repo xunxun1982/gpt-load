@@ -246,6 +246,27 @@ func TestProtocolToolCompatAggregatesToolOutputWithFollowingUserText(t *testing.
 	]`, string(claude.Messages[1].Content))
 }
 
+func TestProtocolToolCompatOrdersToolOutputBeforePrecedingUserText(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_lookup","name":"lookup","arguments":"{}"},
+			{"type":"message","role":"user","content":"and now?"},
+			{"type":"function_call_output","call_id":"call_lookup","output":"done"}
+		]`),
+	}
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 2)
+	assert.Equal(t, "assistant", claude.Messages[0].Role)
+	assert.Equal(t, "user", claude.Messages[1].Role)
+	assert.JSONEq(t, `[
+		{"type":"tool_result","tool_use_id":"call_lookup","content":"done"},
+		{"type":"text","text":"and now?"}
+	]`, string(claude.Messages[1].Content))
+}
+
 func TestProtocolToolCompatSkipsOrphanedFutureToolOutputs(t *testing.T) {
 	req := &CodexRequest{
 		Model: "gpt-test",
@@ -400,6 +421,48 @@ func TestProtocolToolCompatNormalizesNullClaudeToolInputToCodex(t *testing.T) {
 	}, nil)
 	require.Len(t, resp.Output, 1)
 	assert.Equal(t, "{}", resp.Output[0].Arguments)
+}
+
+func TestProtocolToolCompatRejectsClaudeToolUseWithoutIDOrNameForCodex(t *testing.T) {
+	tests := []struct {
+		name  string
+		block string
+	}{
+		{name: "missing ID", block: `{"type":"server_tool_use","name":"lookup","input":{}}`},
+		{name: "missing name", block: `{"type":"future_tool_call","id":"call_lookup","input":{}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &ClaudeRequest{
+				Model: "gpt-test",
+				Messages: []ClaudeMessage{{
+					Role:    "assistant",
+					Content: json.RawMessage("[" + tt.block + "]"),
+				}},
+			}
+
+			_, chatErr := convertClaudeToOpenAI(req, nil)
+			_, codexErr := convertClaudeToCodex(req, "", nil)
+			require.EqualError(t, chatErr, "failed to convert Claude message: Anthropic tool_use requires id and name")
+			require.EqualError(t, codexErr, chatErr.Error())
+		})
+	}
+}
+
+func TestProtocolToolCompatRejectsClaudeToolResultWithoutIDForCodex(t *testing.T) {
+	req := &ClaudeRequest{
+		Model: "gpt-test",
+		Messages: []ClaudeMessage{{
+			Role:    "user",
+			Content: json.RawMessage(`[{"type":"future_tool_result","content":"done"}]`),
+		}},
+	}
+
+	_, chatErr := convertClaudeToOpenAI(req, nil)
+	_, codexErr := convertClaudeToCodex(req, "", nil)
+	require.EqualError(t, chatErr, "failed to convert Claude message: Anthropic tool_result requires tool_use_id")
+	require.EqualError(t, codexErr, chatErr.Error())
 }
 
 func TestProtocolToolCompatDropsOrphanReasoning(t *testing.T) {

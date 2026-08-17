@@ -866,19 +866,12 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 	// with role "system". Merge those into the leading system message instead
 	// of failing the conversion; OpenAI requires system to be the first
 	// message when present.
-	var inlineSystemParts []string
+	inlineSystem, nonSystemMessages, err := collectInlineClaudeSystemMessages(claudeReq.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert Claude message: %w", err)
+	}
 	var convertedMessages []OpenAIMessage
-	for _, msg := range claudeReq.Messages {
-		if msg.Role == "system" {
-			text, err := claudeMessageSystemText(msg)
-			if err != nil {
-				return nil, fmt.Errorf("failed to convert Claude message: %w", err)
-			}
-			if text != "" {
-				inlineSystemParts = append(inlineSystemParts, text)
-			}
-			continue
-		}
+	for _, msg := range nonSystemMessages {
 		openaiMsg, err := convertClaudeMessageToOpenAI(msg, toolNameShortMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
@@ -895,8 +888,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 			return nil, err
 		}
 	}
-	if len(inlineSystemParts) > 0 {
-		inlineSystem := strings.Join(inlineSystemParts, "\n\n")
+	if inlineSystem != "" {
 		if systemContent != "" {
 			systemContent += "\n\n" + inlineSystem
 		} else {
@@ -1026,6 +1018,35 @@ func claudeMessageSystemText(msg ClaudeMessage) (string, error) {
 		}
 	}
 	return strings.Join(textParts, "\n"), nil
+}
+
+// collectInlineClaudeSystemMessages keeps non-system message order while
+// centralizing the non-conforming Claude Code system-message merge policy.
+func collectInlineClaudeSystemMessages(messages []ClaudeMessage) (string, []ClaudeMessage, error) {
+	inlineSystemParts := make([]string, 0)
+	nonSystemMessages := messages
+	foundSystem := false
+	for i, msg := range messages {
+		if msg.Role != "system" {
+			if foundSystem {
+				nonSystemMessages = append(nonSystemMessages, msg)
+			}
+			continue
+		}
+		if !foundSystem {
+			foundSystem = true
+			nonSystemMessages = make([]ClaudeMessage, 0, len(messages)-1)
+			nonSystemMessages = append(nonSystemMessages, messages[:i]...)
+		}
+		text, err := claudeMessageSystemText(msg)
+		if err != nil {
+			return "", nil, err
+		}
+		if text != "" {
+			inlineSystemParts = append(inlineSystemParts, text)
+		}
+	}
+	return strings.Join(inlineSystemParts, "\n\n"), nonSystemMessages, nil
 }
 
 // convertClaudeMessageToOpenAI converts a single Claude message to OpenAI format.

@@ -424,19 +424,12 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	// Claude Code may (non-conformingly) place system prompts inside messages
 	// with role "system"; merge them into the system item below instead of
 	// emitting a raw system message (which some Responses upstreams reject).
-	var inlineSystemParts []string
+	inlineSystem, nonSystemMessages, err := collectInlineClaudeSystemMessages(claudeReq.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert Claude message: %w", err)
+	}
 	var convertedInputs []interface{}
-	for _, msg := range claudeReq.Messages {
-		if msg.Role == "system" {
-			text, err := claudeMessageSystemText(msg)
-			if err != nil {
-				return nil, fmt.Errorf("failed to convert Claude message: %w", err)
-			}
-			if text != "" {
-				inlineSystemParts = append(inlineSystemParts, text)
-			}
-			continue
-		}
+	for _, msg := range nonSystemMessages {
 		converted, err := convertClaudeMessageToCodexFormatWithToolMap(msg, toolNameShortMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
@@ -449,8 +442,7 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	if len(claudeReq.System) > 0 {
 		systemContent = extractSystemContent(claudeReq.System)
 	}
-	if len(inlineSystemParts) > 0 {
-		inlineSystem := strings.Join(inlineSystemParts, "\n\n")
+	if inlineSystem != "" {
 		if systemContent != "" {
 			systemContent += "\n\n" + inlineSystem
 		} else {
@@ -681,6 +673,9 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 				}
 			}
 		case isClaudeToolUseBlock(block):
+			if block.ID == "" || block.Name == "" {
+				return nil, fmt.Errorf("Anthropic tool_use requires id and name")
+			}
 			// Apply shortened name if needed
 			toolName := block.Name
 			if short, ok := toolNameShortMap[block.Name]; ok {
@@ -708,6 +703,9 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 			// assistant branch below (mirroring convertClaudeMessageToOpenAI).
 			if msg.Role == "assistant" {
 				return nil, fmt.Errorf("Anthropic tool_result block %q is not valid in an assistant message", block.Type)
+			}
+			if block.ToolUseID == "" {
+				return nil, fmt.Errorf("Anthropic tool_result requires tool_use_id")
 			}
 			toolResults = append(toolResults, map[string]interface{}{
 				"type":    "function_call_output",
