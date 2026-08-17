@@ -622,6 +622,9 @@ func normalizeToolParameters(raw json.RawMessage) json.RawMessage {
 // Uses the tool name short map to apply shortened names for tool_use blocks.
 func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameShortMap map[string]string) ([]interface{}, error) {
 	var result []interface{}
+	if msg.Role != "user" && msg.Role != "assistant" {
+		return nil, fmt.Errorf("unsupported Anthropic message role %q", msg.Role)
+	}
 
 	// Try to parse content as string first
 	var contentStr string
@@ -673,6 +676,9 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 				}
 			}
 		case isClaudeToolUseBlock(block):
+			if msg.Role != "assistant" {
+				return nil, fmt.Errorf("Anthropic tool_use block %q is only valid in an assistant message", block.Type)
+			}
 			if block.ID == "" || block.Name == "" {
 				return nil, fmt.Errorf("Anthropic tool_use requires id and name")
 			}
@@ -1355,14 +1361,20 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				// Message item added, wait for content_part.added for actual content
 				logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Message item added")
 			case isCodexResponseToolCall(*event.Item):
-				// Close any open block before starting tool block
-				closeOpenBlock()
-				s.currentToolID = event.Item.CallID
-				s.currentToolName = codexClaudeToolName(*event.Item, s.reverseToolNameMap)
-				if s.currentToolName == "" {
+				toolName := codexClaudeToolName(*event.Item, s.reverseToolNameMap)
+				if toolName == "" {
+					closeOpenBlock()
+					s.currentToolID = ""
+					s.currentToolName = ""
+					s.currentToolArgs.Reset()
+					s.toolInputSent = false
 					logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Skipping tool item with unresolved name")
 					return events
 				}
+				// Resolve and validate the name before replacing the active tool state.
+				closeOpenBlock()
+				s.currentToolID = event.Item.CallID
+				s.currentToolName = toolName
 				s.currentToolArgs.Reset()
 				s.toolInputSent = false
 				// Content block start for tool_use

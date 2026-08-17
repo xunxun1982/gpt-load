@@ -1228,6 +1228,36 @@ func TestHandleCodexCCNormalResponseSanitizesCodexErrorLog(t *testing.T) {
 	}
 }
 
+func TestCodexStreamUnresolvedToolNameClearsToolState(t *testing.T) {
+	state := newCodexStreamState(map[string]string{"short_tool": ""})
+	state.currentToolID = "call_previous"
+	state.currentToolName = "previous_tool"
+	state.currentToolArgs.WriteString(`{"stale":true}`)
+	state.toolInputSent = true
+	state.openBlockType = "tool"
+
+	events := state.processCodexStreamEvent(&CodexStreamEvent{
+		Type: "response.output_item.added",
+		Item: &CodexOutputItem{Type: "function_call", CallID: "call_unresolved", Name: "short_tool"},
+	})
+
+	require.Len(t, events, 1)
+	assert.Equal(t, "content_block_stop", events[0].Type)
+	assert.Empty(t, state.currentToolID)
+	assert.Empty(t, state.currentToolName)
+	assert.Zero(t, state.currentToolArgs.Len())
+	assert.False(t, state.toolInputSent)
+
+	deltaEvents := state.processCodexStreamEvent(&CodexStreamEvent{
+		Type:  "response.function_call_arguments.delta",
+		Delta: `{"query":"test"}`,
+	})
+	require.NotEmpty(t, deltaEvents)
+	require.NotNil(t, deltaEvents[0].ContentBlock)
+	assert.NotEqual(t, "call_previous", deltaEvents[0].ContentBlock.ID)
+	assert.NotEqual(t, "call_unresolved", deltaEvents[0].ContentBlock.ID)
+}
+
 // TestHandleCodexCCStreamingResponse tests streaming Codex response conversion
 func TestHandleCodexCCStreamingResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)

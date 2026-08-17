@@ -3,10 +3,12 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 
 	"gpt-load/internal/config"
 	"gpt-load/internal/models"
+	"gpt-load/internal/store"
 	"gpt-load/internal/syncer"
 
 	"github.com/sirupsen/logrus"
@@ -26,6 +28,26 @@ func (groupManagerProxyResolverStub) ResolveProxyURL(_ context.Context, raw stri
 type groupManagerBatchProxyResolverStub struct {
 	singleCalls int
 	batchCalls  int
+}
+
+type groupManagerTimeoutThenSuccessResolver struct {
+	calls atomic.Int32
+}
+
+func (r *groupManagerTimeoutThenSuccessResolver) ResolveProxyURL(_ context.Context, raw string) (string, error) {
+	return "http://" + raw + ".example.com:8080", nil
+}
+
+func (r *groupManagerTimeoutThenSuccessResolver) ResolveProxyURLs(ctx context.Context, refs []string) (map[string]string, error) {
+	if r.calls.Add(1) == 1 {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	resolved := make(map[string]string, len(refs))
+	for _, ref := range refs {
+		resolved[ref] = "http://" + ref + ".example.com:8080"
+	}
+	return resolved, nil
 }
 
 func (s *groupManagerBatchProxyResolverStub) ResolveProxyURL(_ context.Context, raw string) (string, error) {
@@ -229,4 +251,65 @@ func TestGroupManagerRefreshCachedUpstreamsBatchUpdatesAllGroups(t *testing.T) {
 	assert.JSONEq(t, `[{"url":"https://new-second.example.com"}]`, string(cache.ByID[second.ID].Upstreams))
 	assert.JSONEq(t, `[{"url":"https://old-first.example.com"}]`, string(first.Upstreams))
 	assert.JSONEq(t, `[{"url":"https://old-second.example.com"}]`, string(second.Upstreams))
+}
+
+func TestGroupManagerRefreshCachedUpstreamsBatchSupportsNameSwaps(t *testing.T) {
+	t.Parallel()
+
+	first := &models.Group{ID: 61, Name: "first", Upstreams: []byte(`[{"url":"https://first.example.com"}]`)}
+	second := &models.Group{ID: 62, Name: "second", Upstreams: []byte(`[{"url":"https://second.example.com"}]`)}
+	cacheSyncer, err := syncer.NewCacheSyncer(
+		func() (groupCache, error) {
+			return groupCache{
+				ByName: map[string]*models.Group{first.Name: first, second.Name: second},
+				ByID:   map[uint]*models.Group{first.ID: first, second.ID: second},
+			}, nil
+		},
+		nil,
+		"test:group-manager-name-swap",
+		logrus.New().WithField("test", t.Name()), nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(cacheSyncer.Stop)
+
+	gm := &GroupManager{syncer: cacheSyncer}
+	gm.refreshCachedUpstreamsBatch(context.Background(), []cachedUpstreamRefresh{
+		{groupID: first.ID, groupName: second.Name, upstreams: first.Upstreams},
+		{groupID: second.ID, groupName: first.Name, upstreams: second.Upstreams},
+	})
+
+	cache := cacheSyncer.Get()
+	require.Same(t, cache.ByID[first.ID], cache.ByName[second.Name])
+	require.Same(t, cache.ByID[second.ID], cache.ByName[first.Name])
+	assert.Equal(t, second.Name, cache.ByID[first.ID].Name)
+	assert.Equal(t, first.Name, cache.ByID[second.ID].Name)
+}
+
+func TestGroupManagerRetriesProxyResolutionAfterPreloadTimeout(t *testing.T) {
+	t.Setenv("DB_LOOKUP_TIMEOUT_MS", "50")
+	db := setupTestDB(t)
+	group := &models.Group{
+		Name:        "proxy-preload-timeout",
+		DisplayName: "Proxy preload timeout",
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.example.com","weight":100,"proxy_url":"proxy-pool:1"}]`),
+	}
+	require.NoError(t, db.Create(group).Error)
+
+	resolver := &groupManagerTimeoutThenSuccessResolver{}
+	settingsManager := config.NewSystemSettingsManager()
+	settingsManager.SetProxyURLResolver(resolver)
+	memoryStore := store.NewMemoryStore()
+	groupManager := NewGroupManager(db, memoryStore, settingsManager, NewSubGroupManager(memoryStore))
+	require.NoError(t, groupManager.Initialize())
+	t.Cleanup(func() {
+		groupManager.Stop(context.Background())
+		memoryStore.Close()
+	})
+
+	cached, err := groupManager.GetGroupByName(group.Name)
+	require.NoError(t, err)
+	assert.Contains(t, string(cached.Upstreams), `"proxy_url":"http://proxy-pool:1.example.com:8080"`)
+	assert.Equal(t, int32(2), resolver.calls.Load())
 }

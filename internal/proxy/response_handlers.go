@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"gpt-load/internal/models"
@@ -211,6 +212,9 @@ func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 // every byte without a second upstream read or an unbounded allocation.
 func retryableResponseProbe(c *gin.Context, resp *http.Response, retryAvailable bool) (int, string, bool) {
 	if isEventStreamResponse(resp) {
+		// AI review suggested skipping this probe when retries are exhausted. Keep
+		// it so a leading logical SSE failure can still set the final HTTP status
+		// before downstream headers are committed; integration tests require it.
 		return retryableStreamProbe(resp)
 	}
 	if c == nil || c.Request == nil || resp == nil || resp.Body == nil ||
@@ -579,8 +583,18 @@ func logicalFailureStatusCode(errorCode, errorMessage string) int {
 func equivalentNumericLogicalFailureStatusCode(errorCode string) int {
 	// JSON numbers may use decimal or exponent notation. Compare exactly so a
 	// nearby high-precision value is never rounded into a retryable status code.
-	if !json.Valid([]byte(errorCode)) {
+	const (
+		maxNumericStatusCodeBytes    = 64
+		maxNumericStatusCodeExponent = 64
+	)
+	if len(errorCode) > maxNumericStatusCodeBytes || !json.Valid([]byte(errorCode)) {
 		return 0
+	}
+	if exponentIndex := strings.IndexAny(errorCode, "eE"); exponentIndex >= 0 {
+		exponent, err := strconv.ParseInt(errorCode[exponentIndex+1:], 10, 16)
+		if err != nil || exponent < -maxNumericStatusCodeExponent || exponent > maxNumericStatusCodeExponent {
+			return 0
+		}
 	}
 	numericCode, ok := new(big.Rat).SetString(errorCode)
 	if !ok || !numericCode.IsInt() || !numericCode.Num().IsInt64() {

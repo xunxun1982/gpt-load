@@ -1021,6 +1021,22 @@ func TestShouldRemoveAcceptEncodingForProxyParsing(t *testing.T) {
 		c.Request = httptest.NewRequest(http.MethodPost, "/proxy/test/v1/responses", nil)
 		assert.False(t, shouldRemoveAcceptEncodingForProxyParsing(c, &models.Group{}, false))
 	})
+
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{name: "CC conversion", key: ctxKeyCCEnabled},
+		{name: "Codex conversion", key: ctxKeyCodexEnabled},
+		{name: "function call conversion", key: ctxKeyFunctionCallEnabled},
+	} {
+		t.Run("final Responses "+tc.name+" removes accept encoding", func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/proxy/test/v1/responses", nil)
+			c.Set(tc.key, true)
+			assert.True(t, shouldRemoveAcceptEncodingForProxyParsing(c, &models.Group{}, false))
+		})
+	}
 }
 
 func TestRemoveAcceptEncodingForProxyParsingRemovesEncodingForStreamProbe(t *testing.T) {

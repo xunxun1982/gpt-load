@@ -205,12 +205,27 @@ func (gm *GroupManager) Initialize() error {
 			ByID:   make(map[uint]*models.Group, len(groups)),
 		}
 		proxyResolveCache := make(map[string]string)
-		preloadCtx, preloadCancel := context.WithTimeout(context.Background(), getDBLookupTimeout())
+		preloadCtx, preloadCancel := context.WithTimeout(context.Background(), timeout)
 		gm.preloadUpstreamProxyReferences(preloadCtx, groups, proxyResolveCache)
+		preloadTimedOut := preloadCtx.Err() != nil
+		preloadCancel()
+		if preloadTimedOut {
+			// A timed-out preload records unresolved references as themselves. Remove
+			// only those fallbacks so the first owning group can retry with a fresh budget.
+			for ref, resolved := range proxyResolveCache {
+				if ref == resolved {
+					delete(proxyResolveCache, ref)
+				}
+			}
+		}
 		for _, group := range groups {
 			g := *group
 			g.EffectiveConfig = gm.settingsManager.GetEffectiveConfig(g.Config)
-			g.Upstreams = gm.resolveUpstreamProxyReferences(preloadCtx, g.Upstreams, proxyResolveCache)
+			if bytes.Contains(g.Upstreams, []byte("proxy-pool:")) {
+				resolveCtx, resolveCancel := context.WithTimeout(context.Background(), timeout)
+				g.Upstreams = gm.resolveUpstreamProxyReferences(resolveCtx, g.Upstreams, proxyResolveCache)
+				resolveCancel()
+			}
 			statusMatcher, err := failover.ParseStatusCodeMatcher(g.EffectiveConfig.FailoverStatusCodes)
 			if err != nil {
 				logrus.WithError(err).WithField("group_name", g.Name).Warn("Invalid failover status code pattern, using default")
@@ -294,8 +309,6 @@ func (gm *GroupManager) Initialize() error {
 			cache.ByName[g.Name] = &g
 			cache.ByID[g.ID] = &g
 		}
-		preloadCancel()
-
 		return cache, nil
 	}
 
@@ -405,6 +418,14 @@ func (gm *GroupManager) refreshCachedUpstreamsBatch(ctx context.Context, refresh
 			nextByName[name] = group
 		}
 
+		// Delete every previous name before inserting replacements so A<->B swaps
+		// cannot remove a route that was already inserted earlier in this batch.
+		for _, refresh := range resolved {
+			cached, ok := nextByID[refresh.groupID]
+			if ok && cached.Name != refresh.groupName {
+				delete(nextByName, cached.Name)
+			}
+		}
 		for _, refresh := range resolved {
 			cached, ok := nextByID[refresh.groupID]
 			if !ok {
@@ -414,10 +435,6 @@ func (gm *GroupManager) refreshCachedUpstreamsBatch(ctx context.Context, refresh
 			updated.Name = refresh.groupName
 			updated.Upstreams = append(updated.Upstreams[:0:0], refresh.upstreams...)
 			nextByID[refresh.groupID] = &updated
-			if cached.Name != updated.Name {
-				// Remove the old route immediately so a rename cannot briefly serve a stale snapshot.
-				delete(nextByName, cached.Name)
-			}
 			nextByName[updated.Name] = &updated
 		}
 

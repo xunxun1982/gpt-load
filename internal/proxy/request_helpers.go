@@ -68,13 +68,13 @@ func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Gro
 	if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
 		return true
 	}
+	if isCCEnabled(c) || isCodexEnabled(c) || isFunctionCallEnabled(c) || isOpenAIResponseForcedStream(c) || codexDegradationMitigationEnabled(c) {
+		return true
+	}
 	if isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 		// Retry classification inspects successful non-stream Responses payloads
 		// before forwarding them. Let net/http transparently decode negotiated gzip.
 		return retryAvailable
-	}
-	if isCCEnabled(c) || isCodexEnabled(c) || isFunctionCallEnabled(c) || isOpenAIResponseForcedStream(c) || codexDegradationMitigationEnabled(c) {
-		return true
 	}
 	return false
 }

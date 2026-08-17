@@ -128,6 +128,31 @@ func TestHandleProxyRetriesPreludeEOFForAllSSEChannels(t *testing.T) {
 	}
 }
 
+func TestHandleProxyRetriesResponsesIncompleteUpstreamEOFAfterHTTP404(t *testing.T) {
+	failure := "event: response.incomplete\n" +
+		"data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"upstream_eof\"}}}\n\n" +
+		"data: [DONE]\n\n"
+	success := "event: response.completed\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n"
+
+	for _, aggregate := range []bool{false, true} {
+		name := "standard"
+		if aggregate {
+			name = "aggregate"
+		}
+		t.Run(name, func(t *testing.T) {
+			handler, group, requestCount := setupChannelStreamRetryGroup(t, "openai-response", aggregate, http.StatusNotFound, failure, success)
+			response := runStreamRetryRequest(t, handler, group.Name, "/v1/responses",
+				`{"model":"gpt-5","stream":true,"input":"hello"}`)
+
+			require.Equal(t, http.StatusOK, response.Code)
+			require.Equal(t, int32(2), requestCount.Load())
+			require.Contains(t, response.Body.String(), "response.completed")
+			require.NotContains(t, response.Body.String(), "upstream_eof")
+		})
+	}
+}
+
 func TestHandleProxyRetriesHTTPRateLimitWithinRetryBudget(t *testing.T) {
 	testCases := []struct {
 		name      string
@@ -291,7 +316,29 @@ func TestHandleProxyReturnsFinalLogicalStreamFailureAfterRetryExhaustion(t *test
 	require.Contains(t, response.Body.String(), "temporary request rate limit")
 }
 
-func setupChannelStreamRetryGroup(t *testing.T, channelType string, aggregate bool, firstStatus int, firstStream, successStream string) (http.Handler, *models.Group, *atomic.Int32) {
+func TestHandleProxyPreservesHTTPStatusWhenLogicalFailureIsExcludedFromFailover(t *testing.T) {
+	const failure = "event: error\n" +
+		"data: {\"type\":\"error\",\"code\":\"rate_limit_exceeded\",\"message\":\"temporary request rate limit\"}\n\n"
+	for _, tc := range []struct {
+		name      string
+		aggregate bool
+	}{
+		{name: "standard"},
+		{name: "aggregate", aggregate: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, group, requestCount := setupChannelStreamRetryGroup(t, "openai", tc.aggregate, http.StatusOK, failure, failure, "500")
+			response := runStreamRetryRequest(t, handler, group.Name, "/v1/chat/completions",
+				`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
+
+			require.Equal(t, http.StatusOK, response.Code)
+			require.Equal(t, int32(1), requestCount.Load())
+			require.Contains(t, response.Body.String(), "temporary request rate limit")
+		})
+	}
+}
+
+func setupChannelStreamRetryGroup(t *testing.T, channelType string, aggregate bool, firstStatus int, firstStream, successStream string, failoverStatusCodes ...string) (http.Handler, *models.Group, *atomic.Int32) {
 	t.Helper()
 
 	db := setupTestDB(t)
@@ -315,6 +362,9 @@ func setupChannelStreamRetryGroup(t *testing.T, channelType string, aggregate bo
 	subGroup := createTestGroup(t, db, "stream-retry-"+suffix+"-sub", channelType)
 	subGroup.Upstreams = []byte(fmt.Sprintf(`[{"url":%q,"weight":100}]`, upstream.URL))
 	subGroup.Config = map[string]any{"max_retries": 1, "blacklist_threshold": 100}
+	if len(failoverStatusCodes) > 0 {
+		subGroup.Config["failover_status_codes"] = failoverStatusCodes[0]
+	}
 	if !aggregate {
 		subGroup.ProxyKeys = "proxy-a"
 	}

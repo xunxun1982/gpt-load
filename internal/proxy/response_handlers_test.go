@@ -779,6 +779,32 @@ func TestRetryableResponseProbeSkipsNonStreamBodyWithoutRetryBudget(t *testing.T
 	assert.Zero(t, upstreamBody.read)
 }
 
+func TestRetryableResponseProbeInspectsStreamWithoutRetryBudgetForFinalStatus(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	body := []byte("event: error\n" +
+		`data: {"type":"error","code":"rate_limit_exceeded","message":"temporarily limited"}` + "\n\n")
+	upstreamBody := &countingReadCloser{reader: bytes.NewReader(body)}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       upstreamBody,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	statusCode, message, failed := retryableResponseProbe(c, resp, false)
+
+	assert.True(t, failed)
+	assert.Equal(t, http.StatusTooManyRequests, statusCode)
+	assert.Equal(t, "temporarily limited", message)
+	assert.Positive(t, upstreamBody.read)
+	replayed, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, body, replayed)
+}
+
 func TestSSELogicalFailureCapturePreservesNumericErrorCodes(t *testing.T) {
 	t.Parallel()
 
@@ -820,6 +846,8 @@ func TestSSELogicalFailureCaptureClassifiesEquivalentNumericCodes(t *testing.T) 
 		{name: "decimal overloaded", code: "529.00", wantStatus: 529},
 		{name: "exponent timeout", code: "5.04e2", wantStatus: http.StatusGatewayTimeout},
 		{name: "nearby high precision value", code: "429.0000000000000001", wantStatus: http.StatusBadGateway},
+		{name: "oversized numeric token", code: "429." + strings.Repeat("0", 61), wantStatus: http.StatusBadGateway},
+		{name: "oversized exponent", code: "1e1000000", wantStatus: http.StatusBadGateway},
 	}
 
 	for _, tt := range tests {

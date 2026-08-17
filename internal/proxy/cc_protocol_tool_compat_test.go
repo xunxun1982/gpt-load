@@ -441,4 +441,25 @@ func TestCCProtocolToolCompatRejectsAssistantToolResultBlocks(t *testing.T) {
 	require.Contains(t, err.Error(), "assistant message")
 }
 
+func TestCCProtocolToolCompatCodexRejectsNonAssistantToolUse(t *testing.T) {
+	msg := ClaudeMessage{
+		Role: "user",
+		Content: json.RawMessage(`[
+			{"type":"tool_use","id":"call_search","name":"web_search","input":{"query":"test"}}
+		]`),
+	}
+
+	_, err := convertClaudeMessageToCodexFormatWithToolMap(msg, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "assistant message")
+}
+
+func TestCCProtocolToolCompatCodexRejectsUnknownMessageRole(t *testing.T) {
+	msg := ClaudeMessage{Role: "tool", Content: json.RawMessage(`"unexpected"`)}
+
+	_, err := convertClaudeMessageToCodexFormatWithToolMap(msg, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "message role")
+}
+
 func ccBoolPtr(value bool) *bool { return &value }

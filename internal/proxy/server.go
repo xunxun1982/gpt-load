@@ -2031,18 +2031,22 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	}
 	setRateLimitPressureContextForAttempt(c, resp, time.Now())
 	var logicalError string
+	retryStatusCode := 0
+	if resp != nil {
+		retryStatusCode = resp.StatusCode
+	}
 	// Inspect the actual upstream media type: Responses requests may be forced to
 	// stream upstream even when the downstream client requested a normal response.
 	if err == nil && resp != nil {
 		if logicalStatus, message, failed := retryableResponseProbe(c, resp, retryAvailable); failed {
-			resp.StatusCode = logicalStatus
+			retryStatusCode = logicalStatus
 			logicalError = message
 			setLogicalFailureContext(c, logicalStatus, "upstream_response_error", message)
 		}
 	}
 
 	// Unified error handling for retries.
-	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
+	if err != nil || (resp != nil && shouldFailoverOnStatusCode(retryStatusCode, group)) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
 			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
@@ -2060,7 +2064,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 			logrus.Debugf("Request failed (attempt %d/%d) for key %s: %s", retryCount+1, cfg.MaxRetries, utils.MaskAPIKey(apiKey.KeyValue), internalError)
 		} else {
 			// HTTP-level error (status >= 400)
-			statusCode = resp.StatusCode
+			statusCode = retryStatusCode
 			// Limit error body read to a fixed size to prevent memory exhaustion
 			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 			if readErr != nil {
@@ -2983,18 +2987,22 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 	setRateLimitPressureContextForAttempt(c, resp, time.Now())
 	var logicalError string
+	retryStatusCode := 0
+	if resp != nil {
+		retryStatusCode = resp.StatusCode
+	}
 	// Inspect the actual upstream media type: Responses requests may be forced to
 	// stream upstream even when the downstream client requested a normal response.
 	if err == nil && resp != nil {
 		if logicalStatus, message, failed := retryableResponseProbe(c, resp, retryAvailable); failed {
-			resp.StatusCode = logicalStatus
+			retryStatusCode = logicalStatus
 			logicalError = message
 			setLogicalFailureContext(c, logicalStatus, "upstream_response_error", message)
 		}
 	}
 
 	// Unified error handling for retries.
-	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
+	if err != nil || (resp != nil && shouldFailoverOnStatusCode(retryStatusCode, group)) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
 			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
@@ -3012,7 +3020,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			logrus.Debugf("Request failed (attempt %d/%d) for key %s: %s", retryCtx.attemptCount+1, maxRetries, utils.MaskAPIKey(apiKey.KeyValue), internalError)
 		} else {
 			// HTTP-level error (status >= 400)
-			statusCode = resp.StatusCode
+			statusCode = retryStatusCode
 			// Limit error body read to a fixed size to prevent memory exhaustion
 			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 			if readErr != nil {
