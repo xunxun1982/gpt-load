@@ -104,7 +104,7 @@ test("stale paginated site responses do not overwrite newer balance updates", as
   assert.equal(updateSiteBalances([{ id: 1, last_balance: "$10.00" }], requestRevision), false);
   assert.equal(runtimeState.siteBalances[1], "$20.00");
   assert.match(sitePanel, /const siteBalanceRevision = getSiteBalanceRevision\(\)/);
-  assert.match(sitePanel, /updateSiteBalances\(result\.sites, siteBalanceRevision\)/);
+  assert.match(sitePanel, /updateSiteBalances\(normalizedSites, siteBalanceRevision\)/);
 });
 
 test("site management only pushes authoritative refresh results into shared balances", () => {

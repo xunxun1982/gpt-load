@@ -1060,26 +1060,22 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 				role = "user"
 			}
 			text := codexContentText(m["content"], role)
-			// Non-assistant boundaries discard pending thinking even when the
-			// message text is empty or the role is skipped (system/developer).
 			if role != "assistant" {
-				flushToolBlocks()
 				discardThinking()
 			}
 			if role == "developer" || role == "system" {
+				flushToolBlocks()
 				continue
 			}
 			if text == "" {
+				if role != "assistant" {
+					flushToolBlocks()
+				}
 				continue
 			}
 			blocks := takeThinking()
 			blocks = append(blocks, ClaudeContentBlock{Type: "text", Text: text})
-			if role == "assistant" {
-				appendToolBlocks(role, blocks...)
-				continue
-			}
-			content, _ := json.Marshal(blocks)
-			messages = append(messages, ClaudeMessage{Role: role, Content: content})
+			appendToolBlocks(role, blocks...)
 		case codexToolCallItemType(itemType):
 			callID := stringFromMap(m, "call_id")
 			if callID == "" {

@@ -48,6 +48,19 @@ type shortWriteErrorWriter struct {
 	n int
 }
 
+type countingReadCloser struct {
+	reader io.Reader
+	read   int
+}
+
+func (r *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.read += n
+	return n, err
+}
+
+func (r *countingReadCloser) Close() error { return nil }
+
 func (w shortWriteErrorWriter) Write(p []byte) (int, error) {
 	if w.n > len(p) {
 		w.n = len(p)
@@ -615,6 +628,79 @@ func TestRetryableStreamProbeDetectsLeadingFailureAndReplaysSuccess(t *testing.T
 		assert.Equal(t, http.StatusTooManyRequests, statusCode)
 		assert.Equal(t, compressed, w.Body.Bytes())
 	})
+}
+
+func TestRetryableResponseProbeDetectsNonStreamFailureAndReplaysBody(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"id":"resp-limited","status":"failed","error":{"code":"rate_limit_exceeded","message":"temporarily limited"},"output":[]}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	statusCode, message, failed := retryableResponseProbe(c, resp)
+	replayed, err := io.ReadAll(resp.Body)
+
+	require.NoError(t, err)
+	require.True(t, failed)
+	assert.Equal(t, http.StatusTooManyRequests, statusCode)
+	assert.Equal(t, "temporarily limited", message)
+	assert.Equal(t, body, replayed)
+}
+
+func TestRetryableResponseProbeBoundsSuccessfulResponsePrefixAndReplaysBody(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"id":"resp-ok","status":"completed","output":[],"padding":"` + strings.Repeat("x", maxResponseCaptureBytes+1024) + `"}`)
+	upstreamBody := &countingReadCloser{reader: bytes.NewReader(body)}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       upstreamBody,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	_, _, failed := retryableResponseProbe(c, resp)
+	probeRead := upstreamBody.read
+	replayed, err := io.ReadAll(resp.Body)
+
+	require.NoError(t, err)
+	assert.False(t, failed)
+	assert.LessOrEqual(t, probeRead, 4*1024)
+	assert.Equal(t, body, replayed)
+}
+
+func TestRetryableResponseProbeStopsAfterFailureMessageAndReplaysBody(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"status":"failed","error":{"message":"temporary rate limit"},"padding":"` + strings.Repeat("x", maxResponseCaptureBytes+1024) + `"}`)
+	upstreamBody := &countingReadCloser{reader: bytes.NewReader(body)}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       upstreamBody,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	statusCode, message, failed := retryableResponseProbe(c, resp)
+	probeRead := upstreamBody.read
+	replayed, err := io.ReadAll(resp.Body)
+
+	require.NoError(t, err)
+	require.True(t, failed)
+	assert.Equal(t, http.StatusTooManyRequests, statusCode)
+	assert.Equal(t, "temporary rate limit", message)
+	assert.LessOrEqual(t, probeRead, 4*1024)
+	assert.Equal(t, body, replayed)
 }
 
 func TestSSELogicalFailureCapturePreservesNumericErrorCodes(t *testing.T) {

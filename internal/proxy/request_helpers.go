@@ -68,6 +68,11 @@ func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Gro
 	if (len(group.ModelMappingCache) > 0 || group.ModelMapping != "") && shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
 		return true
 	}
+	if isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+		// Retry classification inspects successful non-stream Responses payloads
+		// before forwarding them. Let net/http transparently decode negotiated gzip.
+		return true
+	}
 	if isCCEnabled(c) || isCodexEnabled(c) || isFunctionCallEnabled(c) || isOpenAIResponseForcedStream(c) || codexDegradationMitigationEnabled(c) {
 		return true
 	}
@@ -85,9 +90,8 @@ func removeAcceptEncodingForProxyParsing(req *http.Request, c *gin.Context, grou
 	if req == nil || (!upstreamMayStream && !shouldRemoveAcceptEncodingForProxyParsing(c, group)) {
 		return
 	}
-	// The retry probe must inspect the upstream SSE bytes before anything is sent
-	// downstream. Removing the client encoding request lets net/http transparently
-	// decode gzip and keeps this protocol check consistent across every channel.
+	// Retry probes must inspect upstream bytes before anything is sent downstream.
+	// Removing the client encoding request lets net/http transparently decode gzip.
 	req.Header.Del("Accept-Encoding")
 }
 

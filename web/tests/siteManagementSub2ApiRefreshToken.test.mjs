@@ -159,6 +159,15 @@ test("AnyRouter balance capability is exposed by the site table", () => {
   assert.match(panel, /"wong-gongyi",\s+"anyrouter"/);
 });
 
+test("legacy empty site types are normalized before table state and balance updates", () => {
+  assert.match(
+    panel,
+    /const normalizedSites = result\.sites\.map\(site => \(\{[\s\S]*site_type: normalizeManagedSiteType\(site\.site_type\)[\s\S]*\}\)\)/
+  );
+  assert.match(panel, /sites\.value = normalizedSites/);
+  assert.match(panel, /updateSiteBalances\(normalizedSites, siteBalanceRevision\)/);
+});
+
 test("site auth hints explain AnyRouter user ID and browser-bound cookies", () => {
   assert.match(zhSiteLocale, /AnyRouter[^\n]*Cookie/);
   assert.match(zhSiteLocale, /anyrouterUserIDHint[^\n]*(必须|必填)/);

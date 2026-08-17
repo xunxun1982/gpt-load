@@ -1871,31 +1871,47 @@ func TestUpdateGroupWithChildGroupCacheInvalidation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Create child group
-	childUpstreams := []map[string]interface{}{
-		{
-			"url":    expectedProxyURL("parent-cache-test"),
-			"weight": 1,
-		},
-	}
+	// Create child groups.
+	childUpstreams := []map[string]interface{}{{
+		"url":    expectedProxyURL("parent-cache-test"),
+		"weight": 1,
+	}}
 	childUpstreamsJSON, err := json.Marshal(childUpstreams)
 	require.NoError(t, err)
 
-	childGroup := models.Group{
-		Name:               "parent-cache-test_child1",
-		DisplayName:        "Parent Cache Test (Child1)",
-		GroupType:          "standard",
-		Enabled:            true,
-		Upstreams:          datatypes.JSON(childUpstreamsJSON),
-		ChannelType:        parentGroup.ChannelType,
-		TestModel:          parentGroup.TestModel,
-		ValidationEndpoint: parentGroup.ValidationEndpoint,
-		ParentGroupID:      &parentGroup.ID,
-		ProxyKeys:          "sk-child-key",
-		Sort:               parentGroup.Sort,
+	childGroups := []models.Group{
+		{
+			Name:               "parent-cache-test_child1",
+			DisplayName:        "Parent Cache Test (Child1)",
+			GroupType:          "standard",
+			Enabled:            true,
+			Upstreams:          datatypes.JSON(childUpstreamsJSON),
+			ChannelType:        parentGroup.ChannelType,
+			TestModel:          parentGroup.TestModel,
+			ValidationEndpoint: parentGroup.ValidationEndpoint,
+			ParentGroupID:      &parentGroup.ID,
+			ProxyKeys:          "sk-child-key-1",
+			Sort:               parentGroup.Sort,
+		},
+		{
+			Name:               "parent-cache-test_child2",
+			DisplayName:        "Parent Cache Test (Child2)",
+			GroupType:          "standard",
+			Enabled:            true,
+			Upstreams:          datatypes.JSON(childUpstreamsJSON),
+			ChannelType:        parentGroup.ChannelType,
+			TestModel:          parentGroup.TestModel,
+			ValidationEndpoint: parentGroup.ValidationEndpoint,
+			ParentGroupID:      &parentGroup.ID,
+			ProxyKeys:          "sk-child-key-2",
+			Sort:               parentGroup.Sort,
+		},
 	}
-	err = db.Create(&childGroup).Error
+	err = db.Create(&childGroups).Error
 	require.NoError(t, err)
+	require.NoError(t, svc.groupManager.Reload())
+	// Stop the listener so only the synchronous local refresh can update the cache.
+	svc.groupManager.Stop(context.Background())
 
 	// Reset cache invalidation flag
 	cacheInvalidated = false
@@ -1910,18 +1926,25 @@ func TestUpdateGroupWithChildGroupCacheInvalidation(t *testing.T) {
 	// Verify cache was invalidated
 	assert.True(t, cacheInvalidated, "Child groups cache should be invalidated when parent name changes")
 
-	// Verify child group upstream was updated in database
-	var updatedChild models.Group
-	err = db.First(&updatedChild, childGroup.ID).Error
-	require.NoError(t, err)
-
-	var upstreams []map[string]interface{}
-	err = json.Unmarshal(updatedChild.Upstreams, &upstreams)
-	require.NoError(t, err)
-	require.Len(t, upstreams, 1)
-
 	expectedURL := expectedProxyURL("parent-cache-test-renamed")
-	assert.Equal(t, expectedURL, upstreams[0]["url"])
+	for _, childGroup := range childGroups {
+		var updatedChild models.Group
+		err = db.First(&updatedChild, childGroup.ID).Error
+		require.NoError(t, err)
+
+		var upstreams []map[string]interface{}
+		err = json.Unmarshal(updatedChild.Upstreams, &upstreams)
+		require.NoError(t, err)
+		require.Len(t, upstreams, 1)
+		assert.Equal(t, expectedURL, upstreams[0]["url"])
+
+		cachedChild, cacheErr := svc.groupManager.GetGroupByID(childGroup.ID)
+		require.NoError(t, cacheErr)
+		upstreams = nil
+		require.NoError(t, json.Unmarshal(cachedChild.Upstreams, &upstreams))
+		require.Len(t, upstreams, 1)
+		assert.Equal(t, expectedURL, upstreams[0]["url"])
+	}
 }
 
 // TestUpdateGroupWithChildGroupProxyKeysSync tests that child groups' API keys are synced

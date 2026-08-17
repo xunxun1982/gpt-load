@@ -714,6 +714,10 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 				"call_id": block.ToolUseID,
 				"output":  toolResultOutput(block),
 			})
+		default:
+			// Chat conversion has an explicit image mapper, but Codex input does
+			// not. Fail closed for every unmapped block instead of dropping data.
+			return nil, ccUnsupported("content block", block.Type)
 		}
 	}
 

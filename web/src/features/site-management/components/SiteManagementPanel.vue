@@ -412,8 +412,12 @@ async function loadSites(options: LoadSitesOptions = {}) {
     };
 
     const result = await siteManagementApi.listSitesPaginated(params);
-    sites.value = result.sites;
-    updateSiteBalances(result.sites, siteBalanceRevision);
+    const normalizedSites = result.sites.map(site => ({
+      ...site,
+      site_type: normalizeManagedSiteType(site.site_type),
+    }));
+    sites.value = normalizedSites;
+    updateSiteBalances(normalizedSites, siteBalanceRevision);
     pagination.page = result.page;
     pagination.total = result.total;
     pagination.totalPages = result.total_pages;

@@ -6211,9 +6211,21 @@ func TestSetRateLimitPressureContextForAttempt(t *testing.T) {
 	assert.Equal(t, int64(4), value)
 
 	ctx.Set("response_body", `{"error":{"message":"api key quota exhausted"}}`)
+	ctx.Set(ctxKeyUpstreamLogicalStatusCode, http.StatusBadGateway)
+	ctx.Set(ctxKeyUpstreamLogicalErrorMessage, "previous logical failure")
+	ctx.Set(ctxKeyResponsesStatusUnverified, true)
+	ctx.Set(ctxKeyResponseProcessingFailed, true)
 	setRateLimitPressureContextForAttempt(ctx, resp, now)
-	_, exists = ctx.Get("response_body")
-	assert.False(t, exists)
+	for _, key := range []string{
+		"response_body",
+		ctxKeyUpstreamLogicalStatusCode,
+		ctxKeyUpstreamLogicalErrorMessage,
+		ctxKeyResponsesStatusUnverified,
+		ctxKeyResponseProcessingFailed,
+	} {
+		_, exists = ctx.Get(key)
+		assert.True(t, exists, "rate-limit handling must not clear %s", key)
+	}
 
 	setRateLimitPressureContextForAttempt(ctx, &http.Response{StatusCode: http.StatusInternalServerError}, now)
 	_, exists = ctx.Get(ctxKeyRateLimitPressure)
@@ -6227,6 +6239,72 @@ func TestSetRateLimitPressureContextForAttempt(t *testing.T) {
 	assert.NotPanics(t, func() {
 		setRateLimitPressureContextForAttempt(nil, resp, now)
 	})
+}
+
+func TestExecuteRequestWithRetryClearsPriorAttemptResponseContextBeforeSelection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	ps.requestLogService = services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager())
+
+	group := createTestGroup(t, db, "retry-clear-attempt-context", "openai")
+	group.EffectiveConfig = systemSettingsWithRetryTimeout(0, 0)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := []byte(`{"model":"gpt-test"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/retry-clear-attempt-context/v1/chat/completions", bytes.NewReader(body))
+	c.Set("response_body", `{"error":"previous"}`)
+	c.Set(ctxKeyUpstreamLogicalStatusCode, http.StatusBadGateway)
+	c.Set(ctxKeyUpstreamLogicalErrorMessage, "previous logical failure")
+	c.Set(ctxKeyResponsesStatusUnverified, true)
+	c.Set(ctxKeyResponseProcessingFailed, true)
+
+	ps.executeRequestWithRetry(c, &testChannelProxy{}, group, group, body, false, time.Now(), 0)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, http.StatusServiceUnavailable, logEntry.StatusCode)
+	assert.NotEqual(t, "previous logical failure", logEntry.ErrorMessage)
+	assert.Empty(t, logEntry.ResponseBody)
+}
+
+func TestExecuteAggregateRetryClearsPriorAttemptResponseContextBeforeSelection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	ps.requestLogService = services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager())
+
+	aggregate := &models.Group{
+		ID:              901,
+		Name:            "aggregate-clear-attempt-context",
+		GroupType:       "aggregate",
+		Config:          map[string]any{},
+		EffectiveConfig: types.SystemSettings{},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := []byte(`{"model":"gpt-test"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/aggregate-clear-attempt-context/v1/chat/completions", bytes.NewReader(body))
+	c.Set("response_body", `{"error":"previous"}`)
+	c.Set(ctxKeyUpstreamLogicalStatusCode, http.StatusBadGateway)
+	c.Set(ctxKeyUpstreamLogicalErrorMessage, "previous logical failure")
+	c.Set(ctxKeyResponsesStatusUnverified, true)
+	c.Set(ctxKeyResponseProcessingFailed, true)
+	retryCtx := &retryContext{
+		excludedSubGroups: make(map[uint]bool),
+		originalBodyBytes: body,
+		originalPath:      c.Request.URL.Path,
+		originalRawQuery:  c.Request.URL.RawQuery,
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, aggregate, body, false, time.Now(), retryCtx)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, http.StatusServiceUnavailable, logEntry.StatusCode)
+	assert.NotEqual(t, "previous logical failure", logEntry.ErrorMessage)
+	assert.Empty(t, logEntry.ResponseBody)
 }
 
 func TestRecordDynamicWeightMetricsUsesRetryAfterPressureAfterConsecutive429Threshold(t *testing.T) {

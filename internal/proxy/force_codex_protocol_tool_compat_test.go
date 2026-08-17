@@ -225,6 +225,27 @@ func TestProtocolToolCompatAggregatesClaudeAssistantTextWithToolUse(t *testing.T
 	]`, string(claude.Messages[0].Content))
 }
 
+func TestProtocolToolCompatAggregatesToolOutputWithFollowingUserText(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_lookup","name":"lookup","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_lookup","output":"done"},
+			{"type":"message","role":"user","content":"and now?"}
+		]`),
+	}
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 2)
+	assert.Equal(t, "assistant", claude.Messages[0].Role)
+	assert.Equal(t, "user", claude.Messages[1].Role)
+	assert.JSONEq(t, `[
+		{"type":"tool_result","tool_use_id":"call_lookup","content":"done"},
+		{"type":"text","text":"and now?"}
+	]`, string(claude.Messages[1].Content))
+}
+
 func TestProtocolToolCompatSkipsOrphanedFutureToolOutputs(t *testing.T) {
 	req := &CodexRequest{
 		Model: "gpt-test",

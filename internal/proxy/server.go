@@ -104,16 +104,25 @@ func setRateLimitPressureContextForAttempt(c *gin.Context, resp *http.Response, 
 	}
 	if c.Keys != nil {
 		delete(c.Keys, ctxKeyRateLimitPressure)
-		delete(c.Keys, "response_body")
-		delete(c.Keys, ctxKeyUpstreamLogicalStatusCode)
-		delete(c.Keys, ctxKeyUpstreamLogicalErrorMessage)
-		delete(c.Keys, ctxKeyResponsesStatusUnverified)
-		delete(c.Keys, ctxKeyResponseProcessingFailed)
 	}
 	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
 		return
 	}
 	c.Set(ctxKeyRateLimitPressure, retryAfterRateLimitPressureFromHeader(resp.Header.Get("Retry-After"), now))
+}
+
+// clearAttemptResponseContext removes response state owned by the previous
+// upstream attempt before any selection or request-building failure can log it.
+func clearAttemptResponseContext(c *gin.Context) {
+	if c == nil || c.Keys == nil {
+		return
+	}
+	delete(c.Keys, ctxKeyRateLimitPressure)
+	delete(c.Keys, "response_body")
+	delete(c.Keys, ctxKeyUpstreamLogicalStatusCode)
+	delete(c.Keys, ctxKeyUpstreamLogicalErrorMessage)
+	delete(c.Keys, ctxKeyResponsesStatusUnverified)
+	delete(c.Keys, ctxKeyResponseProcessingFailed)
 }
 
 func retryDelayForAttempt(cfg types.SystemSettings, retryCount int) time.Duration {
@@ -1833,6 +1842,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	cfg := group.EffectiveConfig
 	// Lifecycle time remains request-wide; log duration is intentionally per upstream attempt.
 	attemptStartTime := time.Now()
+	clearAttemptResponseContext(c)
 
 	// Store group in context for response handlers to access
 	c.Set("group", group)
@@ -2007,10 +2017,10 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	// Inspect the actual upstream media type: Responses requests may be forced to
 	// stream upstream even when the downstream client requested a normal response.
 	if err == nil && resp != nil {
-		if logicalStatus, message, failed := retryableStreamProbe(resp); failed {
+		if logicalStatus, message, failed := retryableResponseProbe(c, resp); failed {
 			resp.StatusCode = logicalStatus
 			logicalError = message
-			setLogicalFailureContext(c, logicalStatus, "upstream_stream_error", message)
+			setLogicalFailureContext(c, logicalStatus, "upstream_response_error", message)
 		}
 	}
 
@@ -2220,6 +2230,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	retryCtx *retryContext,
 ) {
 	attemptStartTime := time.Now()
+	clearAttemptResponseContext(c)
 	// The parent aggregate handler can be nil; all sub-group request operations
 	// must use the subGroupChannelHandler selected below.
 	// Restore original path for retry attempts to allow each sub-group to apply its own CC support
@@ -2948,10 +2959,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Inspect the actual upstream media type: Responses requests may be forced to
 	// stream upstream even when the downstream client requested a normal response.
 	if err == nil && resp != nil {
-		if logicalStatus, message, failed := retryableStreamProbe(resp); failed {
+		if logicalStatus, message, failed := retryableResponseProbe(c, resp); failed {
 			resp.StatusCode = logicalStatus
 			logicalError = message
-			setLogicalFailureContext(c, logicalStatus, "upstream_stream_error", message)
+			setLogicalFailureContext(c, logicalStatus, "upstream_response_error", message)
 		}
 	}
 

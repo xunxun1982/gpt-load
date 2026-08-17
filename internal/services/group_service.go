@@ -1170,9 +1170,20 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		s.syncChildGroupKeysAfterCommit(ctx, childGroupsNeedingKeyUpdate, newParentFirstKey, oldParentFirstKey)
 	}
 
+	cacheRefreshes := make([]cachedUpstreamRefresh, 0, len(childGroupsNeedingKeyUpdate)+1)
 	if params.HasUpstreams || group.Name != oldName {
-		s.groupManager.RefreshCachedUpstreams(ctx, group.ID, group.Name, group.Upstreams)
+		cacheRefreshes = append(cacheRefreshes, cachedUpstreamRefresh{
+			groupID: group.ID, groupName: group.Name, upstreams: group.Upstreams,
+		})
 	}
+	if group.Name != oldName {
+		for _, childGroup := range childGroupsNeedingKeyUpdate {
+			cacheRefreshes = append(cacheRefreshes, cachedUpstreamRefresh{
+				groupID: childGroup.ID, groupName: childGroup.Name, upstreams: childGroup.Upstreams,
+			})
+		}
+	}
+	s.groupManager.refreshCachedUpstreamsBatch(ctx, cacheRefreshes)
 	if err := s.groupManager.Invalidate(); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to invalidate group cache")
 	}
@@ -1233,6 +1244,9 @@ func (s *GroupService) syncChildGroupUpstreamsInTransaction(ctx context.Context,
 			Where("parent_group_id = ?", parentGroup.ID).
 			Update("upstreams", datatypes.JSON(upstreamsJSON)).Error; err != nil {
 			return nil, app_errors.ParseDBError(err)
+		}
+		for i := range childGroups {
+			childGroups[i].Upstreams = datatypes.JSON(append([]byte(nil), upstreamsJSON...))
 		}
 
 		logrus.WithContext(ctx).WithFields(logrus.Fields{

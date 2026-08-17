@@ -128,6 +128,16 @@ func (r *replayErrorReader) Read(_ []byte) (int, error) {
 func (r *replayReadCloser) Read(p []byte) (int, error) { return r.reader.Read(p) }
 func (r *replayReadCloser) Close() error               { return r.closer.Close() }
 
+func installResponseBodyReplay(resp *http.Response, remaining io.Reader, prefix []byte, probeErr error) {
+	originalBody := resp.Body
+	replayReaders := []io.Reader{bytes.NewReader(prefix)}
+	if probeErr != nil {
+		replayReaders = append(replayReaders, &replayErrorReader{err: probeErr})
+	}
+	replayReaders = append(replayReaders, remaining)
+	resp.Body = &replayReadCloser{reader: io.MultiReader(replayReaders...), closer: originalBody}
+}
+
 func isEventStreamResponse(resp *http.Response) bool {
 	if resp == nil {
 		return false
@@ -176,17 +186,60 @@ func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 			break
 		}
 	}
-	originalBody := resp.Body
 	// Replay is intentional: the selected response handler must independently parse
 	// the complete stream for usage, logging, and terminal-state accounting.
-	replayReaders := []io.Reader{bytes.NewReader(prefix)}
-	if probeErr != nil {
-		// The probe consumed this read error; replay it once after the buffered prefix.
-		replayReaders = append(replayReaders, &replayErrorReader{err: probeErr})
-	}
-	replayReaders = append(replayReaders, reader)
-	resp.Body = &replayReadCloser{reader: io.MultiReader(replayReaders...), closer: originalBody}
+	installResponseBodyReplay(resp, reader, prefix, probeErr)
 	return capture.statusCode, strings.TrimSpace(capture.errorMessage), capture.firstSemanticFailed
+}
+
+// retryableResponseProbe inspects application-level failures before any bytes
+// reach the downstream. Non-stream Responses payloads use a bounded prefix and
+// keep the buffered reader as the response body so the selected handler replays
+// every byte without a second upstream read or an unbounded allocation.
+func retryableResponseProbe(c *gin.Context, resp *http.Response) (int, string, bool) {
+	if isEventStreamResponse(resp) {
+		return retryableStreamProbe(resp)
+	}
+	if c == nil || c.Request == nil || resp == nil || resp.Body == nil ||
+		resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices ||
+		!isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+		return 0, "", false
+	}
+
+	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
+	if contentEncoding != "" && !strings.EqualFold(contentEncoding, "identity") {
+		// Requests parsed by the proxy omit Accept-Encoding, so net/http normally
+		// exposes decoded bytes. Preserve an unsolicited encoding rather than
+		// risking classification of compressed data or changing the response.
+		return 0, "", false
+	}
+
+	reader := bufio.NewReaderSize(resp.Body, 4*1024)
+	prefix := make([]byte, 0, 4*1024)
+	buf := make([]byte, 4*1024)
+	var probeErr error
+	for len(prefix) < maxResponseCaptureBytes {
+		remaining := maxResponseCaptureBytes - len(prefix)
+		n, err := reader.Read(buf[:min(len(buf), remaining)])
+		if n > 0 {
+			prefix = append(prefix, buf[:n]...)
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				probeErr = err
+			}
+			break
+		}
+		status := gjson.GetBytes(prefix, "status")
+		if status.Exists() && (!strings.EqualFold(strings.TrimSpace(status.String()), "failed") ||
+			gjson.GetBytes(prefix, "error.code").Exists() ||
+			gjson.GetBytes(prefix, "error.message").Exists()) {
+			break
+		}
+	}
+	installResponseBodyReplay(resp, reader, prefix, probeErr)
+	statusCode, _, errorMessage, failed := parseResponsesLogicalFailure(prefix, len(prefix) >= maxResponseCaptureBytes)
+	return statusCode, errorMessage, failed
 }
 
 func isRetryableSSEPrelude(eventType string) bool {
@@ -659,17 +712,30 @@ func setResponsesLogicalFailureFromCapturedBody(c *gin.Context, body []byte, tru
 	if c == nil || c.Request == nil || len(body) == 0 || !isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 		return
 	}
-	statusResult := gjson.GetBytes(body, "status")
-	if truncated && !statusResult.Exists() {
-		c.Set(ctxKeyResponsesStatusUnverified, true)
+	statusCode, errorCode, errorMessage, failed := parseResponsesLogicalFailure(body, truncated)
+	if failed {
+		setLogicalFailureContext(c, statusCode, errorCode, errorMessage)
 		return
 	}
+	if truncated && !gjson.GetBytes(body, "status").Exists() {
+		c.Set(ctxKeyResponsesStatusUnverified, true)
+	}
+}
+
+func parseResponsesLogicalFailure(body []byte, truncated bool) (int, string, string, bool) {
+	if len(body) == 0 {
+		return 0, "", "", false
+	}
+	statusResult := gjson.GetBytes(body, "status")
+	if truncated && !statusResult.Exists() {
+		return 0, "", "", false
+	}
 	if !strings.EqualFold(strings.TrimSpace(statusResult.String()), "failed") {
-		return
+		return 0, "", "", false
 	}
 	errorCode := strings.TrimSpace(gjson.GetBytes(body, "error.code").String())
 	errorMessage := strings.TrimSpace(gjson.GetBytes(body, "error.message").String())
-	setResponsesLogicalFailure(c, statusResult.String(), errorCode, errorMessage)
+	return logicalFailureStatusCode(errorCode, errorMessage), errorCode, errorMessage, true
 }
 
 func setResponsesLogicalFailure(c *gin.Context, status, errorCode, errorMessage string) {

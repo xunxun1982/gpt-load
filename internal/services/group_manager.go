@@ -352,20 +352,43 @@ func (gm *GroupManager) Invalidate() error {
 // the cross-instance invalidation is delivered. Copy-on-write keeps readers that
 // already hold the previous group snapshot race-free.
 func (gm *GroupManager) RefreshCachedUpstreams(ctx context.Context, groupID uint, groupName string, upstreams []byte) {
-	if gm.syncer == nil {
+	gm.refreshCachedUpstreamsBatch(ctx, []cachedUpstreamRefresh{{
+		groupID: groupID, groupName: groupName, upstreams: upstreams,
+	}})
+}
+
+type cachedUpstreamRefresh struct {
+	groupID   uint
+	groupName string
+	upstreams []byte
+}
+
+func (gm *GroupManager) refreshCachedUpstreamsBatch(ctx context.Context, refreshes []cachedUpstreamRefresh) {
+	if gm.syncer == nil || len(refreshes) == 0 {
 		return
 	}
-	// Proxy-pool resolution may perform external I/O, so keep it outside the cache write lock.
-	resolvedUpstreams := gm.resolveUpstreamProxyReferences(ctx, upstreams, make(map[string]string))
+
+	// Proxy-pool resolution may perform external I/O. Resolve every update outside
+	// the cache write lock and share results across the batch.
+	proxyResolveCache := make(map[string]string)
+	resolved := make([]cachedUpstreamRefresh, len(refreshes))
+	for i, refresh := range refreshes {
+		resolved[i] = refresh
+		resolved[i].upstreams = gm.resolveUpstreamProxyReferences(ctx, refresh.upstreams, proxyResolveCache)
+	}
+
 	gm.syncer.Update(func(current groupCache) groupCache {
-		cached, ok := current.ByID[groupID]
-		if !ok {
+		found := false
+		for _, refresh := range resolved {
+			if _, ok := current.ByID[refresh.groupID]; ok {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return current
 		}
 
-		updated := *cached
-		updated.Name = groupName
-		updated.Upstreams = append(updated.Upstreams[:0:0], resolvedUpstreams...)
 		nextByID := make(map[uint]*models.Group, len(current.ByID))
 		for id, group := range current.ByID {
 			nextByID[id] = group
@@ -374,12 +397,23 @@ func (gm *GroupManager) RefreshCachedUpstreams(ctx context.Context, groupID uint
 		for name, group := range current.ByName {
 			nextByName[name] = group
 		}
-		nextByID[groupID] = &updated
-		if cached.Name != updated.Name {
-			// Remove the old route immediately so a rename cannot briefly serve a stale snapshot.
-			delete(nextByName, cached.Name)
+
+		for _, refresh := range resolved {
+			cached, ok := nextByID[refresh.groupID]
+			if !ok {
+				continue
+			}
+			updated := *cached
+			updated.Name = refresh.groupName
+			updated.Upstreams = append(updated.Upstreams[:0:0], refresh.upstreams...)
+			nextByID[refresh.groupID] = &updated
+			if cached.Name != updated.Name {
+				// Remove the old route immediately so a rename cannot briefly serve a stale snapshot.
+				delete(nextByName, cached.Name)
+			}
+			nextByName[updated.Name] = &updated
 		}
-		nextByName[updated.Name] = &updated
+
 		return groupCache{ByName: nextByName, ByID: nextByID}
 	})
 }

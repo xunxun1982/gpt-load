@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	requestmiddleware "gpt-load/internal/middleware"
 	"gpt-load/internal/models"
@@ -47,6 +48,57 @@ func TestHandleProxyRetriesLeadingRateLimitStreamFailure(t *testing.T) {
 				require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
 				require.Equal(t, "completed", payload["status"])
 			}
+		})
+	}
+}
+
+func TestHandleProxyRetriesHTTPRateLimitWithinRetryBudget(t *testing.T) {
+	testCases := []struct {
+		name      string
+		aggregate bool
+	}{
+		{name: "standard", aggregate: false},
+		{name: "aggregate", aggregate: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			response, requestCount, authorizations := runHTTPRateLimitRetryCase(t, tc.aggregate)
+
+			require.Equal(t, http.StatusOK, response.Code)
+			require.Equal(t, int32(2), requestCount.Load())
+			require.Contains(t, response.Body.String(), `"content":"ok"`)
+			require.NotContains(t, response.Body.String(), "rate_limit_error")
+			if tc.aggregate {
+				require.Equal(t, "Bearer sk-http-rate-limit-aggregate-a", <-authorizations)
+				require.Equal(t, "Bearer sk-http-rate-limit-aggregate-success", <-authorizations)
+			}
+		})
+	}
+}
+
+func TestHandleProxyRetriesNonStreamResponsesLogicalRateLimit(t *testing.T) {
+	testCases := []struct {
+		name         string
+		aggregate    bool
+		gzipResponse bool
+	}{
+		{name: "standard", aggregate: false},
+		{name: "aggregate", aggregate: true},
+		{name: "standard gzip", aggregate: false, gzipResponse: true},
+		{name: "aggregate gzip", aggregate: true, gzipResponse: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, group, requestCount := setupNonStreamResponsesLogicalRateLimitRetryGroup(t, tc.aggregate, tc.gzipResponse)
+			response := runStreamRetryRequest(t, handler, group.Name, "/v1/responses",
+				`{"model":"gpt-5","input":"hello","stream":false}`)
+
+			require.Equal(t, http.StatusOK, response.Code)
+			require.Equal(t, int32(2), requestCount.Load())
+			require.NotContains(t, response.Body.String(), "rate_limit_exceeded")
+			require.Contains(t, response.Body.String(), `"status":"completed"`)
 		})
 	}
 }
@@ -296,4 +348,165 @@ func setupLeadingRateLimitStreamRetryGroup(t *testing.T, aggregate bool) (http.H
 	router := gin.New()
 	router.POST("/proxy/:group_name/*path", requestmiddleware.ProxyAuth(ps.groupManager, nil), ps.HandleProxy)
 	return router, targetGroup, requestCount
+}
+
+func setupNonStreamResponsesLogicalRateLimitRetryGroup(t *testing.T, aggregate, gzipResponse bool) (http.Handler, *models.Group, *atomic.Int32) {
+	t.Helper()
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	requestCount := &atomic.Int32{}
+	limitedBody := []byte(`{"id":"resp-limited","status":"failed","error":{"code":"rate_limit_exceeded","message":"temporarily limited"},"output":[]}`)
+	successBody := []byte(`{"id":"resp-ok","status":"completed","error":null,"output":[]}`)
+	if gzipResponse {
+		limitedBody = compressGzipForResponseHandlerTest(t, limitedBody)
+		successBody = compressGzipForResponseHandlerTest(t, successBody)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if gzipResponse {
+			w.Header().Set("Content-Encoding", "gzip")
+		}
+		if requestCount.Add(1) == 1 {
+			_, _ = w.Write(limitedBody)
+			return
+		}
+		_, _ = w.Write(successBody)
+	}))
+	t.Cleanup(upstream.Close)
+
+	suffix := "standard"
+	if aggregate {
+		suffix = "aggregate"
+	}
+	subGroup := createTestGroup(t, db, "responses-logical-rate-limit-"+suffix+"-sub", "openai-response")
+	subGroup.Upstreams = []byte(fmt.Sprintf(`[{"url":%q,"weight":100}]`, upstream.URL))
+	subGroup.Config = map[string]any{"max_retries": 1, "blacklist_threshold": 100}
+	if !aggregate {
+		subGroup.ProxyKeys = "proxy-a"
+	}
+	require.NoError(t, db.Save(subGroup).Error)
+
+	targetGroup := subGroup
+	if aggregate {
+		targetGroup = &models.Group{
+			Name:        "responses-logical-rate-limit-aggregate",
+			ProxyKeys:   "proxy-a",
+			ChannelType: "openai-response",
+			GroupType:   "aggregate",
+			Enabled:     true,
+			Upstreams:   []byte(`[]`),
+			Config:      map[string]any{"max_retries": 0},
+		}
+		require.NoError(t, db.Create(targetGroup).Error)
+		require.NoError(t, db.Create(&models.GroupSubGroup{
+			GroupID:         targetGroup.ID,
+			SubGroupID:      subGroup.ID,
+			SubGroupName:    subGroup.Name,
+			SubGroupEnabled: true,
+			Weight:          100,
+		}).Error)
+	}
+
+	createTestKey(t, db, subGroup.ID, "sk-responses-logical-rate-limit-"+suffix+"-a", ps.encryptionSvc)
+	createTestKey(t, db, subGroup.ID, "sk-responses-logical-rate-limit-"+suffix+"-b", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	router := gin.New()
+	router.POST("/proxy/:group_name/*path", requestmiddleware.ProxyAuth(ps.groupManager, nil), ps.HandleProxy)
+	return router, targetGroup, requestCount
+}
+
+func runHTTPRateLimitRetryCase(t *testing.T, aggregate bool) (*httptest.ResponseRecorder, *atomic.Int32, <-chan string) {
+	t.Helper()
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	requestCount := &atomic.Int32{}
+	authorizations := make(chan string, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		if requestCount.Add(1) == 1 {
+			// A long Retry-After describes pressure on this upstream. It must not
+			// suppress a bounded retry that can rotate to another key or upstream.
+			w.Header().Set("Retry-After", "3600")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error","message":"temporarily limited"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-ok","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	suffix := "standard"
+	if aggregate {
+		suffix = "aggregate"
+	}
+	limitedSubGroup := createTestGroup(t, db, "http-rate-limit-"+suffix+"-limited", "openai")
+	limitedSubGroup.Upstreams = []byte(fmt.Sprintf(`[{"url":%q,"weight":100}]`, upstream.URL))
+	limitedSubGroup.Config = map[string]any{"max_retries": 1, "blacklist_threshold": 100}
+	limitedSubGroup.ProxyKeys = "proxy-a"
+	require.NoError(t, db.Save(limitedSubGroup).Error)
+
+	createTestKey(t, db, limitedSubGroup.ID, "sk-http-rate-limit-"+suffix+"-a", ps.encryptionSvc)
+	if !aggregate {
+		createTestKey(t, db, limitedSubGroup.ID, "sk-http-rate-limit-"+suffix+"-b", ps.encryptionSvc)
+		require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+		require.NoError(t, ps.groupManager.Initialize())
+		t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+		router := gin.New()
+		router.POST("/proxy/:group_name/*path", requestmiddleware.ProxyAuth(ps.groupManager, nil), ps.HandleProxy)
+		return runStreamRetryRequest(t, router, limitedSubGroup.Name, "/v1/chat/completions",
+			`{"model":"gpt-5","messages":[{"role":"user","content":"hello"}]}`), requestCount, authorizations
+	}
+
+	successSubGroup := createTestGroup(t, db, "http-rate-limit-aggregate-success", "openai")
+	successSubGroup.Upstreams = []byte(fmt.Sprintf(`[{"url":%q,"weight":100}]`, upstream.URL))
+	successSubGroup.Config = map[string]any{"max_retries": 0, "blacklist_threshold": 100}
+	require.NoError(t, db.Save(successSubGroup).Error)
+	createTestKey(t, db, successSubGroup.ID, "sk-http-rate-limit-aggregate-success", ps.encryptionSvc)
+
+	targetGroup := &models.Group{
+		Name:        "http-rate-limit-aggregate",
+		ProxyKeys:   "proxy-a",
+		ChannelType: "openai",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[]`),
+		Config:      map[string]any{"max_retries": 1, "sub_max_retries": 0},
+	}
+	require.NoError(t, db.Create(targetGroup).Error)
+	for _, subGroup := range []*models.Group{limitedSubGroup, successSubGroup} {
+		require.NoError(t, db.Create(&models.GroupSubGroup{
+			GroupID:         targetGroup.ID,
+			SubGroupID:      subGroup.ID,
+			SubGroupName:    subGroup.Name,
+			SubGroupEnabled: true,
+			Weight:          100,
+		}).Error)
+	}
+
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(targetGroup.Name)
+	require.NoError(t, err)
+	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hello"}]}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+cachedAggregate.Name+"/v1/chat/completions", strings.NewReader(string(body)))
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+		forcedSubGroupID:    limitedSubGroup.ID,
+	}
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+	return w, requestCount, authorizations
 }

@@ -54,6 +54,23 @@ func TestCCProtocolContentCompatUnsupportedBlocks(t *testing.T) {
 	}
 }
 
+func TestCCProtocolContentCompatCodexRejectsUnmappedImageInsteadOfDroppingIt(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"messages":[{"role":"user","content":[
+			{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}
+		]}]}`)
+
+	_, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err, "the Chat target has an explicit image mapping")
+
+	_, err = convertClaudeToCodex(req, "", nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "content block")
+	require.Contains(t, err.Error(), "image")
+	require.Contains(t, err.Error(), "Not Supported")
+}
+
 func TestCCProtocolContentCompatPlainThinkingHistory(t *testing.T) {
 	req := mustParseClaudeRequest(t, `{
 		"model":"gpt-test","max_tokens":64,

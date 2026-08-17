@@ -170,3 +170,36 @@ func TestGroupManagerRefreshCachedUpstreamsRemovesRenamedCacheEntry(t *testing.T
 	assert.Equal(t, "old-name", original.Name)
 	assert.JSONEq(t, string(originalUpstreams), string(original.Upstreams))
 }
+
+func TestGroupManagerRefreshCachedUpstreamsBatchUpdatesAllGroups(t *testing.T) {
+	t.Parallel()
+
+	first := &models.Group{ID: 51, Name: "first", Upstreams: []byte(`[{"url":"https://old-first.example.com"}]`)}
+	second := &models.Group{ID: 52, Name: "second", Upstreams: []byte(`[{"url":"https://old-second.example.com"}]`)}
+	cacheSyncer, err := syncer.NewCacheSyncer(
+		func() (groupCache, error) {
+			return groupCache{
+				ByName: map[string]*models.Group{first.Name: first, second.Name: second},
+				ByID:   map[uint]*models.Group{first.ID: first, second.ID: second},
+			}, nil
+		},
+		nil,
+		"test:group-manager-batch",
+		logrus.New().WithField("test", t.Name()),
+		nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(cacheSyncer.Stop)
+
+	gm := &GroupManager{syncer: cacheSyncer}
+	gm.refreshCachedUpstreamsBatch(context.Background(), []cachedUpstreamRefresh{
+		{groupID: first.ID, groupName: first.Name, upstreams: []byte(`[{"url":"https://new-first.example.com"}]`)},
+		{groupID: second.ID, groupName: second.Name, upstreams: []byte(`[{"url":"https://new-second.example.com"}]`)},
+	})
+
+	cache := cacheSyncer.Get()
+	assert.JSONEq(t, `[{"url":"https://new-first.example.com"}]`, string(cache.ByID[first.ID].Upstreams))
+	assert.JSONEq(t, `[{"url":"https://new-second.example.com"}]`, string(cache.ByID[second.ID].Upstreams))
+	assert.JSONEq(t, `[{"url":"https://old-first.example.com"}]`, string(first.Upstreams))
+	assert.JSONEq(t, `[{"url":"https://old-second.example.com"}]`, string(second.Upstreams))
+}
