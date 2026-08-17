@@ -337,7 +337,9 @@ func codexToolCallItemType(itemType string) bool {
 }
 
 func codexToolOutputItemType(itemType string) bool {
-	if itemType == "function_call_output" || itemType == "custom_tool_call_output" || itemType == "tool_search_output" || itemType == "mcp_tool_call_output" {
+	if itemType == "function_call_output" || itemType == "custom_tool_call_output" || itemType == "tool_search_output" || itemType == "mcp_tool_call_output" ||
+		itemType == "response_computer_tool_call_output_item" || itemType == "response_custom_tool_call_output_item" ||
+		itemType == "response_function_tool_call_output_item" || itemType == "response_tool_search_output_item" {
 		return true
 	}
 	return strings.HasSuffix(itemType, "_output") || strings.HasSuffix(itemType, "_result") || strings.Contains(itemType, "_tool_result")

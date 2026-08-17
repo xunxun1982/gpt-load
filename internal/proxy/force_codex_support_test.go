@@ -148,6 +148,21 @@ func TestCodexPathHelpersAndSupport(t *testing.T) {
 	})
 }
 
+func TestCodexResponsesOutputItemClassification(t *testing.T) {
+	t.Parallel()
+
+	outputTypes := []string{
+		"response_computer_tool_call_output_item",
+		"response_custom_tool_call_output_item",
+		"response_function_tool_call_output_item",
+		"response_tool_search_output_item",
+	}
+	for _, itemType := range outputTypes {
+		assert.True(t, codexToolOutputItemType(itemType), itemType)
+		assert.False(t, codexToolCallItemType(itemType), itemType)
+	}
+}
+
 func TestConvertCodexRequestToOpenAIChat(t *testing.T) {
 	t.Parallel()
 

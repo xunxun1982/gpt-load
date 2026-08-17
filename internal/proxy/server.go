@@ -876,6 +876,10 @@ func subGroupKeyMaxRetries(subGroupCfg types.SystemSettings, parentSubMaxRetries
 	return maxRetries
 }
 
+func retryBudgetAvailable(configuredRetryLeft, affinityAttempt bool, affinityAttemptCount, affinityMaxAttempts int) bool {
+	return configuredRetryLeft || (affinityAttempt && affinityAttemptCount < affinityMaxAttempts)
+}
+
 // isForceFunctionCallEnabled checks whether the force_function_call flag is enabled
 // for the given group. The middleware is limited to known non-Gemini tool schemas
 // and is stored in the group-level JSON config rather than global system settings.
@@ -1972,7 +1976,20 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	}
 
 	upstreamMayStream := upstreamResponseMayBeEventStream(c, isStream)
-	removeAcceptEncodingForProxyParsing(req, c, group, upstreamMayStream)
+	affinityAttempt := retryCtx != nil && retryCtx.codexAffinityUsingCached
+	affinityAttemptCount := 0
+	affinityMaxAttempts := 0
+	if affinityAttempt {
+		affinityAttemptCount = retryCtx.codexAffinityAttemptCount + 1
+		affinityMaxAttempts = parseCodexAffinityMaxAttempts(group.Config)
+	}
+	retryAvailable := retryBudgetAvailable(
+		retryCount < cfg.MaxRetries,
+		affinityAttempt,
+		affinityAttemptCount,
+		affinityMaxAttempts,
+	)
+	removeAcceptEncodingForProxyParsing(req, c, group, upstreamMayStream, retryAvailable)
 	setUpstreamUserAgentForLog(c, group, req)
 
 	// Use the upstream-specific client (with its dedicated proxy configuration)
@@ -2004,7 +2021,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	}
 
 	removeCodexTurnStateBeforeSend(req, retryCtx != nil && (retryCtx.codexIdentityChanged || retryCtx.codexStateResetRequired))
-	isCodexAffinityAttempt := retryCtx != nil && retryCtx.codexAffinityUsingCached
+	isCodexAffinityAttempt := affinityAttempt
 	if isCodexAffinityAttempt {
 		retryCtx.codexAffinityAttemptCount++
 	}
@@ -2017,7 +2034,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	// Inspect the actual upstream media type: Responses requests may be forced to
 	// stream upstream even when the downstream client requested a normal response.
 	if err == nil && resp != nil {
-		if logicalStatus, message, failed := retryableResponseProbe(c, resp); failed {
+		if logicalStatus, message, failed := retryableResponseProbe(c, resp, retryAvailable); failed {
 			resp.StatusCode = logicalStatus
 			logicalError = message
 			setLogicalFailureContext(c, logicalStatus, "upstream_response_error", message)
@@ -2809,7 +2826,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 	if err != nil {
 		statusCode, apiErr := mapCodexSelectionError(err, apiKey, affinityEnabled)
-		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, attemptStartTime, retryCtx, affinityEnabled, maxRetries, statusCode, err, apiErr.Message, apiKey)
+		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, aggregateSubGroupFailureTiming{lifecycleStartTime: startTime, attemptStartTime: attemptStartTime}, retryCtx, affinityEnabled, maxRetries, statusCode, err, apiErr.Message, apiKey)
 		return
 	}
 	if upstreamSelection == nil || upstreamSelection.URL == "" {
@@ -2913,8 +2930,19 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
+	subGroupCfg := group.EffectiveConfig
+	subGroupKeyRetryCount := retryCtx.subGroupKeyRetryMap[subGroupID]
+	subGroupMaxRetries := subGroupKeyMaxRetries(subGroupCfg, subMaxRetries, subMaxRetriesSet)
+	affinityAttempt := affinityEnabled && retryCtx.codexAffinityUsingCached &&
+		retryCtx.codexAffinityBinding.sameIdentity(retryCtx.codexSelection.binding)
+	retryAvailable := retryBudgetAvailable(
+		retryCtx.attemptCount < maxRetries || subGroupKeyRetryCount < subGroupMaxRetries,
+		affinityAttempt,
+		retryCtx.codexAffinityAttemptCount+1,
+		codexAffinityMaxAttempts,
+	)
 	upstreamMayStream := upstreamResponseMayBeEventStream(c, isStream)
-	removeAcceptEncodingForProxyParsing(req, c, group, upstreamMayStream)
+	removeAcceptEncodingForProxyParsing(req, c, group, upstreamMayStream, retryAvailable)
 	setUpstreamUserAgentForLog(c, group, req)
 
 	// Use the upstream-specific client
@@ -2944,8 +2972,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}).Debug("Using HTTP client for aggregate sub-group request")
 
 	removeCodexTurnStateBeforeSend(req, retryCtx.codexIdentityChanged || retryCtx.codexStateResetRequired)
-	isCodexAffinityPrimaryAttempt := affinityEnabled && retryCtx.codexAffinityUsingCached &&
-		retryCtx.codexAffinityBinding.sameIdentity(retryCtx.codexSelection.binding)
+	isCodexAffinityPrimaryAttempt := affinityAttempt
 	if isCodexAffinityPrimaryAttempt {
 		// Count only attempts that reach the actual upstream client call.
 		retryCtx.codexAffinityAttemptCount++
@@ -2959,7 +2986,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Inspect the actual upstream media type: Responses requests may be forced to
 	// stream upstream even when the downstream client requested a normal response.
 	if err == nil && resp != nil {
-		if logicalStatus, message, failed := retryableResponseProbe(c, resp); failed {
+		if logicalStatus, message, failed := retryableResponseProbe(c, resp, retryAvailable); failed {
 			resp.StatusCode = logicalStatus
 			logicalError = message
 			setLogicalFailureContext(c, logicalStatus, "upstream_response_error", message)
@@ -3055,14 +3082,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				"codex_affinity_max_attempts": codexAffinityMaxAttempts,
 			}).Debug("Codex affinity attempts exhausted, applying aggregate failover budget")
 
-			ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, attemptStartTime, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
+			ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, aggregateSubGroupFailureTiming{lifecycleStartTime: startTime, attemptStartTime: attemptStartTime}, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
 			return
 		}
-
-		// Check sub-group's key retry limit
-		subGroupCfg := group.EffectiveConfig
-		subGroupKeyRetryCount := retryCtx.subGroupKeyRetryMap[subGroupID]
-		subGroupMaxRetries := subGroupKeyMaxRetries(subGroupCfg, subMaxRetries, subMaxRetriesSet)
 
 		// Determine if sub-group has exhausted its key retries
 		isSubGroupKeyRetryExhausted := subGroupKeyRetryCount >= subGroupMaxRetries
@@ -3128,7 +3150,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			"sub_group_max_retries": subGroupMaxRetries,
 		}).Debug("Sub-group key retries exhausted, switching to next sub-group")
 
-		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, attemptStartTime, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
+		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, aggregateSubGroupFailureTiming{lifecycleStartTime: startTime, attemptStartTime: attemptStartTime}, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
 		return
 	}
 
@@ -3245,6 +3267,11 @@ func (ps *ProxyServer) countAvailableSubGroups(group *models.Group, excludedIDs 
 	return count
 }
 
+type aggregateSubGroupFailureTiming struct {
+	lifecycleStartTime time.Time
+	attemptStartTime   time.Time
+}
+
 // handleAggregateSubGroupFailure handles failure of a sub-group in aggregate retry logic
 func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	c *gin.Context,
@@ -3253,8 +3280,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	group *models.Group,
 	bodyBytes []byte,
 	isStream bool,
-	lifecycleStartTime time.Time,
-	attemptStartTime time.Time,
+	timing aggregateSubGroupFailureTiming,
 	retryCtx *retryContext,
 	affinityEnabled bool,
 	maxRetries int,
@@ -3266,7 +3292,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	if retryCtx.lifecycleCtx != nil && retryCtx.lifecycleCtx.Err() != nil {
 		statusCode, ctxErr := retryLifecycleErrorStatus(retryCtx.lifecycleCtx)
 		clearAggregateSubGroupFinal := markAggregateSubGroupFinal(c)
-		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, timing.attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
 		clearAggregateSubGroupFinal()
 		writeRetryLifecycleError(c, statusCode, ctxErr)
 		return
@@ -3309,7 +3335,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	}
 
 	clearAggregateSubGroupFinal := markAggregateSubGroupFinal(c)
-	ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, logError, isStream, "", nil, "", channelHandler, bodyBytes, requestType)
+	ps.logRequest(c, originalGroup, group, apiKey, timing.attemptStartTime, statusCode, logError, isStream, "", nil, "", channelHandler, bodyBytes, requestType)
 	clearAggregateSubGroupFinal()
 
 	// If this is the last attempt, return error
@@ -3340,7 +3366,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	retryCtx.attemptCount++
 	retryCtx.forcedSubGroupID = 0
 	// Use original body bytes for retry to allow new sub-group to apply its own mapping
-	ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, retryCtx.originalBodyBytes, isStream, lifecycleStartTime, retryCtx)
+	ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, retryCtx.originalBodyBytes, isStream, timing.lifecycleStartTime, retryCtx)
 }
 
 // shouldAbortOnIgnorableError checks if an error is ignorable (e.g. client disconnected)

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -146,6 +145,14 @@ func isEventStreamResponse(resp *http.Response) bool {
 	return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
 }
 
+func hasUnsupportedResponseContentEncoding(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
+	return contentEncoding != "" && !strings.EqualFold(contentEncoding, "identity")
+}
+
 // retryableStreamProbe buffers only the leading SSE event. A logical failure can
 // be retried safely only before any meaningful event has reached the downstream.
 // Do not detach Body.Read behind a probe-only timer: net/http response bodies have
@@ -155,7 +162,7 @@ func isEventStreamResponse(resp *http.Response) bool {
 // being written here: a direct write would commit the downstream response and close
 // the retry window, while also bypassing protocol conversion and duplicating replay.
 func retryableStreamProbe(resp *http.Response) (int, string, bool) {
-	if resp == nil || resp.Body == nil || !isEventStreamResponse(resp) {
+	if resp == nil || resp.Body == nil || !isEventStreamResponse(resp) || hasUnsupportedResponseContentEncoding(resp) {
 		return 0, "", false
 	}
 	reader := bufio.NewReaderSize(resp.Body, 4*1024)
@@ -172,6 +179,12 @@ func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 		}
 		if err != nil {
 			capture.Finish()
+			if errors.Is(err, io.EOF) && !capture.meaningfulSeen && !capture.terminalSeen {
+				// An SSE response that ends before content or a terminal event is an
+				// upstream failure for every supported protocol, independent of HTTP status.
+				capture.firstSemanticFailed = true
+				capture.recordFailure("upstream_eof", "upstream_eof")
+			}
 			if !errors.Is(err, io.EOF) {
 				probeErr = err
 			}
@@ -196,18 +209,18 @@ func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 // reach the downstream. Non-stream Responses payloads use a bounded prefix and
 // keep the buffered reader as the response body so the selected handler replays
 // every byte without a second upstream read or an unbounded allocation.
-func retryableResponseProbe(c *gin.Context, resp *http.Response) (int, string, bool) {
+func retryableResponseProbe(c *gin.Context, resp *http.Response, retryAvailable bool) (int, string, bool) {
 	if isEventStreamResponse(resp) {
 		return retryableStreamProbe(resp)
 	}
 	if c == nil || c.Request == nil || resp == nil || resp.Body == nil ||
+		!retryAvailable ||
 		resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices ||
 		!isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 		return 0, "", false
 	}
 
-	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
-	if contentEncoding != "" && !strings.EqualFold(contentEncoding, "identity") {
+	if hasUnsupportedResponseContentEncoding(resp) {
 		// Requests parsed by the proxy omit Accept-Encoding, so net/http normally
 		// exposes decoded bytes. Preserve an unsolicited encoding rather than
 		// risking classification of compressed data or changing the response.
@@ -360,7 +373,19 @@ func streamJSONPayload(line []byte) []byte {
 	}
 }
 
+func isSSETerminalSentinel(line []byte) bool {
+	line = bytes.TrimSpace(line)
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return false
+	}
+	return bytes.Equal(bytes.TrimSpace(line[len("data:"):]), []byte("[DONE]"))
+}
+
 func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
+	if isSSETerminalSentinel(line) {
+		p.terminalSeen = true
+		return
+	}
 	data := streamJSONPayload(line)
 	if len(data) == 0 {
 		return
@@ -374,32 +399,22 @@ func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
 	if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" || eventType == "response.failed" {
 		p.terminalSeen = true
 	}
+	isUpstreamEOF := isResponseIncompleteUpstreamEOF(data, eventType)
 	nestedError := gjson.GetBytes(data, "error")
-	if !nestedError.IsObject() && eventType != "error" && eventType != "response.failed" && !strings.EqualFold(responseStatus, "failed") {
+	if !nestedError.IsObject() && eventType != "error" && eventType != "response.failed" && !strings.EqualFold(responseStatus, "failed") && !isUpstreamEOF {
 		return
 	}
 	if isFirstSemantic {
 		p.firstSemanticFailed = true
 	}
-	errorCode := strings.TrimSpace(gjson.GetBytes(data, "error.code").String())
-	if errorCode == "" {
-		errorCode = strings.TrimSpace(gjson.GetBytes(data, "error.type").String())
-	}
-	if errorCode == "" {
-		errorCode = strings.TrimSpace(gjson.GetBytes(data, "error.status").String())
-	}
-	if errorCode == "" {
-		errorCode = strings.TrimSpace(gjson.GetBytes(data, "response.error.code").String())
-	}
-	if errorCode == "" && eventType == "error" {
-		errorCode = strings.TrimSpace(gjson.GetBytes(data, "code").String())
-	}
-	errorMessage := strings.TrimSpace(gjson.GetBytes(data, "error.message").String())
-	if errorMessage == "" {
-		errorMessage = strings.TrimSpace(gjson.GetBytes(data, "response.error.message").String())
-	}
-	if errorMessage == "" && eventType == "error" {
-		errorMessage = strings.TrimSpace(gjson.GetBytes(data, "message").String())
+	errorCode, errorMessage := responseFailureFields(data, eventType)
+	if isUpstreamEOF {
+		if errorCode == "" {
+			errorCode = "upstream_eof"
+		}
+		if errorMessage == "" {
+			errorMessage = "upstream_eof"
+		}
 	}
 	p.recordFailure(errorCode, errorMessage)
 	p.terminalSeen = true
@@ -428,6 +443,10 @@ func (p *sseLogicalFailureCapture) apply(c *gin.Context) {
 }
 
 func (p *sseLogicalFailureCapture) parseLine(line []byte) {
+	if isSSETerminalSentinel(line) {
+		p.terminalSeen = true
+		return
+	}
 	data := streamJSONPayload(line)
 	if len(data) == 0 {
 		return
@@ -465,36 +484,18 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 		p.terminalSeen = true
 	}
 
-	errorCode := ""
-	errorMessage := ""
-	if payload.Error != nil {
-		errorCode = responseErrorCodeString(payload.Error.Code)
+	errorCode, errorMessage := responseFailureFields(data, payload.Type)
+	isUpstreamEOF := isResponseIncompleteUpstreamEOF(data, payload.Type)
+	if isUpstreamEOF {
 		if errorCode == "" {
-			errorCode = strings.TrimSpace(payload.Error.Type)
-		}
-		if errorCode == "" {
-			errorCode = strings.TrimSpace(payload.Error.Status)
-		}
-		errorMessage = strings.TrimSpace(payload.Error.Message)
-	}
-	if payload.Response != nil && payload.Response.Error != nil {
-		if errorCode == "" {
-			errorCode = responseErrorCodeString(payload.Response.Error.Code)
+			errorCode = "upstream_eof"
 		}
 		if errorMessage == "" {
-			errorMessage = strings.TrimSpace(payload.Response.Error.Message)
-		}
-	}
-	if payload.Type == "error" {
-		if errorCode == "" {
-			errorCode = strings.TrimSpace(gjson.GetBytes(data, "code").String())
-		}
-		if errorMessage == "" {
-			errorMessage = strings.TrimSpace(gjson.GetBytes(data, "message").String())
+			errorMessage = "upstream_eof"
 		}
 	}
 
-	isFailed := payload.Error != nil || payload.Type == "error" || payload.Type == "response.failed" || (payload.Response != nil && strings.EqualFold(strings.TrimSpace(payload.Response.Status), "failed"))
+	isFailed := payload.Error != nil || payload.Type == "error" || payload.Type == "response.failed" || (payload.Response != nil && strings.EqualFold(strings.TrimSpace(payload.Response.Status), "failed")) || isUpstreamEOF
 	if !isFailed {
 		return
 	}
@@ -506,17 +507,43 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 	p.terminalSeen = true
 }
 
-func responseErrorCodeString(value any) string {
-	switch code := value.(type) {
-	case nil:
-		return ""
-	case string:
-		return strings.TrimSpace(code)
-	case json.Number:
-		return strings.TrimSpace(code.String())
-	default:
-		return strings.TrimSpace(fmt.Sprint(code))
+func responseFailureFields(data []byte, eventType string) (string, string) {
+	errorCode := responseFailureField(data, "error.code")
+	if errorCode == "" {
+		errorCode = responseFailureField(data, "error.type")
 	}
+	if errorCode == "" {
+		errorCode = responseFailureField(data, "error.status")
+	}
+	if errorCode == "" {
+		errorCode = responseFailureField(data, "response.error.code")
+	}
+	if errorCode == "" && eventType == "error" {
+		errorCode = responseFailureField(data, "code")
+	}
+	errorMessage := responseFailureField(data, "error.message")
+	if errorMessage == "" {
+		errorMessage = responseFailureField(data, "response.error.message")
+	}
+	if errorMessage == "" && eventType == "error" {
+		errorMessage = responseFailureField(data, "message")
+	}
+	return errorCode, errorMessage
+}
+
+func responseFailureField(data []byte, path string) string {
+	value := gjson.GetBytes(data, path)
+	if value.Type == gjson.Number {
+		// Preserve the numeric token exactly so high-precision and exponent-form
+		// provider codes are classified without float rounding or representation drift.
+		return strings.TrimSpace(value.Raw)
+	}
+	return strings.TrimSpace(value.String())
+}
+
+func isResponseIncompleteUpstreamEOF(data []byte, eventType string) bool {
+	return eventType == "response.incomplete" &&
+		strings.EqualFold(strings.TrimSpace(gjson.GetBytes(data, "response.incomplete_details.reason").String()), "upstream_eof")
 }
 
 func (p *sseLogicalFailureCapture) recordFailure(errorCode, errorMessage string) {

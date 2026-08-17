@@ -61,7 +61,7 @@ func applyCodexCompatibleHeaders(req *http.Request, group *models.Group, isStrea
 	return channel.ApplyCodexCompatibleHeaders(req, group, isStream)
 }
 
-func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Group) bool {
+func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Group, retryAvailable bool) bool {
 	if c == nil || c.Request == nil || group == nil {
 		return false
 	}
@@ -71,7 +71,7 @@ func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Gro
 	if isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 		// Retry classification inspects successful non-stream Responses payloads
 		// before forwarding them. Let net/http transparently decode negotiated gzip.
-		return true
+		return retryAvailable
 	}
 	if isCCEnabled(c) || isCodexEnabled(c) || isFunctionCallEnabled(c) || isOpenAIResponseForcedStream(c) || codexDegradationMitigationEnabled(c) {
 		return true
@@ -86,8 +86,8 @@ func upstreamResponseMayBeEventStream(c *gin.Context, isStream bool) bool {
 	return isStream || isOpenAIResponseForcedStream(c) || codexDegradationMitigationEnabled(c)
 }
 
-func removeAcceptEncodingForProxyParsing(req *http.Request, c *gin.Context, group *models.Group, upstreamMayStream bool) {
-	if req == nil || (!upstreamMayStream && !shouldRemoveAcceptEncodingForProxyParsing(c, group)) {
+func removeAcceptEncodingForProxyParsing(req *http.Request, c *gin.Context, group *models.Group, upstreamMayStream, retryAvailable bool) {
+	if req == nil || (!upstreamMayStream && !shouldRemoveAcceptEncodingForProxyParsing(c, group, retryAvailable)) {
 		return
 	}
 	// Retry probes must inspect upstream bytes before anything is sent downstream.

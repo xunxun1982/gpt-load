@@ -52,6 +52,82 @@ func TestHandleProxyRetriesLeadingRateLimitStreamFailure(t *testing.T) {
 	}
 }
 
+func TestHandleProxyRetriesPreludeEOFForAllSSEChannels(t *testing.T) {
+	testCases := []struct {
+		name        string
+		channelType string
+		path        string
+		requestBody string
+		firstStream string
+		successBody string
+		successMark string
+	}{
+		{
+			name:        "OpenAI Chat",
+			channelType: "openai",
+			path:        "/v1/chat/completions",
+			requestBody: `{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hello"}]}`,
+			firstStream: "data: {\"id\":\"chatcmpl-pending\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+			successBody: "data: {\"id\":\"chatcmpl-ok\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n" +
+				"data: [DONE]\n\n",
+			successMark: `"content":"ok"`,
+		},
+		{
+			name:        "Anthropic Claude",
+			channelType: "anthropic",
+			path:        "/v1/messages",
+			requestBody: `{"model":"claude-sonnet","stream":true,"max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`,
+			firstStream: "event: message_start\n" +
+				"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_pending\",\"content\":[]}}\n\n",
+			successBody: "event: message_start\n" +
+				"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_ok\",\"content\":[]}}\n\n" +
+				"event: content_block_delta\n" +
+				"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+				"event: message_stop\n" +
+				"data: {\"type\":\"message_stop\"}\n\n",
+			successMark: `"text":"ok"`,
+		},
+		{
+			name:        "Gemini",
+			channelType: "gemini",
+			path:        "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+			requestBody: `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`,
+			firstStream: "",
+			successBody: "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]}}]}\n\n",
+			successMark: `"text":"ok"`,
+		},
+		{
+			name:        "OpenAI Responses",
+			channelType: "openai-response",
+			path:        "/v1/responses",
+			requestBody: `{"model":"gpt-5","stream":true,"input":"hello"}`,
+			firstStream: "event: response.created\n" +
+				"data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n",
+			successBody: "event: response.completed\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-ok\",\"status\":\"completed\",\"output\":[]}}\n\n",
+			successMark: "response.completed",
+		},
+	}
+
+	for _, tc := range testCases {
+		for _, aggregate := range []bool{false, true} {
+			groupType := "standard"
+			if aggregate {
+				groupType = "aggregate"
+			}
+			t.Run(fmt.Sprintf("%s/%s", tc.name, groupType), func(t *testing.T) {
+				handler, group, requestCount := setupChannelStreamRetryGroup(t, tc.channelType, aggregate, http.StatusNotFound, tc.firstStream, tc.successBody)
+				response := runStreamRetryRequest(t, handler, group.Name, tc.path, tc.requestBody)
+
+				require.Equal(t, http.StatusOK, response.Code)
+				require.Equal(t, int32(2), requestCount.Load())
+				require.Contains(t, response.Body.String(), tc.successMark)
+				require.NotContains(t, response.Body.String(), "upstream_eof")
+			})
+		}
+	}
+}
+
 func TestHandleProxyRetriesHTTPRateLimitWithinRetryBudget(t *testing.T) {
 	testCases := []struct {
 		name      string
@@ -191,7 +267,7 @@ func TestHandleProxyRetriesLeadingChannelStreamFailures(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			handler, group, requestCount := setupChannelStreamRetryGroup(t, tc.channelType, tc.aggregate, tc.firstStream, tc.successBody)
+			handler, group, requestCount := setupChannelStreamRetryGroup(t, tc.channelType, tc.aggregate, http.StatusOK, tc.firstStream, tc.successBody)
 			response := runStreamRetryRequest(t, handler, group.Name, tc.path, tc.requestBody)
 
 			require.Equal(t, http.StatusOK, response.Code)
@@ -205,7 +281,7 @@ func TestHandleProxyRetriesLeadingChannelStreamFailures(t *testing.T) {
 func TestHandleProxyReturnsFinalLogicalStreamFailureAfterRetryExhaustion(t *testing.T) {
 	const failure = "event: error\n" +
 		"data: {\"type\":\"error\",\"code\":\"rate_limit_exceeded\",\"message\":\"temporary request rate limit\"}\n\n"
-	handler, group, requestCount := setupChannelStreamRetryGroup(t, "openai", false, failure, failure)
+	handler, group, requestCount := setupChannelStreamRetryGroup(t, "openai", false, http.StatusOK, failure, failure)
 
 	response := runStreamRetryRequest(t, handler, group.Name, "/v1/chat/completions",
 		`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
@@ -215,7 +291,7 @@ func TestHandleProxyReturnsFinalLogicalStreamFailureAfterRetryExhaustion(t *test
 	require.Contains(t, response.Body.String(), "temporary request rate limit")
 }
 
-func setupChannelStreamRetryGroup(t *testing.T, channelType string, aggregate bool, firstStream, successStream string) (http.Handler, *models.Group, *atomic.Int32) {
+func setupChannelStreamRetryGroup(t *testing.T, channelType string, aggregate bool, firstStatus int, firstStream, successStream string) (http.Handler, *models.Group, *atomic.Int32) {
 	t.Helper()
 
 	db := setupTestDB(t)
@@ -224,6 +300,7 @@ func setupChannelStreamRetryGroup(t *testing.T, channelType string, aggregate bo
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		if requestCount.Add(1) == 1 {
+			w.WriteHeader(firstStatus)
 			_, _ = io.WriteString(w, firstStream)
 			return
 		}

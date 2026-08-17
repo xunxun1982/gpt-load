@@ -657,6 +657,31 @@ func TestParseMaxRetries(t *testing.T) {
 	}
 }
 
+func TestRetryBudgetAvailable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		configuredRetryLeft  bool
+		affinityAttempt      bool
+		affinityAttemptCount int
+		affinityMaxAttempts  int
+		expected             bool
+	}{
+		{name: "configured retry remains", configuredRetryLeft: true, expected: true},
+		{name: "affinity retry remains", affinityAttempt: true, affinityAttemptCount: 1, affinityMaxAttempts: 2, expected: true},
+		{name: "affinity budget exhausted", affinityAttempt: true, affinityAttemptCount: 2, affinityMaxAttempts: 2, expected: false},
+		{name: "fresh affinity selection has no affinity-only retry", affinityAttemptCount: 0, affinityMaxAttempts: 5, expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, retryBudgetAvailable(tt.configuredRetryLeft, tt.affinityAttempt, tt.affinityAttemptCount, tt.affinityMaxAttempts))
+		})
+	}
+}
+
 func TestIsForceFunctionCallEnabled(t *testing.T) {
 	t.Parallel()
 

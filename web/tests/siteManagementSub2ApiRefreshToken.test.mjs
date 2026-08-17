@@ -159,12 +159,24 @@ test("AnyRouter balance capability is exposed by the site table", () => {
   assert.match(panel, /"wong-gongyi",\s+"anyrouter"/);
 });
 
-test("legacy empty site types are normalized before table state and balance updates", () => {
+test("legacy empty site types are normalized before table state and balance updates", async () => {
   assert.match(
     panel,
     /const normalizedSites = result\.sites\.map\(site => \(\{[\s\S]*site_type: normalizeManagedSiteType\(site\.site_type\)[\s\S]*\}\)\)/
   );
+  const normalizeFunction = panel.match(
+    /function normalizeManagedSiteType\([^)]*\)[^{]*\{[\s\S]*?\n\}/
+  );
+  assert.ok(normalizeFunction);
+  const { outputText } = ts.transpileModule(`export ${normalizeFunction[0]}`, {
+    compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+  });
+  const { normalizeManagedSiteType } = await import(
+    `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
+  );
+  assert.equal(normalizeManagedSiteType(""), "unknown");
   assert.match(panel, /sites\.value = normalizedSites/);
+  assert.match(panel, /updateSiteBalances\(normalizedSites, siteBalanceRevision\)/);
 });
 
 test("site auth hints explain AnyRouter user ID and browser-bound cookies", () => {
