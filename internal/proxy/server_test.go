@@ -2133,13 +2133,18 @@ func TestExecuteRequestWithRetryLogsEachAttemptDuration(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	body := []byte(`{"model":"gpt-test"}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/retry-duration-standard/v1/chat/completions", bytes.NewReader(body))
+	start := time.Now()
 	ps.executeRequestWithRetry(c, &testChannelProxy{client: upstream.Client(), url: upstream.URL}, group, group, body, false, time.Now(), 0)
+	elapsed := time.Since(start).Milliseconds()
 
 	require.Equal(t, http.StatusOK, w.Code)
 	first := popRecordedRequestLog(t, memStore)
 	second := popRecordedRequestLog(t, memStore)
-	assert.Less(t, first.Duration, int64(120))
-	assert.Less(t, second.Duration, int64(120))
+	// Each attempt's recorded duration excludes the retry delay (logRequest
+	// runs before waitBeforeRetry), so the sum must stay below the total
+	// elapsed time minus the configured 150ms retry delay. Relative bounds
+	// keep this test robust under slow CI schedulers.
+	assert.LessOrEqual(t, first.Duration+second.Duration, elapsed-int64(150))
 }
 
 func TestExecuteRequestWithRetryKeepsRetryDelayInsideNonStreamTimeout(t *testing.T) {
@@ -3476,15 +3481,20 @@ func TestExecuteRequestWithAggregateRetryWaitsBeforeSameSubGroupKeyRetry(t *test
 		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
 	}
 
+	start := time.Now()
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+	elapsed := time.Since(start).Milliseconds()
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, attemptTimes, 2)
 	assert.GreaterOrEqual(t, attemptTimes[1].Sub(attemptTimes[0]), 70*time.Millisecond)
 	firstLog := popRecordedRequestLog(t, memStore)
 	secondLog := popRecordedRequestLog(t, memStore)
-	assert.Less(t, firstLog.Duration, int64(120))
-	assert.Less(t, secondLog.Duration, int64(120))
+	// Each attempt's recorded duration excludes the retry delay (logRequest
+	// runs before waitBeforeRetry), so the sum must stay below the total
+	// elapsed time minus the configured 150ms sub-group retry delay.
+	// Relative bounds keep this test robust under slow CI schedulers.
+	assert.LessOrEqual(t, firstLog.Duration+secondLog.Duration, elapsed-int64(150))
 }
 
 func TestExecuteRequestWithAggregateRetryKeepsSubGroupDelayInsideNonStreamTimeout(t *testing.T) {

@@ -1952,6 +1952,10 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		req.Header.Set("Connection", "Keep-Alive")
 	}
 
+	// bodyBytes is kept unfiltered so a retry re-evaluates the selected
+	// upstream's capabilities; loggedBody mirrors the payload actually sent
+	// so request logs reflect the filtered body when filtering rewrote it.
+	loggedBody := bodyBytes
 	// Apply protocol-specific compatibility filtering only to this dispatch
 	// attempt. Keep bodyBytes unchanged so a retry can re-evaluate the selected
 	// upstream's capabilities.
@@ -1972,6 +1976,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 			req.GetBody = func() (io.ReadCloser, error) {
 				return io.NopCloser(bytes.NewReader(filteredBody)), nil
 			}
+			loggedBody = filteredBody
 		}
 	}
 
@@ -2005,7 +2010,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	if client == nil {
 		logrus.Errorf("CRITICAL: upstreamSelection returned nil client for group %s, upstream %s", group.Name, utils.SanitizeRequestURLForLog(upstreamSelection.URL))
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Internal error: nil HTTP client"))
-		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, errors.New("nil HTTP client"), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, errors.New("nil HTTP client"), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeFinal)
 		return
 	}
 
@@ -2049,7 +2054,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	if err != nil || (resp != nil && shouldFailoverOnStatusCode(retryStatusCode, group)) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
-			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeFinal)
 			return
 		}
 
@@ -2103,10 +2108,10 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 					// affinity budget, but send a clean request instead of replaying it.
 					ps.degradeCodexAffinity(retryCtx)
 				}
-				ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, errors.New(internalError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeRetry)
+				ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, errors.New(internalError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeRetry)
 				if !waitBeforeRetry(lifecycleCtx, retryDelayForAttempt(cfg, retryCtx.codexAffinityAttemptCount-1)) {
 					statusCode, ctxErr := retryLifecycleErrorStatus(lifecycleCtx)
-					ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+					ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeFinal)
 					writeRetryLifecycleError(c, statusCode, ctxErr)
 					return
 				}
@@ -2124,7 +2129,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 			requestType = models.RequestTypeFinal
 		}
 
-		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, errors.New(internalError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, requestType)
+		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, errors.New(internalError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, requestType)
 
 		// If this is the last attempt, return error directly without recursion
 		if isLastAttempt {
@@ -2140,7 +2145,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 
 		if !waitBeforeRetry(lifecycleCtx, retryDelayForAttempt(cfg, retryCount)) {
 			statusCode, ctxErr := retryLifecycleErrorStatus(lifecycleCtx)
-			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeFinal)
 			writeRetryLifecycleError(c, statusCode, ctxErr)
 			return
 		}
@@ -2235,7 +2240,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		}
 	}
 
-	ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+	ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeFinal)
 	ps.bindCodexAffinityIfSuccessful(c, resp.StatusCode, retryCtx)
 }
 
@@ -2912,6 +2917,10 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		req.Header.Set("Connection", "Keep-Alive")
 	}
 
+	// finalBodyBytes is kept unfiltered so a retry rebuilds the converted
+	// body; loggedBody mirrors the payload actually sent so request logs
+	// reflect the filtered body when filtering rewrote it.
+	loggedBody := finalBodyBytes
 	// Filter only the body sent by this attempt; retries rebuild the converted
 	// body and can select an upstream with a different capability contract.
 	if target := protocolConversionTarget(c, group); target == codexUpstreamOpenAIChat || target == codexUpstreamClaude {
@@ -2931,6 +2940,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			req.GetBody = func() (io.ReadCloser, error) {
 				return io.NopCloser(bytes.NewReader(filteredBody)), nil
 			}
+			loggedBody = filteredBody
 		}
 	}
 
@@ -2962,7 +2972,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if client == nil {
 		logrus.Errorf("CRITICAL: upstreamSelection returned nil client for sub-group %s, upstream %s", group.Name, utils.SanitizeRequestURLForLog(upstreamSelection.URL))
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Internal error: nil HTTP client"))
-		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, errors.New("nil HTTP client"), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, errors.New("nil HTTP client"), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeFinal)
 		return
 	}
 
@@ -3005,7 +3015,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if err != nil || (resp != nil && shouldFailoverOnStatusCode(retryStatusCode, group)) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
-			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeFinal)
 			return
 		}
 
@@ -3059,7 +3069,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 					ps.degradeCodexAffinity(retryCtx)
 				}
 				ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, errors.New(internalError), isStream,
-					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeRetry)
+					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeRetry)
 
 				logrus.WithFields(logrus.Fields{
 					"aggregate_group":             originalGroup.Name,
@@ -3072,7 +3082,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				if !waitBeforeRetry(retryCtx.lifecycleCtx, retryDelayForAttempt(group.EffectiveConfig, retryCtx.codexAffinityAttemptCount-1)) {
 					statusCode, ctxErr := retryLifecycleErrorStatus(retryCtx.lifecycleCtx)
 					ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream,
-						upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+						upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeFinal)
 					writeRetryLifecycleError(c, statusCode, ctxErr)
 					return
 				}
@@ -3090,7 +3100,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				"codex_affinity_max_attempts": codexAffinityMaxAttempts,
 			}).Debug("Codex affinity attempts exhausted, applying aggregate failover budget")
 
-			ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, aggregateSubGroupFailureTiming{lifecycleStartTime: startTime, attemptStartTime: attemptStartTime}, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
+			ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, loggedBody, isStream, aggregateSubGroupFailureTiming{lifecycleStartTime: startTime, attemptStartTime: attemptStartTime}, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
 			return
 		}
 
@@ -3116,7 +3126,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 			// Log retry request for sub-group key retry
 			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, errors.New(internalError), isStream,
-				upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeRetry)
+				upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeRetry)
 
 			logrus.WithFields(logrus.Fields{
 				"sub_group":             group.Name,
@@ -3137,7 +3147,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			if !waitBeforeRetry(retryCtx.lifecycleCtx, retryDelayForAttempt(subGroupCfg, subGroupKeyRetryCount)) {
 				statusCode, ctxErr := retryLifecycleErrorStatus(retryCtx.lifecycleCtx)
 				ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream,
-					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeFinal)
 				writeRetryLifecycleError(c, statusCode, ctxErr)
 				return
 			}
@@ -3158,7 +3168,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			"sub_group_max_retries": subGroupMaxRetries,
 		}).Debug("Sub-group key retries exhausted, switching to next sub-group")
 
-		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, aggregateSubGroupFailureTiming{lifecycleStartTime: startTime, attemptStartTime: attemptStartTime}, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
+		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, loggedBody, isStream, aggregateSubGroupFailureTiming{lifecycleStartTime: startTime, attemptStartTime: attemptStartTime}, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
 		return
 	}
 
@@ -3253,7 +3263,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
-	ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+	ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeFinal)
 	ps.bindCodexAffinityIfSuccessful(c, resp.StatusCode, retryCtx)
 }
 

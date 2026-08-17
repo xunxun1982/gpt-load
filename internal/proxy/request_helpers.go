@@ -209,6 +209,13 @@ func filterProtocolConversionRequestBody(bodyBytes []byte, group *models.Group, 
 	if len(bodyBytes) == 0 || !protocolConversionShouldRemovePromptCacheKey(group, target, upstreamURL) {
 		return bodyBytes, nil
 	}
+	// Fast path: skip the full JSON parse when the literal key is absent. The
+	// input here is always the converter's own output (applyForceCodexRequestConversion
+	// runs before filtering and emits the key literally via Go's json.Marshal), so
+	// escaped member names such as "prompt_cache_\u006bey" cannot reach this filter:
+	// the original body is decoded into CodexRequest.PromptCacheKey first and then
+	// re-emitted verbatim. Removing this fast path would force a full parse and
+	// re-serialize (reordering keys) on every /codex conversion in the hot path.
 	if !bytes.Contains(bodyBytes, []byte(`"prompt_cache_key"`)) {
 		return bodyBytes, nil
 	}

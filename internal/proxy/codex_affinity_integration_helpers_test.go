@@ -90,7 +90,13 @@ func setupRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handler, *model
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		observations <- codexAffinityObservation{auth: r.Header.Get("Authorization"), turn: r.Header.Get("X-Codex-Turn-State"), body: body}
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// observation count asserted by the caller instead of hanging the
+		// upstream handler.
+		select {
+		case observations <- codexAffinityObservation{auth: r.Header.Get("Authorization"), turn: r.Header.Get("X-Codex-Turn-State"), body: body}:
+		default:
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if requestCount.Add(1) == 1 {
 			http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
@@ -136,7 +142,13 @@ func setupStreamingRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handle
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		observations <- codexAffinityObservation{auth: r.Header.Get("Authorization"), turn: r.Header.Get("X-Codex-Turn-State"), body: body}
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// observation count asserted by the caller instead of hanging the
+		// upstream handler.
+		select {
+		case observations <- codexAffinityObservation{auth: r.Header.Get("Authorization"), turn: r.Header.Get("X-Codex-Turn-State"), body: body}:
+		default:
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		if requestCount.Add(1) == 2 {
 			_, _ = io.WriteString(w, "event: response.failed\n"+

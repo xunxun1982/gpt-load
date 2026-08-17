@@ -56,6 +56,14 @@ func TestCodexRequestOptionCompatOmitsToolOptionsWithoutTools(t *testing.T) {
 	payload := decodeCompatObject(t, applyForceCodexCompat(t, "openai", body))
 	assert.NotContains(t, payload, "tool_choice")
 	assert.NotContains(t, payload, "parallel_tool_calls")
+
+	// The Claude conversion must behave identically: Anthropic rejects a
+	// forced tool selector when the request carries no tools, and "none" is
+	// already the default for tool-less requests, so tool_choice is omitted.
+	claude := decodeCompatObject(t, applyForceCodexCompat(t, "anthropic", body))
+	assert.NotContains(t, claude, "tool_choice")
+	assert.NotContains(t, claude, "parallel_tool_calls")
+	assert.NotContains(t, claude, "disable_parallel_tool_use")
 }
 
 func TestCodexRequestOptionCompatAllowsExplicitPostConversionOverrides(t *testing.T) {

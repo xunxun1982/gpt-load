@@ -27,7 +27,12 @@ func TestHandleProxyAggregateCodexAffinityRetriesLeadingEncryptedContentFailureC
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		observations <- codexAffinityObservation{auth: r.Header.Get("Authorization"), body: body}
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// requests count assertion below instead of hanging the handler.
+		select {
+		case observations <- codexAffinityObservation{auth: r.Header.Get("Authorization"), body: body}:
+		default:
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		if requests.Add(1) == 2 {
 			_, _ = io.WriteString(w, "event: response.failed\n"+
@@ -72,6 +77,8 @@ func TestHandleProxyAggregateCodexAffinityRetriesLeadingEncryptedContentFailureC
 	require.Contains(t, string(failed.body), "reasoning.encrypted_content")
 	require.NotContains(t, string(retried.body), "reasoning.encrypted_content")
 	require.NotEqual(t, failed.auth, retried.auth)
+	// Exactly one warmup, one failed and one retried attempt reached upstream.
+	require.Equal(t, int32(3), requests.Load())
 }
 
 func TestHandleProxyAggregateCodexAffinityReusesExactExecutionBinding(t *testing.T) {

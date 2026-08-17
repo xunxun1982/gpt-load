@@ -89,7 +89,13 @@ func GatewayProxyProviderIDs() []string {
 // a provider, so consumers stay aligned with the provider registry instead of
 // hardcoding route shapes. Returns "" when the gateway or provider is unknown.
 func GatewayProxyPathPrefix(gatewayProxyID, providerID string) string {
-	provider, ok := gatewayProxyProviders[gatewayProxyID]
+	// Normalize like GatewayProxyBaseURLParsed so lookups never miss on case
+	// or surrounding whitespace.
+	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))
+	if trimmedID == "" {
+		return ""
+	}
+	provider, ok := gatewayProxyProviders[trimmedID]
 	if !ok {
 		return ""
 	}

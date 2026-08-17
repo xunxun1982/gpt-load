@@ -494,11 +494,16 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 		for _, tool := range requestTools {
 			appendCodexToolToClaude(&req.Tools, tool, "")
 		}
-	}
-	req.ToolChoice = convertResponsesToolChoiceToClaude(codexReq.ToolChoice, toolCtx)
-	req.ToolChoice, err = codexClaudeToolChoiceWithParallel(req.ToolChoice, codexReq.ParallelToolCalls, len(req.Tools) > 0)
-	if err != nil {
-		return nil, err
+		// tool_choice is only emitted alongside tools, matching the Chat
+		// conversion. Anthropic treats "none" as the default when no tools are
+		// provided, and a forced tool selector without a matching tool is a
+		// request error, so omitting it for tool-less requests is both safe
+		// and required to avoid an invalid payload.
+		req.ToolChoice = convertResponsesToolChoiceToClaude(codexReq.ToolChoice, toolCtx)
+		req.ToolChoice, err = codexClaudeToolChoiceWithParallel(req.ToolChoice, codexReq.ParallelToolCalls, true)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return req, nil
 }
