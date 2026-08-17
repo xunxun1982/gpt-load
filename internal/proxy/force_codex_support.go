@@ -454,7 +454,10 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 	}
 	if codexReq.Reasoning != nil {
 		effort := codexReq.Reasoning.Effort
-		switch effort {
+		// Only the none/empty control signals are normalized (case-insensitive
+		// and trimmed); effort values themselves are provider-defined and stay
+		// verbatim on ClaudeOutputConfig.Effort (see CodexReasoning.Effort).
+		switch strings.ToLower(strings.TrimSpace(effort)) {
 		case "":
 			// An empty effort carries no portable enable/disable signal; omit
 			// Claude thinking fields and let the target model choose its default.
@@ -943,12 +946,7 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 			}
 			name := stringFromMap(m, "name")
 			arguments := codexToolCallArguments(m, itemType)
-			if itemType == "custom_tool_call" {
-				if inputValue, ok := m["input"]; ok && inputValue != nil {
-					inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
-					arguments = string(inputBytes)
-				}
-			} else if itemType == "tool_search_call" {
+			if itemType == "tool_search_call" {
 				name = codexToolSearchProxyName
 			} else if len(toolCtx) > 0 && toolCtx[0] != nil {
 				name = toolCtx[0].chatNameFor(name, stringFromMap(m, "namespace"))
@@ -1108,12 +1106,7 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 			}
 			name := stringFromMap(m, "name")
 			arguments := codexToolCallArguments(m, itemType)
-			if itemType == "custom_tool_call" {
-				if inputValue, ok := m["input"]; ok && inputValue != nil {
-					inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
-					arguments = string(inputBytes)
-				}
-			} else if itemType == "tool_search_call" {
+			if itemType == "tool_search_call" {
 				name = codexToolSearchProxyName
 			} else if len(toolCtx) > 0 && toolCtx[0] != nil {
 				name = toolCtx[0].chatNameFor(name, stringFromMap(m, "namespace"))

@@ -115,7 +115,12 @@ func TestHandleProxyForceCCStrictModelRedirectRetries(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		receivedModels <- model
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// requestCount assertion below instead of hanging the handler goroutine.
+		select {
+		case receivedModels <- model:
+		default:
+		}
 		attempt := requestCount.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if attempt == 1 {
@@ -304,7 +309,12 @@ func TestAggregateForceCCFailureFallsBackToNativeAnthropicSubGroup(t *testing.T)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		received <- receivedRequest{path: r.URL.Path, rawQuery: r.URL.RawQuery, body: payload}
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// attempts assertion below instead of hanging the handler goroutine.
+		select {
+		case received <- receivedRequest{path: r.URL.Path, rawQuery: r.URL.RawQuery, body: payload}:
+		default:
+		}
 		attempt := attempts.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if attempt == 1 {

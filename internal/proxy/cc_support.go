@@ -1015,7 +1015,14 @@ func claudeMessageSystemText(msg ClaudeMessage) (string, error) {
 	for _, block := range blocks {
 		if block.Type == "text" {
 			textParts = append(textParts, block.Text)
+			continue
 		}
+		// Inline system messages are a non-conforming Claude Code placement and
+		// stay tolerant: unlike the top-level system field (convertClaudeSystemContent,
+		// which fails closed on non-text blocks), the dropped block is only logged
+		// so real-world traffic is not rejected while the loss stays observable.
+		logrus.WithField("block_type", block.Type).
+			Warn("CC: Dropped non-text block from inline system message")
 	}
 	return strings.Join(textParts, "\n"), nil
 }

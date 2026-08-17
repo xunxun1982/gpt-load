@@ -85,6 +85,17 @@ func GatewayProxyProviderIDs() []string {
 	return ids
 }
 
+// GatewayProxyPathPrefix returns the gateway route path prefix registered for
+// a provider, so consumers stay aligned with the provider registry instead of
+// hardcoding route shapes. Returns "" when the gateway or provider is unknown.
+func GatewayProxyPathPrefix(gatewayProxyID, providerID string) string {
+	provider, ok := gatewayProxyProviders[gatewayProxyID]
+	if !ok {
+		return ""
+	}
+	return provider.Prefixes[providerID]
+}
+
 // GatewayProxyBaseURLParsed returns a value copy of the parsed runtime base URL.
 func GatewayProxyBaseURLParsed(gatewayProxyID string) (url.URL, bool) {
 	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))

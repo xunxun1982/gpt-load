@@ -280,8 +280,12 @@ func convertedChatUpstreamSupportsPromptCacheKey(rawURL string) bool {
 		if !ok || !sameURLOrigin(parsed, &gatewayURL) {
 			continue
 		}
-		if gatewayPathTargets(path, gatewayURL.EscapedPath(), "api.openai.com") ||
-			gatewayPathTargets(path, gatewayURL.EscapedPath(), "api.kimi.com/coding") {
+		// The path prefix comes from the channel provider registry so the
+		// route shape cannot drift from gatewayProxyProviders; an unknown
+		// prefix fails safe (no capability claim).
+		openaiPrefix := channel.GatewayProxyPathPrefix(gatewayProxyID, "openai")
+		if gatewayPathTargets(path, gatewayURL.EscapedPath(), openaiPrefix, "api.openai.com") ||
+			gatewayPathTargets(path, gatewayURL.EscapedPath(), openaiPrefix, "api.kimi.com/coding") {
 			return true
 		}
 	}
@@ -292,8 +296,11 @@ func sameURLOrigin(a, b *url.URL) bool {
 	return a != nil && b != nil && strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
 }
 
-func gatewayPathTargets(path, basePath, target string) bool {
-	marker := strings.TrimRight(strings.ToLower(basePath), "/") + "/openai/" + target
+func gatewayPathTargets(path, basePath, prefix, target string) bool {
+	if prefix == "" {
+		return false
+	}
+	marker := strings.TrimRight(strings.ToLower(basePath), "/") + "/" + prefix + "/" + target
 	return path == marker || strings.HasPrefix(path, marker+"/")
 }
 

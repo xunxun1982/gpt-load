@@ -3592,7 +3592,10 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 		metadata, _ := payload["metadata"].(map[string]any)
 		_, hasClaudeID := metadata["user_id"].(string)
 		_, hasClaudeSystem := payload["system"].([]any)
-		receivedHeadersCh <- receivedHeaders{
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// attempts assertion below instead of hanging the handler goroutine.
+		select {
+		case receivedHeadersCh <- receivedHeaders{
 			userAgent:        r.Header.Get("User-Agent"),
 			version:          r.Header.Get("Version"),
 			originator:       r.Header.Get("originator"),
@@ -3600,6 +3603,8 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 			hasCodexMetadata: hasCodexMetadata,
 			hasClaudeID:      hasClaudeID,
 			hasClaudeSystem:  hasClaudeSystem,
+		}:
+		default:
 		}
 		if atomic.AddInt32(&attempts, 1) == 1 {
 			http.Error(w, `{"error":"fail first subgroup"}`, http.StatusBadGateway)

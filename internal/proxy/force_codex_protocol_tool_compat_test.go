@@ -681,3 +681,48 @@ func decodeCompatObject(t *testing.T, data []byte) map[string]any {
 	require.NoError(t, decoder.Decode(&value))
 	return value
 }
+
+func TestProtocolToolCompatNormalizesCodexEffortControlValue(t *testing.T) {
+	tests := []struct {
+		name         string
+		effort       string
+		wantDisabled bool
+	}{
+		{name: "empty", effort: ""},
+		{name: "lowercase none", effort: "none", wantDisabled: true},
+		{name: "titlecase none", effort: "None", wantDisabled: true},
+		{name: "uppercase none", effort: "NONE", wantDisabled: true},
+		{name: "padded none", effort: "  none  ", wantDisabled: true},
+		{name: "adaptive passthrough", effort: "High"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &CodexRequest{
+				Model:     "gpt-test",
+				Reasoning: &CodexReasoning{Effort: tt.effort},
+				Input:     json.RawMessage(`[]`),
+			}
+			claude, err := convertCodexRequestToClaude(req)
+			require.NoError(t, err)
+
+			if tt.wantDisabled {
+				require.NotNil(t, claude.Thinking)
+				assert.Equal(t, "disabled", claude.Thinking.Type)
+				assert.Nil(t, claude.OutputConfig)
+				return
+			}
+			if tt.effort == "" {
+				assert.Nil(t, claude.Thinking)
+				assert.Nil(t, claude.OutputConfig)
+				return
+			}
+			// Effort values are provider-defined and forwarded without
+			// normalization; only the none/empty control signals are normalized.
+			require.NotNil(t, claude.Thinking)
+			assert.Equal(t, "adaptive", claude.Thinking.Type)
+			require.NotNil(t, claude.OutputConfig)
+			assert.Equal(t, tt.effort, claude.OutputConfig.Effort)
+		})
+	}
+}
