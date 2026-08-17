@@ -309,9 +309,16 @@ func (s *ProxyPoolService) ResolveProxyURLs(ctx context.Context, refs []string) 
 		ref := strings.TrimSpace(raw)
 		itemID, ok := utils.ParseProxyPoolItemRef(ref)
 		if !ok {
+			// Empty and malformed non-reference values are skipped so one bad
+			// entry does not drop resolvable references; callers keep the raw
+			// value and fail closed. This mirrors ResolveProxyURL's empty-input
+			// handling and the non-batch fallback in ResolveRuntimeProxyURLs.
+			if ref == "" {
+				continue
+			}
 			value, err := utils.NormalizeProxyURL(ref)
 			if err != nil {
-				return nil, err
+				continue
 			}
 			resolved[ref] = value
 			continue

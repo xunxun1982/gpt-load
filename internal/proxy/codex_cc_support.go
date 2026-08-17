@@ -663,7 +663,11 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 			textParts = append(textParts, block.Text)
 		case block.Type == "thinking":
 			if block.Thinking != "" {
-				if block.ID != "" && block.EncryptedContent != "" {
+				// Reasoning items are only valid for assistant messages (OpenAI
+				// Responses semantics: reasoning belongs to the assistant output);
+				// thinking from any other role is replayed as text so it is never
+				// silently dropped by the role dispatch below.
+				if msg.Role == "assistant" && block.ID != "" && block.EncryptedContent != "" {
 					reasoningItems = append(reasoningItems, map[string]interface{}{
 						"type":              "reasoning",
 						"id":                block.ID,

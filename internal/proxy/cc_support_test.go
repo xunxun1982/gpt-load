@@ -110,7 +110,12 @@ func TestHandleProxyForceCCStrictModelRedirectRetries(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		receivedModels <- payload["model"].(string)
+		model, ok := payload["model"].(string)
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		receivedModels <- model
 		attempt := requestCount.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if attempt == 1 {
