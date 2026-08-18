@@ -14,6 +14,7 @@ import (
 
 	requestmiddleware "gpt-load/internal/middleware"
 	"gpt-load/internal/models"
+	"gpt-load/internal/store"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -56,6 +57,7 @@ func TestHandleProxyRetriesPreludeEOFForAllSSEChannels(t *testing.T) {
 	testCases := []struct {
 		name        string
 		channelType string
+		firstStatus int
 		path        string
 		requestBody string
 		firstStream string
@@ -65,6 +67,7 @@ func TestHandleProxyRetriesPreludeEOFForAllSSEChannels(t *testing.T) {
 		{
 			name:        "OpenAI Chat",
 			channelType: "openai",
+			firstStatus: http.StatusNotFound,
 			path:        "/v1/chat/completions",
 			requestBody: `{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hello"}]}`,
 			firstStream: "data: {\"id\":\"chatcmpl-pending\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n",
@@ -75,6 +78,7 @@ func TestHandleProxyRetriesPreludeEOFForAllSSEChannels(t *testing.T) {
 		{
 			name:        "Anthropic Claude",
 			channelType: "anthropic",
+			firstStatus: http.StatusNotFound,
 			path:        "/v1/messages",
 			requestBody: `{"model":"claude-sonnet","stream":true,"max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`,
 			firstStream: "event: message_start\n" +
@@ -90,6 +94,7 @@ func TestHandleProxyRetriesPreludeEOFForAllSSEChannels(t *testing.T) {
 		{
 			name:        "Gemini",
 			channelType: "gemini",
+			firstStatus: http.StatusNotFound,
 			path:        "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
 			requestBody: `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`,
 			firstStream: "",
@@ -99,6 +104,7 @@ func TestHandleProxyRetriesPreludeEOFForAllSSEChannels(t *testing.T) {
 		{
 			name:        "OpenAI Responses",
 			channelType: "openai-response",
+			firstStatus: http.StatusOK,
 			path:        "/v1/responses",
 			requestBody: `{"model":"gpt-5","stream":true,"input":"hello"}`,
 			firstStream: "event: response.created\n" +
@@ -116,13 +122,43 @@ func TestHandleProxyRetriesPreludeEOFForAllSSEChannels(t *testing.T) {
 				groupType = "aggregate"
 			}
 			t.Run(fmt.Sprintf("%s/%s", tc.name, groupType), func(t *testing.T) {
-				handler, group, requestCount := setupChannelStreamRetryGroup(t, tc.channelType, aggregate, http.StatusNotFound, tc.firstStream, tc.successBody, "")
+				handler, group, requestCount := setupChannelStreamRetryGroup(t, tc.channelType, aggregate, tc.firstStatus, tc.firstStream, tc.successBody, "")
 				response := runStreamRetryRequest(t, handler, group.Name, tc.path, tc.requestBody)
 
 				require.Equal(t, http.StatusOK, response.Code)
 				require.Equal(t, int32(2), requestCount.Load())
 				require.Contains(t, response.Body.String(), tc.successMark)
 				require.NotContains(t, response.Body.String(), "upstream_eof")
+			})
+		}
+	}
+}
+
+func TestHandleProxyDoesNotRetryPermanentResponsesLogicalFailures(t *testing.T) {
+	testCases := []struct {
+		name           string
+		errorCode      string
+		expectedStatus int
+	}{
+		{name: "invalid request", errorCode: "invalid_request_error", expectedStatus: http.StatusBadRequest},
+		{name: "model not found", errorCode: "model_not_found", expectedStatus: http.StatusNotFound},
+	}
+
+	for _, tc := range testCases {
+		for _, aggregate := range []bool{false, true} {
+			groupType := "standard"
+			if aggregate {
+				groupType = "aggregate"
+			}
+			t.Run(fmt.Sprintf("%s/%s", tc.name, groupType), func(t *testing.T) {
+				handler, group, requestCount, requestLogStore := setupNonStreamResponsesLogicalFailureGroup(t, aggregate, false, tc.errorCode)
+				response := runStreamRetryRequest(t, handler, group.Name, "/v1/responses",
+					`{"model":"gpt-5","input":"hello","stream":false}`)
+
+				require.Equal(t, http.StatusOK, response.Code)
+				require.Equal(t, int32(1), requestCount.Load())
+				logEntry := popRecordedRequestLog(t, requestLogStore)
+				require.Equal(t, tc.expectedStatus, logEntry.StatusCode)
 			})
 		}
 	}
@@ -192,7 +228,7 @@ func TestHandleProxyRetriesNonStreamResponsesLogicalRateLimit(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			handler, group, requestCount := setupNonStreamResponsesLogicalRateLimitRetryGroup(t, tc.aggregate, tc.gzipResponse)
+			handler, group, requestCount, _ := setupNonStreamResponsesLogicalFailureGroup(t, tc.aggregate, tc.gzipResponse, "rate_limit_exceeded")
 			response := runStreamRetryRequest(t, handler, group.Name, "/v1/responses",
 				`{"model":"gpt-5","input":"hello","stream":false}`)
 
@@ -477,13 +513,13 @@ func setupLeadingRateLimitStreamRetryGroup(t *testing.T, aggregate bool) (http.H
 	return router, targetGroup, requestCount
 }
 
-func setupNonStreamResponsesLogicalRateLimitRetryGroup(t *testing.T, aggregate, gzipResponse bool) (http.Handler, *models.Group, *atomic.Int32) {
+func setupNonStreamResponsesLogicalFailureGroup(t *testing.T, aggregate, gzipResponse bool, errorCode string) (http.Handler, *models.Group, *atomic.Int32, store.Store) {
 	t.Helper()
 
 	db := setupTestDB(t)
-	ps := setupTestProxyServer(t, db)
+	ps, requestLogStore := setupTestProxyServerWithStore(t, db)
 	requestCount := &atomic.Int32{}
-	limitedBody := []byte(`{"id":"resp-limited","status":"failed","error":{"code":"rate_limit_exceeded","message":"temporarily limited"},"output":[]}`)
+	limitedBody := []byte(fmt.Sprintf(`{"id":"resp-limited","status":"failed","error":{"code":%q,"message":"logical failure"},"output":[]}`, errorCode))
 	successBody := []byte(`{"id":"resp-ok","status":"completed","error":null,"output":[]}`)
 	if gzipResponse {
 		limitedBody = compressGzipForResponseHandlerTest(t, limitedBody)
@@ -509,6 +545,7 @@ func setupNonStreamResponsesLogicalRateLimitRetryGroup(t *testing.T, aggregate, 
 	subGroup := createTestGroup(t, db, "responses-logical-rate-limit-"+suffix+"-sub", "openai-response")
 	subGroup.Upstreams = []byte(fmt.Sprintf(`[{"url":%q,"weight":100}]`, upstream.URL))
 	subGroup.Config = map[string]any{"max_retries": 1, "blacklist_threshold": 100}
+	subGroup.EffectiveConfig.EnableRequestBodyLogging = true
 	if !aggregate {
 		subGroup.ProxyKeys = "proxy-a"
 	}
@@ -543,7 +580,7 @@ func setupNonStreamResponsesLogicalRateLimitRetryGroup(t *testing.T, aggregate, 
 
 	router := gin.New()
 	router.POST("/proxy/:group_name/*path", requestmiddleware.ProxyAuth(ps.groupManager, nil), ps.HandleProxy)
-	return router, targetGroup, requestCount
+	return router, targetGroup, requestCount, requestLogStore
 }
 
 func runHTTPRateLimitRetryCase(t *testing.T, aggregate bool) (*httptest.ResponseRecorder, *atomic.Int32, <-chan string) {

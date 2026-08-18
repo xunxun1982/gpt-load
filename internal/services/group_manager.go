@@ -535,7 +535,7 @@ func upstreamsContainUnresolvedProxyRefs(upstreams []byte) bool {
 		if defs[i].ProxyURL == nil {
 			continue
 		}
-		if utils.IsProxyPoolRef(*defs[i].ProxyURL) {
+		if utils.IsProxyPoolRef(strings.TrimSpace(*defs[i].ProxyURL)) {
 			return true
 		}
 	}

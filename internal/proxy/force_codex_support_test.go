@@ -701,7 +701,7 @@ data: [DONE]
 	assert.NotContains(t, out, "sk-proj")
 	statusCode, message, failed := logicalStatusFromContext(c)
 	require.True(t, failed)
-	assert.Equal(t, http.StatusBadGateway, statusCode)
+	assert.Equal(t, http.StatusBadRequest, statusCode)
 	assert.Equal(t, "bad request Bearer [REDACTED_API_KEY]", message)
 }
 

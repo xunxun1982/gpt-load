@@ -1371,9 +1371,9 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			case event.Item.Type == "message":
 				// Message item added, wait for content_part.added for actual content
 				logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Message item added")
-			case isCodexResponseToolCall(*event.Item):
+			case codexToolCallItemType(event.Item.Type):
 				toolName := codexClaudeToolName(*event.Item, s.reverseToolNameMap)
-				if toolName == "" {
+				if event.Item.CallID == "" || toolName == "" {
 					closeOpenBlock()
 					s.currentToolID = ""
 					s.currentToolName = ""
@@ -1382,7 +1382,11 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 					// Mark this output item as skipped so argument deltas cannot
 					// auto-open a fabricated unknown_tool block (per AI review).
 					s.skipActiveToolItem = true
-					logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Skipping tool item with unresolved name")
+					logrus.WithFields(logrus.Fields{
+						"item_type":    event.Item.Type,
+						"item_call_id": event.Item.CallID,
+						"item_name":    event.Item.Name,
+					}).Debug("Codex CC: Skipping tool item with missing ID or unresolved name")
 					return events
 				}
 				// Resolve and validate the name before replacing the active tool state.

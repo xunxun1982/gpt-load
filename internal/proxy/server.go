@@ -2036,6 +2036,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	}
 	setRateLimitPressureContextForAttempt(c, resp, time.Now())
 	var logicalError string
+	var permanentLogicalFailure bool
 	retryStatusCode := 0
 	if resp != nil {
 		retryStatusCode = resp.StatusCode
@@ -2043,15 +2044,17 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	// Inspect the actual upstream media type: Responses requests may be forced to
 	// stream upstream even when the downstream client requested a normal response.
 	if err == nil && resp != nil {
-		if logicalStatus, message, failed := retryableResponseProbe(c, resp, retryAvailable); failed {
-			retryStatusCode = logicalStatus
-			logicalError = message
-			setLogicalFailureContext(c, logicalStatus, "upstream_response_error", message)
+		probe := retryableResponseProbeResult(c, resp, retryAvailable)
+		if probe.failed {
+			retryStatusCode = probe.statusCode
+			logicalError = probe.errorMessage
+			permanentLogicalFailure = isPermanentLogicalFailure(probe.errorCode)
+			setLogicalFailureContext(c, probe.statusCode, "upstream_response_error", probe.errorMessage)
 		}
 	}
 
 	// Unified error handling for retries.
-	if err != nil || (resp != nil && shouldFailoverOnStatusCode(retryStatusCode, group)) {
+	if err != nil || (resp != nil && shouldFailoverOnStatusCode(retryStatusCode, group) && !permanentLogicalFailure) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
 			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeFinal)
@@ -2329,7 +2332,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			logrus.WithField("aggregate_group", originalGroup.Name).
 				Warn("No valid sub-groups available, skipping retry")
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, "No valid sub-groups available"))
-			ps.logRequest(c, originalGroup, originalGroup, nil, attemptStartTime, http.StatusServiceUnavailable,
+			ps.logRequest(c, originalGroup, originalGroup, nil, startTime, http.StatusServiceUnavailable,
 				errors.New("no valid sub-groups"), isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
 			return
 		}
@@ -2997,6 +3000,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 	setRateLimitPressureContextForAttempt(c, resp, time.Now())
 	var logicalError string
+	var permanentLogicalFailure bool
 	retryStatusCode := 0
 	if resp != nil {
 		retryStatusCode = resp.StatusCode
@@ -3004,15 +3008,17 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Inspect the actual upstream media type: Responses requests may be forced to
 	// stream upstream even when the downstream client requested a normal response.
 	if err == nil && resp != nil {
-		if logicalStatus, message, failed := retryableResponseProbe(c, resp, retryAvailable); failed {
-			retryStatusCode = logicalStatus
-			logicalError = message
-			setLogicalFailureContext(c, logicalStatus, "upstream_response_error", message)
+		probe := retryableResponseProbeResult(c, resp, retryAvailable)
+		if probe.failed {
+			retryStatusCode = probe.statusCode
+			logicalError = probe.errorMessage
+			permanentLogicalFailure = isPermanentLogicalFailure(probe.errorCode)
+			setLogicalFailureContext(c, probe.statusCode, "upstream_response_error", probe.errorMessage)
 		}
 	}
 
 	// Unified error handling for retries.
-	if err != nil || (resp != nil && shouldFailoverOnStatusCode(retryStatusCode, group)) {
+	if err != nil || (resp != nil && shouldFailoverOnStatusCode(retryStatusCode, group) && !permanentLogicalFailure) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
 			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeFinal)

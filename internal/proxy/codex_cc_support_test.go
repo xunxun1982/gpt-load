@@ -1275,6 +1275,47 @@ func TestCodexStreamUnresolvedToolNameClearsToolState(t *testing.T) {
 	assert.Equal(t, "call_next", nextEvents[0].ContentBlock.ID)
 }
 
+func TestCodexStreamInvalidToolItemClearsToolState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		item CodexOutputItem
+	}{
+		{name: "missing call ID", item: CodexOutputItem{Type: "function_call", Name: "lookup"}},
+		{name: "missing name", item: CodexOutputItem{Type: "function_call", CallID: "call_missing_name"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newCodexStreamState(nil)
+			state.currentToolID = "call_previous"
+			state.currentToolName = "previous_tool"
+			state.currentToolArgs.WriteString(`{"stale":true}`)
+			state.toolInputSent = true
+			state.openBlockType = "tool"
+
+			events := state.processCodexStreamEvent(&CodexStreamEvent{
+				Type: "response.output_item.added",
+				Item: &tt.item,
+			})
+
+			require.Len(t, events, 1)
+			assert.Equal(t, "content_block_stop", events[0].Type)
+			assert.Empty(t, state.currentToolID)
+			assert.Empty(t, state.currentToolName)
+			assert.Zero(t, state.currentToolArgs.Len())
+			assert.False(t, state.toolInputSent)
+			assert.True(t, state.skipActiveToolItem)
+
+			deltaEvents := state.processCodexStreamEvent(&CodexStreamEvent{
+				Type:  "response.function_call_arguments.delta",
+				Delta: `{"query":"test"}`,
+			})
+			assert.Empty(t, deltaEvents)
+		})
+	}
+}
+
 // TestHandleCodexCCStreamingResponse tests streaming Codex response conversion
 func TestHandleCodexCCStreamingResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)

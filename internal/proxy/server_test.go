@@ -6343,10 +6343,12 @@ func TestExecuteAggregateRetryClearsPriorAttemptResponseContextBeforeSelection(t
 		originalRawQuery:  c.Request.URL.RawQuery,
 	}
 
-	ps.executeRequestWithAggregateRetry(c, nil, aggregate, body, false, time.Now(), retryCtx)
+	requestStart := time.Now().Add(-time.Second)
+	ps.executeRequestWithAggregateRetry(c, nil, aggregate, body, false, requestStart, retryCtx)
 
 	logEntry := popRecordedRequestLog(t, memStore)
 	assert.Equal(t, http.StatusServiceUnavailable, logEntry.StatusCode)
+	assert.GreaterOrEqual(t, logEntry.Duration, int64(900))
 	assert.NotEqual(t, "previous logical failure", logEntry.ErrorMessage)
 	assert.Empty(t, logEntry.ResponseBody)
 }

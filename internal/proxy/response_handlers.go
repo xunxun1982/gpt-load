@@ -107,6 +107,13 @@ type sseLogicalFailureCapture struct {
 	disabled            bool
 }
 
+type logicalFailureProbeResult struct {
+	statusCode   int
+	errorCode    string
+	errorMessage string
+	failed       bool
+}
+
 type replayReadCloser struct {
 	reader io.Reader
 	closer io.Closer
@@ -163,8 +170,13 @@ func hasUnsupportedResponseContentEncoding(resp *http.Response) bool {
 // being written here: a direct write would commit the downstream response and close
 // the retry window, while also bypassing protocol conversion and duplicating replay.
 func retryableStreamProbe(resp *http.Response) (int, string, bool) {
+	result := retryableStreamProbeResult(resp)
+	return result.statusCode, result.errorMessage, result.failed
+}
+
+func retryableStreamProbeResult(resp *http.Response) logicalFailureProbeResult {
 	if resp == nil || resp.Body == nil || !isEventStreamResponse(resp) || hasUnsupportedResponseContentEncoding(resp) {
-		return 0, "", false
+		return logicalFailureProbeResult{}
 	}
 	reader := bufio.NewReaderSize(resp.Body, 4*1024)
 	prefix := make([]byte, 0, 4*1024)
@@ -203,7 +215,12 @@ func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 	// Replay is intentional: the selected response handler must independently parse
 	// the complete stream for usage, logging, and terminal-state accounting.
 	installResponseBodyReplay(resp, reader, prefix, probeErr)
-	return capture.statusCode, strings.TrimSpace(capture.errorMessage), capture.firstSemanticFailed
+	return logicalFailureProbeResult{
+		statusCode:   capture.statusCode,
+		errorCode:    capture.errorCode,
+		errorMessage: strings.TrimSpace(capture.errorMessage),
+		failed:       capture.firstSemanticFailed,
+	}
 }
 
 // retryableResponseProbe inspects application-level failures before any bytes
@@ -211,24 +228,29 @@ func retryableStreamProbe(resp *http.Response) (int, string, bool) {
 // keep the buffered reader as the response body so the selected handler replays
 // every byte without a second upstream read or an unbounded allocation.
 func retryableResponseProbe(c *gin.Context, resp *http.Response, retryAvailable bool) (int, string, bool) {
+	result := retryableResponseProbeResult(c, resp, retryAvailable)
+	return result.statusCode, result.errorMessage, result.failed
+}
+
+func retryableResponseProbeResult(c *gin.Context, resp *http.Response, retryAvailable bool) logicalFailureProbeResult {
 	if isEventStreamResponse(resp) {
 		// AI review suggested skipping this probe when retries are exhausted. Keep
 		// it so a leading logical SSE failure can still set the final HTTP status
 		// before downstream headers are committed; integration tests require it.
-		return retryableStreamProbe(resp)
+		return retryableStreamProbeResult(resp)
 	}
 	if c == nil || c.Request == nil || resp == nil || resp.Body == nil ||
 		!retryAvailable ||
 		resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices ||
 		!isOpenAIResponsesEndpoint(c.Request.URL.Path) {
-		return 0, "", false
+		return logicalFailureProbeResult{}
 	}
 
 	if hasUnsupportedResponseContentEncoding(resp) {
 		// Requests parsed by the proxy omit Accept-Encoding, so net/http normally
 		// exposes decoded bytes. Preserve an unsolicited encoding rather than
 		// risking classification of compressed data or changing the response.
-		return 0, "", false
+		return logicalFailureProbeResult{}
 	}
 
 	reader := bufio.NewReaderSize(resp.Body, 4*1024)
@@ -255,8 +277,13 @@ func retryableResponseProbe(c *gin.Context, resp *http.Response, retryAvailable 
 		}
 	}
 	installResponseBodyReplay(resp, reader, prefix, probeErr)
-	statusCode, _, errorMessage, failed := parseResponsesLogicalFailure(prefix, len(prefix) >= maxResponseCaptureBytes)
-	return statusCode, errorMessage, failed
+	statusCode, errorCode, errorMessage, failed := parseResponsesLogicalFailure(prefix, len(prefix) >= maxResponseCaptureBytes)
+	return logicalFailureProbeResult{
+		statusCode:   statusCode,
+		errorCode:    errorCode,
+		errorMessage: errorMessage,
+		failed:       failed,
+	}
 }
 
 func isRetryableSSEPrelude(eventType string) bool {
@@ -415,8 +442,12 @@ func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
 	if len(data) == 0 {
 		return
 	}
-	isFirstSemantic := !p.meaningfulSeen
 	eventType := strings.TrimSpace(gjson.GetBytes(data, "type").String())
+	p.classifyFailure(data, eventType)
+}
+
+func (p *sseLogicalFailureCapture) classifyFailure(data []byte, eventType string) {
+	isFirstSemantic := !p.meaningfulSeen
 	if !isRetryableSSEDataPrelude(data, eventType) {
 		p.meaningfulSeen = true
 	}
@@ -472,21 +503,7 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 		return
 	}
 	var payload struct {
-		Type  string `json:"type"`
-		Error *struct {
-			Code    any    `json:"code"`
-			Message string `json:"message"`
-			Type    string `json:"type"`
-			Status  string `json:"status"`
-		} `json:"error,omitempty"`
-		Response *struct {
-			Status string `json:"status"`
-			Error  *struct {
-				Code    any    `json:"code"`
-				Message string `json:"message"`
-				Type    string `json:"type"`
-			} `json:"error,omitempty"`
-		} `json:"response,omitempty"`
+		Type string `json:"type"`
 	}
 	if err := utils.UnmarshalJSONUseNumber(data, &payload); err != nil {
 		// pending already reassembles transport reads up to a newline. Do not guess
@@ -496,30 +513,7 @@ func (p *sseLogicalFailureCapture) parseLine(line []byte) {
 		p.unverified = true
 		return
 	}
-	isFirstSemantic := !p.meaningfulSeen
-	if !isRetryableSSEDataPrelude(data, payload.Type) {
-		p.meaningfulSeen = true
-	}
-	if isTerminalResponseEventType(payload.Type) {
-		p.terminalSeen = true
-	}
-
-	errorCode, errorMessage := responseFailureFields(data, payload.Type)
-	isUpstreamEOF := isResponseIncompleteUpstreamEOF(data, payload.Type)
-	if isUpstreamEOF {
-		errorCode, errorMessage = upstreamEOFFailureFields(errorCode, errorMessage)
-	}
-
-	isFailed := payload.Error != nil || payload.Type == "error" || payload.Type == "response.failed" || (payload.Response != nil && strings.EqualFold(strings.TrimSpace(payload.Response.Status), "failed")) || isUpstreamEOF
-	if !isFailed {
-		return
-	}
-	if isFirstSemantic {
-		p.firstSemanticFailed = true
-	}
-
-	p.recordFailure(errorCode, errorMessage)
-	p.terminalSeen = true
+	p.classifyFailure(data, payload.Type)
 }
 
 func responseFailureFields(data []byte, eventType string) (string, string) {
@@ -575,6 +569,10 @@ func logicalFailureStatusCode(errorCode, errorMessage string) int {
 	switch lowerCode {
 	case "429", "rate_limit_exceeded", "rate_limit_error", "resource_exhausted":
 		return http.StatusTooManyRequests
+	case "invalid_request_error":
+		return http.StatusBadRequest
+	case "model_not_found":
+		return http.StatusNotFound
 	case "529", "overloaded_error":
 		// Anthropic documents overloaded_error as HTTP 529, including SSE errors
 		// that arrive after the initial successful HTTP response.
@@ -589,6 +587,15 @@ func logicalFailureStatusCode(errorCode, errorMessage string) int {
 		return http.StatusTooManyRequests
 	}
 	return http.StatusBadGateway
+}
+
+func isPermanentLogicalFailure(errorCode string) bool {
+	switch strings.ToLower(strings.TrimSpace(errorCode)) {
+	case "invalid_request_error", "model_not_found":
+		return true
+	default:
+		return false
+	}
 }
 
 func equivalentNumericLogicalFailureStatusCode(errorCode string) int {

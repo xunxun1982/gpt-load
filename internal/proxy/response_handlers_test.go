@@ -686,6 +686,24 @@ func TestRetryableStreamProbeDetectsLeadingFailureAndReplaysSuccess(t *testing.T
 	})
 }
 
+func TestLogicalFailureStatusCodeClassifiesPermanentErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		errorCode  string
+		statusCode int
+	}{
+		{name: "invalid request", errorCode: "invalid_request_error", statusCode: http.StatusBadRequest},
+		{name: "model not found", errorCode: "model_not_found", statusCode: http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.statusCode, logicalFailureStatusCode(tt.errorCode, "permanent failure"))
+		})
+	}
+}
+
 func TestRetryableResponseProbeDetectsNonStreamFailureAndReplaysBody(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

@@ -194,6 +194,8 @@ const baseSiteTypeOptions = computed<SelectOption[]>(() => [
 
 const siteTypeOptions = baseSiteTypeOptions;
 
+// IMPORTANT: Keep this list in sync with isKnownCapabilitylessSiteType
+// in internal/sitemanagement/site_adapter.go.
 const capabilitylessSiteTypes = new Set<ManagedSiteType>([
   "unknown",
   "brand",

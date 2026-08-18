@@ -1027,6 +1027,7 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 	flushToolBlocks := func() {
 		if pendingToolRole == "user" {
 			if len(pendingUserToolResults) == 0 && len(pendingUserTextBlocks) == 0 {
+				pendingToolRole = ""
 				return
 			}
 			pendingToolBlocks = append(pendingToolBlocks, pendingUserToolResults...)
@@ -1035,6 +1036,7 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 			pendingUserTextBlocks = nil
 		}
 		if len(pendingToolBlocks) == 0 {
+			pendingToolRole = ""
 			return
 		}
 		content, _ := json.Marshal(pendingToolBlocks)

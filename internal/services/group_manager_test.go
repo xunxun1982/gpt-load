@@ -328,6 +328,14 @@ func TestGroupManagerRefreshCachedUpstreamsBatchSkipsUnresolvedProxyRefs(t *test
 	assert.JSONEq(t, `[{"url":"https://new-second.example.com"}]`, string(cache.ByID[second.ID].Upstreams))
 }
 
+func TestUpstreamsContainUnresolvedProxyRefsTrimsWhitespace(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, upstreamsContainUnresolvedProxyRefs([]byte(
+		`[{"url":"https://api.example.com","proxy_url":"  proxy-pool:1  "}]`,
+	)))
+}
+
 func TestGroupManagerRetriesProxyResolutionAfterPreloadTimeout(t *testing.T) {
 	t.Setenv("DB_LOOKUP_TIMEOUT_MS", "50")
 	db := setupTestDB(t)
