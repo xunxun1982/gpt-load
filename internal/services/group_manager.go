@@ -392,14 +392,23 @@ func (gm *GroupManager) refreshCachedUpstreamsBatch(ctx context.Context, refresh
 	// the cache write lock and share results across the batch.
 	proxyResolveCache := make(map[string]string)
 	resolved := make([]cachedUpstreamRefresh, len(refreshes))
+	// skip[i] marks entries whose proxy-pool references failed to resolve
+	// (e.g. context cancellation or resolver error). Publishing the raw
+	// "proxy-pool:<id>" reference would make the group fail closed until the
+	// next full reload, so those entries keep their previous resolved snapshot.
+	skip := make([]bool, len(refreshes))
 	for i, refresh := range refreshes {
 		resolved[i] = refresh
 		resolved[i].upstreams = gm.resolveUpstreamProxyReferences(ctx, refresh.upstreams, proxyResolveCache)
+		skip[i] = upstreamsContainUnresolvedProxyRefs(resolved[i].upstreams)
 	}
 
 	gm.syncer.Update(func(current groupCache) groupCache {
 		found := false
-		for _, refresh := range resolved {
+		for i, refresh := range resolved {
+			if skip[i] {
+				continue
+			}
 			if _, ok := current.ByID[refresh.groupID]; ok {
 				found = true
 				break
@@ -420,13 +429,19 @@ func (gm *GroupManager) refreshCachedUpstreamsBatch(ctx context.Context, refresh
 
 		// Delete every previous name before inserting replacements so A<->B swaps
 		// cannot remove a route that was already inserted earlier in this batch.
-		for _, refresh := range resolved {
+		for i, refresh := range resolved {
+			if skip[i] {
+				continue
+			}
 			cached, ok := nextByID[refresh.groupID]
 			if ok && cached.Name != refresh.groupName {
 				delete(nextByName, cached.Name)
 			}
 		}
-		for _, refresh := range resolved {
+		for i, refresh := range resolved {
+			if skip[i] {
+				continue
+			}
 			cached, ok := nextByID[refresh.groupID]
 			if !ok {
 				continue
@@ -501,6 +516,30 @@ func (gm *GroupManager) resolveUpstreamProxyReferences(ctx context.Context, upst
 		return upstreams
 	}
 	return resolvedUpstreams
+}
+
+// upstreamsContainUnresolvedProxyRefs reports whether the given upstreams still
+// carry a proxy-pool reference. resolveUpstreamProxyReferences preserves the raw
+// reference verbatim when resolution fails (fail closed), so a leftover marker
+// means the caller must not overwrite the previous resolved snapshot.
+func upstreamsContainUnresolvedProxyRefs(upstreams []byte) bool {
+	if !bytes.Contains(upstreams, []byte("proxy-pool:")) {
+		return false
+	}
+	var defs []groupUpstreamDefinition
+	if err := json.Unmarshal(upstreams, &defs); err != nil {
+		// Unparseable data would also fail closed downstream; keep the old snapshot.
+		return true
+	}
+	for i := range defs {
+		if defs[i].ProxyURL == nil {
+			continue
+		}
+		if utils.IsProxyPoolRef(*defs[i].ProxyURL) {
+			return true
+		}
+	}
+	return false
 }
 
 func collectUpstreamProxyReferences(defs []groupUpstreamDefinition, known map[string]string) []string {

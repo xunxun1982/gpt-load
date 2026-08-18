@@ -1247,15 +1247,32 @@ func TestCodexStreamUnresolvedToolNameClearsToolState(t *testing.T) {
 	assert.Empty(t, state.currentToolName)
 	assert.Zero(t, state.currentToolArgs.Len())
 	assert.False(t, state.toolInputSent)
+	assert.True(t, state.skipActiveToolItem)
 
+	// Argument deltas for the skipped item must be ignored entirely: emitting a
+	// block here would fabricate an unknown_tool call with a generated ID.
 	deltaEvents := state.processCodexStreamEvent(&CodexStreamEvent{
 		Type:  "response.function_call_arguments.delta",
 		Delta: `{"query":"test"}`,
 	})
-	require.NotEmpty(t, deltaEvents)
-	require.NotNil(t, deltaEvents[0].ContentBlock)
-	assert.NotEqual(t, "call_previous", deltaEvents[0].ContentBlock.ID)
-	assert.NotEqual(t, "call_unresolved", deltaEvents[0].ContentBlock.ID)
+	assert.Empty(t, deltaEvents)
+
+	customEvents := state.processCodexStreamEvent(&CodexStreamEvent{
+		Type:  "response.custom_tool_call_input.delta",
+		Delta: "*** Begin Patch",
+	})
+	assert.Empty(t, customEvents)
+
+	// A new output item resets the skip state so subsequent tool calls stream normally.
+	nextEvents := state.processCodexStreamEvent(&CodexStreamEvent{
+		Type: "response.output_item.added",
+		Item: &CodexOutputItem{Type: "function_call", CallID: "call_next", Name: "resolved_tool"},
+	})
+	assert.False(t, state.skipActiveToolItem)
+	require.NotEmpty(t, nextEvents)
+	require.NotNil(t, nextEvents[0].ContentBlock)
+	assert.Equal(t, "resolved_tool", nextEvents[0].ContentBlock.Name)
+	assert.Equal(t, "call_next", nextEvents[0].ContentBlock.ID)
 }
 
 // TestHandleCodexCCStreamingResponse tests streaming Codex response conversion

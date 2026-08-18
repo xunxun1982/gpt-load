@@ -20,7 +20,7 @@ test("aggregate editor keeps actions visible and uses a compact desktop grid", (
   assert.match(source, /\.aggregate-group-card\s*\{[\s\S]*max-height:/);
   assert.match(
     source,
-    /\.aggregate-group-card\s+:deep\(\.n-card__content\)[\s\S]*overflow-y:\s*auto;/
+    /\.aggregate-group-card\s+:deep\(\.n-card-content\)[\s\S]*overflow-y:\s*auto;/
   );
   assert.match(source, /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
 });

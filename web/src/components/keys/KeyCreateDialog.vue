@@ -321,7 +321,7 @@ async function handleSubmit() {
   padding: 10px 20px;
 }
 
-:deep(.n-card__content) {
+:deep(.n-card-content) {
   max-height: calc(100vh - 68px - 61px - 50px);
   overflow-y: auto;
 }

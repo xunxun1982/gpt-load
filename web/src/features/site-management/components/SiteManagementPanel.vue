@@ -2974,6 +2974,10 @@ watch(
 }
 .site-form-card :deep(.n-card-content),
 .logs-card :deep(.n-card-content) {
+  /* Naive UI renders the card body with "n-card-content" (single underscore,
+     verified in naive-ui@2.44.1 es/lib card sources); "n-card__content" never
+     matches. AI review suggested the double-underscore spelling — rejected
+     against the installed library sources, keep the working selector. */
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;

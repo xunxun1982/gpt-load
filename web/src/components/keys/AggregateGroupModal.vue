@@ -661,7 +661,7 @@ async function handleSubmit() {
   flex: 0 0 auto;
 }
 
-.aggregate-group-card :deep(.n-card__content) {
+.aggregate-group-card :deep(.n-card-content) {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;

@@ -285,6 +285,49 @@ func TestGroupManagerRefreshCachedUpstreamsBatchSupportsNameSwaps(t *testing.T) 
 	assert.Equal(t, first.Name, cache.ByID[second.ID].Name)
 }
 
+func TestGroupManagerRefreshCachedUpstreamsBatchSkipsUnresolvedProxyRefs(t *testing.T) {
+	t.Parallel()
+
+	// Group A refreshes with a proxy-pool reference whose resolution fails
+	// (canceled context); group B refreshes without any reference. The failed
+	// entry must keep its previous resolved snapshot while healthy entries
+	// still update (per AI review: unresolved references must not be published).
+	first := &models.Group{ID: 71, Name: "first", Upstreams: []byte(
+		`[{"url":"https://old-first.example.com","proxy_url":"http://resolved-proxy.example.com:8080"}]`,
+	)}
+	second := &models.Group{ID: 72, Name: "second", Upstreams: []byte(`[{"url":"https://old-second.example.com"}]`)}
+	cacheSyncer, err := syncer.NewCacheSyncer(
+		func() (groupCache, error) {
+			return groupCache{
+				ByName: map[string]*models.Group{first.Name: first, second.Name: second},
+				ByID:   map[uint]*models.Group{first.ID: first, second.ID: second},
+			}, nil
+		},
+		nil,
+		"test:group-manager-skip-unresolved",
+		logrus.New().WithField("test", t.Name()),
+		nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(cacheSyncer.Stop)
+
+	settingsManager := config.NewSystemSettingsManager()
+	settingsManager.SetProxyURLResolver(&groupManagerTimeoutThenSuccessResolver{})
+	gm := &GroupManager{syncer: cacheSyncer, settingsManager: settingsManager}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	gm.refreshCachedUpstreamsBatch(ctx, []cachedUpstreamRefresh{
+		{groupID: first.ID, groupName: first.Name, upstreams: []byte(`[{"url":"https://new-first.example.com","proxy_url":"proxy-pool:1"}]`)},
+		{groupID: second.ID, groupName: second.Name, upstreams: []byte(`[{"url":"https://new-second.example.com"}]`)},
+	})
+
+	cache := cacheSyncer.Get()
+	assert.JSONEq(t, string(first.Upstreams), string(cache.ByID[first.ID].Upstreams))
+	assert.Equal(t, "first", cache.ByID[first.ID].Name)
+	assert.JSONEq(t, `[{"url":"https://new-second.example.com"}]`, string(cache.ByID[second.ID].Upstreams))
+}
+
 func TestGroupManagerRetriesProxyResolutionAfterPreloadTimeout(t *testing.T) {
 	t.Setenv("DB_LOOKUP_TIMEOUT_MS", "50")
 	db := setupTestDB(t)

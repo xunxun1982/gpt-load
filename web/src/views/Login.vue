@@ -235,7 +235,7 @@ const handleLogin = async () => {
   padding-bottom: 16px;
 }
 
-:deep(.n-card__content) {
+:deep(.n-card-content) {
   padding-top: 0;
 }
 

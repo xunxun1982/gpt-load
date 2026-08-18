@@ -296,7 +296,7 @@ watch(
   transition: all 0.2s ease;
 }
 
-.stat-card :deep(.n-card__content) {
+.stat-card :deep(.n-card-content) {
   height: 100%;
   display: flex;
   flex-direction: column;
