@@ -48,6 +48,56 @@ func TestCodexOutputItemMarshalPreservesLargeNestedInteger(t *testing.T) {
 	require.NotContains(t, string(encoded), "9007199254740992")
 }
 
+func TestConvertClaudeToCodexPreservesPromptWithOnlyInlineSystemMessage(t *testing.T) {
+	t.Parallel()
+
+	req, err := convertClaudeToCodex(&ClaudeRequest{
+		Model:  "claude-test",
+		Prompt: "  continue this task  ",
+		Messages: []ClaudeMessage{{
+			Role:    "system",
+			Content: json.RawMessage(`"Use concise answers."`),
+		}},
+	}, "", nil)
+	require.NoError(t, err)
+
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(req.Input, &input))
+	require.Len(t, input, 2)
+	assert.Equal(t, "developer", input[0]["role"])
+	assert.Equal(t, "user", input[1]["role"])
+	content, err := json.Marshal(input[1]["content"])
+	require.NoError(t, err)
+	assert.JSONEq(t, `[{"type":"input_text","text":"continue this task"}]`, string(content))
+}
+
+func TestConvertCodexToClaudeUsesItemIDWhenCallIDMissing(t *testing.T) {
+	t.Parallel()
+
+	resp := convertCodexToClaudeResponse(&CodexResponse{Output: []CodexOutputItem{{
+		Type:      "tool_search_call",
+		ID:        "search_item_1",
+		Name:      "ignored",
+		Arguments: `{"query":"mail"}`,
+	}}}, nil)
+
+	require.Len(t, resp.Content, 1)
+	assert.Equal(t, "tool_use", resp.Content[0].Type)
+	assert.Equal(t, "search_item_1", resp.Content[0].ID)
+}
+
+func TestCodexStreamUsesItemIDWhenCallIDMissing(t *testing.T) {
+	state := newCodexStreamState(nil)
+	events := state.processCodexStreamEvent(&CodexStreamEvent{
+		Type: "response.output_item.added",
+		Item: &CodexOutputItem{Type: "tool_search_call", ID: "search_item_2"},
+	})
+
+	require.NotEmpty(t, events)
+	require.NotNil(t, events[0].ContentBlock)
+	assert.Equal(t, "search_item_2", events[0].ContentBlock.ID)
+}
+
 // TestCodexCCWindowsPathPreservation tests that Windows paths are preserved correctly
 // in Codex CC response conversion without corruption.
 func TestCodexCCWindowsPathPreservation(t *testing.T) {

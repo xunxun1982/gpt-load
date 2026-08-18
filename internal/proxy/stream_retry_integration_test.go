@@ -591,7 +591,12 @@ func runHTTPRateLimitRetryCase(t *testing.T, aggregate bool) (*httptest.Response
 	requestCount := &atomic.Int32{}
 	authorizations := make(chan string, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authorizations <- r.Header.Get("Authorization")
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// requestCount assertion instead of hanging the upstream handler.
+		select {
+		case authorizations <- r.Header.Get("Authorization"):
+		default:
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if requestCount.Add(1) == 1 {
 			// A long Retry-After describes pressure on this upstream. It must not

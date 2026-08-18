@@ -353,7 +353,7 @@ func codexToolCallArguments(item map[string]any, itemType string) string {
 	if !ok || input == nil {
 		return ""
 	}
-	if itemType == "custom_tool_call" {
+	if strings.Contains(itemType, "custom_tool_call") {
 		encoded, _ := json.Marshal(map[string]any{"input": input})
 		return string(encoded)
 	}
@@ -1094,13 +1094,9 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 				discardThinking()
 			}
 			if role == "developer" || role == "system" {
-				flushToolBlocks()
 				continue
 			}
 			if text == "" {
-				if role != "assistant" {
-					flushToolBlocks()
-				}
 				continue
 			}
 			blocks := takeThinking()

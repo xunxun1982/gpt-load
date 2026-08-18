@@ -123,7 +123,7 @@ func TestHandleProxyStandardCodexAffinityPreservesRedirectedModelAcrossRetry(t *
 }
 
 func TestHandleProxyStandardCodexAffinityRetriesLeadingEncryptedContentFailure(t *testing.T) {
-	handler, group, observations := setupStreamingRetryingStandardCodexAffinityGroup(t)
+	handler, group, requestCount, observations := setupStreamingRetryingStandardCodexAffinityGroup(t)
 	body := []byte(`{
   "model":"gpt-5","stream":true,"include":["reasoning.encrypted_content"],
   "input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"cipher"}]
@@ -134,6 +134,7 @@ func TestHandleProxyStandardCodexAffinityRetriesLeadingEncryptedContentFailure(t
 	require.NotContains(t, string(warmup.body), "reasoning.encrypted_content")
 
 	response := runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "old-turn", body)
+	require.Equal(t, int32(3), requestCount.Load())
 	first := <-observations
 	second := <-observations
 

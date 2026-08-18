@@ -172,6 +172,15 @@ func codexClaudeToolName(item CodexOutputItem, reverseToolNameMap map[string]str
 	return toolName
 }
 
+// codexToolCallID prefers the protocol call_id and falls back to item id for
+// output kinds whose schema makes call_id optional (for example tool_search_call).
+func codexToolCallID(item CodexOutputItem) string {
+	if item.CallID != "" {
+		return item.CallID
+	}
+	return item.ID
+}
+
 func codexClaudeToolInput(item CodexOutputItem) json.RawMessage {
 	if item.Type == "custom_tool_call" {
 		return codexCustomToolClaudeInput(item.Input)
@@ -182,7 +191,7 @@ func codexClaudeToolInput(item CodexOutputItem) json.RawMessage {
 }
 
 func isCodexResponseToolCall(item CodexOutputItem) bool {
-	if !codexToolCallItemType(item.Type) || item.CallID == "" {
+	if !codexToolCallItemType(item.Type) || codexToolCallID(item) == "" {
 		return false
 	}
 	return codexClaudeToolName(item, nil) != ""
@@ -465,7 +474,7 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	}
 
 	// Handle prompt-only requests
-	if len(claudeReq.Messages) == 0 && strings.TrimSpace(claudeReq.Prompt) != "" {
+	if len(nonSystemMessages) == 0 && strings.TrimSpace(claudeReq.Prompt) != "" {
 		inputItems = append(inputItems, map[string]interface{}{
 			"type": "message",
 			"role": "user",
@@ -866,7 +875,7 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 			}
 			claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
 				Type:  "tool_use",
-				ID:    item.CallID,
+				ID:    codexToolCallID(item),
 				Name:  toolName,
 				Input: codexClaudeToolInput(item),
 			})
@@ -1373,7 +1382,8 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Message item added")
 			case codexToolCallItemType(event.Item.Type):
 				toolName := codexClaudeToolName(*event.Item, s.reverseToolNameMap)
-				if event.Item.CallID == "" || toolName == "" {
+				toolCallID := codexToolCallID(*event.Item)
+				if toolCallID == "" || toolName == "" {
 					closeOpenBlock()
 					s.currentToolID = ""
 					s.currentToolName = ""
@@ -1384,14 +1394,14 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 					s.skipActiveToolItem = true
 					logrus.WithFields(logrus.Fields{
 						"item_type":    event.Item.Type,
-						"item_call_id": event.Item.CallID,
+						"item_call_id": toolCallID,
 						"item_name":    event.Item.Name,
 					}).Debug("Codex CC: Skipping tool item with missing ID or unresolved name")
 					return events
 				}
 				// Resolve and validate the name before replacing the active tool state.
 				closeOpenBlock()
-				s.currentToolID = event.Item.CallID
+				s.currentToolID = toolCallID
 				s.currentToolName = toolName
 				s.currentToolArgs.Reset()
 				s.toolInputSent = false
@@ -1555,9 +1565,9 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				// Message complete - no action needed, content_part.done handles it
 				logrus.Debug("Codex CC: Message item done")
 			case isCodexResponseToolCall(*event.Item):
-				// Store completed tool use block. CallID is guaranteed non-empty by
-				// isCodexResponseToolCall, so only the reverse name map lookup can
-				// still resolve to an empty tool name here.
+				// Store completed tool use block. The effective call ID is guaranteed
+				// non-empty by isCodexResponseToolCall, including item.ID fallbacks.
+				// Only the reverse name map lookup can still resolve to an empty name.
 				toolName := codexClaudeToolName(*event.Item, s.reverseToolNameMap)
 				if toolName == "" {
 					logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Skipping completed tool item with missing ID or name")
@@ -1570,7 +1580,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 				s.toolUseBlocks = append(s.toolUseBlocks, ClaudeContentBlock{
 					Type:  "tool_use",
-					ID:    event.Item.CallID,
+					ID:    codexToolCallID(*event.Item),
 					Name:  toolName,
 					Input: inputJSON,
 				})

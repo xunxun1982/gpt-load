@@ -130,7 +130,7 @@ func setupRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handler, *model
 	return router, group, observations
 }
 
-func setupStreamingRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handler, *models.Group, <-chan codexAffinityObservation) {
+func setupStreamingRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handler, *models.Group, *atomic.Int32, <-chan codexAffinityObservation) {
 	t.Helper()
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -178,7 +178,7 @@ func setupStreamingRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handle
 
 	router := gin.New()
 	router.POST("/proxy/:group_name/*path", requestmiddleware.ProxyAuth(ps.groupManager, nil), ps.HandleProxy)
-	return router, group, observations
+	return router, group, &requestCount, observations
 }
 
 func runStandardCodexAffinityRequest(t *testing.T, handler http.Handler, groupName, proxyKey, turn string, body []byte) *httptest.ResponseRecorder {

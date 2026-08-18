@@ -1024,6 +1024,27 @@ func TestConvertCodexRequestToClaude(t *testing.T) {
 	assert.True(t, got.Stream)
 }
 
+func TestConvertCodexRequestToClaudeKeepsUserMessagesTogetherAcrossDeveloperItem(t *testing.T) {
+	t.Parallel()
+
+	req := &CodexRequest{Input: json.RawMessage(`[
+		{"type":"message","role":"user","content":"first"},
+		{"type":"message","role":"developer","content":"context"},
+		{"type":"message","role":"user","content":"second"}
+	]`)}
+
+	got, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 1)
+	assert.Equal(t, "user", got.Messages[0].Role)
+	assert.Contains(t, string(got.Messages[0].Content), "first")
+	assert.Contains(t, string(got.Messages[0].Content), "second")
+}
+
+func TestCodexToolCallArgumentsWrapsResponseCustomToolInput(t *testing.T) {
+	assert.JSONEq(t, `{"input":"patch"}`, codexToolCallArguments(map[string]any{"input": "patch"}, "response_custom_tool_call_item"))
+}
+
 func TestConvertCodexRequestToClaudeUsesItemIDWhenCallIDMissing(t *testing.T) {
 	t.Parallel()
 
