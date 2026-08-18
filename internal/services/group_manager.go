@@ -207,17 +207,7 @@ func (gm *GroupManager) Initialize() error {
 		proxyResolveCache := make(map[string]string)
 		preloadCtx, preloadCancel := context.WithTimeout(context.Background(), timeout)
 		gm.preloadUpstreamProxyReferences(preloadCtx, groups, proxyResolveCache)
-		preloadTimedOut := preloadCtx.Err() != nil
 		preloadCancel()
-		if preloadTimedOut {
-			// A timed-out preload records unresolved references as themselves. Remove
-			// only those fallbacks so the first owning group can retry with a fresh budget.
-			for ref, resolved := range proxyResolveCache {
-				if ref == resolved {
-					delete(proxyResolveCache, ref)
-				}
-			}
-		}
 		for _, group := range groups {
 			g := *group
 			g.EffectiveConfig = gm.settingsManager.GetEffectiveConfig(g.Config)
@@ -488,9 +478,7 @@ func (gm *GroupManager) resolveUpstreamProxyReferences(ctx context.Context, upst
 		return upstreams
 	}
 	pending := collectUpstreamProxyReferences(defs, cache)
-	for ref, resolved := range gm.settingsManager.ResolveRuntimeProxyURLs(ctx, pending) {
-		cache[ref] = resolved
-	}
+	cacheResolvedProxyURLs(cache, gm.settingsManager.ResolveRuntimeProxyURLs(ctx, pending))
 	changed := false
 	for i := range defs {
 		if defs[i].ProxyURL == nil {
@@ -565,6 +553,15 @@ func collectUpstreamProxyReferences(defs []groupUpstreamDefinition, known map[st
 	return refs
 }
 
+// cacheResolvedProxyURLs keeps unresolved identity fallbacks retryable across groups.
+func cacheResolvedProxyURLs(cache, resolvedURLs map[string]string) {
+	for ref, resolved := range resolvedURLs {
+		if resolved != ref {
+			cache[ref] = resolved
+		}
+	}
+}
+
 func (gm *GroupManager) preloadUpstreamProxyReferences(ctx context.Context, groups []*models.Group, cache map[string]string) {
 	if gm.settingsManager == nil {
 		return
@@ -586,9 +583,7 @@ func (gm *GroupManager) preloadUpstreamProxyReferences(ctx context.Context, grou
 			}
 		}
 	}
-	for ref, resolved := range gm.settingsManager.ResolveRuntimeProxyURLs(ctx, refs) {
-		cache[ref] = resolved
-	}
+	cacheResolvedProxyURLs(cache, gm.settingsManager.ResolveRuntimeProxyURLs(ctx, refs))
 }
 
 // parseModelRedirectRulesV2 parses V2 model redirect rules from JSON.

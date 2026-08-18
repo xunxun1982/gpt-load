@@ -27,13 +27,17 @@ type staticProxyURLResolver struct {
 }
 
 type sequenceProxyURLResolver struct {
-	values map[string]string
-	errors map[string]error
-	calls  []string
+	values    map[string]string
+	errors    map[string]error
+	calls     []string
+	afterCall func(string)
 }
 
 func (r *sequenceProxyURLResolver) ResolveProxyURL(_ context.Context, ref string) (string, error) {
 	r.calls = append(r.calls, ref)
+	if r.afterCall != nil {
+		r.afterCall(ref)
+	}
 	return r.values[ref], r.errors[ref]
 }
 
@@ -123,6 +127,31 @@ func TestResolveRuntimeProxyURLsContinuesAfterFailure(t *testing.T) {
 	assert.Equal(t, []string{"proxy-pool:1", "proxy-pool:2"}, resolver.calls)
 	assert.Equal(t, "proxy-pool:1", resolved["proxy-pool:1"])
 	assert.Equal(t, "http://proxy.example.com:8080", resolved["proxy-pool:2"])
+}
+
+func TestResolveRuntimeProxyURLsStopsAfterContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resolver := &sequenceProxyURLResolver{
+		values: map[string]string{
+			"proxy-pool:1": "http://first.example.com:8080",
+			"proxy-pool:2": "http://second.example.com:8080",
+		},
+		afterCall: func(ref string) {
+			if ref == "proxy-pool:1" {
+				cancel()
+			}
+		},
+	}
+	manager := NewSystemSettingsManager()
+	manager.SetProxyURLResolver(resolver)
+
+	resolved := manager.ResolveRuntimeProxyURLs(ctx, []string{"proxy-pool:1", "proxy-pool:2"})
+
+	assert.Equal(t, []string{"proxy-pool:1"}, resolver.calls)
+	assert.Equal(t, "http://first.example.com:8080", resolved["proxy-pool:1"])
+	assert.Equal(t, "proxy-pool:2", resolved["proxy-pool:2"])
 }
 
 func setupSystemSettingsTestDB(t *testing.T) *gorm.DB {

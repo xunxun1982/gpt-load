@@ -515,8 +515,8 @@ func TestGroupImportHelpersCountAndSampleChildKeys(t *testing.T) {
 }
 
 func TestGetImportModeUsesChildOnlyEncryptedKeys(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	groups := []GroupExportData{
 		{
@@ -541,8 +541,8 @@ func TestGetImportModeUsesChildOnlyEncryptedKeys(t *testing.T) {
 }
 
 func TestGetExportMode(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -596,8 +596,8 @@ func TestGetExportMode(t *testing.T) {
 }
 
 func TestGetImportMode(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name       string

@@ -654,6 +654,14 @@ func setLogicalFailureContext(c *gin.Context, statusCode int, errorCode, errorMe
 	}
 }
 
+func setLogicalFailureProbeContext(c *gin.Context, probe logicalFailureProbeResult) {
+	errorCode := probe.errorCode
+	if errorCode == "" {
+		errorCode = "upstream_response_error"
+	}
+	setLogicalFailureContext(c, probe.statusCode, errorCode, probe.errorMessage)
+}
+
 func markResponseProcessingFailed(c *gin.Context) {
 	if c != nil {
 		c.Set(ctxKeyResponseProcessingFailed, true)

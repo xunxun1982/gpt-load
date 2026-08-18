@@ -57,6 +57,25 @@ func logrusHookText(hook *logrustest.Hook) string {
 	return b.String()
 }
 
+func TestClaudeOutputEffortTrimsWhitespace(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name   string
+		effort string
+		want   string
+	}{
+		{name: "known value", effort: " high ", want: "high"},
+		{name: "provider-defined value", effort: " future_effort ", want: "future_effort"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			effort, err := claudeOutputEffort(&ClaudeOutputConfig{Effort: tt.effort})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, effort)
+		})
+	}
+}
+
 func TestApplyCCRequestConversionDirectStoresModelRedirectTargetIndex(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -96,8 +115,8 @@ func TestApplyCCRequestConversionDirectStoresModelRedirectTargetIndex(t *testing
 }
 
 func TestHandleProxyForceCCStrictModelRedirectRetries(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -298,8 +317,8 @@ func TestHandleProxyAggregateForceCCCountTokensAppliesOverridesBeforeInterceptio
 }
 
 func TestAggregateForceCCFailureFallsBackToNativeAnthropicSubGroup(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)

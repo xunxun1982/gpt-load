@@ -1134,7 +1134,6 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 			discardThinking()
 			callID := stringFromMap(m, "call_id")
 			if callID == "" {
-				flushToolBlocks()
 				continue
 			}
 			blocks := []ClaudeContentBlock{{

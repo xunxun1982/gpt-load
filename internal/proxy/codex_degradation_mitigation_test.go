@@ -21,8 +21,8 @@ import (
 )
 
 func TestCodexDegradationMitigationShouldEnable(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	body := []byte(`{"model":"gpt-5","stream":true}`)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -203,8 +203,8 @@ func TestCodexDegradationMitigationFoldDropsTruncatedOutputAndContinuesOnce(t *t
 }
 
 func TestCodexDegradationMitigationMarksFailedTerminal(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		GroupType:   "standard",

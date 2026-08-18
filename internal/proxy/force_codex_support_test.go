@@ -26,6 +26,26 @@ type failAfterWriteResponseWriter struct {
 	writes    int
 }
 
+func TestConvertCodexInputToClaudeMessagesSkipsToolOutputWithoutCallID(t *testing.T) {
+	t.Parallel()
+
+	input := json.RawMessage(`[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"A"}]},
+		{"type":"function_call_output","output":"ignored"},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"B"}]}
+	]`)
+
+	messages, err := convertCodexInputToClaudeMessages(input, false)
+
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	assert.Equal(t, "user", messages[0].Role)
+	var content []ClaudeContentBlock
+	require.NoError(t, json.Unmarshal(messages[0].Content, &content))
+	require.Len(t, content, 2)
+	assert.Equal(t, []string{"A", "B"}, []string{content[0].Text, content[1].Text})
+}
+
 func (w *failAfterWriteResponseWriter) Write(data []byte) (int, error) {
 	w.writes++
 	if w.writes > w.failAfter {
@@ -471,8 +491,8 @@ data: [DONE]
 }
 
 func TestHandleForceCodexStreamingResponseCapturesUpstreamUsage(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	stream := []byte(`data: {"id":"chatcmpl_usage","object":"chat.completion.chunk","created":123,"model":"gpt-test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}
 
@@ -508,8 +528,8 @@ data: [DONE]
 }
 
 func TestHandleForceCodexStreamingResponseWrapsCompletedEvent(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	stream := []byte(`data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}
 
@@ -553,8 +573,8 @@ data: [DONE]
 }
 
 func TestHandleForceCodexNormalResponseConvertsAnthropicError(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"busy Bearer sk-proj-12345678901234567890"}}`)
 	w := httptest.NewRecorder()
@@ -581,8 +601,8 @@ func TestHandleForceCodexNormalResponseConvertsAnthropicError(t *testing.T) {
 }
 
 func TestHandleForceCodexNormalResponseConvertsOpenAIChatError(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	body := []byte(`{"error":{"type":"rate_limit_error","message":"quota Bearer sk-proj-12345678901234567890"}}`)
 	w := httptest.NewRecorder()
@@ -609,8 +629,8 @@ func TestHandleForceCodexNormalResponseConvertsOpenAIChatError(t *testing.T) {
 }
 
 func TestHandleForceCodexNormalResponseMarksHTTP200LogicalFailure(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -635,8 +655,8 @@ func TestHandleForceCodexNormalResponseMarksHTTP200LogicalFailure(t *testing.T) 
 }
 
 func TestHandleForceCodexStreamingResponseEmitsFailedForAnthropicError(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	stream := []byte(`event: error
 data: {"type":"error","error":{"type":"overloaded_error","message":"try later"}}
@@ -670,8 +690,8 @@ data: [DONE]
 }
 
 func TestHandleForceCodexStreamingResponseEmitsFailedForOpenAIChatError(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	stream := []byte(`event: error
 data: {"error":{"type":"invalid_request_error","message":"bad request Bearer sk-proj-12345678901234567890"}}
@@ -706,8 +726,8 @@ data: [DONE]
 }
 
 func TestHandleForceCodexStreamingResponseStopsAfterSSEWriteError(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	stream := []byte(`data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":"stop"}]}
 
@@ -737,8 +757,8 @@ data: [DONE]
 }
 
 func TestHandleForceCodexStreamingResponseRejectsUnverifiedCompletion(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name   string
@@ -802,8 +822,8 @@ func TestHandleForceCodexStreamingResponseRejectsUnverifiedCompletion(t *testing
 }
 
 func TestHandleForceCodexStreamingResponseAcceptsProtocolTerminal(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name   string
@@ -849,8 +869,8 @@ func TestHandleForceCodexStreamingResponseAcceptsProtocolTerminal(t *testing.T) 
 }
 
 func TestHandleForceCodexStreamingResponseEmitsResponsesDeltas(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	stream := []byte(`data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"reasoning_content":"Need context. "},"finish_reason":null}]}
 
@@ -889,8 +909,8 @@ data: [DONE]
 }
 
 func TestHandleForceCodexStreamingResponseEmitsFunctionCallArgumentsDone(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	stream := []byte(`data: {"id":"chatcmpl_tools","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_list","type":"function","function":{"name":"list_mcp_resources","arguments":"{"}}]},"finish_reason":null}]}
 
@@ -927,8 +947,8 @@ data: [DONE]
 }
 
 func TestHandleForceCodexStreamingResponseEmitsCustomToolInputEvents(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	stream := []byte(`data: {"id":"chatcmpl_custom","object":"chat.completion.chunk","created":123,"model":"deepseek-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_custom","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":"}}]},"finish_reason":null}]}
 
@@ -1240,8 +1260,8 @@ func TestConvertClaudeResponseToCodexRestoresCodexToolKinds(t *testing.T) {
 }
 
 func TestHandleProxyForceCodexOpenAIChatNonStreaming(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1294,8 +1314,8 @@ func TestHandleProxyForceCodexOpenAIChatNonStreaming(t *testing.T) {
 }
 
 func TestHandleProxyForceCodexStrictModelRedirectRetriesFromSourceModel(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1355,8 +1375,8 @@ func TestHandleProxyForceCodexStrictModelRedirectRetriesFromSourceModel(t *testi
 }
 
 func TestHandleProxyForceCodexOpenAIChatCompactConvertsToChatEndpoint(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1408,8 +1428,8 @@ func TestHandleProxyForceCodexOpenAIChatCompactConvertsToChatEndpoint(t *testing
 }
 
 func TestHandleProxyForceCodexAnthropicNonStreaming(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1463,8 +1483,8 @@ func TestHandleProxyForceCodexAnthropicNonStreaming(t *testing.T) {
 }
 
 func TestHandleProxyForceCodexAnthropicCompactConvertsToMessagesEndpoint(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1517,8 +1537,8 @@ func TestHandleProxyForceCodexAnthropicCompactConvertsToMessagesEndpoint(t *test
 }
 
 func TestAggregateForceCodexUsesSelectedSubGroupConfig(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -1613,8 +1633,8 @@ func TestAggregateForceCodexUsesSelectedSubGroupConfig(t *testing.T) {
 }
 
 func TestAggregateForceCodexPassthroughNativeResponsesSubGroup(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -1694,8 +1714,8 @@ func TestAggregateForceCodexPassthroughNativeResponsesSubGroup(t *testing.T) {
 }
 
 func TestAggregateForceCodexFailureFallsBackToNativeResponsesSubGroup(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)

@@ -256,8 +256,8 @@ func createTestKey(t *testing.T, db *gorm.DB, groupID uint, keyValue string, enc
 }
 
 func TestHandleProxyAggregateSkipsParentChannelInitialization(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name             string
@@ -366,8 +366,8 @@ func TestHandleProxyAggregateSkipsParentChannelInitialization(t *testing.T) {
 }
 
 func TestIsGenericStreamRequestDetectsGeminiNativeStreamPath(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -377,8 +377,8 @@ func TestIsGenericStreamRequestDetectsGeminiNativeStreamPath(t *testing.T) {
 }
 
 func TestIsGenericStreamRequestDetectsAcceptHeader(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -389,8 +389,8 @@ func TestIsGenericStreamRequestDetectsAcceptHeader(t *testing.T) {
 }
 
 func TestIsGenericStreamRequestDetectsQueryParam(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -400,8 +400,8 @@ func TestIsGenericStreamRequestDetectsQueryParam(t *testing.T) {
 }
 
 func TestIsGenericStreamRequestDetectsJSONBodyStreamTrue(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -411,8 +411,8 @@ func TestIsGenericStreamRequestDetectsJSONBodyStreamTrue(t *testing.T) {
 }
 
 func TestIsGenericStreamRequestReturnsFalseForNonStream(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -949,8 +949,8 @@ func TestFormatUpstreamAddrForLog(t *testing.T) {
 }
 
 func TestLogRequestRecordsProxyInfoInUpstreamAddr(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name         string
@@ -1012,8 +1012,8 @@ func TestLogRequestRecordsProxyInfoInUpstreamAddr(t *testing.T) {
 }
 
 func TestRestoreOriginalPath(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name          string
@@ -1065,8 +1065,8 @@ func TestRestoreOriginalPath(t *testing.T) {
 }
 
 func TestClearForceProtocolContextClearsToolState(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -1154,8 +1154,8 @@ func TestCountAvailableSubGroups(t *testing.T) {
 }
 
 func TestShouldAbortOnIgnorableErrorRetriesUpstreamTimeoutWhenClientAlive(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1177,8 +1177,8 @@ func TestShouldAbortOnIgnorableErrorRetriesUpstreamTimeoutWhenClientAlive(t *tes
 }
 
 func TestShouldAbortOnIgnorableErrorStopsWhenClientCanceled(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1250,8 +1250,8 @@ func TestEffectiveNonStreamRequestContextFallsBackForNonPositiveTimeout(t *testi
 }
 
 func TestExecuteRequestWithRetryStopsWhenNonStreamLifecycleTimeoutExpires(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1327,8 +1327,8 @@ func TestRetryDelayForAttemptUsesExponentialBackoffWithJitter(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityKeyReadsExistingCodexContext(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1353,8 +1353,8 @@ func TestCodexAggregateAffinityKeyReadsExistingCodexContext(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityKeyReadsOfficialCodexHeaders(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1410,8 +1410,8 @@ func TestCodexAggregateAffinityKeyReadsOfficialCodexHeaders(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityKeyFallsBackToPromptCacheKey(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1432,8 +1432,8 @@ func TestCodexAggregateAffinityKeyFallsBackToPromptCacheKey(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityKeyAppliesToOpenAIResponseAggregateWithoutCodexMarkers(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "responses-aggregate",
@@ -1453,8 +1453,8 @@ func TestCodexAggregateAffinityKeyAppliesToOpenAIResponseAggregateWithoutCodexMa
 }
 
 func TestCodexAggregateAffinityKeyHandlesMissingRequest(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "responses-aggregate",
@@ -1472,8 +1472,8 @@ func TestCodexAggregateAffinityKeyHandlesMissingRequest(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityKeyReadsCodexTurnMetadataHeader(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1494,8 +1494,8 @@ func TestCodexAggregateAffinityKeyReadsCodexTurnMetadataHeader(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityKeyReadsCodexClientMetadata(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1517,8 +1517,8 @@ func TestCodexAggregateAffinityKeyReadsCodexClientMetadata(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityKeyPrefersStableThreadMetadata(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1539,8 +1539,8 @@ func TestCodexAggregateAffinityKeyPrefersStableThreadMetadata(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityKeyBodyThreadOverridesSharedSessionHeader(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1560,8 +1560,8 @@ func TestCodexAggregateAffinityKeyBodyThreadOverridesSharedSessionHeader(t *test
 }
 
 func TestCodexAggregateAffinityKeyUsesSessionMetadataWhenThreadMissing(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1582,8 +1582,8 @@ func TestCodexAggregateAffinityKeyUsesSessionMetadataWhenThreadMissing(t *testin
 }
 
 func TestCodexAggregateAffinityKeyWithDegradationMitigationEnabled(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1606,8 +1606,8 @@ func TestCodexAggregateAffinityKeyWithDegradationMitigationEnabled(t *testing.T)
 }
 
 func TestCodexAggregateAffinityKeyDisabledOutsideEnabledOpenAIResponseAggregate(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name  string
@@ -1650,8 +1650,8 @@ func TestCodexAggregateAffinityKeyDisabledOutsideEnabledOpenAIResponseAggregate(
 }
 
 func TestCodexAggregateAffinityKeyDisabledOutsideResponsesPost(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1788,8 +1788,8 @@ func TestCodexAggregateAffinityCacheKeyHasBoundedScopedEncoding(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityCacheFallsBackWhenCachedSubGroupHasNoActiveKeys(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1861,8 +1861,8 @@ func TestCodexAggregateAffinityCacheFallsBackWhenCachedSubGroupHasNoActiveKeys(t
 }
 
 func TestCodexAggregateAffinityCacheSkipsZeroWeightSubGroupAndRebinds(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1982,8 +1982,8 @@ func TestCodexAffinityCandidateChecksSkipDisabledAndZeroWeightSubGroups(t *testi
 }
 
 func TestRetryContextCachesCodexRequestPayloadAndModel(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -2029,8 +2029,8 @@ func TestRetryContextCodexRequestModelReusesParsedPayload(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityThreadHeaderAvoidsBodyPayloadParsing(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -2181,8 +2181,8 @@ func TestExecuteRequestWithRetryKeepsRetryDelayInsideNonStreamTimeout(t *testing
 }
 
 func TestExecuteRequestWithRetrySanitizesIgnorableAbortLogError(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -2368,8 +2368,8 @@ func TestExecuteRequestWithRetryCodexCCModeUsesConfiguredSimulatedVersion(t *tes
 }
 
 func TestExecuteRequestWithRetryForceStreamSendsStreamTrueToResponsesUpstream(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -2420,8 +2420,8 @@ func TestExecuteRequestWithRetryForceStreamSendsStreamTrueToResponsesUpstream(t 
 }
 
 func TestHandleProxyForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -2469,8 +2469,8 @@ func TestHandleProxyForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
 }
 
 func TestHandleProxyAggregateForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -2536,8 +2536,8 @@ func TestHandleProxyAggregateForceCodexCompactMarksOpenAIResponseMode(t *testing
 }
 
 func TestHandleProxyAggregateCodexAffinitySkipsSubGroupWithoutActiveKeys(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -2618,8 +2618,8 @@ func TestHandleProxyAggregateCodexAffinitySkipsSubGroupWithoutActiveKeys(t *test
 }
 
 func TestExecuteRequestWithRetrySanitizesUpstreamHTTPError(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -2741,8 +2741,8 @@ func TestExecuteRequestWithRetryLogsUpstreamUserAgentWhenSimulatedClientAlreadyI
 }
 
 func TestLogRequestTruncatesUserAgentFieldsToColumnLimit(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -2775,8 +2775,8 @@ func TestLogRequestTruncatesUserAgentFieldsToColumnLimit(t *testing.T) {
 }
 
 func TestLogRequestSanitizesCapturedResponseBodyBeforeTruncation(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -2954,8 +2954,8 @@ func TestExecuteRequestWithRetrySimulatedCodexSurvivesTwoProxyLayers(t *testing.
 }
 
 func TestExecuteRequestWithAggregateRetryStopsWhenNonStreamLifecycleTimeoutExpires(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -3136,8 +3136,8 @@ func TestExecuteRequestWithAggregateRetryUsesEffectiveStreamModeForLifecycle(t *
 }
 
 func TestExecuteRequestWithAggregateRetryKeepsMappedBodyWhenParamOverridesFail(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -3214,8 +3214,8 @@ func TestExecuteRequestWithAggregateRetryKeepsMappedBodyWhenParamOverridesFail(t
 }
 
 func TestExecuteRequestWithAggregateRetryKeepsConvertedBodyWhenDeferredParamOverridesFail(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -3292,8 +3292,8 @@ func TestExecuteRequestWithAggregateRetryKeepsConvertedBodyWhenDeferredParamOver
 }
 
 func TestExecuteRequestWithAggregateRetryAppliesOnlySelectedSubGroupSimulatedClient(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -3570,8 +3570,8 @@ func TestExecuteRequestWithAggregateRetryKeepsSubGroupDelayInsideNonStreamTimeou
 }
 
 func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubGroups(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -3719,8 +3719,8 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 }
 
 func TestExecuteRequestWithAggregateRetryLogsSimulatedClientEnabledForSelectedSubGroupOnly(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -3828,8 +3828,8 @@ func TestExecuteRequestWithAggregateRetryLogsSimulatedClientEnabledForSelectedSu
 }
 
 func TestExecuteRequestWithAggregateRetryUsesSelectedSubGroupMaxRetries(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -4723,8 +4723,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCacheMissUsesEffectiveWeig
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityCacheMissBindsOnlySuccessfulFallback(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -4855,8 +4855,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCacheMissBindsOnlySuccessf
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindLogicalFailure(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -4954,8 +4954,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindLogicalFailure(
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindNormalResponsesLogicalFailure(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -5024,8 +5024,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindNormalResponses
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindForcedStreamProcessingFailure(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -5117,8 +5117,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindForcedStreamPro
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindNonSuccessHTTPStatus(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -5186,8 +5186,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindNonSuccessHTTPS
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityCrossProtocolFailureClearsCachedBinding(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name         string
@@ -5275,8 +5275,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCrossProtocolFailureClears
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindIncompleteForceCodexStream(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -5348,8 +5348,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindIncompleteForce
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallback(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -5476,8 +5476,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityStaleCachedPrimaryStripsOnFallback(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -5572,8 +5572,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityStaleCachedPrimaryStripsOn
 }
 
 func TestExecuteRequestWithAggregateRetryWithoutCodexAffinityKeepsEncryptedReasoningOnFailover(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -5714,8 +5714,8 @@ func jsonInputContainsReasoningItemForTest(value any) bool {
 }
 
 func TestExecuteRequestWithAggregateRetrySubMaxRetriesDoesNotCapParentGroupRetries(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -5855,8 +5855,8 @@ func TestExecuteRequestWithAggregateRetrySubMaxRetriesDoesNotCapParentGroupRetri
 }
 
 func TestExecuteRequestWithAggregateRetryExplicitZeroSubMaxRetriesDisablesKeyRetries(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -5963,8 +5963,8 @@ func TestExecuteRequestWithAggregateRetryExplicitZeroSubMaxRetriesDisablesKeyRet
 }
 
 func TestExecuteRequestWithAggregateRetryPinsSubGroupDuringKeyRetries(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -6090,8 +6090,8 @@ func TestExecuteRequestWithAggregateRetryPinsSubGroupDuringKeyRetries(t *testing
 }
 
 func TestMarkAggregateSubGroupFinalRestoresFalseValue(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -6108,8 +6108,8 @@ func TestMarkAggregateSubGroupFinalRestoresFalseValue(t *testing.T) {
 }
 
 func TestAggregateRetryAttemptsUpdateDynamicHealthAcrossChannels(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -6235,8 +6235,8 @@ func TestRetryAfterRateLimitPressureFromHeader(t *testing.T) {
 }
 
 func TestSetRateLimitPressureContextForAttempt(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	now := time.Date(2026, 6, 11, 12, 0, 0, 500*int(time.Millisecond), time.UTC)
 	w := httptest.NewRecorder()
@@ -6354,8 +6354,8 @@ func TestExecuteAggregateRetryClearsPriorAttemptResponseContextBeforeSelection(t
 }
 
 func TestRecordDynamicWeightMetricsUsesRetryAfterPressureAfterConsecutive429Threshold(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -6384,8 +6384,8 @@ func TestRecordDynamicWeightMetricsUsesRetryAfterPressureAfterConsecutive429Thre
 }
 
 func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFor429(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -6409,8 +6409,8 @@ func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFor429(t *testing.T
 }
 
 func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFromCompressed429Body(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -6444,8 +6444,8 @@ func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFromCompressed429Bo
 }
 
 func TestQuotaExhaustedRateLimitPressureMarkers(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -6499,8 +6499,8 @@ func TestQuotaExhaustedRateLimitPressureMarkers(t *testing.T) {
 }
 
 func TestRecordDynamicWeightMetricsForV2ModelRedirect(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -6537,8 +6537,8 @@ func TestRecordDynamicWeightMetricsForV2ModelRedirect(t *testing.T) {
 }
 
 func TestRecordDynamicWeightMetricsUsesRedirectSourceWhenModelMappingExists(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -6579,8 +6579,8 @@ func TestRecordDynamicWeightMetricsUsesRedirectSourceWhenModelMappingExists(t *t
 }
 
 func TestClearModelRedirectContextRemovesRetryAttemptState(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Set("original_model", "previous-alias")
@@ -6741,8 +6741,8 @@ func TestLogRequestSanitizesErrorBeforeDebugLogging(t *testing.T) {
 }
 
 func TestLogRequestUsesEstimatedTokenFallbackWhenUsageMissing(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -6765,8 +6765,8 @@ func TestLogRequestUsesEstimatedTokenFallbackWhenUsageMissing(t *testing.T) {
 }
 
 func TestLogRequestKeepsEstimatedOutputTokensForLargeBody(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -6789,8 +6789,8 @@ func TestLogRequestKeepsEstimatedOutputTokensForLargeBody(t *testing.T) {
 }
 
 func TestLogRequestPrefersUpstreamTokenUsageOverEstimate(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -6812,8 +6812,8 @@ func TestLogRequestPrefersUpstreamTokenUsageOverEstimate(t *testing.T) {
 }
 
 func TestLogRequestSkipsTokenUsageForFailedRequest(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -6836,8 +6836,8 @@ func TestLogRequestSkipsTokenUsageForFailedRequest(t *testing.T) {
 }
 
 func TestLogRequestSanitizesRequestBodyBeforePersisting(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -6867,8 +6867,8 @@ func TestLogRequestSanitizesRequestBodyBeforePersisting(t *testing.T) {
 }
 
 func TestLogRequestUsesLogicalStreamingFailureForHealthMetrics(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	dwm := services.NewDynamicWeightManager(memStore)
@@ -6896,8 +6896,8 @@ func TestLogRequestUsesLogicalStreamingFailureForHealthMetrics(t *testing.T) {
 }
 
 func TestLogRequestPreservesLogicalErrorMessageWhenFinalErrorExists(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{

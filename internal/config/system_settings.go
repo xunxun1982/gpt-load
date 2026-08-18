@@ -430,6 +430,12 @@ func (sm *SystemSettingsManager) ResolveRuntimeProxyURLs(ctx context.Context, re
 	} else {
 		batch = make(map[string]string, len(pending))
 		for _, ref := range pending {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				if err == nil {
+					err = ctxErr
+				}
+				break
+			}
 			value, resolveErr := sm.proxyURLResolver.ResolveProxyURL(ctx, ref)
 			if resolveErr != nil {
 				// Keep resolving later references so one stale pool entry does not

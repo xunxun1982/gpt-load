@@ -597,7 +597,8 @@ func claudeOutputEffort(config *ClaudeOutputConfig) (string, error) {
 	if ccRawJSONPresent(config.Format) {
 		return "", ccUnsupported("output_config field", "format")
 	}
-	return config.Effort, nil
+	// Values stay provider-defined, but surrounding whitespace is never meaningful.
+	return strings.TrimSpace(config.Effort), nil
 }
 
 func claudeServiceTierToOpenAI(value string) (string, error) {

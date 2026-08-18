@@ -2049,7 +2049,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 			retryStatusCode = probe.statusCode
 			logicalError = probe.errorMessage
 			permanentLogicalFailure = isPermanentLogicalFailure(probe.errorCode)
-			setLogicalFailureContext(c, probe.statusCode, "upstream_response_error", probe.errorMessage)
+			setLogicalFailureProbeContext(c, probe)
 		}
 	}
 
@@ -3013,7 +3013,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			retryStatusCode = probe.statusCode
 			logicalError = probe.errorMessage
 			permanentLogicalFailure = isPermanentLogicalFailure(probe.errorCode)
-			setLogicalFailureContext(c, probe.statusCode, "upstream_response_error", probe.errorMessage)
+			setLogicalFailureProbeContext(c, probe)
 		}
 	}
 

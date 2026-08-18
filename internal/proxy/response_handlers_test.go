@@ -363,6 +363,7 @@ func TestHandleNormalResponseRecordsLargeCompressedResponsesFailure(t *testing.T
 }
 
 func TestRetryableStreamProbeDetectsLeadingFailureAndReplaysSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	t.Parallel()
 
 	t.Run("leading failure", func(t *testing.T) {
@@ -426,7 +427,6 @@ func TestRetryableStreamProbeDetectsLeadingFailureAndReplaysSuccess(t *testing.T
 		_, _, failed := retryableStreamProbe(resp)
 		require.False(t, failed)
 
-		gin.SetMode(gin.TestMode)
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -671,7 +671,6 @@ func TestRetryableStreamProbeDetectsLeadingFailureAndReplaysSuccess(t *testing.T
 		assert.False(t, failed)
 		assert.Equal(t, compressed, replayed)
 
-		gin.SetMode(gin.TestMode)
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -705,8 +704,8 @@ func TestLogicalFailureStatusCodeClassifiesPermanentErrors(t *testing.T) {
 }
 
 func TestRetryableResponseProbeDetectsNonStreamFailureAndReplaysBody(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	body := []byte(`{"id":"resp-limited","status":"failed","error":{"code":"rate_limit_exceeded","message":"temporarily limited"},"output":[]}`)
 	resp := &http.Response{
@@ -728,8 +727,8 @@ func TestRetryableResponseProbeDetectsNonStreamFailureAndReplaysBody(t *testing.
 }
 
 func TestRetryableResponseProbeBoundsSuccessfulResponsePrefixAndReplaysBody(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	body := []byte(`{"id":"resp-ok","status":"completed","output":[],"padding":"` + strings.Repeat("x", maxResponseCaptureBytes+1024) + `"}`)
 	upstreamBody := &countingReadCloser{reader: bytes.NewReader(body)}
@@ -752,8 +751,8 @@ func TestRetryableResponseProbeBoundsSuccessfulResponsePrefixAndReplaysBody(t *t
 }
 
 func TestRetryableResponseProbeStopsAfterFailureMessageAndReplaysBody(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	body := []byte(`{"status":"failed","error":{"message":"temporary rate limit"},"padding":"` + strings.Repeat("x", maxResponseCaptureBytes+1024) + `"}`)
 	upstreamBody := &countingReadCloser{reader: bytes.NewReader(body)}
@@ -778,8 +777,8 @@ func TestRetryableResponseProbeStopsAfterFailureMessageAndReplaysBody(t *testing
 }
 
 func TestRetryableResponseProbeSkipsNonStreamBodyWithoutRetryBudget(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	body := []byte(`{"status":"failed","error":{"code":"rate_limit_exceeded","message":"temporarily limited"}}`)
 	upstreamBody := &countingReadCloser{reader: bytes.NewReader(body)}
@@ -798,8 +797,8 @@ func TestRetryableResponseProbeSkipsNonStreamBodyWithoutRetryBudget(t *testing.T
 }
 
 func TestRetryableResponseProbeInspectsStreamWithoutRetryBudgetForFinalStatus(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	body := []byte("event: error\n" +
 		`data: {"type":"error","code":"rate_limit_exceeded","message":"temporarily limited"}` + "\n\n")
@@ -1356,6 +1355,33 @@ func TestSetLogicalFailureContextSanitizesSyntheticBody(t *testing.T) {
 			assert.NotContains(t, bodyStr, "operator@example.invalid")
 			assert.Contains(t, bodyStr, "[REDACTED_EMAIL]")
 		}
+	}
+}
+
+func TestSetLogicalFailureProbeContextPreservesErrorCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name      string
+		errorCode string
+		wantCode  string
+	}{
+		{name: "upstream code", errorCode: "model_not_found", wantCode: "model_not_found"},
+		{name: "fallback", wantCode: "upstream_response_error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			setLogicalFailureProbeContext(c, logicalFailureProbeResult{
+				statusCode:   http.StatusBadGateway,
+				errorCode:    tt.errorCode,
+				errorMessage: "upstream failed",
+			})
+
+			body, exists := c.Get("response_body")
+			require.True(t, exists)
+			assert.Contains(t, body, `"code":"`+tt.wantCode+`"`)
+		})
 	}
 }
 
@@ -1986,8 +2012,8 @@ data: [DONE]
 }
 
 func TestHandleCodexForcedStreamResponseSanitizesEncryptedContentForLog(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	streamData := `event: response.created
 data: {"type":"response.created","response":{"id":"resp_reasoning","model":"gpt-5"}}

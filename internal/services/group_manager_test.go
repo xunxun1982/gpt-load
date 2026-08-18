@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -34,6 +35,10 @@ type groupManagerTimeoutThenSuccessResolver struct {
 	calls atomic.Int32
 }
 
+type groupManagerFailureThenSuccessResolver struct {
+	calls atomic.Int32
+}
+
 func (r *groupManagerTimeoutThenSuccessResolver) ResolveProxyURL(_ context.Context, raw string) (string, error) {
 	return "http://" + raw + ".example.com:8080", nil
 }
@@ -42,6 +47,21 @@ func (r *groupManagerTimeoutThenSuccessResolver) ResolveProxyURLs(ctx context.Co
 	if r.calls.Add(1) == 1 {
 		<-ctx.Done()
 		return nil, ctx.Err()
+	}
+	resolved := make(map[string]string, len(refs))
+	for _, ref := range refs {
+		resolved[ref] = "http://" + ref + ".example.com:8080"
+	}
+	return resolved, nil
+}
+
+func (r *groupManagerFailureThenSuccessResolver) ResolveProxyURL(_ context.Context, _ string) (string, error) {
+	return "", errors.New("unexpected single proxy resolution")
+}
+
+func (r *groupManagerFailureThenSuccessResolver) ResolveProxyURLs(_ context.Context, refs []string) (map[string]string, error) {
+	if r.calls.Add(1) == 1 {
+		return nil, errors.New("temporary proxy resolution failure")
 	}
 	resolved := make(map[string]string, len(refs))
 	for _, ref := range refs {
@@ -180,6 +200,24 @@ func TestGroupManagerResolveUpstreamProxyReferencesTrimsReferenceCacheKey(t *tes
 	)
 
 	assert.Contains(t, string(resolved), `"proxy_url":"http://proxy.example.com:8080"`)
+}
+
+func TestGroupManagerResolveUpstreamProxyReferencesRetriesUnresolvedCacheEntry(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`[{"url":"https://api.example.com","proxy_url":"proxy-pool:1"}]`)
+	resolver := &groupManagerFailureThenSuccessResolver{}
+	settingsManager := config.NewSystemSettingsManager()
+	settingsManager.SetProxyURLResolver(resolver)
+	groupManager := &GroupManager{settingsManager: settingsManager}
+	cache := make(map[string]string)
+
+	first := groupManager.resolveUpstreamProxyReferences(context.Background(), raw, cache)
+	second := groupManager.resolveUpstreamProxyReferences(context.Background(), raw, cache)
+
+	assert.Contains(t, string(first), `"proxy_url":"proxy-pool:1"`)
+	assert.Contains(t, string(second), `"proxy_url":"http://proxy-pool:1.example.com:8080"`)
+	assert.Equal(t, int32(2), resolver.calls.Load())
 }
 
 func TestGroupManagerRefreshCachedUpstreamsRemovesRenamedCacheEntry(t *testing.T) {
@@ -349,6 +387,34 @@ func TestGroupManagerRetriesProxyResolutionAfterPreloadTimeout(t *testing.T) {
 	require.NoError(t, db.Create(group).Error)
 
 	resolver := &groupManagerTimeoutThenSuccessResolver{}
+	settingsManager := config.NewSystemSettingsManager()
+	settingsManager.SetProxyURLResolver(resolver)
+	memoryStore := store.NewMemoryStore()
+	groupManager := NewGroupManager(db, memoryStore, settingsManager, NewSubGroupManager(memoryStore))
+	require.NoError(t, groupManager.Initialize())
+	t.Cleanup(func() {
+		groupManager.Stop(context.Background())
+		memoryStore.Close()
+	})
+
+	cached, err := groupManager.GetGroupByName(group.Name)
+	require.NoError(t, err)
+	assert.Contains(t, string(cached.Upstreams), `"proxy_url":"http://proxy-pool:1.example.com:8080"`)
+	assert.Equal(t, int32(2), resolver.calls.Load())
+}
+
+func TestGroupManagerRetriesProxyResolutionAfterPreloadFailure(t *testing.T) {
+	db := setupTestDB(t)
+	group := &models.Group{
+		Name:        "proxy-preload-failure",
+		DisplayName: "Proxy preload failure",
+		ChannelType: "openai",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://api.example.com","weight":100,"proxy_url":"proxy-pool:1"}]`),
+	}
+	require.NoError(t, db.Create(group).Error)
+
+	resolver := &groupManagerFailureThenSuccessResolver{}
 	settingsManager := config.NewSystemSettingsManager()
 	settingsManager.SetProxyURLResolver(resolver)
 	memoryStore := store.NewMemoryStore()
