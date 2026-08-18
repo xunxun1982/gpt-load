@@ -19,16 +19,18 @@ func TestCodexAffinityDoesNotPersistMissingTurnStateReset(t *testing.T) {
 }
 
 func TestStandardCodexAffinityKeepsStateResetForFailedTurn(t *testing.T) {
-	handler, group, observations := setupRetryingStandardCodexAffinityGroup(t)
+	handler, group, requestCount, observations := setupRetryingStandardCodexAffinityGroup(t)
 	body := codexAffinityTurnResetBody("turn-1")
 
 	recorder := runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "stale-turn", body)
 	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, int32(2), requestCount.Load())
 	<-observations
 	<-observations
 
 	recorder = runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "stale-turn", body)
 	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, int32(3), requestCount.Load())
 	observation := <-observations
 
 	require.Empty(t, observation.turn)
@@ -37,17 +39,19 @@ func TestStandardCodexAffinityKeepsStateResetForFailedTurn(t *testing.T) {
 }
 
 func TestStandardCodexAffinityRestoresEncryptedStateForNextTurn(t *testing.T) {
-	handler, group, observations := setupRetryingStandardCodexAffinityGroup(t)
+	handler, group, requestCount, observations := setupRetryingStandardCodexAffinityGroup(t)
 	failedTurnBody := codexAffinityTurnResetBody("turn-1")
 
 	recorder := runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "failed-turn", failedTurnBody)
 	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, int32(2), requestCount.Load())
 	<-observations
 	<-observations
 
 	nextTurnBody := codexAffinityTurnResetBody("turn-2")
 	recorder = runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "next-turn", nextTurnBody)
 	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, int32(3), requestCount.Load())
 	observation := <-observations
 
 	require.Equal(t, "next-turn", observation.turn)

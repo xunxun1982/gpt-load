@@ -5952,24 +5952,30 @@ func TestRemoveFunctionCallsBlocks_ProductionLogScenario(t *testing.T) {
 // TestRepairMalformedJSON_ProductionLogPatterns tests JSON repair for patterns from production log
 func TestRepairMalformedJSON_ProductionLogPatternsExtended(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       string
-		shouldParse bool // Whether the repaired JSON should be parseable
+		name            string
+		input           string
+		shouldParse     bool // Whether the repaired JSON should be parseable
+		wantFields      []string
+		forbiddenFields []string
 	}{
 		{
 			name:        "missing_content_field_name",
 			input:       `[{"id":"1",": "研究Python GUI框架","activeForm":"正在研究"}]`,
 			shouldParse: true,
+			wantFields:  []string{`"content"`},
 		},
 		{
-			name:        "form_to_activeform",
-			input:       `[{"id":"1","content":"task","Form":"正在执行"}]`,
-			shouldParse: true,
+			name:            "form_to_activeform",
+			input:           `[{"id":"1","content":"task","Form":"正在执行"}]`,
+			shouldParse:     true,
+			wantFields:      []string{`"activeForm"`},
+			forbiddenFields: []string{`"Form"`},
 		},
 		{
 			name:        "state_to_status",
 			input:       `[{"id":"1","content":"task","state":"pending"}]`,
 			shouldParse: true,
+			wantFields:  []string{`"status"`},
 		},
 		{
 			name:        "unquoted_status_value",
@@ -5994,25 +6000,14 @@ func TestRepairMalformedJSON_ProductionLogPatternsExtended(t *testing.T) {
 				t.Errorf("repairMalformedJSON() result is not valid JSON: %v\nInput: %s\nOutput: %s", err, tt.input, result)
 			}
 
-			// Verify specific field transformations
-			if tt.name == "form_to_activeform" {
-				if !strings.Contains(result, `"activeForm"`) {
-					t.Errorf("expected Form to be converted to activeForm, got: %s", result)
-				}
-				if strings.Contains(result, `"Form"`) {
-					t.Errorf("expected Form to be removed, got: %s", result)
+			for _, field := range tt.wantFields {
+				if !strings.Contains(result, field) {
+					t.Errorf("expected repaired JSON to contain %s, got: %s", field, result)
 				}
 			}
-
-			if tt.name == "state_to_status" {
-				if !strings.Contains(result, `"status"`) {
-					t.Errorf("expected state to be converted to status, got: %s", result)
-				}
-			}
-
-			if tt.name == "missing_content_field_name" {
-				if !strings.Contains(result, `"content"`) {
-					t.Errorf("expected content field to be added, got: %s", result)
+			for _, field := range tt.forbiddenFields {
+				if strings.Contains(result, field) {
+					t.Errorf("expected repaired JSON not to contain %s, got: %s", field, result)
 				}
 			}
 		})

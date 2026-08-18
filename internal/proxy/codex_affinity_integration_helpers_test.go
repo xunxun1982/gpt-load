@@ -78,27 +78,28 @@ func setupStandardCodexAffinityGroup(t *testing.T, enabled bool, rules []models.
 	return router, group, observations
 }
 
-func setupRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handler, *models.Group, <-chan codexAffinityObservation) {
+func setupRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handler, *models.Group, *atomic.Int32, <-chan codexAffinityObservation) {
 	t.Helper()
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
 	observations := make(chan codexAffinityObservation, 2)
 	var requestCount atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := requestCount.Add(1)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		// Non-blocking: an unexpected extra attempt must fail via the
-		// observation count asserted by the caller instead of hanging the
+		// request count asserted by the caller instead of hanging the
 		// upstream handler.
 		select {
 		case observations <- codexAffinityObservation{auth: r.Header.Get("Authorization"), turn: r.Header.Get("X-Codex-Turn-State"), body: body}:
 		default:
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if requestCount.Add(1) == 1 {
+		if attempt == 1 {
 			http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
 			return
 		}
@@ -127,7 +128,7 @@ func setupRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handler, *model
 
 	router := gin.New()
 	router.POST("/proxy/:group_name/*path", requestmiddleware.ProxyAuth(ps.groupManager, nil), ps.HandleProxy)
-	return router, group, observations
+	return router, group, &requestCount, observations
 }
 
 func setupStreamingRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handler, *models.Group, *atomic.Int32, <-chan codexAffinityObservation) {
@@ -137,20 +138,21 @@ func setupStreamingRetryingStandardCodexAffinityGroup(t *testing.T) (http.Handle
 	observations := make(chan codexAffinityObservation, 4)
 	var requestCount atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := requestCount.Add(1)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		// Non-blocking: an unexpected extra attempt must fail via the
-		// observation count asserted by the caller instead of hanging the
+		// request count asserted by the caller instead of hanging the
 		// upstream handler.
 		select {
 		case observations <- codexAffinityObservation{auth: r.Header.Get("Authorization"), turn: r.Header.Get("X-Codex-Turn-State"), body: body}:
 		default:
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		if requestCount.Add(1) == 2 {
+		if attempt == 2 {
 			_, _ = io.WriteString(w, "event: response.failed\n"+
 				"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"The encrypted content could not be verified or decrypted\"}}}\n\n")
 			return

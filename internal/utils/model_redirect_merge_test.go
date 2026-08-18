@@ -11,10 +11,11 @@ import (
 
 func TestMergeModelRedirectRulesV2(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       string
-		expected    string
-		expectError bool
+		name                    string
+		input                   string
+		expected                string
+		expectError             bool
+		compareTargetsUnordered bool
 	}{
 		{
 			name:     "empty input",
@@ -210,6 +211,7 @@ func TestMergeModelRedirectRulesV2(t *testing.T) {
 					]
 				}
 			}`,
+			compareTargetsUnordered: true,
 		},
 		{
 			name: "skip empty keys after trimming",
@@ -288,8 +290,7 @@ func TestMergeModelRedirectRulesV2(t *testing.T) {
 			err = json.Unmarshal(result, &resultObj)
 			require.NoError(t, err, "result JSON should be valid")
 
-			// For the "merge duplicate keys" test, verify content without order dependency
-			if tt.name == "merge duplicate keys after trimming whitespace" {
+			if tt.compareTargetsUnordered {
 				// Verify we have exactly one key "gpt-4"
 				assert.Len(t, resultObj, 1)
 				assert.Contains(t, resultObj, "gpt-4")

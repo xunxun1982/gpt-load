@@ -88,13 +88,14 @@ func TestHandleProxyStandardCodexAffinityDisabledPreservesStateAndRotation(t *te
 }
 
 func TestHandleProxyStandardCodexAffinityFailureStripsEncryptedStateBeforeRetry(t *testing.T) {
-	handler, group, observations := setupRetryingStandardCodexAffinityGroup(t)
+	handler, group, requestCount, observations := setupRetryingStandardCodexAffinityGroup(t)
 	body := []byte(`{
   "model":"gpt-5","include":["reasoning.encrypted_content","web_search_call.results"],
   "input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"cipher"}]
 }`)
 
 	require.Equal(t, http.StatusOK, runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "old-turn", body).Code)
+	require.Equal(t, int32(2), requestCount.Load())
 	first := <-observations
 	second := <-observations
 
@@ -108,10 +109,11 @@ func TestHandleProxyStandardCodexAffinityFailureStripsEncryptedStateBeforeRetry(
 }
 
 func TestHandleProxyStandardCodexAffinityPreservesRedirectedModelAcrossRetry(t *testing.T) {
-	handler, group, observations := setupRetryingStandardCodexAffinityGroup(t)
+	handler, group, requestCount, observations := setupRetryingStandardCodexAffinityGroup(t)
 	body := []byte(`{"model":"gpt-source","input":"hello","stream":false}`)
 
 	require.Equal(t, http.StatusOK, runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "", body).Code)
+	require.Equal(t, int32(2), requestCount.Load())
 	first := <-observations
 	second := <-observations
 

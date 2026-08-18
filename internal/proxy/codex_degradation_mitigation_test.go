@@ -67,10 +67,11 @@ func TestCodexMitigationIsSSEPreservesCompatibleContentTypes(t *testing.T) {
 
 	tests := []struct {
 		name        string
+		nilResponse bool
 		contentType string
 		want        bool
 	}{
-		{name: "nil response", want: false},
+		{name: "nil response", nilResponse: true, want: false},
 		{name: "standard", contentType: "text/event-stream; charset=utf-8", want: true},
 		{name: "case insensitive", contentType: "TEXT/EVENT-STREAM", want: true},
 		{name: "compatible vendor prefix", contentType: "application/text/event-stream", want: true},
@@ -79,7 +80,7 @@ func TestCodexMitigationIsSSEPreservesCompatibleContentTypes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var resp *http.Response
-			if tt.name != "nil response" {
+			if !tt.nilResponse {
 				resp = &http.Response{Header: http.Header{"Content-Type": []string{tt.contentType}}}
 			}
 			assert.Equal(t, tt.want, codexMitigationIsSSE(resp))

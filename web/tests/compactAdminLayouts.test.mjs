@@ -18,10 +18,12 @@ test("aggregate editor keeps actions visible and uses a compact desktop grid", (
 
   assert.match(source, /class="aggregate-group-card"[\s\S]*size="medium"/);
   assert.match(source, /\.aggregate-group-card\s*\{[\s\S]*max-height:/);
+  // Naive UI 2.44.1 renders .n-card-content; the legacy double-underscore selector is invalid.
   assert.match(
     source,
-    /\.aggregate-group-card\s+:deep\(\.n-card-content\)[\s\S]*overflow-y:\s*auto;/
+    /\.aggregate-group-card\s+:deep\(\.n-card-content\)\s*\{[^}]*overflow-y:\s*auto;/
   );
+  assert.doesNotMatch(source, /:deep\(\.n-card__content\)/);
   assert.match(source, /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
 });
 
@@ -29,7 +31,11 @@ test("site editor uses the available desktop width for a compact two-column form
   const source = readSource("../src/features/site-management/components/SiteManagementPanel.vue");
 
   assert.match(source, /\.site-form-modal\s*\{[\s\S]*width:\s*min\(1040px,/);
-  assert.match(source, /\.site-form-card\s+:deep\(\.n-card-content\)[\s\S]*overflow-y:\s*auto;/);
+  assert.match(
+    source,
+    /\.site-form-card\s+:deep\(\.n-card-content\)(?:\s*,[^{}]*)?\s*\{[^}]*overflow-y:\s*auto;/
+  );
+  assert.doesNotMatch(source, /:deep\(\.n-card__content\)/);
   // Each form section lays its fields out on a two-column grid; rows are flattened
   // into the grid via display: contents, and full-width fields span both columns.
   assert.match(

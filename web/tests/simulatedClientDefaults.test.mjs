@@ -33,7 +33,7 @@ test("simulated client defaults stay aligned with the pinned UI defaults", async
 
   assert.match(DEFAULT_CODEX_VERSION, /^\d+\.\d+\.\d+$/);
   assert.match(DEFAULT_CLAUDE_CODE_VERSION, /^\d+\.\d+\.\d+$/);
-  assert.equal(DEFAULT_CODEX_VERSION, "0.147.0");
+  assert.equal(DEFAULT_CODEX_VERSION, "0.146.1");
   assert.equal(DEFAULT_CLAUDE_CODE_VERSION, "2.1.233");
   // UI consumers must import the shared defaults instead of pinning version literals.
   assert.match(groupFormModal, /from "@\/utils\/simulated-client-defaults"/);
