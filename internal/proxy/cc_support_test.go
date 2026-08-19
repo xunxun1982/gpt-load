@@ -6394,6 +6394,23 @@ func TestConvertClaudeToOpenAI(t *testing.T) {
 	}
 }
 
+func TestConvertClaudeToOpenAIKeepsPromptWhenInlineMessagesAreSystemOnly(t *testing.T) {
+	t.Parallel()
+
+	got, err := convertClaudeToOpenAI(&ClaudeRequest{
+		Prompt: "  continue the task  ",
+		Messages: []ClaudeMessage{{
+			Role:    "system",
+			Content: json.RawMessage(`"system context"`),
+		}},
+	}, nil)
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 2)
+	assert.Equal(t, "system", got.Messages[0].Role)
+	assert.Equal(t, "user", got.Messages[1].Role)
+	assert.JSONEq(t, `"continue the task"`, string(got.Messages[1].Content))
+}
+
 // TestNormalizeArgsLooseMode tests parameter normalization in loose mode
 // Loose mode automatically converts JSON strings to objects/arrays and infers types
 func TestNormalizeArgsLooseMode(t *testing.T) {

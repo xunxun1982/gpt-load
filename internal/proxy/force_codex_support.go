@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -28,6 +29,8 @@ const (
 
 	codexToolSearchProxyName = "tool_search"
 )
+
+var errCodexInputNoConvertibleMessages = errors.New("Codex input contains no convertible messages")
 
 // isCodexPath detects the explicit /codex force endpoint without confusing it
 // with a group that is literally named "codex".
@@ -422,6 +425,9 @@ func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, er
 		return nil, err
 	}
 	req.Messages = append(req.Messages, messages...)
+	if len(req.Messages) == 0 {
+		return nil, errCodexInputNoConvertibleMessages
+	}
 
 	if len(requestTools) > 0 {
 		req.Tools = make([]OpenAITool, 0, len(requestTools))
@@ -893,6 +899,11 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 	items, ok := raw.([]any)
 	if !ok {
 		if s, ok := raw.(string); ok {
+			// Keep an instructions-only Chat request valid; the caller performs the
+			// final non-empty-message check after adding instructions.
+			if s == "" {
+				return nil, nil
+			}
 			return []OpenAIMessage{{Role: "user", Content: marshalStringAsJSONRaw("codex_input", s)}}, nil
 		}
 		return nil, fmt.Errorf("unsupported Codex input format")
@@ -1005,6 +1016,9 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 	items, ok := raw.([]any)
 	if !ok {
 		if s, ok := raw.(string); ok {
+			if s == "" {
+				return nil, errCodexInputNoConvertibleMessages
+			}
 			content, _ := json.Marshal([]ClaudeContentBlock{{Type: "text", Text: s}})
 			return []ClaudeMessage{{Role: "user", Content: content}}, nil
 		}
@@ -1146,6 +1160,9 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bo
 	}
 	flushToolBlocks()
 	discardThinking()
+	if len(messages) == 0 {
+		return nil, errCodexInputNoConvertibleMessages
+	}
 	return messages, nil
 }
 
@@ -1505,8 +1522,10 @@ func validateForceCodexTools(tools []CodexTool, target string) error {
 			// Unknown tool kinds are transported as ordinary function tools. The
 			// gateway does not execute or interpret them, so there is no tool-name
 			// allowlist to update when a provider adds a new kind.
-			if strings.TrimSpace(codexToolName(tool)) == "" {
-				return unsupportedCodexTool(toolType, target, "name is required for function-shell conversion")
+			// A whitespace-only raw type is invalid even when a name is present;
+			// reject it before codexToolName can fall back to an unusable value.
+			if strings.TrimSpace(tool.Type) == "" {
+				return unsupportedCodexTool(toolType, target, "type is required for function-shell conversion")
 			}
 		}
 	}

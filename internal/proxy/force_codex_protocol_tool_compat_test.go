@@ -79,7 +79,8 @@ func TestProtocolToolCompatDeduplicatesDiscoveredToolsAfterExplicitTools(t *test
 		}},
 		Input: json.RawMessage(`[
 			{"type":"additional_tools","tools":[{"type":"function","name":"lookup","description":"discovered definition","parameters":{"type":"object"}}]},
-			{"type":"tool_search_output","tools":[{"type":"function","name":"lookup","description":"replayed definition","parameters":{"type":"object"}}]}
+			{"type":"tool_search_output","tools":[{"type":"function","name":"lookup","description":"replayed definition","parameters":{"type":"object"}}]},
+			{"type":"message","role":"user","content":"continue"}
 		]`),
 	}
 
@@ -467,16 +468,16 @@ func TestProtocolToolCompatRejectsClaudeToolResultWithoutIDForCodex(t *testing.T
 
 func TestProtocolToolCompatDropsOrphanReasoning(t *testing.T) {
 	tests := []struct {
-		name      string
-		input     json.RawMessage
-		wantEmpty bool
+		name    string
+		input   json.RawMessage
+		wantErr bool
 	}{
 		{
 			name: "trailing reasoning",
 			input: json.RawMessage(`[
 			{"type":"reasoning","summary":[{"type":"summary_text","text":"trailing plan"}]}
 		]`),
-			wantEmpty: true,
+			wantErr: true,
 		},
 		{
 			name: "reasoning before user",
@@ -492,16 +493,20 @@ func TestProtocolToolCompatDropsOrphanReasoning(t *testing.T) {
 			req := &CodexRequest{Model: "gpt-test", Input: tt.input}
 
 			chat, err := convertCodexRequestToOpenAIChat(req)
-			require.NoError(t, err)
+			if tt.wantErr {
+				require.ErrorIs(t, err, errCodexInputNoConvertibleMessages)
+			} else {
+				require.NoError(t, err)
+			}
 
 			claude, err := convertCodexRequestToClaude(req)
-			require.NoError(t, err)
-
-			if tt.wantEmpty {
-				assert.Empty(t, chat.Messages)
-				assert.Empty(t, claude.Messages)
+			if tt.wantErr {
+				require.ErrorIs(t, err, errCodexInputNoConvertibleMessages)
+				assert.Nil(t, chat)
+				assert.Nil(t, claude)
 				return
 			}
+			require.NoError(t, err)
 
 			require.Len(t, chat.Messages, 1)
 			assert.Nil(t, chat.Messages[0].ReasoningContent)
@@ -605,19 +610,26 @@ func TestProtocolToolCompatRestoresUnknownClaudeToolUseResponse(t *testing.T) {
 	assert.Equal(t, `{"id":9007199254740993}`, got.Output[0].Arguments)
 }
 
-func TestProtocolToolCompatRejectsUnnamedFunctionsBeforeConversion(t *testing.T) {
-	for _, tool := range []string{
-		`{"type":"function","parameters":{"type":"object"}}`,
-		`{"type":"namespace","name":"mail","tools":[{"type":"function","parameters":{"type":"object"}}]}`,
-	} {
-		t.Run(tool, func(t *testing.T) {
-			body := []byte(`{"model":"gpt-test","input":"hello","tools":[` + tool + `]}`)
+func TestProtocolToolCompatRejectsToolsWithoutConvertibleNames(t *testing.T) {
+	tests := []struct {
+		name       string
+		tool       string
+		wantDetail string
+	}{
+		{name: "function without name", tool: `{"type":"function","parameters":{"type":"object"}}`, wantDetail: "name is required"},
+		{name: "namespace child without name", tool: `{"type":"namespace","name":"mail","tools":[{"type":"function","parameters":{"type":"object"}}]}`, wantDetail: "name is required"},
+		{name: "blank type", tool: `{"type":"   "}`, wantDetail: "type is required"},
+		{name: "blank type with name", tool: `{"type":"   ","name":"named"}`, wantDetail: "type is required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-test","input":"hello","tools":[` + tt.tool + `]}`)
 			c, _ := gin.CreateTestContext(nil)
 			_, converted, err := (&ProxyServer{}).applyForceCodexRequestConversion(c, &models.Group{ChannelType: "openai"}, body)
 			require.Error(t, err)
 			assert.False(t, converted)
 			assert.Contains(t, err.Error(), "unsupported_tool")
-			assert.Contains(t, err.Error(), "name is required")
+			assert.Contains(t, err.Error(), tt.wantDetail)
 		})
 	}
 }
@@ -701,7 +713,7 @@ func TestProtocolToolCompatNormalizesCodexEffortControlValue(t *testing.T) {
 			req := &CodexRequest{
 				Model:     "gpt-test",
 				Reasoning: &CodexReasoning{Effort: tt.effort},
-				Input:     json.RawMessage(`[]`),
+				Input:     json.RawMessage(`"hello"`),
 			}
 			claude, err := convertCodexRequestToClaude(req)
 			require.NoError(t, err)

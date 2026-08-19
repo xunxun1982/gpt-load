@@ -18,6 +18,16 @@ func TestCodexAffinityDoesNotPersistMissingTurnStateReset(t *testing.T) {
 	require.False(t, cache.requiresStateReset("cache-key", codexStateDomainWithoutTurnState, now))
 }
 
+func TestCodexAffinityStateResetDoesNotShortenTTLForOutOfOrderTimestamp(t *testing.T) {
+	cache := newCodexAffinityCache(time.Hour, 2)
+	now := time.Unix(150, 0)
+
+	cache.markStateReset("cache-key", "turn:1", now.Add(30*time.Minute))
+	cache.markStateReset("cache-key", "turn:1", now)
+
+	require.True(t, cache.requiresStateReset("cache-key", "turn:1", now.Add(75*time.Minute)))
+}
+
 func TestStandardCodexAffinityKeepsStateResetForFailedTurn(t *testing.T) {
 	handler, group, requestCount, observations := setupRetryingStandardCodexAffinityGroup(t)
 	body := codexAffinityTurnResetBody("turn-1")

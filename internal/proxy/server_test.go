@@ -1347,7 +1347,7 @@ func TestCodexAggregateAffinityKeyReadsExistingCodexContext(t *testing.T) {
 	c.Request.Header.Set("Session_ID", "header-session")
 	c.Request.Header.Set("Conversation_ID", "header-conversation")
 
-	assert.Equal(t, "header-session", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "header-session", codexAffinityKey(c, group, body))
 	assert.Equal(t, "header-session", c.Request.Header.Get("Session_ID"))
 	assert.JSONEq(t, `{"model":"gpt-5.4","prompt_cache_key":"body-cache-key"}`, string(body))
 }
@@ -1404,7 +1404,7 @@ func TestCodexAggregateAffinityKeyReadsOfficialCodexHeaders(t *testing.T) {
 				c.Request.Header.Set(name, value)
 			}
 
-			assert.Equal(t, tt.want, codexAggregateAffinityKey(c, group, body))
+			assert.Equal(t, tt.want, codexAffinityKey(c, group, body))
 		})
 	}
 }
@@ -1428,7 +1428,7 @@ func TestCodexAggregateAffinityKeyFallsBackToPromptCacheKey(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
 
-	assert.Equal(t, "body-cache-key", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "body-cache-key", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyAppliesToOpenAIResponseAggregateWithoutCodexMarkers(t *testing.T) {
@@ -1449,7 +1449,7 @@ func TestCodexAggregateAffinityKeyAppliesToOpenAIResponseAggregateWithoutCodexMa
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/responses-aggregate/v1/responses", bytes.NewReader(body))
 
-	assert.Equal(t, "stable-session", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "stable-session", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyHandlesMissingRequest(t *testing.T) {
@@ -1467,7 +1467,7 @@ func TestCodexAggregateAffinityKeyHandlesMissingRequest(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 
 	assert.NotPanics(t, func() {
-		assert.Empty(t, codexAggregateAffinityKey(c, group, []byte(`{"prompt_cache_key":"stable-session"}`)))
+		assert.Empty(t, codexAffinityKey(c, group, []byte(`{"prompt_cache_key":"stable-session"}`)))
 	})
 }
 
@@ -1490,7 +1490,7 @@ func TestCodexAggregateAffinityKeyReadsCodexTurnMetadataHeader(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("X-Codex-Turn-Metadata", `{"prompt_cache_key":"turn-cache-key","window_id":"turn-window"}`)
 
-	assert.Equal(t, "turn-cache-key", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "turn-cache-key", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyReadsCodexClientMetadata(t *testing.T) {
@@ -1512,7 +1512,7 @@ func TestCodexAggregateAffinityKeyReadsCodexClientMetadata(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
 
-	assert.Equal(t, "body-window", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "body-turn-cache", codexAffinityKey(c, group, body))
 	assert.JSONEq(t, `{"model":"gpt-5.4","client_metadata":{"x-codex-window-id":"body-window","x-codex-turn-metadata":"{\"prompt_cache_key\":\"body-turn-cache\",\"window_id\":\"body-turn-window\"}"}}`, string(body))
 }
 
@@ -1535,7 +1535,7 @@ func TestCodexAggregateAffinityKeyPrefersStableThreadMetadata(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
 
-	assert.Equal(t, "stable-thread", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "stable-thread", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyBodyThreadOverridesSharedSessionHeader(t *testing.T) {
@@ -1556,7 +1556,7 @@ func TestCodexAggregateAffinityKeyBodyThreadOverridesSharedSessionHeader(t *test
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("Session-Id", "shared-session")
 
-	assert.Equal(t, "new-project-thread", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "new-project-thread", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyUsesSessionMetadataWhenThreadMissing(t *testing.T) {
@@ -1578,7 +1578,7 @@ func TestCodexAggregateAffinityKeyUsesSessionMetadataWhenThreadMissing(t *testin
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
 
-	assert.Equal(t, "stable-session", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "stable-session", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyWithDegradationMitigationEnabled(t *testing.T) {
@@ -1602,16 +1602,17 @@ func TestCodexAggregateAffinityKeyWithDegradationMitigationEnabled(t *testing.T)
 	c.Request.Header.Set("Originator", "codex_cli_rs")
 	c.Request.Header.Set("Session_ID", "header-session")
 
-	assert.Equal(t, "header-session", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "header-session", codexAffinityKey(c, group, body))
 }
 
-func TestCodexAggregateAffinityKeyDisabledOutsideEnabledOpenAIResponseAggregate(t *testing.T) {
+func TestCodexAffinityKeyDisabledOutsideEnabledOpenAIResponsesGroups(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Parallel()
 
 	tests := []struct {
 		name  string
 		group *models.Group
+		want  string
 	}{
 		{
 			name: "non responses aggregate",
@@ -1626,6 +1627,7 @@ func TestCodexAggregateAffinityKeyDisabledOutsideEnabledOpenAIResponseAggregate(
 				Name: "responses-standard", GroupType: "standard", ChannelType: "openai-response",
 				Config: map[string]any{"codex_affinity_enabled": true},
 			},
+			want: "header-session",
 		},
 		{
 			name: "affinity disabled",
@@ -1644,7 +1646,7 @@ func TestCodexAggregateAffinityKeyDisabledOutsideEnabledOpenAIResponseAggregate(
 			c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+tt.group.Name+"/v1/responses", bytes.NewReader(body))
 			c.Request.Header.Set("Session_ID", "header-session")
 
-			assert.Empty(t, codexAggregateAffinityKey(c, tt.group, body))
+			assert.Equal(t, tt.want, codexAffinityKey(c, tt.group, body))
 		})
 	}
 }
@@ -1677,7 +1679,7 @@ func TestCodexAggregateAffinityKeyDisabledOutsideResponsesPost(t *testing.T) {
 			c.Request = httptest.NewRequest(tt.method, tt.path, bytes.NewReader(body))
 			c.Request.Header.Set("Session-Id", "header-session")
 
-			assert.Empty(t, codexAggregateAffinityKey(c, group, body))
+			assert.Empty(t, codexAffinityKey(c, group, body))
 		})
 	}
 }
@@ -1985,15 +1987,6 @@ func TestRetryContextCachesCodexRequestPayloadAndModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Parallel()
 
-	group := &models.Group{
-		Name:        "codex-aggregate",
-		GroupType:   "aggregate",
-		ChannelType: "openai-response",
-		Config: map[string]any{
-			"codex_affinity_enabled": true,
-		},
-	}
-
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", nil)
@@ -2004,13 +1997,13 @@ func TestRetryContextCachesCodexRequestPayloadAndModel(t *testing.T) {
 	}
 	payload, ok := retryCtx.codexRequestPayload([]byte(`{"model":"ignored"}`))
 	require.True(t, ok)
-	assert.Equal(t, "stable-thread", codexAggregateAffinityKeyFromPayload(c, group, payload, ok))
+	assert.Equal(t, "stable-thread", codexAffinityKeyFromPayload(c, payload, ok))
 	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel([]byte(`{"model":"ignored"}`)))
 
 	retryCtx.originalBodyBytes = []byte(`{"model":"mutated","client_metadata":{"thread_id":"mutated-thread"}}`)
 	payload, ok = retryCtx.codexRequestPayload(nil)
 	require.True(t, ok)
-	assert.Equal(t, "stable-thread", codexAggregateAffinityKeyFromPayload(c, group, payload, ok))
+	assert.Equal(t, "stable-thread", codexAffinityKeyFromPayload(c, payload, ok))
 	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel(nil))
 }
 
@@ -2026,40 +2019,6 @@ func TestRetryContextCodexRequestModelReusesParsedPayload(t *testing.T) {
 
 	retryCtx.originalBodyBytes = []byte(`not-json`)
 	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel(nil))
-}
-
-func TestCodexAggregateAffinityThreadHeaderAvoidsBodyPayloadParsing(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Parallel()
-
-	group := &models.Group{
-		Name:        "codex-aggregate",
-		GroupType:   "aggregate",
-		ChannelType: "openai-response",
-		Config: map[string]any{
-			"codex_affinity_enabled": true,
-		},
-	}
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", nil)
-	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
-	c.Request.Header.Set("Thread-Id", "header-thread")
-
-	retryCtx := &retryContext{
-		originalBodyBytes: []byte(`{"model":"gpt-5","client_metadata":{"thread_id":"stable-thread"}}`),
-	}
-	affinityKey := codexAggregateAffinityThreadHeaderKey(c, group)
-	if affinityKey == "" {
-		payload, payloadOK := retryCtx.codexRequestPayload(nil)
-		affinityKey = codexAggregateAffinityKeyFromPayload(c, group, payload, payloadOK)
-	}
-
-	assert.Equal(t, "header-thread", affinityKey)
-	assert.False(t, retryCtx.codexParsedPayloadSet)
-	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel(nil))
-	assert.False(t, retryCtx.codexParsedPayloadSet)
 }
 
 func TestExecuteRequestWithRetryWaitsConfiguredDelayBeforeRetry(t *testing.T) {

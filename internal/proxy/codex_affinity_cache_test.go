@@ -18,6 +18,15 @@ func TestCodexAffinityCacheKeySeparatesAuthenticatedProxyIdentity(t *testing.T) 
 	require.NotEqual(t, keyA, keyB)
 }
 
+func TestCodexAffinityCacheKeySeparatesThreadsWithinAuthenticatedProxyIdentity(t *testing.T) {
+	t.Parallel()
+
+	keyA := codexAffinityScopedCacheKey(7, "proxy-digest", "thread-1")
+	keyB := codexAffinityScopedCacheKey(7, "proxy-digest", "thread-2")
+
+	require.NotEqual(t, keyA, keyB)
+}
+
 func TestCodexAffinityCacheKeyRejectsMissingAuthenticatedProxyIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -85,6 +94,34 @@ func TestCodexAffinityCacheUsesTTLAndLRU(t *testing.T) {
 	require.False(t, hotOK)
 	require.True(t, oldOK)
 	require.False(t, expiredOK)
+}
+
+func TestCodexAffinityCacheRenewsTTLWhenSuccessfulBindingIsStoredAgain(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(350, 0)
+	cache := newCodexAffinityCache(time.Hour, 2)
+	binding := codexAffinityBinding{executionGroupID: 1, keyID: 2, upstreamIdentity: "upstream"}
+	cache.setBinding("cache-key", binding, now)
+	cache.setBinding("cache-key", binding, now.Add(50*time.Minute))
+
+	_, renewed := cache.getBinding("cache-key", now.Add(100*time.Minute))
+	_, expired := cache.getBinding("cache-key", now.Add(111*time.Minute))
+	require.True(t, renewed)
+	require.False(t, expired)
+}
+
+func TestCodexAffinityCacheDoesNotShortenTTLForOutOfOrderTimestamp(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(375, 0)
+	cache := newCodexAffinityCache(time.Hour, 2)
+	binding := codexAffinityBinding{executionGroupID: 1, keyID: 2, upstreamIdentity: "upstream"}
+	cache.setBinding("cache-key", binding, now.Add(30*time.Minute))
+	cache.setBinding("cache-key", binding, now)
+
+	_, stillRenewed := cache.getBinding("cache-key", now.Add(75*time.Minute))
+	require.True(t, stillRenewed)
 }
 
 func TestCodexAffinityCacheKeepsTurnResetAcrossRebinding(t *testing.T) {

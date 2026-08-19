@@ -46,6 +46,76 @@ func TestConvertCodexInputToClaudeMessagesSkipsToolOutputWithoutCallID(t *testin
 	assert.Equal(t, []string{"A", "B"}, []string{content[0].Text, content[1].Text})
 }
 
+func TestConvertCodexInputToClaudeMessagesRejectsInputWithNoConvertibleItems(t *testing.T) {
+	t.Parallel()
+
+	_, err := convertCodexInputToClaudeMessages(json.RawMessage(`[
+		{"type":"message","role":"system","content":"dropped"},
+		{"type":"function_call_output","output":"also dropped"}
+	]`), false)
+	require.ErrorIs(t, err, errCodexInputNoConvertibleMessages)
+}
+
+func TestConvertCodexInputToClaudeMessagesRejectsEmptyScalarInput(t *testing.T) {
+	t.Parallel()
+
+	_, err := convertCodexInputToClaudeMessages(json.RawMessage(`""`), false)
+	require.ErrorIs(t, err, errCodexInputNoConvertibleMessages)
+}
+
+func TestConvertCodexRequestToOpenAIChatRejectsInputWithNoConvertibleItems(t *testing.T) {
+	t.Parallel()
+
+	_, err := convertCodexRequestToOpenAIChat(&CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":""},
+			{"type":"function_call_output","output":"dropped"}
+		]`),
+	})
+	require.ErrorIs(t, err, errCodexInputNoConvertibleMessages)
+}
+
+func TestConvertCodexRequestToOpenAIChatRejectsEmptyScalarInput(t *testing.T) {
+	t.Parallel()
+
+	_, err := convertCodexRequestToOpenAIChat(&CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`""`),
+	})
+	require.ErrorIs(t, err, errCodexInputNoConvertibleMessages)
+}
+
+func TestConvertCodexRequestToOpenAIChatKeepsInstructionsForEmptyScalarInput(t *testing.T) {
+	t.Parallel()
+
+	got, err := convertCodexRequestToOpenAIChat(&CodexRequest{
+		Model:        "gpt-test",
+		Instructions: "follow the policy",
+		Input:        json.RawMessage(`""`),
+	})
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 1)
+	assert.Equal(t, "system", got.Messages[0].Role)
+}
+
+func TestConvertCodexRequestToOpenAIChatKeepsInstructionsWhenInputHasNoConvertibleItems(t *testing.T) {
+	t.Parallel()
+
+	got, err := convertCodexRequestToOpenAIChat(&CodexRequest{
+		Model:        "gpt-test",
+		Instructions: "follow the policy",
+		Input: json.RawMessage(`[
+			{"type":"additional_tools","tools":[]},
+			{"type":"function_call_output","output":"dropped"}
+		]`),
+	})
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 1)
+	assert.Equal(t, "system", got.Messages[0].Role)
+	assert.JSONEq(t, `"follow the policy"`, string(got.Messages[0].Content))
+}
+
 func (w *failAfterWriteResponseWriter) Write(data []byte) (int, error) {
 	w.writes++
 	if w.writes > w.failAfter {

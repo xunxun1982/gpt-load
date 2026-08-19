@@ -222,92 +222,6 @@ func isAggregateSubGroupFinal(c *gin.Context) bool {
 	return enabled
 }
 
-func codexAggregateAffinityKey(c *gin.Context, group *models.Group, bodyBytes []byte) string {
-	if value := codexAggregateAffinityThreadHeaderKey(c, group); value != "" {
-		return value
-	}
-
-	var payload map[string]any
-	err := json.Unmarshal(bodyBytes, &payload)
-	return codexAggregateAffinityKeyFromPayload(c, group, payload, err == nil)
-}
-
-func codexAggregateAffinityThreadHeaderKey(c *gin.Context, group *models.Group) string {
-	if !codexAggregateAffinityEnabled(c, group) {
-		return ""
-	}
-	// A Codex session can contain multiple project threads, so prefer the per-thread identity.
-	return firstNonEmptyHeader(c, "Thread-Id")
-}
-
-func codexAggregateAffinityFallbackHeaderKey(c *gin.Context, group *models.Group) string {
-	if !codexAggregateAffinityEnabled(c, group) {
-		return ""
-	}
-	if value := firstNonEmptyHeader(c, "Session-Id", "X-Client-Request-Id"); value != "" {
-		return value
-	}
-	if value := firstNonEmptyHeader(c, "Session_ID", "session_id"); value != "" {
-		return value
-	}
-	if value := firstNonEmptyHeader(c, "X-Session-ID", "x-session-id"); value != "" {
-		return value
-	}
-	return firstNonEmptyHeader(c, "Conversation_ID", "conversation_id")
-}
-
-func codexAggregateAffinityEnabled(c *gin.Context, group *models.Group) bool {
-	return c != nil && c.Request != nil && group != nil &&
-		c.Request.Method == http.MethodPost &&
-		isOpenAIResponsesEndpoint(c.Request.URL.Path) &&
-		group.GroupType == "aggregate" &&
-		group.ChannelType == "openai-response" &&
-		getGroupConfigBool(group, "codex_affinity_enabled")
-}
-
-func codexAggregateAffinityKeyFromPayload(c *gin.Context, group *models.Group, payload map[string]any, payloadOK bool) string {
-	if !codexAggregateAffinityEnabled(c, group) {
-		return ""
-	}
-	if value := codexAggregateAffinityThreadHeaderKey(c, group); value != "" {
-		return value
-	}
-
-	metadata, hasMetadata := payload["client_metadata"].(map[string]any)
-	if payloadOK && hasMetadata {
-		if value := stringFromJSONMap(metadata, "thread_id"); value != "" {
-			return value
-		}
-	}
-	if value := codexAggregateAffinityFallbackHeaderKey(c, group); value != "" {
-		return value
-	}
-	if !payloadOK {
-		return ""
-	}
-	if hasMetadata {
-		if value := stringFromJSONMap(metadata, "session_id"); value != "" {
-			return value
-		}
-		if value := stringFromJSONMap(metadata, "x-codex-window-id"); value != "" {
-			return value
-		}
-		if value := codexTurnMetadataAffinityKey(stringFromJSONMap(metadata, "x-codex-turn-metadata")); value != "" {
-			return value
-		}
-	}
-	if value := codexTurnMetadataAffinityKey(firstNonEmptyHeader(c, "X-Codex-Turn-Metadata")); value != "" {
-		return value
-	}
-	if value := firstNonEmptyHeader(c, "X-Codex-Window-Id", "x-codex-window-id"); value != "" {
-		return value
-	}
-	if value := stringFromJSONMap(payload, "prompt_cache_key"); value != "" {
-		return value
-	}
-	return ""
-}
-
 func codexTurnMetadataAffinityKey(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -2371,6 +2285,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}
 		}
 		if subGroupID == 0 {
+			// A cache miss, including a new thread, intentionally falls back to
+			// health-weighted selection; the previously bound subgroup is not
+			// excluded because it may still be the healthiest valid choice.
 			subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetry(originalGroup, retryCtx.excludedSubGroups)
 		}
 		if err != nil {

@@ -907,8 +907,8 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 	}
 	messages = append(messages, convertedMessages...)
 
-	// Treat prompt as a single user message when no explicit messages are provided.
-	if len(claudeReq.Messages) == 0 && strings.TrimSpace(claudeReq.Prompt) != "" {
+	// Treat prompt as a single user message when no non-system messages are provided.
+	if len(nonSystemMessages) == 0 && strings.TrimSpace(claudeReq.Prompt) != "" {
 		promptText := strings.TrimSpace(claudeReq.Prompt)
 		contentJSON := marshalStringAsJSONRaw("prompt", promptText)
 		messages = append(messages, OpenAIMessage{

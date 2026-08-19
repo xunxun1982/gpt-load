@@ -73,7 +73,13 @@ func (cache *codexAffinityCache) setBinding(key string, binding codexAffinityBin
 	if element, ok := cache.entries[key]; ok {
 		entry := element.Value.(*codexAffinityCacheEntry)
 		entry.binding = binding
-		entry.expiresAt = now.Add(cache.ttl)
+		// Successful requests renew the binding, so the TTL is an idle timeout rather than an absolute lifetime.
+		candidateExpiry := now.Add(cache.ttl)
+		// A request can be preempted after computing now and before taking the
+		// lock; never let that older timestamp shorten a newer renewal.
+		if candidateExpiry.After(entry.expiresAt) {
+			entry.expiresAt = candidateExpiry
+		}
 		cache.order.MoveToFront(element)
 		return
 	}
