@@ -129,6 +129,7 @@ export default {
   // Site types
   siteTypeOther: "Other",
   siteTypeBrand: "Brand",
+  siteTypeCommercial: "Commercial",
   siteTypeNewApi: "New API",
   siteTypeSub2Api: "Sub2API",
   siteTypeOneHub: "One Hub",

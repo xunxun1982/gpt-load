@@ -257,7 +257,7 @@ function handleCancel() {
   padding: 10px 20px;
 }
 
-:deep(.n-card__content) {
+:deep(.n-card-content) {
   padding: 16px 20px;
 }
 

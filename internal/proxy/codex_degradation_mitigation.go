@@ -812,6 +812,8 @@ func codexMitigationIsSSE(resp *http.Response) bool {
 	if resp == nil {
 		return false
 	}
+	// Preserve the mitigation's historical compatibility with upstream proxies
+	// that prefix the standard SSE media type.
 	return strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
 }
 

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"gpt-load/internal/models"
@@ -24,6 +26,7 @@ const maxResponseCaptureBytes = 65000
 const (
 	maxUsageTailCaptureBytes     = maxResponseCaptureBytes
 	maxCodexStreamLineBytes      = 1 * 1024 * 1024
+	maxRetryableStreamProbeBytes = 64 * 1024
 	maxCodexStreamCollectBytes   = 8 * 1024 * 1024
 	errCodexStreamCollectorLimit = "codex forced stream collector exceeded size limit"
 )
@@ -93,13 +96,232 @@ func (w *limitedResponseCaptureWriter) String() string {
 }
 
 type sseLogicalFailureCapture struct {
-	pending      []byte
+	pending             []byte
+	statusCode          int
+	errorCode           string
+	errorMessage        string
+	meaningfulSeen      bool
+	firstSemanticFailed bool
+	terminalSeen        bool
+	unverified          bool
+	disabled            bool
+}
+
+type logicalFailureProbeResult struct {
 	statusCode   int
 	errorCode    string
 	errorMessage string
-	terminalSeen bool
-	unverified   bool
-	disabled     bool
+	failed       bool
+}
+
+type replayReadCloser struct {
+	reader io.Reader
+	closer io.Closer
+}
+
+type replayErrorReader struct {
+	err error
+}
+
+func (r *replayErrorReader) Read(_ []byte) (int, error) {
+	if r.err == nil {
+		return 0, io.EOF
+	}
+	err := r.err
+	r.err = nil
+	return 0, err
+}
+
+func (r *replayReadCloser) Read(p []byte) (int, error) { return r.reader.Read(p) }
+func (r *replayReadCloser) Close() error               { return r.closer.Close() }
+
+func installResponseBodyReplay(resp *http.Response, remaining io.Reader, prefix []byte, probeErr error) {
+	originalBody := resp.Body
+	replayReaders := []io.Reader{bytes.NewReader(prefix)}
+	if probeErr != nil {
+		replayReaders = append(replayReaders, &replayErrorReader{err: probeErr})
+	}
+	replayReaders = append(replayReaders, remaining)
+	resp.Body = &replayReadCloser{reader: io.MultiReader(replayReaders...), closer: originalBody}
+}
+
+func isEventStreamResponse(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	mediaType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";")
+	return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
+}
+
+func hasUnsupportedResponseContentEncoding(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
+	return contentEncoding != "" && !strings.EqualFold(contentEncoding, "identity")
+}
+
+// retryableStreamProbe buffers only the leading SSE event. A logical failure can
+// be retried safely only before any meaningful event has reached the downstream.
+// Do not detach Body.Read behind a probe-only timer: net/http response bodies have
+// no portable, non-destructive per-read deadline. Abandoning that read would race
+// the downstream reader or retain a goroutine until the request lifecycle expires.
+// Prelude and heartbeat bytes intentionally remain in the replay body rather than
+// being written here: a direct write would commit the downstream response and close
+// the retry window, while also bypassing protocol conversion and duplicating replay.
+func retryableStreamProbe(resp *http.Response) (int, string, bool) {
+	result := retryableStreamProbeResult(resp)
+	return result.statusCode, result.errorMessage, result.failed
+}
+
+func retryableStreamProbeResult(resp *http.Response) logicalFailureProbeResult {
+	if resp == nil || resp.Body == nil || !isEventStreamResponse(resp) || hasUnsupportedResponseContentEncoding(resp) {
+		return logicalFailureProbeResult{}
+	}
+	reader := bufio.NewReaderSize(resp.Body, 4*1024)
+	prefix := make([]byte, 0, 4*1024)
+	var capture sseLogicalFailureCapture
+	var probeErr error
+	buf := make([]byte, 4*1024)
+	for len(prefix) < maxRetryableStreamProbeBytes {
+		remaining := maxRetryableStreamProbeBytes - len(prefix)
+		n, err := reader.Read(buf[:min(len(buf), remaining)])
+		if n > 0 {
+			prefix = append(prefix, buf[:n]...)
+			_, _ = capture.Write(buf[:n])
+		}
+		if err != nil {
+			capture.Finish()
+			if errors.Is(err, io.EOF) && !capture.meaningfulSeen && !capture.terminalSeen {
+				// An SSE response that ends before content or a terminal event is an
+				// upstream failure for every supported protocol, independent of HTTP status.
+				capture.firstSemanticFailed = true
+				capture.recordFailure("upstream_eof", "upstream_eof")
+			}
+			if !errors.Is(err, io.EOF) {
+				probeErr = err
+			}
+		}
+		if capture.meaningfulSeen || capture.terminalSeen {
+			// Prelude events are buffered without committing the response. Any content,
+			// unknown event, or terminal event closes the retry window before forwarding;
+			// the selected handler then forwards/translates the replay exactly once.
+			break
+		}
+		if err != nil {
+			break
+		}
+	}
+	// Replay is intentional: the selected response handler must independently parse
+	// the complete stream for usage, logging, and terminal-state accounting.
+	installResponseBodyReplay(resp, reader, prefix, probeErr)
+	return logicalFailureProbeResult{
+		statusCode:   capture.statusCode,
+		errorCode:    capture.errorCode,
+		errorMessage: strings.TrimSpace(capture.errorMessage),
+		failed:       capture.firstSemanticFailed,
+	}
+}
+
+// retryableResponseProbe inspects application-level failures before any bytes
+// reach the downstream. Non-stream Responses payloads use a bounded prefix and
+// keep the buffered reader as the response body so the selected handler replays
+// every byte without a second upstream read or an unbounded allocation.
+func retryableResponseProbe(c *gin.Context, resp *http.Response, retryAvailable bool) (int, string, bool) {
+	result := retryableResponseProbeResult(c, resp, retryAvailable)
+	return result.statusCode, result.errorMessage, result.failed
+}
+
+func retryableResponseProbeResult(c *gin.Context, resp *http.Response, retryAvailable bool) logicalFailureProbeResult {
+	if isEventStreamResponse(resp) {
+		// AI review suggested skipping this probe when retries are exhausted. Keep
+		// it so a leading logical SSE failure can still set the final HTTP status
+		// before downstream headers are committed; integration tests require it.
+		return retryableStreamProbeResult(resp)
+	}
+	if c == nil || c.Request == nil || resp == nil || resp.Body == nil ||
+		!retryAvailable ||
+		resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices ||
+		!isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+		return logicalFailureProbeResult{}
+	}
+
+	if hasUnsupportedResponseContentEncoding(resp) {
+		// Requests parsed by the proxy omit Accept-Encoding, so net/http normally
+		// exposes decoded bytes. Preserve an unsolicited encoding rather than
+		// risking classification of compressed data or changing the response.
+		return logicalFailureProbeResult{}
+	}
+
+	reader := bufio.NewReaderSize(resp.Body, 4*1024)
+	prefix := make([]byte, 0, 4*1024)
+	buf := make([]byte, 4*1024)
+	var probeErr error
+	for len(prefix) < maxResponseCaptureBytes {
+		remaining := maxResponseCaptureBytes - len(prefix)
+		n, err := reader.Read(buf[:min(len(buf), remaining)])
+		if n > 0 {
+			prefix = append(prefix, buf[:n]...)
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				probeErr = err
+			}
+			break
+		}
+		status := gjson.GetBytes(prefix, "status")
+		if status.Exists() && (!strings.EqualFold(strings.TrimSpace(status.String()), "failed") ||
+			gjson.GetBytes(prefix, "error.code").Exists() ||
+			gjson.GetBytes(prefix, "error.message").Exists()) {
+			break
+		}
+	}
+	installResponseBodyReplay(resp, reader, prefix, probeErr)
+	statusCode, errorCode, errorMessage, failed := parseResponsesLogicalFailure(prefix, len(prefix) >= maxResponseCaptureBytes)
+	return logicalFailureProbeResult{
+		statusCode:   statusCode,
+		errorCode:    errorCode,
+		errorMessage: errorMessage,
+		failed:       failed,
+	}
+}
+
+func isRetryableSSEPrelude(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "response.created", "response.queued", "response.in_progress", "message_start", "ping":
+		// These events carry only request/message metadata or a heartbeat. Buffering
+		// them keeps retries safe because no assistant content reached downstream.
+		return true
+	default:
+		return false
+	}
+}
+
+func isRetryableSSEDataPrelude(data []byte, eventType string) bool {
+	if isRetryableSSEPrelude(eventType) {
+		return true
+	}
+	// OpenAI Chat's first chunk can contain only the assistant role and omit
+	// `type`. It is metadata rather than generated content, so a following
+	// leading error remains safe to retry. Content/tool deltas close the window.
+	if strings.TrimSpace(eventType) != "" {
+		return false
+	}
+	choices := gjson.GetBytes(data, "choices")
+	if !choices.IsArray() || len(choices.Array()) == 0 {
+		return false
+	}
+	delta := choices.Get("0.delta")
+	if !delta.IsObject() || strings.TrimSpace(delta.Get("role").String()) == "" {
+		return false
+	}
+	for _, field := range []string{"content", "tool_calls", "function_call", "refusal"} {
+		value := delta.Get(field)
+		if value.Exists() && !strings.EqualFold(strings.TrimSpace(value.Raw), "null") && value.String() != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *tailUsageCapture) Write(p []byte) (int, error) {
@@ -182,32 +404,71 @@ func streamJSONPayload(line []byte) []byte {
 	}
 }
 
+func isSSETerminalSentinel(line []byte) bool {
+	line = bytes.TrimSpace(line)
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return false
+	}
+	return bytes.Equal(bytes.TrimSpace(line[len("data:"):]), []byte("[DONE]"))
+}
+
+func isTerminalResponseEventType(eventType string) bool {
+	switch eventType {
+	case "response.completed", "response.done", "response.incomplete", "response.failed":
+		return true
+	default:
+		return false
+	}
+}
+
+// upstreamEOFFailureFields fills the sentinel code/message used when the
+// upstream stream ends without a meaningful or terminal event.
+func upstreamEOFFailureFields(errorCode, errorMessage string) (string, string) {
+	if errorCode == "" {
+		errorCode = "upstream_eof"
+	}
+	if errorMessage == "" {
+		errorMessage = "upstream_eof"
+	}
+	return errorCode, errorMessage
+}
+
 func (p *sseLogicalFailureCapture) parseOversizedLinePrefix(line []byte) {
+	if isSSETerminalSentinel(line) {
+		p.terminalSeen = true
+		return
+	}
 	data := streamJSONPayload(line)
 	if len(data) == 0 {
 		return
 	}
 	eventType := strings.TrimSpace(gjson.GetBytes(data, "type").String())
+	p.classifyFailure(data, eventType)
+}
+
+func (p *sseLogicalFailureCapture) classifyFailure(data []byte, eventType string) {
+	isFirstSemantic := !p.meaningfulSeen
+	if !isRetryableSSEDataPrelude(data, eventType) {
+		p.meaningfulSeen = true
+	}
 	responseStatus := strings.TrimSpace(gjson.GetBytes(data, "response.status").String())
-	if eventType == "response.completed" || eventType == "response.done" || eventType == "response.failed" {
+	if isTerminalResponseEventType(eventType) {
 		p.terminalSeen = true
 	}
-	topLevelError := gjson.GetBytes(data, "error")
-	if !topLevelError.IsObject() && eventType != "response.failed" && !strings.EqualFold(responseStatus, "failed") {
+	isUpstreamEOF := isResponseIncompleteUpstreamEOF(data, eventType)
+	nestedError := gjson.GetBytes(data, "error")
+	if !nestedError.IsObject() && eventType != "error" && eventType != "response.failed" && !strings.EqualFold(responseStatus, "failed") && !isUpstreamEOF {
 		return
 	}
-	errorCode := strings.TrimSpace(gjson.GetBytes(data, "error.code").String())
-	if errorCode == "" {
-		errorCode = strings.TrimSpace(gjson.GetBytes(data, "error.type").String())
+	if isFirstSemantic {
+		p.firstSemanticFailed = true
 	}
-	if errorCode == "" {
-		errorCode = strings.TrimSpace(gjson.GetBytes(data, "response.error.code").String())
-	}
-	errorMessage := strings.TrimSpace(gjson.GetBytes(data, "error.message").String())
-	if errorMessage == "" {
-		errorMessage = strings.TrimSpace(gjson.GetBytes(data, "response.error.message").String())
+	errorCode, errorMessage := responseFailureFields(data, eventType)
+	if isUpstreamEOF {
+		errorCode, errorMessage = upstreamEOFFailureFields(errorCode, errorMessage)
 	}
 	p.recordFailure(errorCode, errorMessage)
+	p.terminalSeen = true
 }
 
 func (p *sseLogicalFailureCapture) Finish() {
@@ -233,73 +494,139 @@ func (p *sseLogicalFailureCapture) apply(c *gin.Context) {
 }
 
 func (p *sseLogicalFailureCapture) parseLine(line []byte) {
+	if isSSETerminalSentinel(line) {
+		p.terminalSeen = true
+		return
+	}
 	data := streamJSONPayload(line)
 	if len(data) == 0 {
 		return
 	}
-
 	var payload struct {
-		Type  string `json:"type"`
-		Error *struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-			Type    string `json:"type"`
-		} `json:"error,omitempty"`
-		Response *struct {
-			Status string `json:"status"`
-			Error  *struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
-				Type    string `json:"type"`
-			} `json:"error,omitempty"`
-		} `json:"response,omitempty"`
+		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(data, &payload); err != nil {
+	if err := utils.UnmarshalJSONUseNumber(data, &payload); err != nil {
+		// pending already reassembles transport reads up to a newline. Do not guess
+		// across invalid newline-delimited JSON records: combining separate SSE data
+		// can manufacture a false error after semantic output and cause a duplicate retry.
+		p.meaningfulSeen = true
 		p.unverified = true
 		return
 	}
-	if payload.Type == "response.completed" || payload.Type == "response.done" || payload.Type == "response.failed" {
-		p.terminalSeen = true
-	}
+	p.classifyFailure(data, payload.Type)
+}
 
-	errorCode := ""
-	errorMessage := ""
-	if payload.Error != nil {
-		errorCode = strings.TrimSpace(payload.Error.Code)
-		if errorCode == "" {
-			errorCode = strings.TrimSpace(payload.Error.Type)
-		}
-		errorMessage = strings.TrimSpace(payload.Error.Message)
+func responseFailureFields(data []byte, eventType string) (string, string) {
+	errorCode := responseFailureField(data, "error.code")
+	if errorCode == "" {
+		errorCode = responseFailureField(data, "error.type")
 	}
-	if payload.Response != nil && payload.Response.Error != nil {
-		if errorCode == "" {
-			errorCode = strings.TrimSpace(payload.Response.Error.Code)
-		}
-		if errorMessage == "" {
-			errorMessage = strings.TrimSpace(payload.Response.Error.Message)
-		}
+	if errorCode == "" {
+		errorCode = responseFailureField(data, "error.status")
 	}
+	if errorCode == "" {
+		errorCode = responseFailureField(data, "response.error.code")
+	}
+	if errorCode == "" && eventType == "error" {
+		errorCode = responseFailureField(data, "code")
+	}
+	errorMessage := responseFailureField(data, "error.message")
+	if errorMessage == "" {
+		errorMessage = responseFailureField(data, "response.error.message")
+	}
+	if errorMessage == "" && eventType == "error" {
+		errorMessage = responseFailureField(data, "message")
+	}
+	return errorCode, errorMessage
+}
 
-	isFailed := payload.Error != nil || payload.Type == "response.failed" || (payload.Response != nil && strings.EqualFold(strings.TrimSpace(payload.Response.Status), "failed"))
-	if !isFailed {
-		return
+func responseFailureField(data []byte, path string) string {
+	value := gjson.GetBytes(data, path)
+	if value.Type == gjson.Number {
+		// Preserve the numeric token exactly so high-precision and exponent-form
+		// provider codes are classified without float rounding or representation drift.
+		return strings.TrimSpace(value.Raw)
 	}
+	return strings.TrimSpace(value.String())
+}
 
-	p.recordFailure(errorCode, errorMessage)
+func isResponseIncompleteUpstreamEOF(data []byte, eventType string) bool {
+	return eventType == "response.incomplete" &&
+		strings.EqualFold(strings.TrimSpace(gjson.GetBytes(data, "response.incomplete_details.reason").String()), "upstream_eof")
 }
 
 func (p *sseLogicalFailureCapture) recordFailure(errorCode, errorMessage string) {
-	statusCode := http.StatusBadGateway
-	lowerCode := strings.ToLower(errorCode)
-	lowerMessage := strings.ToLower(errorMessage)
-	if lowerCode == "rate_limit_exceeded" || strings.Contains(lowerMessage, "concurrency limit exceeded") || strings.Contains(lowerMessage, "rate limit") {
-		statusCode = http.StatusTooManyRequests
-	}
-
-	p.statusCode = statusCode
+	p.statusCode = logicalFailureStatusCode(errorCode, errorMessage)
 	p.errorCode = errorCode
 	if errorMessage != "" {
 		p.errorMessage = errorMessage
+	}
+}
+
+func logicalFailureStatusCode(errorCode, errorMessage string) int {
+	lowerCode := strings.ToLower(strings.TrimSpace(errorCode))
+	lowerMessage := strings.ToLower(errorMessage)
+	switch lowerCode {
+	case "429", "rate_limit_exceeded", "rate_limit_error", "resource_exhausted":
+		return http.StatusTooManyRequests
+	case "invalid_request_error":
+		return http.StatusBadRequest
+	case "model_not_found":
+		return http.StatusNotFound
+	case "529", "overloaded_error":
+		// Anthropic documents overloaded_error as HTTP 529, including SSE errors
+		// that arrive after the initial successful HTTP response.
+		return 529
+	case "504", "timeout_error":
+		return http.StatusGatewayTimeout
+	}
+	if statusCode := equivalentNumericLogicalFailureStatusCode(lowerCode); statusCode != 0 {
+		return statusCode
+	}
+	if strings.Contains(lowerMessage, "concurrency limit exceeded") || strings.Contains(lowerMessage, "rate limit") {
+		return http.StatusTooManyRequests
+	}
+	return http.StatusBadGateway
+}
+
+func isPermanentLogicalFailure(errorCode string) bool {
+	switch strings.ToLower(strings.TrimSpace(errorCode)) {
+	case "invalid_request_error", "model_not_found":
+		return true
+	default:
+		return false
+	}
+}
+
+func equivalentNumericLogicalFailureStatusCode(errorCode string) int {
+	// JSON numbers may use decimal or exponent notation. Compare exactly so a
+	// nearby high-precision value is never rounded into a retryable status code.
+	const (
+		maxNumericStatusCodeBytes    = 64
+		maxNumericStatusCodeExponent = 64
+	)
+	if len(errorCode) > maxNumericStatusCodeBytes || !json.Valid([]byte(errorCode)) {
+		return 0
+	}
+	if exponentIndex := strings.IndexAny(errorCode, "eE"); exponentIndex >= 0 {
+		exponent, err := strconv.ParseInt(errorCode[exponentIndex+1:], 10, 16)
+		if err != nil || exponent < -maxNumericStatusCodeExponent || exponent > maxNumericStatusCodeExponent {
+			return 0
+		}
+	}
+	numericCode, ok := new(big.Rat).SetString(errorCode)
+	if !ok || !numericCode.IsInt() || !numericCode.Num().IsInt64() {
+		return 0
+	}
+	switch numericCode.Num().Int64() {
+	case http.StatusTooManyRequests:
+		return http.StatusTooManyRequests
+	case 529:
+		return 529
+	case http.StatusGatewayTimeout:
+		return http.StatusGatewayTimeout
+	default:
+		return 0
 	}
 }
 
@@ -325,6 +652,14 @@ func setLogicalFailureContext(c *gin.Context, statusCode int, errorCode, errorMe
 			c.Set(ctxKeyRateLimitPressure, int64(3))
 		}
 	}
+}
+
+func setLogicalFailureProbeContext(c *gin.Context, probe logicalFailureProbeResult) {
+	errorCode := probe.errorCode
+	if errorCode == "" {
+		errorCode = "upstream_response_error"
+	}
+	setLogicalFailureContext(c, probe.statusCode, errorCode, probe.errorMessage)
 }
 
 func markResponseProcessingFailed(c *gin.Context) {
@@ -444,28 +779,37 @@ func setResponsesLogicalFailureFromCapturedBody(c *gin.Context, body []byte, tru
 	if c == nil || c.Request == nil || len(body) == 0 || !isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 		return
 	}
-	statusResult := gjson.GetBytes(body, "status")
-	if truncated && !statusResult.Exists() {
-		c.Set(ctxKeyResponsesStatusUnverified, true)
+	statusCode, errorCode, errorMessage, failed := parseResponsesLogicalFailure(body, truncated)
+	if failed {
+		setLogicalFailureContext(c, statusCode, errorCode, errorMessage)
 		return
 	}
+	if truncated && !gjson.GetBytes(body, "status").Exists() {
+		c.Set(ctxKeyResponsesStatusUnverified, true)
+	}
+}
+
+func parseResponsesLogicalFailure(body []byte, truncated bool) (int, string, string, bool) {
+	if len(body) == 0 {
+		return 0, "", "", false
+	}
+	statusResult := gjson.GetBytes(body, "status")
+	if truncated && !statusResult.Exists() {
+		return 0, "", "", false
+	}
 	if !strings.EqualFold(strings.TrimSpace(statusResult.String()), "failed") {
-		return
+		return 0, "", "", false
 	}
 	errorCode := strings.TrimSpace(gjson.GetBytes(body, "error.code").String())
 	errorMessage := strings.TrimSpace(gjson.GetBytes(body, "error.message").String())
-	setResponsesLogicalFailure(c, statusResult.String(), errorCode, errorMessage)
+	return logicalFailureStatusCode(errorCode, errorMessage), errorCode, errorMessage, true
 }
 
 func setResponsesLogicalFailure(c *gin.Context, status, errorCode, errorMessage string) {
 	if !strings.EqualFold(strings.TrimSpace(status), "failed") {
 		return
 	}
-	statusCode := http.StatusBadGateway
-	if strings.EqualFold(errorCode, "rate_limit_exceeded") {
-		statusCode = http.StatusTooManyRequests
-	}
-	setLogicalFailureContext(c, statusCode, errorCode, errorMessage)
+	setLogicalFailureContext(c, logicalFailureStatusCode(errorCode, errorMessage), errorCode, errorMessage)
 }
 
 func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Response) {
@@ -736,8 +1080,8 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 	// Check for Codex error in response
 	if codexResp.Error != nil {
 		statusCode := resp.StatusCode
-		if strings.EqualFold(codexResp.Status, "failed") && strings.EqualFold(codexResp.Error.Code, "rate_limit_exceeded") {
-			statusCode = http.StatusTooManyRequests
+		if strings.EqualFold(codexResp.Status, "failed") {
+			statusCode = logicalFailureStatusCode(codexResp.Error.Code, codexResp.Error.Message)
 		} else if statusCode < http.StatusBadRequest {
 			statusCode = http.StatusBadGateway
 		}

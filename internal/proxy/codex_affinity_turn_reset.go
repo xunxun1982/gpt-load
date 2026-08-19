@@ -72,7 +72,12 @@ func (cache *codexAffinityCache) markStateReset(key, turnKey string, now time.Ti
 			cache.removeElementLocked(element)
 		} else {
 			entry.resetTurnKey = turnKey
-			entry.expiresAt = now.Add(cache.ttl)
+			// A delayed failure callback must not shorten a newer state-reset
+			// protection window computed by a request that completed later.
+			candidateExpiry := now.Add(cache.ttl)
+			if candidateExpiry.After(entry.expiresAt) {
+				entry.expiresAt = candidateExpiry
+			}
 			cache.order.MoveToFront(element)
 			return
 		}

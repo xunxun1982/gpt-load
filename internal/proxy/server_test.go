@@ -37,6 +37,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -255,8 +256,8 @@ func createTestKey(t *testing.T, db *gorm.DB, groupID uint, keyValue string, enc
 }
 
 func TestHandleProxyAggregateSkipsParentChannelInitialization(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name             string
@@ -365,8 +366,8 @@ func TestHandleProxyAggregateSkipsParentChannelInitialization(t *testing.T) {
 }
 
 func TestIsGenericStreamRequestDetectsGeminiNativeStreamPath(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -376,8 +377,8 @@ func TestIsGenericStreamRequestDetectsGeminiNativeStreamPath(t *testing.T) {
 }
 
 func TestIsGenericStreamRequestDetectsAcceptHeader(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -388,8 +389,8 @@ func TestIsGenericStreamRequestDetectsAcceptHeader(t *testing.T) {
 }
 
 func TestIsGenericStreamRequestDetectsQueryParam(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -399,8 +400,8 @@ func TestIsGenericStreamRequestDetectsQueryParam(t *testing.T) {
 }
 
 func TestIsGenericStreamRequestDetectsJSONBodyStreamTrue(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -410,8 +411,8 @@ func TestIsGenericStreamRequestDetectsJSONBodyStreamTrue(t *testing.T) {
 }
 
 func TestIsGenericStreamRequestReturnsFalseForNonStream(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -652,6 +653,31 @@ func TestParseMaxRetries(t *testing.T) {
 			t.Parallel()
 			result := parseMaxRetries(tt.config)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestRetryBudgetAvailable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		configuredRetryLeft  bool
+		affinityAttempt      bool
+		affinityAttemptCount int
+		affinityMaxAttempts  int
+		expected             bool
+	}{
+		{name: "configured retry remains", configuredRetryLeft: true, expected: true},
+		{name: "affinity retry remains", affinityAttempt: true, affinityAttemptCount: 1, affinityMaxAttempts: 2, expected: true},
+		{name: "affinity budget exhausted", affinityAttempt: true, affinityAttemptCount: 2, affinityMaxAttempts: 2, expected: false},
+		{name: "fresh affinity selection has no affinity-only retry", affinityAttemptCount: 0, affinityMaxAttempts: 5, expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, retryBudgetAvailable(tt.configuredRetryLeft, tt.affinityAttempt, tt.affinityAttemptCount, tt.affinityMaxAttempts))
 		})
 	}
 }
@@ -923,8 +949,8 @@ func TestFormatUpstreamAddrForLog(t *testing.T) {
 }
 
 func TestLogRequestRecordsProxyInfoInUpstreamAddr(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name         string
@@ -986,26 +1012,34 @@ func TestLogRequestRecordsProxyInfoInUpstreamAddr(t *testing.T) {
 }
 
 func TestRestoreOriginalPath(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
-		name         string
-		originalPath string
-		currentPath  string
-		expectedPath string
+		name          string
+		originalPath  string
+		currentPath   string
+		originalQuery string
+		currentQuery  string
+		expectedPath  string
+		expectedQuery string
 	}{
 		{
-			name:         "restore_needed",
-			originalPath: "/v1/messages",
-			currentPath:  "/v1/chat/completions",
-			expectedPath: "/v1/messages",
+			name:          "restore_needed",
+			originalPath:  "/v1/messages",
+			currentPath:   "/v1/chat/completions",
+			originalQuery: "trace=keep",
+			currentQuery:  "beta=true",
+			expectedPath:  "/v1/messages",
+			expectedQuery: "trace=keep",
 		},
 		{
-			name:         "no_restore_needed",
-			originalPath: "/v1/messages",
-			currentPath:  "/v1/messages",
-			expectedPath: "/v1/messages",
+			name:          "empty_query_clears_prior_attempt",
+			originalPath:  "/v1/messages",
+			currentPath:   "/v1/messages",
+			currentQuery:  "beta=true",
+			expectedPath:  "/v1/messages",
+			expectedQuery: "",
 		},
 	}
 
@@ -1015,22 +1049,24 @@ func TestRestoreOriginalPath(t *testing.T) {
 
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
-			c.Request = httptest.NewRequest("POST", tt.currentPath, nil)
+			c.Request = httptest.NewRequest("POST", tt.currentPath+"?"+tt.currentQuery, nil)
 
 			retryCtx := &retryContext{
-				originalPath: tt.originalPath,
+				originalPath:     tt.originalPath,
+				originalRawQuery: tt.originalQuery,
 			}
 
 			restoreOriginalPath(c, retryCtx)
 
 			assert.Equal(t, tt.expectedPath, c.Request.URL.Path)
+			assert.Equal(t, tt.expectedQuery, c.Request.URL.RawQuery)
 		})
 	}
 }
 
 func TestClearForceProtocolContextClearsToolState(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -1041,6 +1077,7 @@ func TestClearForceProtocolContextClearsToolState(t *testing.T) {
 	c.Set(ctxKeyOpenAIToolNameReverseMap, map[string]string{"short": "original"})
 	c.Set(ctxKeyCodexToolNameReverseMap, map[string]string{"short": "original"})
 	c.Set(ctxKeyCodexToolContext, newCodexToolContext([]CodexTool{{Type: "custom", Name: "exec"}}))
+	c.Set("thinking_model_applied", true)
 
 	clearForceProtocolContext(c)
 
@@ -1052,6 +1089,7 @@ func TestClearForceProtocolContextClearsToolState(t *testing.T) {
 		ctxKeyOpenAIToolNameReverseMap,
 		ctxKeyCodexToolNameReverseMap,
 		ctxKeyCodexToolContext,
+		"thinking_model_applied",
 	} {
 		_, exists := c.Get(key)
 		assert.False(t, exists, "expected %s to be cleared", key)
@@ -1116,8 +1154,8 @@ func TestCountAvailableSubGroups(t *testing.T) {
 }
 
 func TestShouldAbortOnIgnorableErrorRetriesUpstreamTimeoutWhenClientAlive(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1139,8 +1177,8 @@ func TestShouldAbortOnIgnorableErrorRetriesUpstreamTimeoutWhenClientAlive(t *tes
 }
 
 func TestShouldAbortOnIgnorableErrorStopsWhenClientCanceled(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1212,8 +1250,8 @@ func TestEffectiveNonStreamRequestContextFallsBackForNonPositiveTimeout(t *testi
 }
 
 func TestExecuteRequestWithRetryStopsWhenNonStreamLifecycleTimeoutExpires(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1289,8 +1327,8 @@ func TestRetryDelayForAttemptUsesExponentialBackoffWithJitter(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityKeyReadsExistingCodexContext(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1309,14 +1347,14 @@ func TestCodexAggregateAffinityKeyReadsExistingCodexContext(t *testing.T) {
 	c.Request.Header.Set("Session_ID", "header-session")
 	c.Request.Header.Set("Conversation_ID", "header-conversation")
 
-	assert.Equal(t, "header-session", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "header-session", codexAffinityKey(c, group, body))
 	assert.Equal(t, "header-session", c.Request.Header.Get("Session_ID"))
 	assert.JSONEq(t, `{"model":"gpt-5.4","prompt_cache_key":"body-cache-key"}`, string(body))
 }
 
 func TestCodexAggregateAffinityKeyReadsOfficialCodexHeaders(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1366,14 +1404,14 @@ func TestCodexAggregateAffinityKeyReadsOfficialCodexHeaders(t *testing.T) {
 				c.Request.Header.Set(name, value)
 			}
 
-			assert.Equal(t, tt.want, codexAggregateAffinityKey(c, group, body))
+			assert.Equal(t, tt.want, codexAffinityKey(c, group, body))
 		})
 	}
 }
 
 func TestCodexAggregateAffinityKeyFallsBackToPromptCacheKey(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1390,12 +1428,12 @@ func TestCodexAggregateAffinityKeyFallsBackToPromptCacheKey(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
 
-	assert.Equal(t, "body-cache-key", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "body-cache-key", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyAppliesToOpenAIResponseAggregateWithoutCodexMarkers(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "responses-aggregate",
@@ -1411,12 +1449,12 @@ func TestCodexAggregateAffinityKeyAppliesToOpenAIResponseAggregateWithoutCodexMa
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/responses-aggregate/v1/responses", bytes.NewReader(body))
 
-	assert.Equal(t, "stable-session", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "stable-session", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyHandlesMissingRequest(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "responses-aggregate",
@@ -1429,13 +1467,13 @@ func TestCodexAggregateAffinityKeyHandlesMissingRequest(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 
 	assert.NotPanics(t, func() {
-		assert.Empty(t, codexAggregateAffinityKey(c, group, []byte(`{"prompt_cache_key":"stable-session"}`)))
+		assert.Empty(t, codexAffinityKey(c, group, []byte(`{"prompt_cache_key":"stable-session"}`)))
 	})
 }
 
 func TestCodexAggregateAffinityKeyReadsCodexTurnMetadataHeader(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1452,12 +1490,12 @@ func TestCodexAggregateAffinityKeyReadsCodexTurnMetadataHeader(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("X-Codex-Turn-Metadata", `{"prompt_cache_key":"turn-cache-key","window_id":"turn-window"}`)
 
-	assert.Equal(t, "turn-cache-key", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "turn-cache-key", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyReadsCodexClientMetadata(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1474,13 +1512,13 @@ func TestCodexAggregateAffinityKeyReadsCodexClientMetadata(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
 
-	assert.Equal(t, "body-window", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "body-turn-cache", codexAffinityKey(c, group, body))
 	assert.JSONEq(t, `{"model":"gpt-5.4","client_metadata":{"x-codex-window-id":"body-window","x-codex-turn-metadata":"{\"prompt_cache_key\":\"body-turn-cache\",\"window_id\":\"body-turn-window\"}"}}`, string(body))
 }
 
 func TestCodexAggregateAffinityKeyPrefersStableThreadMetadata(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1497,12 +1535,12 @@ func TestCodexAggregateAffinityKeyPrefersStableThreadMetadata(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
 
-	assert.Equal(t, "stable-thread", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "stable-thread", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyBodyThreadOverridesSharedSessionHeader(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1518,12 +1556,12 @@ func TestCodexAggregateAffinityKeyBodyThreadOverridesSharedSessionHeader(t *test
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("Session-Id", "shared-session")
 
-	assert.Equal(t, "new-project-thread", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "new-project-thread", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyUsesSessionMetadataWhenThreadMissing(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1540,12 +1578,12 @@ func TestCodexAggregateAffinityKeyUsesSessionMetadataWhenThreadMissing(t *testin
 	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
 
-	assert.Equal(t, "stable-session", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "stable-session", codexAffinityKey(c, group, body))
 }
 
 func TestCodexAggregateAffinityKeyWithDegradationMitigationEnabled(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1564,16 +1602,17 @@ func TestCodexAggregateAffinityKeyWithDegradationMitigationEnabled(t *testing.T)
 	c.Request.Header.Set("Originator", "codex_cli_rs")
 	c.Request.Header.Set("Session_ID", "header-session")
 
-	assert.Equal(t, "header-session", codexAggregateAffinityKey(c, group, body))
+	assert.Equal(t, "header-session", codexAffinityKey(c, group, body))
 }
 
-func TestCodexAggregateAffinityKeyDisabledOutsideEnabledOpenAIResponseAggregate(t *testing.T) {
-	t.Parallel()
+func TestCodexAffinityKeyDisabledOutsideEnabledOpenAIResponsesGroups(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name  string
 		group *models.Group
+		want  string
 	}{
 		{
 			name: "non responses aggregate",
@@ -1588,6 +1627,7 @@ func TestCodexAggregateAffinityKeyDisabledOutsideEnabledOpenAIResponseAggregate(
 				Name: "responses-standard", GroupType: "standard", ChannelType: "openai-response",
 				Config: map[string]any{"codex_affinity_enabled": true},
 			},
+			want: "header-session",
 		},
 		{
 			name: "affinity disabled",
@@ -1606,14 +1646,14 @@ func TestCodexAggregateAffinityKeyDisabledOutsideEnabledOpenAIResponseAggregate(
 			c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+tt.group.Name+"/v1/responses", bytes.NewReader(body))
 			c.Request.Header.Set("Session_ID", "header-session")
 
-			assert.Empty(t, codexAggregateAffinityKey(c, tt.group, body))
+			assert.Equal(t, tt.want, codexAffinityKey(c, tt.group, body))
 		})
 	}
 }
 
 func TestCodexAggregateAffinityKeyDisabledOutsideResponsesPost(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		Name:        "codex-aggregate",
@@ -1639,7 +1679,7 @@ func TestCodexAggregateAffinityKeyDisabledOutsideResponsesPost(t *testing.T) {
 			c.Request = httptest.NewRequest(tt.method, tt.path, bytes.NewReader(body))
 			c.Request.Header.Set("Session-Id", "header-session")
 
-			assert.Empty(t, codexAggregateAffinityKey(c, group, body))
+			assert.Empty(t, codexAffinityKey(c, group, body))
 		})
 	}
 }
@@ -1750,8 +1790,8 @@ func TestCodexAggregateAffinityCacheKeyHasBoundedScopedEncoding(t *testing.T) {
 }
 
 func TestCodexAggregateAffinityCacheFallsBackWhenCachedSubGroupHasNoActiveKeys(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1823,8 +1863,8 @@ func TestCodexAggregateAffinityCacheFallsBackWhenCachedSubGroupHasNoActiveKeys(t
 }
 
 func TestCodexAggregateAffinityCacheSkipsZeroWeightSubGroupAndRebinds(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -1944,17 +1984,8 @@ func TestCodexAffinityCandidateChecksSkipDisabledAndZeroWeightSubGroups(t *testi
 }
 
 func TestRetryContextCachesCodexRequestPayloadAndModel(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
-
-	group := &models.Group{
-		Name:        "codex-aggregate",
-		GroupType:   "aggregate",
-		ChannelType: "openai-response",
-		Config: map[string]any{
-			"codex_affinity_enabled": true,
-		},
-	}
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -1966,13 +1997,13 @@ func TestRetryContextCachesCodexRequestPayloadAndModel(t *testing.T) {
 	}
 	payload, ok := retryCtx.codexRequestPayload([]byte(`{"model":"ignored"}`))
 	require.True(t, ok)
-	assert.Equal(t, "stable-thread", codexAggregateAffinityKeyFromPayload(c, group, payload, ok))
+	assert.Equal(t, "stable-thread", codexAffinityKeyFromPayload(c, payload, ok))
 	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel([]byte(`{"model":"ignored"}`)))
 
 	retryCtx.originalBodyBytes = []byte(`{"model":"mutated","client_metadata":{"thread_id":"mutated-thread"}}`)
 	payload, ok = retryCtx.codexRequestPayload(nil)
 	require.True(t, ok)
-	assert.Equal(t, "stable-thread", codexAggregateAffinityKeyFromPayload(c, group, payload, ok))
+	assert.Equal(t, "stable-thread", codexAffinityKeyFromPayload(c, payload, ok))
 	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel(nil))
 }
 
@@ -1988,40 +2019,6 @@ func TestRetryContextCodexRequestModelReusesParsedPayload(t *testing.T) {
 
 	retryCtx.originalBodyBytes = []byte(`not-json`)
 	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel(nil))
-}
-
-func TestCodexAggregateAffinityThreadHeaderAvoidsBodyPayloadParsing(t *testing.T) {
-	t.Parallel()
-	gin.SetMode(gin.TestMode)
-
-	group := &models.Group{
-		Name:        "codex-aggregate",
-		GroupType:   "aggregate",
-		ChannelType: "openai-response",
-		Config: map[string]any{
-			"codex_affinity_enabled": true,
-		},
-	}
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/codex-aggregate/v1/responses", nil)
-	c.Request.Header.Set("User-Agent", buildCodexUserAgent("0.150.1"))
-	c.Request.Header.Set("Thread-Id", "header-thread")
-
-	retryCtx := &retryContext{
-		originalBodyBytes: []byte(`{"model":"gpt-5","client_metadata":{"thread_id":"stable-thread"}}`),
-	}
-	affinityKey := codexAggregateAffinityThreadHeaderKey(c, group)
-	if affinityKey == "" {
-		payload, payloadOK := retryCtx.codexRequestPayload(nil)
-		affinityKey = codexAggregateAffinityKeyFromPayload(c, group, payload, payloadOK)
-	}
-
-	assert.Equal(t, "header-thread", affinityKey)
-	assert.False(t, retryCtx.codexParsedPayloadSet)
-	assert.Equal(t, "gpt-5", retryCtx.codexRequestModel(nil))
-	assert.False(t, retryCtx.codexParsedPayloadSet)
 }
 
 func TestExecuteRequestWithRetryWaitsConfiguredDelayBeforeRetry(t *testing.T) {
@@ -2067,6 +2064,48 @@ func TestExecuteRequestWithRetryWaitsConfiguredDelayBeforeRetry(t *testing.T) {
 	assert.GreaterOrEqual(t, attemptTimes[1].Sub(attemptTimes[0]), 70*time.Millisecond)
 }
 
+func TestExecuteRequestWithRetryLogsEachAttemptDuration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	ps.requestLogService = services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager())
+
+	group := createTestGroup(t, db, "retry-duration-standard", "openai")
+	group.EffectiveConfig = systemSettingsWithRetryTimeout(1, 0)
+	group.EffectiveConfig.RetryDelayMs = 150
+	createTestKey(t, db, group.ID, "sk-retry-duration-1", ps.encryptionSvc)
+	createTestKey(t, db, group.ID, "sk-retry-duration-2", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+
+	var attempts atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if attempts.Add(1) == 1 {
+			http.Error(w, `{"error":"temporary"}`, http.StatusBadGateway)
+			return
+		}
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := []byte(`{"model":"gpt-test"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/retry-duration-standard/v1/chat/completions", bytes.NewReader(body))
+	start := time.Now()
+	ps.executeRequestWithRetry(c, &testChannelProxy{client: upstream.Client(), url: upstream.URL}, group, group, body, false, time.Now(), 0)
+	elapsed := time.Since(start).Milliseconds()
+
+	require.Equal(t, http.StatusOK, w.Code)
+	first := popRecordedRequestLog(t, memStore)
+	second := popRecordedRequestLog(t, memStore)
+	// Each attempt's recorded duration excludes the retry delay (logRequest
+	// runs before waitBeforeRetry), so the sum must stay below the total
+	// elapsed time minus the configured 150ms retry delay. Relative bounds
+	// keep this test robust under slow CI schedulers.
+	assert.LessOrEqual(t, first.Duration+second.Duration, elapsed-int64(150))
+}
+
 func TestExecuteRequestWithRetryKeepsRetryDelayInsideNonStreamTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -2101,8 +2140,8 @@ func TestExecuteRequestWithRetryKeepsRetryDelayInsideNonStreamTimeout(t *testing
 }
 
 func TestExecuteRequestWithRetrySanitizesIgnorableAbortLogError(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -2154,7 +2193,10 @@ func TestExecuteRequestWithRetrySimulatedClaudeCodeAddsMessagesIdentity(t *testi
 	receivedSessionID := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedBody <- got
 		receivedDangerousHeader <- r.Header.Get("Anthropic-Dangerous-Direct-Browser-Access")
 		receivedSessionID <- r.Header.Get("X-Claude-Code-Session-Id")
@@ -2208,7 +2250,10 @@ func TestExecuteRequestWithRetrySimulatedCodexPreservesRequestModel(t *testing.T
 	receivedHeaders := make(chan http.Header, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedBody <- got
 		receivedUserAgent <- r.Header.Get("User-Agent")
 		receivedHeaders <- r.Header.Clone()
@@ -2282,8 +2327,8 @@ func TestExecuteRequestWithRetryCodexCCModeUsesConfiguredSimulatedVersion(t *tes
 }
 
 func TestExecuteRequestWithRetryForceStreamSendsStreamTrueToResponsesUpstream(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -2291,7 +2336,10 @@ func TestExecuteRequestWithRetryForceStreamSendsStreamTrueToResponsesUpstream(t 
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedBody <- body
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "event: response.completed\n")
@@ -2331,8 +2379,8 @@ func TestExecuteRequestWithRetryForceStreamSendsStreamTrueToResponsesUpstream(t 
 }
 
 func TestHandleProxyForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -2341,7 +2389,10 @@ func TestHandleProxyForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedPath <- r.URL.Path
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
@@ -2377,8 +2428,8 @@ func TestHandleProxyForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
 }
 
 func TestHandleProxyAggregateForceCodexCompactMarksOpenAIResponseMode(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -2387,7 +2438,10 @@ func TestHandleProxyAggregateForceCodexCompactMarksOpenAIResponseMode(t *testing
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedPath <- r.URL.Path
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
@@ -2441,8 +2495,8 @@ func TestHandleProxyAggregateForceCodexCompactMarksOpenAIResponseMode(t *testing
 }
 
 func TestHandleProxyAggregateCodexAffinitySkipsSubGroupWithoutActiveKeys(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -2523,8 +2577,8 @@ func TestHandleProxyAggregateCodexAffinitySkipsSubGroupWithoutActiveKeys(t *test
 }
 
 func TestExecuteRequestWithRetrySanitizesUpstreamHTTPError(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -2646,8 +2700,8 @@ func TestExecuteRequestWithRetryLogsUpstreamUserAgentWhenSimulatedClientAlreadyI
 }
 
 func TestLogRequestTruncatesUserAgentFieldsToColumnLimit(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -2680,8 +2734,8 @@ func TestLogRequestTruncatesUserAgentFieldsToColumnLimit(t *testing.T) {
 }
 
 func TestLogRequestSanitizesCapturedResponseBodyBeforeTruncation(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -2732,7 +2786,10 @@ func TestExecuteRequestWithRetryPreservesCodexHeadersThroughTwoProxyLayers(t *te
 
 	secondLayer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		ctx, _ := gin.CreateTestContext(w)
 		ctx.Request = httptest.NewRequest(r.Method, r.URL.RequestURI(), bytes.NewReader(body))
 		ctx.Request.Header = r.Header.Clone()
@@ -2812,7 +2869,10 @@ func TestExecuteRequestWithRetrySimulatedCodexSurvivesTwoProxyLayers(t *testing.
 
 	secondLayer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		ctx, _ := gin.CreateTestContext(w)
 		ctx.Request = httptest.NewRequest(r.Method, r.URL.RequestURI(), bytes.NewReader(body))
 		ctx.Request.Header = r.Header.Clone()
@@ -2853,8 +2913,8 @@ func TestExecuteRequestWithRetrySimulatedCodexSurvivesTwoProxyLayers(t *testing.
 }
 
 func TestExecuteRequestWithAggregateRetryStopsWhenNonStreamLifecycleTimeoutExpires(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -3034,9 +3094,165 @@ func TestExecuteRequestWithAggregateRetryUsesEffectiveStreamModeForLifecycle(t *
 	assert.Equal(t, int32(1), atomic.LoadInt32(&attempts))
 }
 
-func TestExecuteRequestWithAggregateRetryAppliesOnlySelectedSubGroupSimulatedClient(t *testing.T) {
-	t.Parallel()
+func TestExecuteRequestWithAggregateRetryKeepsMappedBodyWhenParamOverridesFail(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		receivedBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_mapped","object":"chat.completion","created":1,"model":"real-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "agg-mapped-body-sub", "openai")
+	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	subGroup.ModelMapping = `{"alias-model":"real-model"}`
+	subGroup.Config = map[string]any{
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	require.NoError(t, db.Save(subGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-mapped-body",
+		ChannelType: "openai",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
+		Config:      map[string]any{"max_retries": 0},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      subGroup.ID,
+		SubGroupName:    subGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, subGroup.ID, "sk-agg-mapped-body", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+	cachedSubGroup, err := ps.groupManager.GetGroupByName(subGroup.Name)
+	require.NoError(t, err)
+	// Force json.Marshal to fail after model mapping without relying on malformed client JSON.
+	cachedSubGroup.ParamOverrides = datatypes.JSONMap{"unsupported": func() {}}
+
+	body := []byte(`{"model":"alias-model","stream":false}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/chat/completions", bytes.NewReader(body))
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &payload))
+	assert.Equal(t, "real-model", payload["model"])
+	assert.NotContains(t, payload, "unsupported")
+}
+
+func TestExecuteRequestWithAggregateRetryKeepsConvertedBodyWhenDeferredParamOverridesFail(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Parallel()
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		receivedBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_converted","object":"chat.completion","created":1,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "agg-deferred-overrides-sub", "openai")
+	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	subGroup.Config = map[string]any{
+		"codex_support":       true,
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	require.NoError(t, db.Save(subGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-deferred-overrides",
+		ChannelType: "openai-response",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[]`),
+		Config:      map[string]any{"max_retries": 0},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      subGroup.ID,
+		SubGroupName:    subGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, subGroup.ID, "sk-agg-deferred-overrides", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+	cachedSubGroup, err := ps.groupManager.GetGroupByName(subGroup.Name)
+	require.NoError(t, err)
+	// Force the deferred override marshal to fail after Responses-to-Chat conversion.
+	cachedSubGroup.ParamOverrides = datatypes.JSONMap{"unsupported": func() {}}
+
+	body := []byte(`{"model":"gpt-test","input":"hello","stream":false}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/v1/responses", bytes.NewReader(body))
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	payload := decodeCompatObject(t, <-receivedBody)
+	assert.Contains(t, payload, "messages")
+	assert.NotContains(t, payload, "input")
+	assert.NotContains(t, payload, "unsupported")
+}
+
+func TestExecuteRequestWithAggregateRetryAppliesOnlySelectedSubGroupSimulatedClient(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -3048,7 +3264,10 @@ func TestExecuteRequestWithAggregateRetryAppliesOnlySelectedSubGroupSimulatedCli
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedUserAgent <- r.Header.Get("User-Agent")
 		receivedVersion <- r.Header.Get("Version")
 		receivedOriginator <- r.Header.Get("originator")
@@ -3151,6 +3370,8 @@ func TestExecuteRequestWithAggregateRetryWaitsBeforeSameSubGroupKeyRetry(t *test
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	ps.requestLogService = services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager())
 
 	var mu sync.Mutex
 	attemptTimes := make([]time.Time, 0, 2)
@@ -3173,7 +3394,7 @@ func TestExecuteRequestWithAggregateRetryWaitsBeforeSameSubGroupKeyRetry(t *test
 	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
 	subGroup.Config = map[string]any{
 		"max_retries":         1,
-		"retry_delay_ms":      120,
+		"retry_delay_ms":      150,
 		"blacklist_threshold": 100,
 	}
 	require.NoError(t, db.Save(subGroup).Error)
@@ -3219,11 +3440,20 @@ func TestExecuteRequestWithAggregateRetryWaitsBeforeSameSubGroupKeyRetry(t *test
 		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
 	}
 
+	start := time.Now()
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+	elapsed := time.Since(start).Milliseconds()
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, attemptTimes, 2)
 	assert.GreaterOrEqual(t, attemptTimes[1].Sub(attemptTimes[0]), 70*time.Millisecond)
+	firstLog := popRecordedRequestLog(t, memStore)
+	secondLog := popRecordedRequestLog(t, memStore)
+	// Each attempt's recorded duration excludes the retry delay (logRequest
+	// runs before waitBeforeRetry), so the sum must stay below the total
+	// elapsed time minus the configured 150ms sub-group retry delay.
+	// Relative bounds keep this test robust under slow CI schedulers.
+	assert.LessOrEqual(t, firstLog.Duration+secondLog.Duration, elapsed-int64(150))
 }
 
 func TestExecuteRequestWithAggregateRetryKeepsSubGroupDelayInsideNonStreamTimeout(t *testing.T) {
@@ -3299,8 +3529,8 @@ func TestExecuteRequestWithAggregateRetryKeepsSubGroupDelayInsideNonStreamTimeou
 }
 
 func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubGroups(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -3318,14 +3548,23 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 	receivedHeadersCh := make(chan receivedHeaders, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		var payload map[string]any
-		require.NoError(t, json.Unmarshal(body, &payload))
+		if err := json.Unmarshal(body, &payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		_, hasCodexMetadata := payload["client_metadata"].(map[string]any)
 		metadata, _ := payload["metadata"].(map[string]any)
 		_, hasClaudeID := metadata["user_id"].(string)
 		_, hasClaudeSystem := payload["system"].([]any)
-		receivedHeadersCh <- receivedHeaders{
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// attempts assertion below instead of hanging the handler goroutine.
+		select {
+		case receivedHeadersCh <- receivedHeaders{
 			userAgent:        r.Header.Get("User-Agent"),
 			version:          r.Header.Get("Version"),
 			originator:       r.Header.Get("originator"),
@@ -3333,6 +3572,8 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 			hasCodexMetadata: hasCodexMetadata,
 			hasClaudeID:      hasClaudeID,
 			hasClaudeSystem:  hasClaudeSystem,
+		}:
+		default:
 		}
 		if atomic.AddInt32(&attempts, 1) == 1 {
 			http.Error(w, `{"error":"fail first subgroup"}`, http.StatusBadGateway)
@@ -3415,6 +3656,10 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
 
 	require.Equal(t, http.StatusOK, w.Code)
+	// Assert the upstream attempt count before draining the observation
+	// channel: an unexpected extra attempt must fail here instead of being
+	// dropped by the non-blocking send above.
+	require.Equal(t, int32(2), atomic.LoadInt32(&attempts))
 	got := []receivedHeaders{<-receivedHeadersCh, <-receivedHeadersCh}
 	want := []receivedHeaders{
 		{
@@ -3433,8 +3678,8 @@ func TestExecuteRequestWithAggregateRetryClearsSimulatedClientHeadersBetweenSubG
 }
 
 func TestExecuteRequestWithAggregateRetryLogsSimulatedClientEnabledForSelectedSubGroupOnly(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -3442,7 +3687,10 @@ func TestExecuteRequestWithAggregateRetryLogsSimulatedClientEnabledForSelectedSu
 	receivedBody := make(chan []byte, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		receivedBody <- body
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
@@ -3539,8 +3787,8 @@ func TestExecuteRequestWithAggregateRetryLogsSimulatedClientEnabledForSelectedSu
 }
 
 func TestExecuteRequestWithAggregateRetryUsesSelectedSubGroupMaxRetries(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -4176,7 +4424,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcr
 	secondBodies := make(chan []byte, 2)
 	firstUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		firstBodies <- body
 		atomic.AddInt32(&firstAttempts, 1)
 		w.Header().Set("Content-Type", "application/json")
@@ -4186,7 +4437,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityKeepsSuccessfulSubGroupAcr
 
 	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		secondBodies <- body
 		atomic.AddInt32(&secondAttempts, 1)
 		w.Header().Set("Content-Type", "application/json")
@@ -4428,8 +4682,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCacheMissUsesEffectiveWeig
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityCacheMissBindsOnlySuccessfulFallback(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -4560,8 +4814,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCacheMissBindsOnlySuccessf
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindLogicalFailure(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -4659,8 +4913,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindLogicalFailure(
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindNormalResponsesLogicalFailure(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -4729,8 +4983,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindNormalResponses
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindForcedStreamProcessingFailure(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -4822,8 +5076,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindForcedStreamPro
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindNonSuccessHTTPStatus(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -4891,8 +5145,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindNonSuccessHTTPS
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityCrossProtocolFailureClearsCachedBinding(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name         string
@@ -4980,8 +5234,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCrossProtocolFailureClears
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindIncompleteForceCodexStream(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -5053,8 +5307,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityDoesNotBindIncompleteForce
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallback(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -5063,7 +5317,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 	fallbackBodies := make(chan []byte, 1)
 	cachedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		cachedBodies <- body
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -5073,7 +5330,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 
 	fallbackUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		fallbackBodies <- body
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
@@ -5175,8 +5435,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityCachedPrimaryStripsOnFallb
 }
 
 func TestExecuteRequestWithAggregateRetryCodexAffinityStaleCachedPrimaryStripsOnFallback(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -5184,7 +5444,10 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityStaleCachedPrimaryStripsOn
 	fallbackBodies := make(chan []byte, 1)
 	fallbackUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		fallbackBodies <- body
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
@@ -5268,8 +5531,8 @@ func TestExecuteRequestWithAggregateRetryCodexAffinityStaleCachedPrimaryStripsOn
 }
 
 func TestExecuteRequestWithAggregateRetryWithoutCodexAffinityKeepsEncryptedReasoningOnFailover(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -5286,7 +5549,10 @@ func TestExecuteRequestWithAggregateRetryWithoutCodexAffinityKeepsEncryptedReaso
 
 	fallbackUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		fallbackBodies <- body
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
@@ -5407,8 +5673,8 @@ func jsonInputContainsReasoningItemForTest(value any) bool {
 }
 
 func TestExecuteRequestWithAggregateRetrySubMaxRetriesDoesNotCapParentGroupRetries(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -5548,8 +5814,8 @@ func TestExecuteRequestWithAggregateRetrySubMaxRetriesDoesNotCapParentGroupRetri
 }
 
 func TestExecuteRequestWithAggregateRetryExplicitZeroSubMaxRetriesDisablesKeyRetries(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -5656,8 +5922,8 @@ func TestExecuteRequestWithAggregateRetryExplicitZeroSubMaxRetriesDisablesKeyRet
 }
 
 func TestExecuteRequestWithAggregateRetryPinsSubGroupDuringKeyRetries(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps, memStore := setupTestProxyServerWithStore(t, db)
@@ -5783,8 +6049,8 @@ func TestExecuteRequestWithAggregateRetryPinsSubGroupDuringKeyRetries(t *testing
 }
 
 func TestMarkAggregateSubGroupFinalRestoresFalseValue(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -5801,8 +6067,8 @@ func TestMarkAggregateSubGroupFinalRestoresFalseValue(t *testing.T) {
 }
 
 func TestAggregateRetryAttemptsUpdateDynamicHealthAcrossChannels(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -5928,8 +6194,8 @@ func TestRetryAfterRateLimitPressureFromHeader(t *testing.T) {
 }
 
 func TestSetRateLimitPressureContextForAttempt(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	now := time.Date(2026, 6, 11, 12, 0, 0, 500*int(time.Millisecond), time.UTC)
 	w := httptest.NewRecorder()
@@ -5948,9 +6214,21 @@ func TestSetRateLimitPressureContextForAttempt(t *testing.T) {
 	assert.Equal(t, int64(4), value)
 
 	ctx.Set("response_body", `{"error":{"message":"api key quota exhausted"}}`)
+	ctx.Set(ctxKeyUpstreamLogicalStatusCode, http.StatusBadGateway)
+	ctx.Set(ctxKeyUpstreamLogicalErrorMessage, "previous logical failure")
+	ctx.Set(ctxKeyResponsesStatusUnverified, true)
+	ctx.Set(ctxKeyResponseProcessingFailed, true)
 	setRateLimitPressureContextForAttempt(ctx, resp, now)
-	_, exists = ctx.Get("response_body")
-	assert.False(t, exists)
+	for _, key := range []string{
+		"response_body",
+		ctxKeyUpstreamLogicalStatusCode,
+		ctxKeyUpstreamLogicalErrorMessage,
+		ctxKeyResponsesStatusUnverified,
+		ctxKeyResponseProcessingFailed,
+	} {
+		_, exists = ctx.Get(key)
+		assert.True(t, exists, "rate-limit handling must not clear %s", key)
+	}
 
 	setRateLimitPressureContextForAttempt(ctx, &http.Response{StatusCode: http.StatusInternalServerError}, now)
 	_, exists = ctx.Get(ctxKeyRateLimitPressure)
@@ -5960,11 +6238,83 @@ func TestSetRateLimitPressureContextForAttempt(t *testing.T) {
 	setRateLimitPressureContextForAttempt(ctx, nil, now)
 	_, exists = ctx.Get(ctxKeyRateLimitPressure)
 	assert.False(t, exists)
+
+	assert.NotPanics(t, func() {
+		setRateLimitPressureContextForAttempt(nil, resp, now)
+	})
+}
+
+func TestExecuteRequestWithRetryClearsPriorAttemptResponseContextBeforeSelection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	ps.requestLogService = services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager())
+
+	group := createTestGroup(t, db, "retry-clear-attempt-context", "openai")
+	group.EffectiveConfig = systemSettingsWithRetryTimeout(0, 0)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := []byte(`{"model":"gpt-test"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/retry-clear-attempt-context/v1/chat/completions", bytes.NewReader(body))
+	c.Set("response_body", `{"error":"previous"}`)
+	c.Set(ctxKeyUpstreamLogicalStatusCode, http.StatusBadGateway)
+	c.Set(ctxKeyUpstreamLogicalErrorMessage, "previous logical failure")
+	c.Set(ctxKeyResponsesStatusUnverified, true)
+	c.Set(ctxKeyResponseProcessingFailed, true)
+
+	ps.executeRequestWithRetry(c, &testChannelProxy{}, group, group, body, false, time.Now(), 0)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, http.StatusServiceUnavailable, logEntry.StatusCode)
+	assert.NotEqual(t, "previous logical failure", logEntry.ErrorMessage)
+	assert.Empty(t, logEntry.ResponseBody)
+}
+
+func TestExecuteAggregateRetryClearsPriorAttemptResponseContextBeforeSelection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	memStore := store.NewMemoryStore()
+	ps.requestLogService = services.NewRequestLogService(nil, memStore, config.NewSystemSettingsManager())
+
+	aggregate := &models.Group{
+		ID:              901,
+		Name:            "aggregate-clear-attempt-context",
+		GroupType:       "aggregate",
+		Config:          map[string]any{},
+		EffectiveConfig: types.SystemSettings{},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := []byte(`{"model":"gpt-test"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/aggregate-clear-attempt-context/v1/chat/completions", bytes.NewReader(body))
+	c.Set("response_body", `{"error":"previous"}`)
+	c.Set(ctxKeyUpstreamLogicalStatusCode, http.StatusBadGateway)
+	c.Set(ctxKeyUpstreamLogicalErrorMessage, "previous logical failure")
+	c.Set(ctxKeyResponsesStatusUnverified, true)
+	c.Set(ctxKeyResponseProcessingFailed, true)
+	retryCtx := &retryContext{
+		excludedSubGroups: make(map[uint]bool),
+		originalBodyBytes: body,
+		originalPath:      c.Request.URL.Path,
+		originalRawQuery:  c.Request.URL.RawQuery,
+	}
+
+	requestStart := time.Now().Add(-time.Second)
+	ps.executeRequestWithAggregateRetry(c, nil, aggregate, body, false, requestStart, retryCtx)
+
+	logEntry := popRecordedRequestLog(t, memStore)
+	assert.Equal(t, http.StatusServiceUnavailable, logEntry.StatusCode)
+	assert.GreaterOrEqual(t, logEntry.Duration, int64(900))
+	assert.NotEqual(t, "previous logical failure", logEntry.ErrorMessage)
+	assert.Empty(t, logEntry.ResponseBody)
 }
 
 func TestRecordDynamicWeightMetricsUsesRetryAfterPressureAfterConsecutive429Threshold(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -5993,8 +6343,8 @@ func TestRecordDynamicWeightMetricsUsesRetryAfterPressureAfterConsecutive429Thre
 }
 
 func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFor429(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -6018,8 +6368,8 @@ func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFor429(t *testing.T
 }
 
 func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFromCompressed429Body(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -6053,8 +6403,8 @@ func TestRecordDynamicWeightMetricsUsesQuotaExhaustedPressureFromCompressed429Bo
 }
 
 func TestQuotaExhaustedRateLimitPressureMarkers(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name     string
@@ -6108,8 +6458,8 @@ func TestQuotaExhaustedRateLimitPressureMarkers(t *testing.T) {
 }
 
 func TestRecordDynamicWeightMetricsForV2ModelRedirect(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -6146,8 +6496,8 @@ func TestRecordDynamicWeightMetricsForV2ModelRedirect(t *testing.T) {
 }
 
 func TestRecordDynamicWeightMetricsUsesRedirectSourceWhenModelMappingExists(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	ps := setupTestProxyServer(t, db)
@@ -6188,8 +6538,8 @@ func TestRecordDynamicWeightMetricsUsesRedirectSourceWhenModelMappingExists(t *t
 }
 
 func TestClearModelRedirectContextRemovesRetryAttemptState(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Set("original_model", "previous-alias")
@@ -6263,6 +6613,59 @@ func TestRequestLogBoundariesSanitizeInternalErrors(t *testing.T) {
 	})
 }
 
+func TestHandleProxyLogsParamOverrideFailures(t *testing.T) {
+	tests := []struct {
+		name        string
+		channelType string
+		path        string
+		body        string
+		config      map[string]any
+	}{
+		{
+			name:        "standard override",
+			channelType: "openai",
+			path:        "/v1/chat/completions",
+			body:        `{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`,
+		},
+		{
+			name:        "deferred override",
+			channelType: "openai",
+			path:        "/codex/v1/responses",
+			body:        `{"model":"gpt-test","input":"hello"}`,
+			config:      map[string]any{"codex_support": true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			ps, memStore := setupTestProxyServerWithStore(t, db)
+			group := createTestGroup(t, db, "override-log-"+strings.ReplaceAll(tt.name, " ", "-"), tt.channelType)
+			for key, value := range tt.config {
+				group.Config[key] = value
+			}
+			require.NoError(t, db.Save(group).Error)
+			require.NoError(t, ps.groupManager.Initialize())
+			t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+			cachedGroup, err := ps.groupManager.GetGroupByName(group.Name)
+			require.NoError(t, err)
+			cachedGroup.ParamOverrides = datatypes.JSONMap{"unsupported": func() {}}
+
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Params = gin.Params{{Key: "group_name", Value: group.Name}}
+			c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+group.Name+tt.path, strings.NewReader(tt.body))
+
+			ps.HandleProxy(c)
+
+			require.Equal(t, http.StatusInternalServerError, w.Code, w.Body.String())
+			logEntry := popRecordedRequestLog(t, memStore)
+			assert.Equal(t, http.StatusInternalServerError, logEntry.StatusCode)
+			assert.Contains(t, logEntry.ErrorMessage, "unsupported type")
+		})
+	}
+}
+
 func TestLogRequestSanitizesErrorBeforeDebugLogging(t *testing.T) {
 	logger := logrus.StandardLogger()
 	previousOutput := logger.Out
@@ -6297,8 +6700,8 @@ func TestLogRequestSanitizesErrorBeforeDebugLogging(t *testing.T) {
 }
 
 func TestLogRequestUsesEstimatedTokenFallbackWhenUsageMissing(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -6321,8 +6724,8 @@ func TestLogRequestUsesEstimatedTokenFallbackWhenUsageMissing(t *testing.T) {
 }
 
 func TestLogRequestKeepsEstimatedOutputTokensForLargeBody(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -6345,8 +6748,8 @@ func TestLogRequestKeepsEstimatedOutputTokensForLargeBody(t *testing.T) {
 }
 
 func TestLogRequestPrefersUpstreamTokenUsageOverEstimate(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -6368,8 +6771,8 @@ func TestLogRequestPrefersUpstreamTokenUsageOverEstimate(t *testing.T) {
 }
 
 func TestLogRequestSkipsTokenUsageForFailedRequest(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -6392,8 +6795,8 @@ func TestLogRequestSkipsTokenUsageForFailedRequest(t *testing.T) {
 }
 
 func TestLogRequestSanitizesRequestBodyBeforePersisting(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{
@@ -6423,8 +6826,8 @@ func TestLogRequestSanitizesRequestBodyBeforePersisting(t *testing.T) {
 }
 
 func TestLogRequestUsesLogicalStreamingFailureForHealthMetrics(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	dwm := services.NewDynamicWeightManager(memStore)
@@ -6452,8 +6855,8 @@ func TestLogRequestUsesLogicalStreamingFailureForHealthMetrics(t *testing.T) {
 }
 
 func TestLogRequestPreservesLogicalErrorMessageWhenFinalErrorExists(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	memStore := store.NewMemoryStore()
 	ps := &ProxyServer{

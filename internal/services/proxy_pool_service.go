@@ -27,6 +27,7 @@ const (
 	defaultProxyPoolTestTimeout   = 10 * time.Second
 	defaultGatewayProxyTestCount  = 3
 	defaultGatewayProxyTestGap    = 3 * time.Second
+	proxyURLResolveBatchSize      = 500
 
 	defaultProxyPoolCountryLookupURL = "http://ip-api.com/json/?fields=status,country,countryCode,query"
 )
@@ -296,6 +297,54 @@ func (s *ProxyPoolService) ResolveProxyURL(ctx context.Context, raw string) (str
 		return item.URL, nil
 	}
 	return utils.NormalizeProxyURL(trimmed)
+}
+
+// ResolveProxyURLs resolves proxy-pool references in bounded IN queries.
+// Missing IDs are omitted so callers can preserve the unresolved reference and fail closed.
+func (s *ProxyPoolService) ResolveProxyURLs(ctx context.Context, refs []string) (map[string]string, error) {
+	resolved := make(map[string]string, len(refs))
+	refsByID := make(map[uint][]string, len(refs))
+	ids := make([]uint, 0, len(refs))
+	for _, raw := range refs {
+		ref := strings.TrimSpace(raw)
+		itemID, ok := utils.ParseProxyPoolItemRef(ref)
+		if !ok {
+			// Empty and malformed non-reference values are skipped so one bad
+			// entry does not drop resolvable references; callers keep the raw
+			// value and fail closed. This mirrors ResolveProxyURL's empty-input
+			// handling and the non-batch fallback in ResolveRuntimeProxyURLs.
+			if ref == "" {
+				continue
+			}
+			value, err := utils.NormalizeProxyURL(ref)
+			if err != nil {
+				continue
+			}
+			resolved[ref] = value
+			continue
+		}
+		if _, exists := refsByID[itemID]; !exists {
+			ids = append(ids, itemID)
+		}
+		refsByID[itemID] = append(refsByID[itemID], ref)
+	}
+
+	for start := 0; start < len(ids); start += proxyURLResolveBatchSize {
+		end := min(start+proxyURLResolveBatchSize, len(ids))
+		items := make([]models.ProxyPoolItem, 0, end-start)
+		if err := s.db.WithContext(ctx).
+			Select("id", "url").
+			Where("id IN ?", ids[start:end]).
+			Find(&items).Error; err != nil {
+			return nil, app_errors.ParseDBError(err)
+		}
+		for _, item := range items {
+			for _, ref := range refsByID[item.ID] {
+				resolved[ref] = item.URL
+			}
+		}
+	}
+	return resolved, nil
 }
 
 // ListSelectionOptions returns manual proxies for proxy selection controls.

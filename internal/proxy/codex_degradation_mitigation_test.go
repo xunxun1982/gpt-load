@@ -21,8 +21,8 @@ import (
 )
 
 func TestCodexDegradationMitigationShouldEnable(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	body := []byte(`{"model":"gpt-5","stream":true}`)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -60,6 +60,32 @@ func TestCodexDegradationMitigationShouldEnable(t *testing.T) {
 		Config:      datatypes.JSONMap{"codex_degradation_mitigation_enabled": true},
 	}
 	assert.False(t, codexDegradationMitigationShouldEnable(c, nonCodex, nonCodex, body, true))
+}
+
+func TestCodexMitigationIsSSEPreservesCompatibleContentTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		nilResponse bool
+		contentType string
+		want        bool
+	}{
+		{name: "nil response", nilResponse: true, want: false},
+		{name: "standard", contentType: "text/event-stream; charset=utf-8", want: true},
+		{name: "case insensitive", contentType: "TEXT/EVENT-STREAM", want: true},
+		{name: "compatible vendor prefix", contentType: "application/text/event-stream", want: true},
+		{name: "json", contentType: "application/json", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resp *http.Response
+			if !tt.nilResponse {
+				resp = &http.Response{Header: http.Header{"Content-Type": []string{tt.contentType}}}
+			}
+			assert.Equal(t, tt.want, codexMitigationIsSSE(resp))
+		})
+	}
 }
 
 func TestCodexDegradationMitigationContinuationPayload(t *testing.T) {
@@ -178,8 +204,8 @@ func TestCodexDegradationMitigationFoldDropsTruncatedOutputAndContinuesOnce(t *t
 }
 
 func TestCodexDegradationMitigationMarksFailedTerminal(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	group := &models.Group{
 		GroupType:   "standard",

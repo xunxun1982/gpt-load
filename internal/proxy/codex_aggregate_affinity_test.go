@@ -3,7 +3,10 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	requestmiddleware "gpt-load/internal/middleware"
@@ -12,6 +15,73 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHandleProxyAggregateCodexAffinityRetriesLeadingEncryptedContentFailureClean(t *testing.T) {
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+	observations := make(chan codexAffinityObservation, 4)
+	var requests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// requests count assertion below instead of hanging the handler.
+		select {
+		case observations <- codexAffinityObservation{auth: r.Header.Get("Authorization"), body: body}:
+		default:
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if requests.Add(1) == 2 {
+			_, _ = io.WriteString(w, "event: response.failed\n"+
+				"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"The encrypted content could not be decrypted or parsed\"}}}\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, "event: response.completed\n"+
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-test\",\"status\":\"completed\",\"output\":[]}}\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "aggregate-affinity-stream-sub", "openai-response")
+	subGroup.Upstreams = []byte(fmt.Sprintf(`[{"url":%q,"weight":100}]`, upstream.URL))
+	subGroup.Config = map[string]any{"max_retries": 0, "blacklist_threshold": 100}
+	require.NoError(t, db.Save(subGroup).Error)
+	parent := &models.Group{
+		Name: "aggregate-affinity-stream-parent", ProxyKeys: "proxy-a", ChannelType: "openai-response",
+		GroupType: "aggregate", Enabled: true, Upstreams: []byte(`[]`),
+		Config: map[string]any{"max_retries": 0, "codex_affinity_enabled": true, "codex_affinity_max_retries": 2},
+	}
+	require.NoError(t, db.Create(parent).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{GroupID: parent.ID, SubGroupID: subGroup.ID, SubGroupName: subGroup.Name, SubGroupEnabled: true, Weight: 100}).Error)
+	createTestKey(t, db, subGroup.ID, "sk-aggregate-stream-a", ps.encryptionSvc)
+	createTestKey(t, db, subGroup.ID, "sk-aggregate-stream-b", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	router := gin.New()
+	router.POST("/proxy/:group_name/*path", requestmiddleware.ProxyAuth(ps.groupManager, nil), ps.HandleProxy)
+	body := []byte(`{"model":"gpt-5","stream":true,"include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"cipher"}]}`)
+	require.Equal(t, http.StatusOK, runCodexAffinityRequest(t, router, parent.Name, "proxy-a", "thread-aggregate", "", body).Code)
+	warmup := <-observations
+	require.NotContains(t, string(warmup.body), "reasoning.encrypted_content")
+
+	response := runCodexAffinityRequest(t, router, parent.Name, "proxy-a", "thread-aggregate", "", body)
+	// Exactly one warmup, one failed and one retried attempt reached upstream.
+	// Assert before draining the observation channel so a missing attempt
+	// fails here instead of blocking on the receives below.
+	require.Equal(t, int32(3), requests.Load())
+	failed := <-observations
+	retried := <-observations
+	require.Equal(t, http.StatusOK, response.Code)
+	require.NotContains(t, response.Body.String(), "response.failed")
+	require.Contains(t, response.Body.String(), "response.completed")
+	require.Contains(t, string(failed.body), "reasoning.encrypted_content")
+	require.NotContains(t, string(retried.body), "reasoning.encrypted_content")
+	require.NotEqual(t, failed.auth, retried.auth)
+}
 
 func TestHandleProxyAggregateCodexAffinityReusesExactExecutionBinding(t *testing.T) {
 	db := setupTestDB(t)

@@ -189,11 +189,13 @@ func TestParseAuthConfig_EdgeCases(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		authType       string
-		decryptedValue string
-		expectedTypes  []string
-		expectedValues map[string]string
+		name                 string
+		authType             string
+		decryptedValue       string
+		expectedTypes        []string
+		expectedValues       map[string]string
+		checkRefreshToken    bool
+		expectedRefreshToken string
 	}{
 		{
 			name:           "auth_type with none mixed in",
@@ -253,6 +255,8 @@ func TestParseAuthConfig_EdgeCases(t *testing.T) {
 			expectedValues: map[string]string{
 				"access_token": "expired-token",
 			},
+			checkRefreshToken:    true,
+			expectedRefreshToken: "refresh-token",
 		},
 	}
 
@@ -264,8 +268,8 @@ func TestParseAuthConfig_EdgeCases(t *testing.T) {
 
 			assert.Equal(t, tt.expectedTypes, config.AuthTypes)
 			assert.Equal(t, tt.expectedValues, config.AuthValues)
-			if tt.name == "sub2api supplemental refresh token is preserved" {
-				assert.Equal(t, "refresh-token", config.GetSupplementalValue("refresh_token"))
+			if tt.checkRefreshToken {
+				assert.Equal(t, tt.expectedRefreshToken, config.GetSupplementalValue("refresh_token"))
 			}
 		})
 	}

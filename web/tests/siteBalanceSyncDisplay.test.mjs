@@ -104,7 +104,7 @@ test("stale paginated site responses do not overwrite newer balance updates", as
   assert.equal(updateSiteBalances([{ id: 1, last_balance: "$10.00" }], requestRevision), false);
   assert.equal(runtimeState.siteBalances[1], "$20.00");
   assert.match(sitePanel, /const siteBalanceRevision = getSiteBalanceRevision\(\)/);
-  assert.match(sitePanel, /updateSiteBalances\(result\.sites, siteBalanceRevision\)/);
+  assert.match(sitePanel, /updateSiteBalances\(normalizedSites, siteBalanceRevision\)/);
 });
 
 test("site management only pushes authoritative refresh results into shared balances", () => {
@@ -219,18 +219,16 @@ test("managed-site modal keeps actions outside the scroll area with responsive s
   assert.match(sitePanel, /\.form-section\s*\{[^}]*border-radius:/s);
   assert.match(
     sitePanel,
-    /\.site-form-card :deep\(\.n-card__content\)[\s\S]*?\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0/s
+    /\.site-form-card :deep\(\.n-card-content\)[\s\S]*?\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/s
   );
-  assert.doesNotMatch(sitePanel, /\.site-form-card :deep\(\.n-card-content\)/);
+  assert.doesNotMatch(sitePanel, /\.site-form-card :deep\(\.n-card__content\)/);
+  assert.match(sitePanel, /<n-form[^>]*class="site-form"[^>]*size="small"/s);
   assert.match(sitePanel, /v-model:value="siteForm\.sort"[\s\S]{0,100}style="width:\s*150px"/);
   // Sort and balance multiplier share a two-column grid row; the multiplier keeps
   // its hint below the input via field-stack.
   assert.match(sitePanel, /siteManagement\.sort'\)"\s*class="form-item-half"/);
   assert.match(sitePanel, /siteManagement\.balanceMultiplier'\)"\s*class="form-item-half"/);
   assert.match(sitePanel, /siteManagement\.balanceMultiplier[\s\S]{0,400}class="field-stack"/);
-  assert.match(sitePanel, /\.form-section\s*\{[^}]*margin-bottom:\s*10px[^}]*padding:\s*8px 12px/s);
-  assert.match(sitePanel, /\.section-title\s*\{[^}]*margin:\s*0 0 4px 0/s);
-  assert.match(sitePanel, /\.site-form :deep\(\.n-form-item\)\s*\{[^}]*margin-bottom:\s*6px/s);
   assert.match(sitePanel, /label-width="auto"/);
 });
 

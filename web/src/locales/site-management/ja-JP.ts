@@ -128,6 +128,7 @@ export default {
   // Site types
   siteTypeOther: "その他",
   siteTypeBrand: "ブランド",
+  siteTypeCommercial: "商用",
   siteTypeNewApi: "New API",
   siteTypeSub2Api: "Sub2API",
   siteTypeOneHub: "One Hub",

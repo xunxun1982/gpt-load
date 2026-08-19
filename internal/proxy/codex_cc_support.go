@@ -77,11 +77,9 @@ type CodexRequest struct {
 }
 
 // CodexReasoning represents reasoning configuration for Codex CLI-compatible Responses requests.
-// This enables thinking/reasoning capabilities in Codex models.
-// NOTE: Effort values vary by model - we use "low", "medium", "high" for compatibility.
-// GPT-5.2+ supports additional values like "minimal", "none", "xhigh".
+// Effort values are provider-defined and are forwarded without normalization.
 type CodexReasoning struct {
-	Effort  string `json:"effort,omitempty"`  // "low", "medium", "high" (compatible with all reasoning models)
+	Effort  string `json:"effort,omitempty"`
 	Summary string `json:"summary,omitempty"` // "auto", "none", "detailed"
 	Context string `json:"context,omitempty"` // "auto", "current_turn", "all_turns"
 }
@@ -174,12 +172,29 @@ func codexClaudeToolName(item CodexOutputItem, reverseToolNameMap map[string]str
 	return toolName
 }
 
-func codexClaudeToolInput(item CodexOutputItem, toolName string) json.RawMessage {
+// codexToolCallID prefers the protocol call_id and falls back to item id for
+// output kinds whose schema makes call_id optional (for example tool_search_call).
+func codexToolCallID(item CodexOutputItem) string {
+	if item.CallID != "" {
+		return item.CallID
+	}
+	return item.ID
+}
+
+func codexClaudeToolInput(item CodexOutputItem) json.RawMessage {
 	if item.Type == "custom_tool_call" {
 		return codexCustomToolClaudeInput(item.Input)
 	}
-	argsStr := cleanToolCallArguments(toolName, item.Arguments)
-	return codexToolArgumentsRawMessage(argsStr)
+	// Tool arguments pass through verbatim: the converter must not interpret
+	// provider-specific payloads (large integers survive as exact JSON text).
+	return codexToolArgumentsRawMessage(item.Arguments)
+}
+
+func isCodexResponseToolCall(item CodexOutputItem) bool {
+	if !codexToolCallItemType(item.Type) || codexToolCallID(item) == "" {
+		return false
+	}
+	return codexClaudeToolName(item, nil) != ""
 }
 
 // CodexSummaryItem represents a summary item in reasoning output.
@@ -375,6 +390,13 @@ func buildReverseToolNameMap(shortMap map[string]string) map[string]string {
 // Tool name shortening is handled internally via buildToolNameShortMap; the reverse map is stored
 // in context for response restoration (see setCodexToolNameReverseMap).
 func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, group *models.Group) (*CodexRequest, error) {
+	effort, err := claudeOutputEffort(claudeReq.OutputConfig)
+	if err != nil {
+		return nil, err
+	}
+	thinkingActive := claudeThinkingActive(claudeReq.Thinking)
+	thinkingDisabled := claudeThinkingDisabled(claudeReq.Thinking)
+
 	// Use custom instructions if provided, otherwise use default
 	instructions := codexDefaultInstructions
 	if customInstructions != "" {
@@ -408,27 +430,51 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	// Build input array using the Codex CLI-compatible Responses format.
 	var inputItems []interface{}
 
-	// Preserve Claude's system prompt as a developer input item by default.
-	if len(claudeReq.System) > 0 {
-		systemContent := extractSystemContent(claudeReq.System)
-		if systemContent != "" {
-			systemRole := "developer"
-			if getGroupConfigBool(group, "responses_legacy_user_role") {
-				systemRole = "user"
-			}
-			inputItems = append(inputItems, map[string]interface{}{
-				"type": "message",
-				"role": systemRole,
-				"content": []map[string]interface{}{
-					{"type": "input_text", "text": systemContent},
-				},
-			})
-			logrus.WithFields(logrus.Fields{"system_len": len(systemContent), "role": systemRole}).Debug("Codex CC: Added system message")
+	// Claude Code may (non-conformingly) place system prompts inside messages
+	// with role "system"; merge them into the system item below instead of
+	// emitting a raw system message (which some Responses upstreams reject).
+	inlineSystem, nonSystemMessages, err := collectInlineClaudeSystemMessages(claudeReq.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert Claude message: %w", err)
+	}
+	var convertedInputs []interface{}
+	for _, msg := range nonSystemMessages {
+		converted, err := convertClaudeMessageToCodexFormatWithToolMap(msg, toolNameShortMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
 		}
+		convertedInputs = append(convertedInputs, converted...)
+	}
+
+	// Preserve Claude's system prompt as a developer input item by default.
+	systemContent := ""
+	if len(claudeReq.System) > 0 {
+		systemContent = extractSystemContent(claudeReq.System)
+	}
+	if inlineSystem != "" {
+		if systemContent != "" {
+			systemContent += "\n\n" + inlineSystem
+		} else {
+			systemContent = inlineSystem
+		}
+	}
+	if systemContent != "" {
+		systemRole := "developer"
+		if getGroupConfigBool(group, "responses_legacy_user_role") {
+			systemRole = "user"
+		}
+		inputItems = append(inputItems, map[string]interface{}{
+			"type": "message",
+			"role": systemRole,
+			"content": []map[string]interface{}{
+				{"type": "input_text", "text": systemContent},
+			},
+		})
+		logrus.WithFields(logrus.Fields{"system_len": len(systemContent), "role": systemRole}).Debug("Codex CC: Added system message")
 	}
 
 	// Handle prompt-only requests
-	if len(claudeReq.Messages) == 0 && strings.TrimSpace(claudeReq.Prompt) != "" {
+	if len(nonSystemMessages) == 0 && strings.TrimSpace(claudeReq.Prompt) != "" {
 		inputItems = append(inputItems, map[string]interface{}{
 			"type": "message",
 			"role": "user",
@@ -438,19 +484,7 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 		})
 	}
 
-	// Convert messages with tool name mapping
-	for _, msg := range claudeReq.Messages {
-		converted, err := convertClaudeMessageToCodexFormatWithToolMap(msg, toolNameShortMap)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
-		}
-		inputItems = append(inputItems, converted...)
-	}
-
-	// Inject thinking hints when extended thinking is enabled
-	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
-		injectThinkingHint(inputItems, claudeReq.Thinking.BudgetTokens)
-	}
+	inputItems = append(inputItems, convertedInputs...)
 
 	// Marshal input items
 	inputBytes, err := json.Marshal(inputItems)
@@ -461,7 +495,6 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 
 	// Convert tools with shortened names
 	if len(claudeReq.Tools) > 0 {
-		strict := false
 		tools := make([]CodexTool, 0, len(claudeReq.Tools))
 		for _, tool := range claudeReq.Tools {
 			// Apply shortened name if needed
@@ -476,7 +509,6 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 				Name:        toolName,
 				Description: tool.Description,
 				Parameters:  params,
-				Strict:      &strict,
 			})
 		}
 		codexReq.Tools = tools
@@ -533,31 +565,23 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 		}
 	}
 
-	// Configure reasoning for OpenAI Responses only when thinking is enabled.
-	// Non-reasoning models (e.g., gpt-4o) will reject these parameters with 400 errors.
-	// Only set when client explicitly requests thinking to avoid breaking non-reasoning models.
-	// Codex uses "reasoning.effort" (nested object) vs OpenAI Chat's "reasoning_effort" (flat field).
-	//
-	// NOTE: Users can override reasoning via param_overrides, e.g., {"reasoning": {"effort": "xhigh", "summary": "auto"}}
-	// When overriding, include "summary" field to ensure reasoning summaries are returned in streaming responses.
-	//
-	// Reference: CLIProxyAPI always sets these parameters, but we only set them when thinking is enabled
-	// to avoid breaking non-reasoning models.
-	if claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
-		// Derive effort from thinking budget, default to "medium" when budget is 0 or not specified
-		reasoningEffort := "medium"
-		if claudeReq.Thinking.BudgetTokens > 0 {
-			reasoningEffort = thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
+	// Explicit effort only moves between protocol field shapes. budget_tokens
+	// has no lossless Responses equivalent, so it is not converted to a guessed
+	// effort value. When effort is absent, leave it omitted so the upstream
+	// provider can apply its own default; empty is not a portable "auto" value.
+	// Explicitly disabled thinking maps to the target protocol's explicit off value.
+	if effort != "" || thinkingActive || thinkingDisabled {
+		// Explicitly disabled thinking takes precedence over a conflicting
+		// effort value; forwarding both can re-enable reasoning or yield 400.
+		if thinkingDisabled {
+			// Model names are provider-defined and dynamic; preserve the explicit
+			// disable intent instead of guessing support from a stale local list.
+			effort = "none"
 		}
-		logrus.WithFields(logrus.Fields{
-			"budget_tokens":    claudeReq.Thinking.BudgetTokens,
-			"reasoning_effort": reasoningEffort,
-		}).Debug("Codex CC: Configured reasoning effort from thinking budget")
-
-		codexReq.Reasoning = &CodexReasoning{
-			Effort:  reasoningEffort,
-			Summary: "auto", // Enable reasoning summary for streaming responses
-		}
+		codexReq.Reasoning = &CodexReasoning{Effort: effort}
+	}
+	if thinkingActive {
+		codexReq.Reasoning.Summary = "auto"
 		// Disable response storage for privacy (store: false means don't store)
 		// Reference: CLIProxyAPI uses sjson.Set(template, "store", false)
 		store := false
@@ -567,13 +591,6 @@ func convertClaudeToCodex(claudeReq *ClaudeRequest, customInstructions string, g
 	}
 
 	return codexReq, nil
-}
-
-func codexCallIDFromClaudeToolID(id string) string {
-	if strings.HasPrefix(id, "call_") {
-		return id
-	}
-	return "call_" + id
 }
 
 // normalizeToolParameters ensures tool parameters have valid JSON schema structure.
@@ -614,6 +631,9 @@ func normalizeToolParameters(raw json.RawMessage) json.RawMessage {
 // Uses the tool name short map to apply shortened names for tool_use blocks.
 func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameShortMap map[string]string) ([]interface{}, error) {
 	var result []interface{}
+	if msg.Role != "user" && msg.Role != "assistant" {
+		return nil, fmt.Errorf("unsupported Anthropic message role %q", msg.Role)
+	}
 
 	// Try to parse content as string first
 	var contentStr string
@@ -638,54 +658,90 @@ func convertClaudeMessageToCodexFormatWithToolMap(msg ClaudeMessage, toolNameSho
 		return nil, fmt.Errorf("failed to parse content blocks: %w", err)
 	}
 
-	// Separate different block types
+	// Separate block types. Claude thinking history has no Responses reasoning ID
+	// or encrypted_content, so replay it as assistant text instead of inventing an
+	// invalid reasoning item for store:false requests.
 	var textParts []string
+	var reasoningItems []interface{}
 	var toolCalls []interface{}
 	var toolResults []interface{}
 
 	for _, block := range blocks {
-		switch block.Type {
-		case "text":
+		switch {
+		case block.Type == "text":
 			textParts = append(textParts, block.Text)
-		case "thinking":
-			// AI REVIEW NOTE: Suggestion to handle thinking blocks separately was considered.
-			// This is intentionally merged into textParts because:
-			// 1. This is Claude→Codex REQUEST conversion (not response conversion)
-			// 2. OpenAI Responses does not support thinking blocks as input format.
-			// 3. Thinking content from Claude client's history provides important reasoning context
-			// 4. Discarding thinking would lose valuable context for multi-turn conversations
-			// 5. Merging preserves the assistant's reasoning chain for better continuity
+		case block.Type == "thinking":
 			if block.Thinking != "" {
-				textParts = append(textParts, block.Thinking)
+				// Reasoning items are only valid for assistant messages (OpenAI
+				// Responses semantics: reasoning belongs to the assistant output);
+				// thinking from any other role is replayed as text so it is never
+				// silently dropped by the role dispatch below.
+				if msg.Role == "assistant" && block.ID != "" && block.EncryptedContent != "" {
+					reasoningItems = append(reasoningItems, map[string]interface{}{
+						"type":              "reasoning",
+						"id":                block.ID,
+						"encrypted_content": block.EncryptedContent,
+						"status":            "completed",
+						"summary":           []map[string]interface{}{{"type": "summary_text", "text": block.Thinking}},
+					})
+				} else {
+					textParts = append(textParts, block.Thinking)
+				}
 			}
-		case "tool_use":
+		case isClaudeToolUseBlock(block):
+			if msg.Role != "assistant" {
+				return nil, fmt.Errorf("Anthropic tool_use block %q is only valid in an assistant message", block.Type)
+			}
+			if block.ID == "" || block.Name == "" {
+				return nil, fmt.Errorf("Anthropic tool_use requires id and name")
+			}
 			// Apply shortened name if needed
 			toolName := block.Name
 			if short, ok := toolNameShortMap[block.Name]; ok {
 				toolName = short
 			}
-			// Clean up tool arguments for compatibility with upstream APIs
-			argsStr := cleanToolCallArguments(block.Name, string(block.Input))
+			argsStr := string(block.Input)
+			// Normalize blank or JSON null input to "{}" so Codex clients never
+			// receive the literal "null" as arguments, matching the OpenAI
+			// conversion semantics (convertClaudeMessageToOpenAI).
+			if trimmed := strings.TrimSpace(argsStr); trimmed == "" || trimmed == "null" {
+				argsStr = "{}"
+			}
+			// Claude tool ids are used verbatim as Codex call ids.
 			toolCalls = append(toolCalls, map[string]interface{}{
 				"type":      "function_call",
 				"id":        "fc_" + block.ID,
-				"call_id":   codexCallIDFromClaudeToolID(block.ID),
+				"call_id":   block.ID,
 				"name":      toolName,
 				"arguments": argsStr,
 			})
-		case "tool_result":
-			resultContent := extractToolResultContent(block)
+		case isClaudeToolResultBlock(block):
+			// Anthropic only allows tool_result blocks in user messages; an
+			// assistant-role tool result is non-conformant input. Reject it
+			// explicitly so it is not silently collected and then dropped by the
+			// assistant branch below (mirroring convertClaudeMessageToOpenAI).
+			if msg.Role == "assistant" {
+				return nil, fmt.Errorf("Anthropic tool_result block %q is not valid in an assistant message", block.Type)
+			}
+			if block.ToolUseID == "" {
+				return nil, fmt.Errorf("Anthropic tool_result requires tool_use_id")
+			}
 			toolResults = append(toolResults, map[string]interface{}{
 				"type":    "function_call_output",
-				"call_id": codexCallIDFromClaudeToolID(block.ToolUseID),
-				"output":  resultContent,
+				"call_id": block.ToolUseID,
+				"output":  toolResultOutput(block),
 			})
+		default:
+			// Chat conversion has an explicit image mapper, but Codex input does
+			// not. Fail closed for every unmapped block instead of dropping data.
+			return nil, ccUnsupported("content block", block.Type)
 		}
 	}
 
 	// Build result based on role
 	switch msg.Role {
 	case "assistant":
+		result = append(result, reasoningItems...)
 		if len(textParts) > 0 {
 			result = append(result, map[string]interface{}{
 				"type":   "message",
@@ -733,93 +789,24 @@ func extractSystemContent(system json.RawMessage) string {
 	return ""
 }
 
-// injectThinkingHint adds thinking hint to the last user message.
-func injectThinkingHint(inputItems []interface{}, budgetTokens int) {
-	for i := len(inputItems) - 1; i >= 0; i-- {
-		item, ok := inputItems[i].(map[string]interface{})
-		if !ok {
-			continue
+func toolResultOutput(block ClaudeContentBlock) any {
+	if len(block.Content) == 0 {
+		if block.IsError {
+			return map[string]any{"is_error": true, "content": ""}
 		}
-		role, _ := item["role"].(string)
-		if role != "user" {
-			continue
+		return ""
+	}
+	var value any
+	if err := decodeCodexJSONUseNumber(block.Content, &value); err == nil {
+		if block.IsError {
+			return map[string]any{"is_error": true, "content": value}
 		}
-		content, ok := item["content"].([]map[string]interface{})
-		if !ok || len(content) == 0 {
-			continue
-		}
-		// Find the last input_text block
-		for j := len(content) - 1; j >= 0; j-- {
-			if content[j]["type"] == "input_text" {
-				text, _ := content[j]["text"].(string)
-				hint := ThinkingHintInterleaved
-				if budgetTokens > 0 {
-					hint += fmt.Sprintf(ThinkingHintMaxLength, budgetTokens)
-				}
-				content[j]["text"] = text + "\n" + hint
-				return
-			}
-		}
+		return value
 	}
-	// Per AI review: log when hint cannot be injected to aid debugging
-	logrus.Debug("Codex CC: Could not inject thinking hint - no suitable user message found")
-}
-
-// cleanToolCallArguments cleans up tool call arguments for compatibility with upstream APIs.
-// For WebSearch tool, removes empty allowed_domains and blocked_domains arrays that cause
-// "Cannot specify both allowed_domains and blocked_domains" errors on some providers.
-func cleanToolCallArguments(toolName, argsStr string) string {
-	if argsStr == "" {
-		return argsStr
+	if block.IsError {
+		return map[string]any{"is_error": true, "content": string(block.Content)}
 	}
-
-	// Only process WebSearch-related tools
-	toolNameLower := strings.ToLower(toolName)
-	if !strings.Contains(toolNameLower, "websearch") && !strings.Contains(toolNameLower, "web_search") {
-		return argsStr
-	}
-
-	// Parse arguments as JSON
-	var args map[string]interface{}
-	if err := decodeCodexJSONUseNumber([]byte(argsStr), &args); err != nil {
-		return argsStr
-	}
-
-	modified := false
-
-	// Remove empty allowed_domains array
-	if domains, ok := args["allowed_domains"]; ok {
-		if arr, isArr := domains.([]interface{}); isArr && len(arr) == 0 {
-			delete(args, "allowed_domains")
-			modified = true
-		}
-	}
-
-	// Remove empty blocked_domains array
-	if domains, ok := args["blocked_domains"]; ok {
-		if arr, isArr := domains.([]interface{}); isArr && len(arr) == 0 {
-			delete(args, "blocked_domains")
-			modified = true
-		}
-	}
-
-	if !modified {
-		return argsStr
-	}
-
-	// Re-marshal the cleaned arguments
-	cleanedBytes, err := json.Marshal(args)
-	if err != nil {
-		return argsStr
-	}
-
-	logrus.WithFields(logrus.Fields{
-		"tool_name":    toolName,
-		"original_len": len(argsStr),
-		"cleaned_len":  len(cleanedBytes),
-	}).Debug("Codex CC: Cleaned WebSearch tool arguments")
-
-	return string(cleanedBytes)
+	return string(block.Content)
 }
 
 // extractToolResultContent extracts content from a tool_result block.
@@ -854,8 +841,8 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 	}
 
 	for _, item := range codexResp.Output {
-		switch item.Type {
-		case "message":
+		switch {
+		case item.Type == "message":
 			for _, content := range item.Content {
 				switch content.Type {
 				case "output_text":
@@ -878,26 +865,21 @@ func convertCodexToClaudeResponse(codexResp *CodexResponse, reverseToolNameMap m
 					}
 				}
 			}
-		case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
-			if item.CallID != "" {
-				toolName := codexClaudeToolName(item, reverseToolNameMap)
-				if toolName == "" {
-					continue
-				}
-				if item.Type != "custom_tool_call" && !isValidCodexToolCallArguments(toolName, item.Arguments, nil) {
-					continue
-				}
-				inputJSON := codexClaudeToolInput(item, toolName)
-				// Extract tool use ID from call_id (remove "call_" prefix if present)
-				toolUseID := strings.TrimPrefix(item.CallID, "call_")
-				claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
-					Type:  "tool_use",
-					ID:    toolUseID,
-					Name:  toolName,
-					Input: inputJSON,
-				})
+		case isCodexResponseToolCall(item):
+			toolName := codexClaudeToolName(item, reverseToolNameMap)
+			if toolName == "" {
+				continue
 			}
-		case "reasoning":
+			if item.Type != "custom_tool_call" && !isValidCodexToolCallArguments(toolName, item.Arguments, nil) {
+				continue
+			}
+			claudeResp.Content = append(claudeResp.Content, ClaudeContentBlock{
+				Type:  "tool_use",
+				ID:    codexToolCallID(item),
+				Name:  toolName,
+				Input: codexClaudeToolInput(item),
+			})
+		case item.Type == "reasoning":
 			// Convert reasoning to thinking block.
 			// Codex CLI-compatible Responses returns reasoning in "summary" field with type "summary_text".
 			// First try summary field, then fall back to content.
@@ -1190,6 +1172,11 @@ type codexStreamState struct {
 	// inThinkingBlock tracks whether we are currently inside a thinking/reasoning block.
 	// Used to properly handle reasoning summary events.
 	inThinkingBlock bool
+	// skipActiveToolItem marks the current output item as skipped because its
+	// tool name could not be resolved. Argument deltas for such an item are
+	// ignored so they cannot auto-open a fabricated unknown_tool block.
+	// Cleared whenever a new output item begins.
+	skipActiveToolItem bool
 }
 
 // newCodexStreamState creates a new stream state for Codex CLI-compatible Responses conversion.
@@ -1242,14 +1229,13 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		s.toolInputSent = true
 	}
 	toolInputForCurrentItem := func(item CodexOutputItem) json.RawMessage {
-		toolName := codexClaudeToolName(item, s.reverseToolNameMap)
 		if item.Type == "custom_tool_call" && item.Input == nil {
 			item.Input = s.currentToolArgs.String()
 		}
 		if item.Arguments == "" {
 			item.Arguments = s.currentToolArgs.String()
 		}
-		return codexClaudeToolInput(item, toolName)
+		return codexClaudeToolInput(item)
 	}
 
 	switch event.Type {
@@ -1381,6 +1367,8 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 	case "response.output_item.added":
 		if event.Item != nil {
+			// A new output item resets the skip state of a previously skipped tool item.
+			s.skipActiveToolItem = false
 			logrus.WithFields(logrus.Fields{
 				"item_type":    event.Item.Type,
 				"item_id":      event.Item.ID,
@@ -1388,25 +1376,38 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 				"item_name":    event.Item.Name,
 				"output_idx":   event.OutputIdx,
 			}).Debug("Codex CC: Output item added")
-			switch event.Item.Type {
-			case "message":
+			switch {
+			case event.Item.Type == "message":
 				// Message item added, wait for content_part.added for actual content
 				logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Message item added")
-			case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
-				// Close any open block before starting tool block
-				closeOpenBlock()
-				s.currentToolID = event.Item.CallID
-				s.currentToolName = codexClaudeToolName(*event.Item, s.reverseToolNameMap)
-				if s.currentToolID == "" || s.currentToolName == "" {
-					logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Skipping tool item with missing ID or name")
+			case codexToolCallItemType(event.Item.Type):
+				toolName := codexClaudeToolName(*event.Item, s.reverseToolNameMap)
+				toolCallID := codexToolCallID(*event.Item)
+				if toolCallID == "" || toolName == "" {
+					closeOpenBlock()
+					s.currentToolID = ""
+					s.currentToolName = ""
+					s.currentToolArgs.Reset()
+					s.toolInputSent = false
+					// Mark this output item as skipped so argument deltas cannot
+					// auto-open a fabricated unknown_tool block (per AI review).
+					s.skipActiveToolItem = true
+					logrus.WithFields(logrus.Fields{
+						"item_type":    event.Item.Type,
+						"item_call_id": toolCallID,
+						"item_name":    event.Item.Name,
+					}).Debug("Codex CC: Skipping tool item with missing ID or unresolved name")
 					return events
 				}
+				// Resolve and validate the name before replacing the active tool state.
+				closeOpenBlock()
+				s.currentToolID = toolCallID
+				s.currentToolName = toolName
 				s.currentToolArgs.Reset()
 				s.toolInputSent = false
 				// Content block start for tool_use
-				toolUseID := strings.TrimPrefix(s.currentToolID, "call_")
 				logrus.WithFields(logrus.Fields{
-					"tool_id":       toolUseID,
+					"tool_id":       s.currentToolID,
 					"tool_name":     s.currentToolName,
 					"original_name": event.Item.Name,
 					"claude_index":  s.nextClaudeIndex,
@@ -1417,7 +1418,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 					Index: s.nextClaudeIndex,
 					ContentBlock: &ClaudeContentBlock{
 						Type:  "tool_use",
-						ID:    toolUseID,
+						ID:    s.currentToolID,
 						Name:  s.currentToolName,
 						Input: json.RawMessage("{}"),
 					},
@@ -1480,6 +1481,11 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 		}
 
 	case "response.function_call_arguments.delta":
+		if s.skipActiveToolItem {
+			// Ignore argument deltas for a tool item skipped due to an unresolved
+			// name; auto-opening here would emit a fabricated unknown_tool block.
+			return events
+		}
 		// Per AI review: guard delta emission with block state to prevent orphan deltas.
 		// Auto-open tool block if not present when receiving first delta.
 		if event.Delta != "" && s.openBlockType != "tool" {
@@ -1493,7 +1499,6 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 			if toolUseID == "" {
 				toolUseID = "call_" + uuid.New().String()[:8]
 			}
-			toolUseID = strings.TrimPrefix(toolUseID, "call_")
 			toolName := s.currentToolName
 			if toolName == "" {
 				toolName = "unknown_tool"
@@ -1525,21 +1530,26 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 	case "response.function_call_arguments.done":
 		// Function call arguments complete
+		// Pass through verbatim; see codexClaudeToolInput for the contract.
 		if event.Arguments != "" && s.openBlockType == "tool" && !s.toolInputSent {
-			toolName := s.currentToolName
-			if toolName == "" {
-				toolName = "unknown_tool"
-			}
-			appendToolInputDelta(codexToolArgumentsRawMessage(cleanToolCallArguments(toolName, event.Arguments)))
+			appendToolInputDelta(codexToolArgumentsRawMessage(event.Arguments))
 		}
 		logrus.WithField("args_len", s.currentToolArgs.Len()).Debug("Codex CC: Function call arguments done")
 
 	case "response.custom_tool_call_input.delta":
+		if s.skipActiveToolItem {
+			// Ignore input deltas for a tool item skipped due to an unresolved name.
+			return events
+		}
 		if event.Delta != "" {
 			s.currentToolArgs.WriteString(event.Delta)
 		}
 
 	case "response.custom_tool_call_input.done":
+		if s.skipActiveToolItem {
+			// Ignore the completion of a tool item skipped due to an unresolved name.
+			return events
+		}
 		if s.openBlockType == "tool" && !s.toolInputSent {
 			input := event.Input
 			if input == nil {
@@ -1550,16 +1560,16 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 	case "response.output_item.done":
 		if event.Item != nil {
-			switch event.Item.Type {
-			case "message":
+			switch {
+			case event.Item.Type == "message":
 				// Message complete - no action needed, content_part.done handles it
 				logrus.Debug("Codex CC: Message item done")
-			case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
-				// Store completed tool use block
-				toolUseID := event.Item.CallID
-				toolUseID = strings.TrimPrefix(toolUseID, "call_")
+			case isCodexResponseToolCall(*event.Item):
+				// Store completed tool use block. The effective call ID is guaranteed
+				// non-empty by isCodexResponseToolCall, including item.ID fallbacks.
+				// Only the reverse name map lookup can still resolve to an empty name.
 				toolName := codexClaudeToolName(*event.Item, s.reverseToolNameMap)
-				if toolUseID == "" || toolName == "" {
+				if toolName == "" {
 					logrus.WithField("item_type", event.Item.Type).Debug("Codex CC: Skipping completed tool item with missing ID or name")
 					return events
 				}
@@ -1570,7 +1580,7 @@ func (s *codexStreamState) processCodexStreamEvent(event *CodexStreamEvent) []Cl
 
 				s.toolUseBlocks = append(s.toolUseBlocks, ClaudeContentBlock{
 					Type:  "tool_use",
-					ID:    toolUseID,
+					ID:    codexToolCallID(*event.Item),
 					Name:  toolName,
 					Input: inputJSON,
 				})
@@ -2000,15 +2010,12 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 				"timeout_seconds": timeoutDuration.Seconds(),
 			}).Warn("Codex CC: SSE read timeout, upstream did not send data")
 			// Send error event to client
-			// NOTE: Using "api_error" instead of "timeout_error" per Claude API documentation.
-			// Claude's standard error types are: invalid_request_error, authentication_error,
-			// permission_error, not_found_error, request_too_large, rate_limit_error, api_error,
-			// overloaded_error. "timeout_error" is not a standard type, so we use "api_error"
-			// which maps to HTTP 500 for unexpected server-side failures including timeouts.
+			// Anthropic documents timeout_error as HTTP 504. Preserve that protocol
+			// distinction so clients can classify this transient failure correctly.
 			errorEvent := ClaudeStreamEvent{
 				Type: "error",
 				Error: &ClaudeError{
-					Type:    "api_error",
+					Type:    "timeout_error",
 					Message: fmt.Sprintf("Upstream did not respond within %.0f seconds", timeoutDuration.Seconds()),
 				},
 			}

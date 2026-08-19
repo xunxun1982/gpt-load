@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -87,13 +88,14 @@ func TestHandleProxyStandardCodexAffinityDisabledPreservesStateAndRotation(t *te
 }
 
 func TestHandleProxyStandardCodexAffinityFailureStripsEncryptedStateBeforeRetry(t *testing.T) {
-	handler, group, observations := setupRetryingStandardCodexAffinityGroup(t)
+	handler, group, requestCount, observations := setupRetryingStandardCodexAffinityGroup(t)
 	body := []byte(`{
   "model":"gpt-5","include":["reasoning.encrypted_content","web_search_call.results"],
   "input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"cipher"}]
 }`)
 
 	require.Equal(t, http.StatusOK, runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "old-turn", body).Code)
+	require.Equal(t, int32(2), requestCount.Load())
 	first := <-observations
 	second := <-observations
 
@@ -104,6 +106,47 @@ func TestHandleProxyStandardCodexAffinityFailureStripsEncryptedStateBeforeRetry(
 	require.NotContains(t, string(second.body), "reasoning.encrypted_content")
 	require.Contains(t, string(second.body), "web_search_call.results")
 	require.NotEqual(t, first.auth, second.auth)
+}
+
+func TestHandleProxyStandardCodexAffinityPreservesRedirectedModelAcrossRetry(t *testing.T) {
+	handler, group, requestCount, observations := setupRetryingStandardCodexAffinityGroup(t)
+	body := []byte(`{"model":"gpt-source","input":"hello","stream":false}`)
+
+	require.Equal(t, http.StatusOK, runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "", body).Code)
+	require.Equal(t, int32(2), requestCount.Load())
+	first := <-observations
+	second := <-observations
+
+	for _, observation := range []codexAffinityObservation{first, second} {
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(observation.body, &payload))
+		require.Equal(t, "gpt-target", payload["model"])
+	}
+}
+
+func TestHandleProxyStandardCodexAffinityRetriesLeadingEncryptedContentFailure(t *testing.T) {
+	handler, group, requestCount, observations := setupStreamingRetryingStandardCodexAffinityGroup(t)
+	body := []byte(`{
+  "model":"gpt-5","stream":true,"include":["reasoning.encrypted_content"],
+  "input":[{"type":"message","role":"user","content":"hello"},{"type":"reasoning","encrypted_content":"cipher"}]
+}`)
+
+	require.Equal(t, http.StatusOK, runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "old-turn", body).Code)
+	warmup := <-observations
+	require.NotContains(t, string(warmup.body), "reasoning.encrypted_content")
+
+	response := runStandardCodexAffinityRequest(t, handler, group.Name, "proxy-a", "old-turn", body)
+	require.Equal(t, int32(3), requestCount.Load())
+	first := <-observations
+	second := <-observations
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.NotContains(t, response.Body.String(), "response.failed")
+	require.Contains(t, response.Body.String(), "response.completed")
+	require.NotEqual(t, first.auth, second.auth)
+	require.Contains(t, string(first.body), "reasoning.encrypted_content")
+	require.NotContains(t, string(second.body), "reasoning.encrypted_content")
+	require.NotContains(t, string(second.body), `"type":"reasoning"`)
 }
 
 func TestHandleProxyStandardCodexAffinitySeparatesProxyKeys(t *testing.T) {

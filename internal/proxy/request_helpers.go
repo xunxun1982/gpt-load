@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -21,6 +23,13 @@ const (
 	requestLogModelMaxLength       = 255
 	responsesEncryptedReasoning    = "reasoning.encrypted_content"
 )
+
+// promptCacheGatewayProxyIDs lists the built-in gateway proxies whose routes
+// keep the original target host in the path, so prompt-cache capability
+// detection can reuse the runtime gateway base URL. Derived from the channel
+// provider registry to stay synchronized when a built-in gateway is added or
+// removed; runtime base URL changes still take effect immediately.
+var promptCacheGatewayProxyIDs = channel.GatewayProxyProviderIDs()
 
 func setModelRedirectContext(c *gin.Context, originalModel string, targetIdx int, preserveOriginal bool) {
 	if originalModel == "" {
@@ -52,7 +61,7 @@ func applyCodexCompatibleHeaders(req *http.Request, group *models.Group, isStrea
 	return channel.ApplyCodexCompatibleHeaders(req, group, isStream)
 }
 
-func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Group) bool {
+func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Group, retryAvailable bool) bool {
 	if c == nil || c.Request == nil || group == nil {
 		return false
 	}
@@ -62,13 +71,27 @@ func shouldRemoveAcceptEncodingForProxyParsing(c *gin.Context, group *models.Gro
 	if isCCEnabled(c) || isCodexEnabled(c) || isFunctionCallEnabled(c) || isOpenAIResponseForcedStream(c) || codexDegradationMitigationEnabled(c) {
 		return true
 	}
+	if isOpenAIResponsesEndpoint(c.Request.URL.Path) {
+		// Retry classification inspects successful non-stream Responses payloads
+		// before forwarding them. Let net/http transparently decode negotiated gzip.
+		return retryAvailable
+	}
 	return false
 }
 
-func removeAcceptEncodingForProxyParsing(req *http.Request, c *gin.Context, group *models.Group) {
-	if req == nil || !shouldRemoveAcceptEncodingForProxyParsing(c, group) {
+func upstreamResponseMayBeEventStream(c *gin.Context, isStream bool) bool {
+	// retryableStreamProbe inspects every successful streaming response, across
+	// all supported channels and regardless of the remaining retry budget. Keep
+	// compression disabled here so it never receives client-negotiated gzip bytes.
+	return isStream || isOpenAIResponseForcedStream(c) || codexDegradationMitigationEnabled(c)
+}
+
+func removeAcceptEncodingForProxyParsing(req *http.Request, c *gin.Context, group *models.Group, upstreamMayStream, retryAvailable bool) {
+	if req == nil || (!upstreamMayStream && !shouldRemoveAcceptEncodingForProxyParsing(c, group, retryAvailable)) {
 		return
 	}
+	// Retry probes must inspect upstream bytes before anything is sent downstream.
+	// Removing the client encoding request lets net/http transparently decode gzip.
 	req.Header.Del("Accept-Encoding")
 }
 
@@ -150,7 +173,7 @@ func appendUnique(values *[]string, value string) {
 }
 
 func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group) ([]byte, error) {
-	if len(group.ParamOverrides) == 0 || len(bodyBytes) == 0 {
+	if group == nil || len(group.ParamOverrides) == 0 || len(bodyBytes) == 0 {
 		return bodyBytes, nil
 	}
 
@@ -180,6 +203,133 @@ func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group
 	}
 
 	return json.Marshal(requestData)
+}
+
+func filterProtocolConversionRequestBody(bodyBytes []byte, group *models.Group, target, upstreamURL string) ([]byte, error) {
+	if len(bodyBytes) == 0 || !protocolConversionShouldRemovePromptCacheKey(group, target, upstreamURL) {
+		return bodyBytes, nil
+	}
+	// Fast path: skip the full JSON parse when the literal key is absent. The
+	// input here is always the converter's own output (applyForceCodexRequestConversion
+	// runs before filtering and emits the key literally via Go's json.Marshal), so
+	// escaped member names such as "prompt_cache_\u006bey" cannot reach this filter:
+	// the original body is decoded into CodexRequest.PromptCacheKey first and then
+	// re-emitted verbatim. Removing this fast path would force a full parse and
+	// re-serialize (reordering keys) on every /codex conversion in the hot path.
+	if !bytes.Contains(bodyBytes, []byte(`"prompt_cache_key"`)) {
+		return bodyBytes, nil
+	}
+
+	var requestData map[string]any
+	if err := utils.UnmarshalJSONUseNumber(bodyBytes, &requestData); err != nil {
+		logrus.WithError(err).Warn("protocol conversion filter: unparsable body, passing through")
+		return bodyBytes, nil
+	}
+	if _, exists := requestData["prompt_cache_key"]; !exists {
+		return bodyBytes, nil
+	}
+	delete(requestData, "prompt_cache_key")
+	upstreamHost := ""
+	if parsed, err := url.Parse(strings.TrimSpace(upstreamURL)); err == nil {
+		upstreamHost = parsed.Hostname()
+	}
+	logrus.WithFields(logrus.Fields{
+		"target":        target,
+		"upstream_host": upstreamHost,
+	}).Debug("protocol conversion filter: removed unsupported prompt_cache_key")
+	return json.Marshal(requestData)
+}
+
+// protocolConversionShouldRemovePromptCacheKey decides whether prompt_cache_key
+// must be removed for the given conversion target. For the OpenAI Chat target,
+// the group option "prompt_cache_routing" overrides automatic detection:
+//
+//	"enabled"/"enable"/"true"/"1"/"yes"/"on"  keep the key regardless of upstream
+//	"disabled"/"disable"/"false"/"0"/"no"/"off" remove the key regardless of upstream
+//	any other value falls back to upstream capability detection
+//
+// The option is read case-insensitively via getGroupConfigString.
+func protocolConversionShouldRemovePromptCacheKey(group *models.Group, target, upstreamURL string) bool {
+	if target == codexUpstreamClaude {
+		return true
+	}
+	if target != codexUpstreamOpenAIChat {
+		return false
+	}
+	if group != nil {
+		switch strings.ToLower(getGroupConfigString(group, "prompt_cache_routing")) {
+		case "enabled", "enable", "true", "1", "yes", "on":
+			return false
+		case "disabled", "disable", "false", "0", "no", "off":
+			return true
+		}
+	}
+	return !convertedChatUpstreamSupportsPromptCacheKey(upstreamURL)
+}
+
+func convertedChatUpstreamSupportsPromptCacheKey(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	path := strings.ToLower(parsed.EscapedPath())
+	if host == "api.openai.com" {
+		return true
+	}
+	if host == "api.kimi.com" && (path == "/coding" || strings.HasPrefix(path, "/coding/")) {
+		return true
+	}
+	// Built-in gateway URLs encode the original target host in the path. Keep
+	// the same conservative capability decision when such a route is selected.
+	for _, gatewayProxyID := range promptCacheGatewayProxyIDs {
+		gatewayURL, ok := channel.GatewayProxyBaseURLParsed(gatewayProxyID)
+		if !ok || !sameURLOrigin(parsed, &gatewayURL) {
+			continue
+		}
+		// The path prefix comes from the channel provider registry so the
+		// route shape cannot drift from gatewayProxyProviders; an unknown
+		// prefix fails safe (no capability claim).
+		openaiPrefix := channel.GatewayProxyPathPrefix(gatewayProxyID, "openai")
+		if gatewayPathTargets(path, gatewayURL.EscapedPath(), openaiPrefix, "api.openai.com") ||
+			gatewayPathTargets(path, gatewayURL.EscapedPath(), openaiPrefix, "api.kimi.com/coding") {
+			return true
+		}
+	}
+	return false
+}
+
+func sameURLOrigin(a, b *url.URL) bool {
+	return a != nil && b != nil && strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
+func gatewayPathTargets(path, basePath, prefix, target string) bool {
+	if prefix == "" {
+		return false
+	}
+	marker := strings.TrimRight(strings.ToLower(basePath), "/") + "/" + prefix + "/" + target
+	return path == marker || strings.HasPrefix(path, marker+"/")
+}
+
+func protocolConversionTarget(c *gin.Context, group *models.Group) string {
+	if c == nil || group == nil {
+		return ""
+	}
+	if isOpenAIResponseCCMode(c) {
+		return codexUpstreamResponses
+	}
+	if isCCEnabled(c) {
+		if group.ChannelType == "openai" {
+			return codexUpstreamOpenAIChat
+		}
+		if group.ChannelType == "openai-response" {
+			return codexUpstreamResponses
+		}
+	}
+	if isCodexEnabled(c) {
+		return getCodexUpstreamFormat(c)
+	}
+	return ""
 }
 
 // applyParallelToolCallsConfig applies the parallel_tool_calls configuration to the request.

@@ -99,14 +99,30 @@ func retryAfterRateLimitPressureFromHeader(header string, now time.Time) int64 {
 }
 
 func setRateLimitPressureContextForAttempt(c *gin.Context, resp *http.Response, now time.Time) {
+	if c == nil {
+		return
+	}
 	if c.Keys != nil {
 		delete(c.Keys, ctxKeyRateLimitPressure)
-		delete(c.Keys, "response_body")
 	}
 	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
 		return
 	}
 	c.Set(ctxKeyRateLimitPressure, retryAfterRateLimitPressureFromHeader(resp.Header.Get("Retry-After"), now))
+}
+
+// clearAttemptResponseContext removes response state owned by the previous
+// upstream attempt before any selection or request-building failure can log it.
+func clearAttemptResponseContext(c *gin.Context) {
+	if c == nil || c.Keys == nil {
+		return
+	}
+	delete(c.Keys, ctxKeyRateLimitPressure)
+	delete(c.Keys, "response_body")
+	delete(c.Keys, ctxKeyUpstreamLogicalStatusCode)
+	delete(c.Keys, ctxKeyUpstreamLogicalErrorMessage)
+	delete(c.Keys, ctxKeyResponsesStatusUnverified)
+	delete(c.Keys, ctxKeyResponseProcessingFailed)
 }
 
 func retryDelayForAttempt(cfg types.SystemSettings, retryCount int) time.Duration {
@@ -204,92 +220,6 @@ func isAggregateSubGroupFinal(c *gin.Context) bool {
 	}
 	enabled, _ := value.(bool)
 	return enabled
-}
-
-func codexAggregateAffinityKey(c *gin.Context, group *models.Group, bodyBytes []byte) string {
-	if value := codexAggregateAffinityThreadHeaderKey(c, group); value != "" {
-		return value
-	}
-
-	var payload map[string]any
-	err := json.Unmarshal(bodyBytes, &payload)
-	return codexAggregateAffinityKeyFromPayload(c, group, payload, err == nil)
-}
-
-func codexAggregateAffinityThreadHeaderKey(c *gin.Context, group *models.Group) string {
-	if !codexAggregateAffinityEnabled(c, group) {
-		return ""
-	}
-	// A Codex session can contain multiple project threads, so prefer the per-thread identity.
-	return firstNonEmptyHeader(c, "Thread-Id")
-}
-
-func codexAggregateAffinityFallbackHeaderKey(c *gin.Context, group *models.Group) string {
-	if !codexAggregateAffinityEnabled(c, group) {
-		return ""
-	}
-	if value := firstNonEmptyHeader(c, "Session-Id", "X-Client-Request-Id"); value != "" {
-		return value
-	}
-	if value := firstNonEmptyHeader(c, "Session_ID", "session_id"); value != "" {
-		return value
-	}
-	if value := firstNonEmptyHeader(c, "X-Session-ID", "x-session-id"); value != "" {
-		return value
-	}
-	return firstNonEmptyHeader(c, "Conversation_ID", "conversation_id")
-}
-
-func codexAggregateAffinityEnabled(c *gin.Context, group *models.Group) bool {
-	return c != nil && c.Request != nil && group != nil &&
-		c.Request.Method == http.MethodPost &&
-		isOpenAIResponsesEndpoint(c.Request.URL.Path) &&
-		group.GroupType == "aggregate" &&
-		group.ChannelType == "openai-response" &&
-		getGroupConfigBool(group, "codex_affinity_enabled")
-}
-
-func codexAggregateAffinityKeyFromPayload(c *gin.Context, group *models.Group, payload map[string]any, payloadOK bool) string {
-	if !codexAggregateAffinityEnabled(c, group) {
-		return ""
-	}
-	if value := codexAggregateAffinityThreadHeaderKey(c, group); value != "" {
-		return value
-	}
-
-	metadata, hasMetadata := payload["client_metadata"].(map[string]any)
-	if payloadOK && hasMetadata {
-		if value := stringFromJSONMap(metadata, "thread_id"); value != "" {
-			return value
-		}
-	}
-	if value := codexAggregateAffinityFallbackHeaderKey(c, group); value != "" {
-		return value
-	}
-	if !payloadOK {
-		return ""
-	}
-	if hasMetadata {
-		if value := stringFromJSONMap(metadata, "session_id"); value != "" {
-			return value
-		}
-		if value := stringFromJSONMap(metadata, "x-codex-window-id"); value != "" {
-			return value
-		}
-		if value := codexTurnMetadataAffinityKey(stringFromJSONMap(metadata, "x-codex-turn-metadata")); value != "" {
-			return value
-		}
-	}
-	if value := codexTurnMetadataAffinityKey(firstNonEmptyHeader(c, "X-Codex-Turn-Metadata")); value != "" {
-		return value
-	}
-	if value := firstNonEmptyHeader(c, "X-Codex-Window-Id", "x-codex-window-id"); value != "" {
-		return value
-	}
-	if value := stringFromJSONMap(payload, "prompt_cache_key"); value != "" {
-		return value
-	}
-	return ""
 }
 
 func codexTurnMetadataAffinityKey(raw string) string {
@@ -474,6 +404,14 @@ func logicalStatusFromContext(c *gin.Context) (int, string, bool) {
 	return statusCode, strings.TrimSpace(messageStr), true
 }
 
+func isCodexEncryptedContentFailure(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "encrypted content") &&
+		(strings.Contains(message, "could not be verified") ||
+			strings.Contains(message, "could not be decrypted") ||
+			strings.Contains(message, "could not be parsed"))
+}
+
 func effectiveNonStreamRequestContext(parent context.Context, cfg types.SystemSettings) (context.Context, context.CancelFunc) {
 	if cfg.NonStreamRequestTimeout > 0 {
 		return context.WithTimeout(parent, time.Duration(cfg.NonStreamRequestTimeout)*time.Second)
@@ -517,6 +455,7 @@ type retryContext struct {
 	attemptCount                   int           // Current attempt count (aggregate-level sub-group switches)
 	originalBodyBytes              []byte        // Original request body (before any sub-group mapping)
 	originalPath                   string        // Original request path (for CC support restoration)
+	originalRawQuery               string        // Original request query (for per-sub-group protocol handling)
 	subGroupKeyRetryMap            map[uint]int  // Tracks key retry count for each sub-group (sub-group ID -> retry count)
 	forcedSubGroupID               uint          // Keeps key-level retries on the selected sub-group until its retry budget is exhausted
 	codexAffinityKey               string        // Stable Codex affinity key for this aggregate request
@@ -622,17 +561,19 @@ func safeProxyURL(proxyURL *string) string {
 	return parsedURL.String()
 }
 
-// restoreOriginalPath restores the original request path for retry attempts.
+// restoreOriginalPath restores the original request path and query for retry attempts.
 // This is used by aggregate retry logic to ensure each sub-group can apply its
 // own CC support and path rewriting without inheriting state from previous
 // attempts.
 func restoreOriginalPath(c *gin.Context, retryCtx *retryContext) {
-	if retryCtx == nil {
+	if c == nil || c.Request == nil || c.Request.URL == nil || retryCtx == nil {
 		return
 	}
 	if retryCtx.originalPath != "" && c.Request.URL.Path != retryCtx.originalPath {
 		c.Request.URL.Path = retryCtx.originalPath
 	}
+	// An empty captured query is meaningful and must clear query state from a prior attempt.
+	c.Request.URL.RawQuery = retryCtx.originalRawQuery
 }
 
 // clearForceProtocolContext prevents one aggregate sub-group attempt from
@@ -651,6 +592,7 @@ func clearForceProtocolContext(c *gin.Context) {
 	delete(c.Keys, ctxKeyCodexToolContext)
 	delete(c.Keys, ctxKeyFunctionCallEnabled)
 	delete(c.Keys, ctxKeyTriggerSignal)
+	delete(c.Keys, "thinking_model_applied")
 	delete(c.Keys, "cc_was_claude_path")
 	delete(c.Keys, "codex_was_codex_path")
 }
@@ -848,6 +790,10 @@ func subGroupKeyMaxRetries(subGroupCfg types.SystemSettings, parentSubMaxRetries
 	return maxRetries
 }
 
+func retryBudgetAvailable(configuredRetryLeft, affinityAttempt bool, affinityAttemptCount, affinityMaxAttempts int) bool {
+	return configuredRetryLeft || (affinityAttempt && affinityAttemptCount < affinityMaxAttempts)
+}
+
 // isForceFunctionCallEnabled checks whether the force_function_call flag is enabled
 // for the given group. The middleware is limited to known non-Gemini tool schemas
 // and is stored in the group-level JSON config rather than global system settings.
@@ -982,6 +928,22 @@ func isOpenAIResponsesCodexEndpoint(path string) bool {
 		strings.HasSuffix(path, "/v1/responses/compact")
 }
 
+// shouldDeferParamOverridesForProtocolConversion keeps channel overrides on the
+// final upstream protocol when a forced Claude/Codex request will be converted.
+func shouldDeferParamOverridesForProtocolConversion(group *models.Group, ccConversion, codexConversion bool) bool {
+	if group == nil {
+		return false
+	}
+	return (ccConversion && isCCSupportEnabled(group)) ||
+		(codexConversion && isCodexSupportEnabled(group))
+}
+
+func aggregateClaudeConversionExpected(wasClaudePath bool, aggregateChannelType string, isMessagesEndpoint bool) bool {
+	// wasClaudePath is captured before rewriting /claude/v1; forced Claude paths
+	// remain conversion candidates until the post-rewrite endpoint check.
+	return wasClaudePath || (aggregateChannelType == "anthropic" && isMessagesEndpoint)
+}
+
 func rewriteCodexResponsesPathToUpstream(path, upstreamPath string) string {
 	if strings.HasSuffix(path, "/v1/responses/compact") {
 		return strings.TrimSuffix(path, "/v1/responses/compact") + upstreamPath
@@ -1041,7 +1003,7 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 
 	path := c.Request.URL.Path
 	// Path is already rewritten from /claude/v1/messages/count_tokens.
-	if !strings.HasSuffix(path, "/v1/messages/count_tokens") {
+	if !isClaudeCountTokensEndpoint(path) {
 		return false
 	}
 
@@ -1068,6 +1030,10 @@ func (ps *ProxyServer) handleTokenCount(c *gin.Context, group *models.Group, bod
 	// Claude /v1/messages/count_tokens returns only input_tokens.
 	c.JSON(http.StatusOK, gin.H{"input_tokens": adjustedTokens})
 	return true
+}
+
+func isClaudeCountTokensEndpoint(path string) bool {
+	return strings.HasSuffix(path, "/v1/messages/count_tokens")
 }
 
 // handleEventLoggingBatch handles Claude Code event logging batch endpoint.
@@ -1266,6 +1232,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 			excludedSubGroups:   make(map[uint]bool, len(originalGroup.SubGroups)),
 			attemptCount:        0,
 			originalPath:        c.Request.URL.Path, // Save original path for retry restoration
+			originalRawQuery:    c.Request.URL.RawQuery,
 			subGroupKeyRetryMap: make(map[uint]int, len(originalGroup.SubGroups)),
 		}
 	}
@@ -1312,6 +1279,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		retryCtx = &retryContext{
 			originalBodyBytes: bodyBytes,
 			originalPath:      c.Request.URL.Path,
+			originalRawQuery:  c.Request.URL.RawQuery,
 		}
 		bodyBytes, err = ps.prepareStandardCodexAffinity(c, channelHandler, originalGroup, bodyBytes, retryCtx)
 		if err != nil {
@@ -1372,7 +1340,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 	// Handle CC support path rewriting for all requests (including GET)
 	// This must happen before body processing to ensure correct path for upstream
 	wasClaudePath := isClaudePath(c.Request.URL.Path, group.Name)
-	if isCCSupportEnabled(group) && wasClaudePath {
+	if isClaudeEndpointSupported(group) && wasClaudePath {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
 
@@ -1380,7 +1348,9 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 		// Sanitize query parameters for CC support (e.g., remove beta=true)
 		// These are Claude-specific and should not be passed to OpenAI-style upstreams
-		sanitizeCCQueryParams(c.Request.URL)
+		if isCCSupportEnabled(group) {
+			sanitizeCCQueryParams(c.Request.URL)
+		}
 		c.Set("cc_was_claude_path", true)
 		logrus.WithFields(logrus.Fields{
 			"group":           group.Name,
@@ -1424,10 +1394,18 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 				c.Set("original_model", originalModel)
 			}
 
-			finalBodyBytes, err = ps.applyParamOverrides(bodyBytesAfterMapping, group)
-			if err != nil {
-				response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides: %v", err)))
-				return
+			ccConversionExpected := isCCSupportEnabled(group) && wasClaudePath && strings.HasSuffix(c.Request.URL.Path, "/v1/messages")
+			codexConversionExpected := isCodexSupportEnabled(group) && wasCodexPath && isOpenAIResponsesCodexEndpoint(c.Request.URL.Path)
+			deferParamOverrides := shouldDeferParamOverridesForProtocolConversion(group, ccConversionExpected, codexConversionExpected) &&
+				!isClaudeCountTokensEndpoint(c.Request.URL.Path)
+			finalBodyBytes = bodyBytesAfterMapping
+			if !deferParamOverrides {
+				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+				if err != nil {
+					response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides: %v", err)))
+					ps.logEarlyError(c, group, startTime, http.StatusInternalServerError, err)
+					return
+				}
 			}
 
 			// Handle Claude count_tokens endpoint (CC only).
@@ -1456,13 +1434,6 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 						return
 					} else if converted {
 						finalBodyBytes = convertedBody
-						// Re-apply param overrides after CC conversion to allow overriding
-						// converted parameters (e.g., reasoning.effort for OpenAI Responses API).
-						// This enables users to force specific values like {"reasoning": {"effort": "xhigh"}}.
-						finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-						if err != nil {
-							logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI Responses CC conversion")
-						}
 						// Rewrite path from /v1/messages to /v1/responses for OpenAI Responses
 						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/responses", 1)
 						logrus.WithFields(logrus.Fields{
@@ -1483,12 +1454,6 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 						return
 					} else if converted {
 						finalBodyBytes = convertedBody
-						// Re-apply param overrides after CC conversion to allow overriding
-						// converted parameters (e.g., reasoning_effort for OpenAI API).
-						finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-						if err != nil {
-							logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI CC conversion")
-						}
 						// Rewrite path from /v1/messages to /v1/chat/completions
 						c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
 						logrus.WithFields(logrus.Fields{
@@ -1516,10 +1481,6 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 					return
 				} else if converted {
 					finalBodyBytes = convertedBody
-					finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-					if err != nil {
-						logrus.WithError(err).Warn("Failed to re-apply param overrides after Codex conversion")
-					}
 					switch group.ChannelType {
 					case "openai":
 						c.Request.URL.Path = rewriteCodexResponsesPathToUpstream(c.Request.URL.Path, "/v1/chat/completions")
@@ -1531,6 +1492,15 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 						"channel_type": group.ChannelType,
 						"new_path":     c.Request.URL.Path,
 					}).Debug("Force Codex: converted Responses request to upstream format")
+				}
+			}
+
+			if deferParamOverrides {
+				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
+				if err != nil {
+					response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides after protocol conversion: %v", err)))
+					ps.logEarlyError(c, group, startTime, http.StatusInternalServerError, err)
+					return
 				}
 			}
 
@@ -1788,6 +1758,9 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	retryCtx *retryContext,
 ) {
 	cfg := group.EffectiveConfig
+	// Lifecycle time remains request-wide; log duration is intentionally per upstream attempt.
+	attemptStartTime := time.Now()
+	clearAttemptResponseContext(c)
 
 	// Store group in context for response handlers to access
 	c.Set("group", group)
@@ -1809,12 +1782,12 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	if err != nil {
 		statusCode, apiErr := mapCodexSelectionError(err, apiKey, retryCtx != nil && retryCtx.codexAffinityEnabled)
 		response.Error(c, apiErr)
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(err), isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(err), isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
 	if upstreamSelection == nil || upstreamSelection.URL == "" {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to select upstream: empty result"))
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, errors.New("failed to select upstream: empty result"), isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, errors.New("failed to select upstream: empty result"), isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
 
@@ -1822,7 +1795,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	if err != nil {
 		logrus.Errorf("Failed to create upstream request: %v", err)
 		response.Error(c, app_errors.ErrInternalServer)
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, fmt.Errorf("failed to create request: %v", err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, fmt.Errorf("failed to create request: %v", err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
 	req.ContentLength = int64(len(bodyBytes))
@@ -1841,12 +1814,13 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	finalBodyBytes := bodyBytes
 	var originalModel string
 	var targetIdx int = -1
-	if !isCCEnabled(c) {
+	_, modelRedirectAlreadyApplied := c.Get(ctxKeyModelRedirectSourceModel)
+	if !isCCEnabled(c) && !modelRedirectAlreadyApplied {
 		var err error
 		finalBodyBytes, originalModel, targetIdx, err = channelHandler.ApplyModelRedirectWithIndex(req, bodyBytes, group)
 		if err != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusBadRequest, err, isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
 			return
 		}
 
@@ -1892,7 +1866,49 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		req.Header.Set("Connection", "Keep-Alive")
 	}
 
-	removeAcceptEncodingForProxyParsing(req, c, group)
+	// bodyBytes is kept unfiltered so a retry re-evaluates the selected
+	// upstream's capabilities; loggedBody mirrors the payload actually sent
+	// so request logs reflect the filtered body when filtering rewrote it.
+	loggedBody := bodyBytes
+	// Apply protocol-specific compatibility filtering only to this dispatch
+	// attempt. Keep bodyBytes unchanged so a retry can re-evaluate the selected
+	// upstream's capabilities.
+	if target := protocolConversionTarget(c, group); target == codexUpstreamOpenAIChat || target == codexUpstreamClaude {
+		upstreamURL := upstreamSelection.TargetURL
+		if upstreamURL == "" {
+			upstreamURL = upstreamSelection.URL
+		}
+		filteredBody, filterErr := filterProtocolConversionRequestBody(bodyBytes, group, target, upstreamURL)
+		if filterErr != nil {
+			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, fmt.Errorf("failed to apply protocol compatibility: %v", filterErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply protocol compatibility: %v", filterErr)))
+			return
+		}
+		if !bytes.Equal(filteredBody, bodyBytes) {
+			req.Body = io.NopCloser(bytes.NewReader(filteredBody))
+			req.ContentLength = int64(len(filteredBody))
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(filteredBody)), nil
+			}
+			loggedBody = filteredBody
+		}
+	}
+
+	upstreamMayStream := upstreamResponseMayBeEventStream(c, isStream)
+	affinityAttempt := retryCtx != nil && retryCtx.codexAffinityUsingCached
+	affinityAttemptCount := 0
+	affinityMaxAttempts := 0
+	if affinityAttempt {
+		affinityAttemptCount = retryCtx.codexAffinityAttemptCount + 1
+		affinityMaxAttempts = parseCodexAffinityMaxAttempts(group.Config)
+	}
+	retryAvailable := retryBudgetAvailable(
+		retryCount < cfg.MaxRetries,
+		affinityAttempt,
+		affinityAttemptCount,
+		affinityMaxAttempts,
+	)
+	removeAcceptEncodingForProxyParsing(req, c, group, upstreamMayStream, retryAvailable)
 	setUpstreamUserAgentForLog(c, group, req)
 
 	// Use the upstream-specific client (with its dedicated proxy configuration)
@@ -1908,7 +1924,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	if client == nil {
 		logrus.Errorf("CRITICAL: upstreamSelection returned nil client for group %s, upstream %s", group.Name, utils.SanitizeRequestURLForLog(upstreamSelection.URL))
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Internal error: nil HTTP client"))
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, errors.New("nil HTTP client"), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, errors.New("nil HTTP client"), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeFinal)
 		return
 	}
 
@@ -1924,7 +1940,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	}
 
 	removeCodexTurnStateBeforeSend(req, retryCtx != nil && (retryCtx.codexIdentityChanged || retryCtx.codexStateResetRequired))
-	isCodexAffinityAttempt := retryCtx != nil && retryCtx.codexAffinityUsingCached
+	isCodexAffinityAttempt := affinityAttempt
 	if isCodexAffinityAttempt {
 		retryCtx.codexAffinityAttemptCount++
 	}
@@ -1933,12 +1949,29 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		defer resp.Body.Close()
 	}
 	setRateLimitPressureContextForAttempt(c, resp, time.Now())
+	var logicalError string
+	var permanentLogicalFailure bool
+	retryStatusCode := 0
+	if resp != nil {
+		retryStatusCode = resp.StatusCode
+	}
+	// Inspect the actual upstream media type: Responses requests may be forced to
+	// stream upstream even when the downstream client requested a normal response.
+	if err == nil && resp != nil {
+		probe := retryableResponseProbeResult(c, resp, retryAvailable)
+		if probe.failed {
+			retryStatusCode = probe.statusCode
+			logicalError = probe.errorMessage
+			permanentLogicalFailure = isPermanentLogicalFailure(probe.errorCode)
+			setLogicalFailureProbeContext(c, probe)
+		}
+	}
 
 	// Unified error handling for retries.
-	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
+	if err != nil || (resp != nil && shouldFailoverOnStatusCode(retryStatusCode, group) && !permanentLogicalFailure) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeFinal)
 			return
 		}
 
@@ -1953,7 +1986,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 			logrus.Debugf("Request failed (attempt %d/%d) for key %s: %s", retryCount+1, cfg.MaxRetries, utils.MaskAPIKey(apiKey.KeyValue), internalError)
 		} else {
 			// HTTP-level error (status >= 400)
-			statusCode = resp.StatusCode
+			statusCode = retryStatusCode
 			// Limit error body read to a fixed size to prevent memory exhaustion
 			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 			if readErr != nil {
@@ -1975,6 +2008,9 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 			}
 
 			parsedError = app_errors.ParseUpstreamError(errorBody)
+			if logicalError != "" {
+				parsedError = logicalError
+			}
 			internalError = sanitizeInternalErrorMessage(parsedError)
 			logrus.Debugf("Request failed with status %d (attempt %d/%d) for key %s. Parsed Error: %s", statusCode, retryCount+1, cfg.MaxRetries, utils.MaskAPIKey(apiKey.KeyValue), internalError)
 		}
@@ -1984,13 +2020,19 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		if isCodexAffinityAttempt {
 			maxAttempts := parseCodexAffinityMaxAttempts(group.Config)
 			if retryCtx.codexAffinityAttemptCount < maxAttempts {
-				ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(internalError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeRetry)
+				if isCodexEncryptedContentFailure(internalError) {
+					// The ciphertext is scoped to the prior state domain. Retry within the
+					// affinity budget, but send a clean request instead of replaying it.
+					ps.degradeCodexAffinity(retryCtx)
+				}
+				ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, errors.New(internalError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeRetry)
 				if !waitBeforeRetry(lifecycleCtx, retryDelayForAttempt(cfg, retryCtx.codexAffinityAttemptCount-1)) {
 					statusCode, ctxErr := retryLifecycleErrorStatus(lifecycleCtx)
-					ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+					ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeFinal)
 					writeRetryLifecycleError(c, statusCode, ctxErr)
 					return
 				}
+				// Keep the current body: model redirect and request sanitization were already applied.
 				ps.executeRequestWithRetryLifecycle(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount, lifecycleCtx, retryCtx)
 				return
 			}
@@ -2004,7 +2046,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 			requestType = models.RequestTypeFinal
 		}
 
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(internalError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, requestType)
+		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, errors.New(internalError), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, requestType)
 
 		// If this is the last attempt, return error directly without recursion
 		if isLastAttempt {
@@ -2020,7 +2062,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 
 		if !waitBeforeRetry(lifecycleCtx, retryDelayForAttempt(cfg, retryCount)) {
 			statusCode, ctxErr := retryLifecycleErrorStatus(lifecycleCtx)
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeFinal)
 			writeRetryLifecycleError(c, statusCode, ctxErr)
 			return
 		}
@@ -2028,6 +2070,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		if retryCtx != nil && retryCtx.codexAffinityEnabled {
 			ps.degradeCodexAffinity(retryCtx)
 		}
+		// Keep the current body so a retry cannot fall back to the pre-redirect model.
 		ps.executeRequestWithRetryLifecycle(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount+1, lifecycleCtx, retryCtx)
 		return
 	}
@@ -2114,7 +2157,7 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 		}
 	}
 
-	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, bodyBytes, models.RequestTypeFinal)
+	ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, channelHandler, loggedBody, models.RequestTypeFinal)
 	ps.bindCodexAffinityIfSuccessful(c, resp.StatusCode, retryCtx)
 }
 
@@ -2129,6 +2172,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	startTime time.Time,
 	retryCtx *retryContext,
 ) {
+	attemptStartTime := time.Now()
+	clearAttemptResponseContext(c)
 	// The parent aggregate handler can be nil; all sub-group request operations
 	// must use the subGroupChannelHandler selected below.
 	// Restore original path for retry attempts to allow each sub-group to apply its own CC support
@@ -2240,6 +2285,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}
 		}
 		if subGroupID == 0 {
+			// A cache miss, including a new thread, intentionally falls back to
+			// health-weighted selection; the previously bound subgroup is not
+			// excluded because it may still be the healthiest valid choice.
 			subGroupName, subGroupID, err = ps.subGroupManager.SelectSubGroupWithRetry(originalGroup, retryCtx.excludedSubGroups)
 		}
 		if err != nil {
@@ -2311,6 +2359,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Store current sub-group ID for failure handling
 	c.Set("current_sub_group_id", subGroupID)
 	clearModelRedirectContext(c)
+	// Capture the original aggregate path before any sub-group rewrite.
+	wasClaudePath := isClaudePath(c.Request.URL.Path, originalGroup.Name)
+	wasCodexPath := isCodexPath(c.Request.URL.Path, originalGroup.Name)
 
 	// Apply model mapping for the selected sub-group
 	finalBodyBytes, originalModel := ps.applyModelMapping(bodyBytes, group)
@@ -2318,14 +2369,31 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		c.Set("original_model", originalModel)
 	}
 
-	// Apply parameter overrides for the selected sub-group
-	finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-	if err != nil {
-		logrus.WithError(err).WithFields(logrus.Fields{
-			"aggregate_group": originalGroup.Name,
-			"sub_group":       group.Name,
-		}).Warn("Failed to apply parameter overrides for sub-group, using original body")
-		finalBodyBytes = bodyBytes
+	ccConversionExpected := isCCSupportEnabled(group) && aggregateClaudeConversionExpected(
+		wasClaudePath,
+		originalGroup.ChannelType,
+		strings.HasSuffix(c.Request.URL.Path, "/v1/messages"),
+	)
+	codexConversionExpected := isCodexSupportEnabled(group) &&
+		(wasCodexPath || originalGroup.ChannelType == "openai-response") &&
+		isOpenAIResponsesCodexEndpoint(rewriteCodexPathToOpenAIGeneric(c.Request.URL.Path))
+	deferParamOverrides := shouldDeferParamOverridesForProtocolConversion(group, ccConversionExpected, codexConversionExpected) &&
+		!isClaudeCountTokensEndpoint(c.Request.URL.Path)
+	if !deferParamOverrides {
+		overriddenBody, overrideErr := ps.applyParamOverrides(finalBodyBytes, group)
+		if overrideErr != nil {
+			// Intentional divergence from the standard path (which fails fast):
+			// an aggregate request must not fail entirely because one sub-group
+			// could not apply overrides - the already-mapped body is a valid
+			// request and other sub-groups may still succeed. Behavior is locked
+			// by TestExecuteRequestWithAggregateRetryKeepsMappedBodyWhenParamOverridesFail.
+			logrus.WithError(overrideErr).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to apply parameter overrides for sub-group, keeping mapped body")
+		} else {
+			finalBodyBytes = overriddenBody
+		}
 	}
 
 	// Handle Claude count_tokens endpoint for aggregate sub-group (CC only).
@@ -2345,14 +2413,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	c.Set(ctxKeyCCEnabled, false)
 	c.Set(ctxKeyCodexEnabled, false)
 	c.Set(ctxKeyCodexUpstreamFormat, "")
-	// Use originalGroup.Name for path check since request path is /proxy/{aggregate_group}/claude/v1/...
-	wasClaudePath := isClaudePath(c.Request.URL.Path, originalGroup.Name)
-	wasCodexPath := isCodexPath(c.Request.URL.Path, originalGroup.Name)
+	// Use the captured original path booleans for this sub-group.
 
 	// Handle CC support path rewriting for sub-groups
 	// This rewrites /claude/ paths to standard OpenAI paths. For groups named "claude",
 	// OpenAI-style paths like /proxy/claude/v1/messages are not treated as CC paths.
-	if isCCSupportEnabled(group) && wasClaudePath {
+	if isClaudeEndpointSupported(group) && wasClaudePath {
 		originalPath := c.Request.URL.Path
 		originalQuery := c.Request.URL.RawQuery
 
@@ -2360,7 +2426,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 		// Sanitize query parameters for CC support (e.g., remove beta=true)
 		// These are Claude-specific and should not be passed to OpenAI-style upstreams
-		sanitizeCCQueryParams(c.Request.URL)
+		if isCCSupportEnabled(group) {
+			sanitizeCCQueryParams(c.Request.URL)
+		}
 		c.Set("cc_was_claude_path", true)
 		logrus.WithFields(logrus.Fields{
 			"aggregate_group": originalGroup.Name,
@@ -2390,8 +2458,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	// Clear any stale OpenAI Responses CC state from previous sub-group attempts.
 	c.Set(ctxKeyOpenAIResponseCC, false)
 	isMessagesEndpoint := strings.HasSuffix(c.Request.URL.Path, "/v1/messages")
-	shouldConvertCCForSubGroup := isCCSupportEnabled(group) && isMessagesEndpoint &&
-		(wasClaudePath || originalGroup.ChannelType == "anthropic")
+	shouldConvertCCForSubGroup := isCCSupportEnabled(group) && isMessagesEndpoint && aggregateClaudeConversionExpected(
+		wasClaudePath,
+		originalGroup.ChannelType,
+		isMessagesEndpoint,
+	)
 	if shouldConvertCCForSubGroup {
 		// Handle channel-specific CC support conversions
 		switch group.ChannelType {
@@ -2443,12 +2514,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				logrus.WithFields(outFields).Debug("OpenAI Responses CC: Conversion completed for aggregate sub-group")
 
 				finalBodyBytes = convertedBody
-				// Re-apply param overrides after CC conversion to allow overriding
-				// converted parameters (e.g., reasoning.effort for OpenAI Responses API).
-				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-				if err != nil {
-					logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI Responses CC conversion for sub-group")
-				}
 				// Rewrite path from /v1/messages to /v1/responses for OpenAI Responses
 				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/responses", 1)
 				logrus.WithFields(logrus.Fields{
@@ -2473,12 +2538,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				return
 			} else if converted {
 				finalBodyBytes = convertedBody
-				// Re-apply param overrides after CC conversion to allow overriding
-				// converted parameters (e.g., reasoning_effort for OpenAI API).
-				finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-				if err != nil {
-					logrus.WithError(err).Warn("Failed to re-apply param overrides after OpenAI CC conversion for sub-group")
-				}
 				// Rewrite path from /v1/messages to /v1/chat/completions
 				c.Request.URL.Path = strings.Replace(c.Request.URL.Path, "/v1/messages", "/v1/chat/completions", 1)
 				logrus.WithFields(logrus.Fields{
@@ -2510,10 +2569,6 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			return
 		} else if converted {
 			finalBodyBytes = convertedBody
-			finalBodyBytes, err = ps.applyParamOverrides(finalBodyBytes, group)
-			if err != nil {
-				logrus.WithError(err).Warn("Failed to re-apply param overrides after Codex conversion for sub-group")
-			}
 			switch group.ChannelType {
 			case "openai":
 				c.Request.URL.Path = rewriteCodexResponsesPathToUpstream(c.Request.URL.Path, "/v1/chat/completions")
@@ -2526,6 +2581,21 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				"channel_type":    group.ChannelType,
 				"new_path":        c.Request.URL.Path,
 			}).Debug("Force Codex: converted Responses request for sub-group")
+		}
+	}
+
+	if deferParamOverrides {
+		overriddenBody, overrideErr := ps.applyParamOverrides(finalBodyBytes, group)
+		if overrideErr != nil {
+			// Same intentional divergence as the non-deferred branch above: keep
+			// the protocol-converted body so this sub-group attempt still runs.
+			// Locked by TestExecuteRequestWithAggregateRetryKeepsConvertedBodyWhenDeferredParamOverridesFail.
+			logrus.WithError(overrideErr).WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"sub_group":       group.Name,
+			}).Warn("Failed to apply parameter overrides after protocol conversion for sub-group")
+		} else {
+			finalBodyBytes = overriddenBody
 		}
 	}
 
@@ -2669,7 +2739,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				if err != nil {
 					statusCode, apiErr := mapCodexSelectionError(err, apiKey, true)
 					response.Error(c, apiErr)
-					ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(err), isStream, "", nil, "", subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+					ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(err), isStream, "", nil, "", subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 					return
 				}
 			}
@@ -2685,12 +2755,12 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}
 	if err != nil {
 		statusCode, apiErr := mapCodexSelectionError(err, apiKey, affinityEnabled)
-		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, affinityEnabled, maxRetries, statusCode, err, apiErr.Message, apiKey)
+		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, aggregateSubGroupFailureTiming{lifecycleStartTime: startTime, attemptStartTime: attemptStartTime}, retryCtx, affinityEnabled, maxRetries, statusCode, err, apiErr.Message, apiKey)
 		return
 	}
 	if upstreamSelection == nil || upstreamSelection.URL == "" {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Failed to select upstream: empty result"))
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, errors.New("failed to select upstream: empty result"), isStream, "", nil, "", subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, errors.New("failed to select upstream: empty result"), isStream, "", nil, "", subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 		return
 	}
 
@@ -2698,7 +2768,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if err != nil {
 		logrus.Errorf("Failed to create upstream request: %v", err)
 		response.Error(c, app_errors.ErrInternalServer)
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, fmt.Errorf("failed to create request: %v", err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, fmt.Errorf("failed to create request: %v", err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 		return
 	}
 	req.ContentLength = int64(len(finalBodyBytes))
@@ -2722,7 +2792,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		redirectedBody, redirectOriginalModel, targetIdx, err = subGroupChannelHandler.ApplyModelRedirectWithIndex(req, finalBodyBytes, group)
 		if err != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusBadRequest, err, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
 			return
 		}
 
@@ -2767,7 +2837,46 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		req.Header.Set("Connection", "Keep-Alive")
 	}
 
-	removeAcceptEncodingForProxyParsing(req, c, group)
+	// finalBodyBytes is kept unfiltered so a retry rebuilds the converted
+	// body; loggedBody mirrors the payload actually sent so request logs
+	// reflect the filtered body when filtering rewrote it.
+	loggedBody := finalBodyBytes
+	// Filter only the body sent by this attempt; retries rebuild the converted
+	// body and can select an upstream with a different capability contract.
+	if target := protocolConversionTarget(c, group); target == codexUpstreamOpenAIChat || target == codexUpstreamClaude {
+		upstreamURL := upstreamSelection.TargetURL
+		if upstreamURL == "" {
+			upstreamURL = upstreamSelection.URL
+		}
+		filteredBody, filterErr := filterProtocolConversionRequestBody(finalBodyBytes, group, target, upstreamURL)
+		if filterErr != nil {
+			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, fmt.Errorf("failed to apply protocol compatibility for sub-group: %v", filterErr), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply protocol compatibility: %v", filterErr)))
+			return
+		}
+		if !bytes.Equal(filteredBody, finalBodyBytes) {
+			req.Body = io.NopCloser(bytes.NewReader(filteredBody))
+			req.ContentLength = int64(len(filteredBody))
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(filteredBody)), nil
+			}
+			loggedBody = filteredBody
+		}
+	}
+
+	subGroupCfg := group.EffectiveConfig
+	subGroupKeyRetryCount := retryCtx.subGroupKeyRetryMap[subGroupID]
+	subGroupMaxRetries := subGroupKeyMaxRetries(subGroupCfg, subMaxRetries, subMaxRetriesSet)
+	affinityAttempt := affinityEnabled && retryCtx.codexAffinityUsingCached &&
+		retryCtx.codexAffinityBinding.sameIdentity(retryCtx.codexSelection.binding)
+	retryAvailable := retryBudgetAvailable(
+		retryCtx.attemptCount < maxRetries || subGroupKeyRetryCount < subGroupMaxRetries,
+		affinityAttempt,
+		retryCtx.codexAffinityAttemptCount+1,
+		codexAffinityMaxAttempts,
+	)
+	upstreamMayStream := upstreamResponseMayBeEventStream(c, isStream)
+	removeAcceptEncodingForProxyParsing(req, c, group, upstreamMayStream, retryAvailable)
 	setUpstreamUserAgentForLog(c, group, req)
 
 	// Use the upstream-specific client
@@ -2783,7 +2892,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if client == nil {
 		logrus.Errorf("CRITICAL: upstreamSelection returned nil client for sub-group %s, upstream %s", group.Name, utils.SanitizeRequestURLForLog(upstreamSelection.URL))
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, "Internal error: nil HTTP client"))
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusInternalServerError, errors.New("nil HTTP client"), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, http.StatusInternalServerError, errors.New("nil HTTP client"), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeFinal)
 		return
 	}
 
@@ -2797,8 +2906,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	}).Debug("Using HTTP client for aggregate sub-group request")
 
 	removeCodexTurnStateBeforeSend(req, retryCtx.codexIdentityChanged || retryCtx.codexStateResetRequired)
-	isCodexAffinityPrimaryAttempt := affinityEnabled && retryCtx.codexAffinityUsingCached &&
-		retryCtx.codexAffinityBinding.sameIdentity(retryCtx.codexSelection.binding)
+	isCodexAffinityPrimaryAttempt := affinityAttempt
 	if isCodexAffinityPrimaryAttempt {
 		// Count only attempts that reach the actual upstream client call.
 		retryCtx.codexAffinityAttemptCount++
@@ -2808,12 +2916,29 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		defer resp.Body.Close()
 	}
 	setRateLimitPressureContextForAttempt(c, resp, time.Now())
+	var logicalError string
+	var permanentLogicalFailure bool
+	retryStatusCode := 0
+	if resp != nil {
+		retryStatusCode = resp.StatusCode
+	}
+	// Inspect the actual upstream media type: Responses requests may be forced to
+	// stream upstream even when the downstream client requested a normal response.
+	if err == nil && resp != nil {
+		probe := retryableResponseProbeResult(c, resp, retryAvailable)
+		if probe.failed {
+			retryStatusCode = probe.statusCode
+			logicalError = probe.errorMessage
+			permanentLogicalFailure = isPermanentLogicalFailure(probe.errorCode)
+			setLogicalFailureProbeContext(c, probe)
+		}
+	}
 
 	// Unified error handling for retries.
-	if err != nil || (resp != nil && shouldFailoverOnStatusCode(resp.StatusCode, group)) {
+	if err != nil || (resp != nil && shouldFailoverOnStatusCode(retryStatusCode, group) && !permanentLogicalFailure) {
 		if ps.shouldAbortOnIgnorableError(c, err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, 499, sanitizeInternalError(err), isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeFinal)
 			return
 		}
 
@@ -2828,7 +2953,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			logrus.Debugf("Request failed (attempt %d/%d) for key %s: %s", retryCtx.attemptCount+1, maxRetries, utils.MaskAPIKey(apiKey.KeyValue), internalError)
 		} else {
 			// HTTP-level error (status >= 400)
-			statusCode = resp.StatusCode
+			statusCode = retryStatusCode
 			// Limit error body read to a fixed size to prevent memory exhaustion
 			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 			if readErr != nil {
@@ -2849,6 +2974,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			}
 
 			parsedError = app_errors.ParseUpstreamError(errorBody)
+			if logicalError != "" {
+				parsedError = logicalError
+			}
 			internalError = sanitizeInternalErrorMessage(parsedError)
 			logrus.Debugf("Request failed with status %d (attempt %d/%d) for key %s. Parsed Error: %s", statusCode, retryCtx.attemptCount+1, maxRetries, utils.MaskAPIKey(apiKey.KeyValue), internalError)
 		}
@@ -2858,8 +2986,13 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 		if isCodexAffinityPrimaryAttempt {
 			if retryCtx.codexAffinityAttemptCount < codexAffinityMaxAttempts {
-				ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(internalError), isStream,
-					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeRetry)
+				if isCodexEncryptedContentFailure(internalError) {
+					// Invalid encrypted state cannot recover on replay. Keep this retry
+					// inside the affinity budget while forcing the shared state sanitizer.
+					ps.degradeCodexAffinity(retryCtx)
+				}
+				ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, errors.New(internalError), isStream,
+					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeRetry)
 
 				logrus.WithFields(logrus.Fields{
 					"aggregate_group":             originalGroup.Name,
@@ -2871,8 +3004,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 				if !waitBeforeRetry(retryCtx.lifecycleCtx, retryDelayForAttempt(group.EffectiveConfig, retryCtx.codexAffinityAttemptCount-1)) {
 					statusCode, ctxErr := retryLifecycleErrorStatus(retryCtx.lifecycleCtx)
-					ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(ctxErr), isStream,
-						upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+					ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream,
+						upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeFinal)
 					writeRetryLifecycleError(c, statusCode, ctxErr)
 					return
 				}
@@ -2890,14 +3023,9 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 				"codex_affinity_max_attempts": codexAffinityMaxAttempts,
 			}).Debug("Codex affinity attempts exhausted, applying aggregate failover budget")
 
-			ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
+			ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, loggedBody, isStream, aggregateSubGroupFailureTiming{lifecycleStartTime: startTime, attemptStartTime: attemptStartTime}, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
 			return
 		}
-
-		// Check sub-group's key retry limit
-		subGroupCfg := group.EffectiveConfig
-		subGroupKeyRetryCount := retryCtx.subGroupKeyRetryMap[subGroupID]
-		subGroupMaxRetries := subGroupKeyMaxRetries(subGroupCfg, subMaxRetries, subMaxRetriesSet)
 
 		// Determine if sub-group has exhausted its key retries
 		isSubGroupKeyRetryExhausted := subGroupKeyRetryCount >= subGroupMaxRetries
@@ -2920,8 +3048,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			retryCtx.subGroupKeyRetryMap[subGroupID]++
 
 			// Log retry request for sub-group key retry
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(internalError), isStream,
-				upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeRetry)
+			ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, errors.New(internalError), isStream,
+				upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeRetry)
 
 			logrus.WithFields(logrus.Fields{
 				"sub_group":             group.Name,
@@ -2941,8 +3069,8 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 
 			if !waitBeforeRetry(retryCtx.lifecycleCtx, retryDelayForAttempt(subGroupCfg, subGroupKeyRetryCount)) {
 				statusCode, ctxErr := retryLifecycleErrorStatus(retryCtx.lifecycleCtx)
-				ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(ctxErr), isStream,
-					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+				ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream,
+					upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeFinal)
 				writeRetryLifecycleError(c, statusCode, ctxErr)
 				return
 			}
@@ -2963,7 +3091,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 			"sub_group_max_retries": subGroupMaxRetries,
 		}).Debug("Sub-group key retries exhausted, switching to next sub-group")
 
-		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
+		ps.handleAggregateSubGroupFailure(c, subGroupChannelHandler, originalGroup, group, loggedBody, isStream, aggregateSubGroupFailureTiming{lifecycleStartTime: startTime, attemptStartTime: attemptStartTime}, retryCtx, affinityEnabled, maxRetries, statusCode, errors.New(internalError), internalError, apiKey)
 		return
 	}
 
@@ -3058,7 +3186,7 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		}
 	}
 
-	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, finalBodyBytes, models.RequestTypeFinal)
+	ps.logRequest(c, originalGroup, group, apiKey, attemptStartTime, resp.StatusCode, nil, isStream, upstreamSelection.URL, upstreamSelection.ProxyURL, upstreamSelection.GatewayProxy, subGroupChannelHandler, loggedBody, models.RequestTypeFinal)
 	ps.bindCodexAffinityIfSuccessful(c, resp.StatusCode, retryCtx)
 }
 
@@ -3080,6 +3208,11 @@ func (ps *ProxyServer) countAvailableSubGroups(group *models.Group, excludedIDs 
 	return count
 }
 
+type aggregateSubGroupFailureTiming struct {
+	lifecycleStartTime time.Time
+	attemptStartTime   time.Time
+}
+
 // handleAggregateSubGroupFailure handles failure of a sub-group in aggregate retry logic
 func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	c *gin.Context,
@@ -3088,7 +3221,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	group *models.Group,
 	bodyBytes []byte,
 	isStream bool,
-	startTime time.Time,
+	timing aggregateSubGroupFailureTiming,
 	retryCtx *retryContext,
 	affinityEnabled bool,
 	maxRetries int,
@@ -3100,7 +3233,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	if retryCtx.lifecycleCtx != nil && retryCtx.lifecycleCtx.Err() != nil {
 		statusCode, ctxErr := retryLifecycleErrorStatus(retryCtx.lifecycleCtx)
 		clearAggregateSubGroupFinal := markAggregateSubGroupFinal(c)
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, sanitizeInternalError(ctxErr), isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, apiKey, timing.attemptStartTime, statusCode, sanitizeInternalError(ctxErr), isStream, "", nil, "", channelHandler, bodyBytes, models.RequestTypeFinal)
 		clearAggregateSubGroupFinal()
 		writeRetryLifecycleError(c, statusCode, ctxErr)
 		return
@@ -3143,7 +3276,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	}
 
 	clearAggregateSubGroupFinal := markAggregateSubGroupFinal(c)
-	ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, logError, isStream, "", nil, "", channelHandler, bodyBytes, requestType)
+	ps.logRequest(c, originalGroup, group, apiKey, timing.attemptStartTime, statusCode, logError, isStream, "", nil, "", channelHandler, bodyBytes, requestType)
 	clearAggregateSubGroupFinal()
 
 	// If this is the last attempt, return error
@@ -3174,7 +3307,7 @@ func (ps *ProxyServer) handleAggregateSubGroupFailure(
 	retryCtx.attemptCount++
 	retryCtx.forcedSubGroupID = 0
 	// Use original body bytes for retry to allow new sub-group to apply its own mapping
-	ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, retryCtx.originalBodyBytes, isStream, startTime, retryCtx)
+	ps.executeRequestWithAggregateRetry(c, channelHandler, originalGroup, retryCtx.originalBodyBytes, isStream, timing.lifecycleStartTime, retryCtx)
 }
 
 // shouldAbortOnIgnorableError checks if an error is ignorable (e.g. client disconnected)
@@ -3210,7 +3343,9 @@ func (ps *ProxyServer) logEarlyError(c *gin.Context, group *models.Group, startT
 		errMsg = err.Error()
 	}
 
-	// Use sanitized URL to prevent auth token leakage in logs
+	// Early failures happen before an upstream attempt exists; retain request-wide
+	// elapsed time here. Upstream retry attempts use logRequest's per-attempt clock.
+	// Use sanitized URL to prevent auth token leakage in logs.
 	ps.requestLogService.RecordError(groupID, groupName, c.ClientIP(), utils.TruncateString(utils.SanitizeURLForLog(c.Request.URL), 500), errMsg, statusCode, time.Since(startTime).Milliseconds())
 }
 

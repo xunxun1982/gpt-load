@@ -26,6 +26,36 @@ type staticProxyURLResolver struct {
 	err      error
 }
 
+type sequenceProxyURLResolver struct {
+	values    map[string]string
+	errors    map[string]error
+	calls     []string
+	afterCall func(string)
+}
+
+func (r *sequenceProxyURLResolver) ResolveProxyURL(_ context.Context, ref string) (string, error) {
+	r.calls = append(r.calls, ref)
+	if r.afterCall != nil {
+		r.afterCall(ref)
+	}
+	return r.values[ref], r.errors[ref]
+}
+
+type batchProxyURLResolver struct {
+	values map[string]string
+	err    error
+	calls  [][]string
+}
+
+func (r *batchProxyURLResolver) ResolveProxyURL(_ context.Context, _ string) (string, error) {
+	return "", errors.New("unexpected single resolution")
+}
+
+func (r *batchProxyURLResolver) ResolveProxyURLs(_ context.Context, refs []string) (map[string]string, error) {
+	r.calls = append(r.calls, append([]string(nil), refs...))
+	return r.values, r.err
+}
+
 type noopSystemSettingsGroupManager struct{}
 
 func (noopSystemSettingsGroupManager) Invalidate() error {
@@ -34,6 +64,94 @@ func (noopSystemSettingsGroupManager) Invalidate() error {
 
 func (r staticProxyURLResolver) ResolveProxyURL(_ context.Context, _ string) (string, error) {
 	return r.resolved, r.err
+}
+
+func TestResolveRuntimeProxyURLsDeduplicatesAndPreservesPlainURL(t *testing.T) {
+	t.Parallel()
+
+	resolver := &batchProxyURLResolver{values: map[string]string{"proxy-pool:1": "http://proxy.example.com:8080"}}
+	manager := NewSystemSettingsManager()
+	manager.SetProxyURLResolver(resolver)
+
+	resolved := manager.ResolveRuntimeProxyURLs(context.Background(), []string{" proxy-pool:1 ", "proxy-pool:1", "http://direct.example.com"})
+
+	require.Len(t, resolver.calls, 1)
+	assert.Equal(t, []string{"proxy-pool:1"}, resolver.calls[0])
+	assert.Equal(t, "http://proxy.example.com:8080", resolved["proxy-pool:1"])
+	assert.Equal(t, "http://direct.example.com", resolved["http://direct.example.com"])
+}
+
+func TestResolveRuntimeProxyURLsBatchFailureKeepsReferences(t *testing.T) {
+	t.Parallel()
+
+	manager := NewSystemSettingsManager()
+	manager.SetProxyURLResolver(&batchProxyURLResolver{
+		values: map[string]string{"proxy-pool:1": "http://partial.example.com:8080"},
+		err:    errors.New("temporary database failure"),
+	})
+
+	resolved := manager.ResolveRuntimeProxyURLs(context.Background(), []string{"proxy-pool:1"})
+
+	assert.Equal(t, "proxy-pool:1", resolved["proxy-pool:1"])
+}
+
+func TestResolveRuntimeProxyURLsNonBatchFailureKeepsPartialSuccess(t *testing.T) {
+	t.Parallel()
+
+	resolver := &sequenceProxyURLResolver{
+		values: map[string]string{"proxy-pool:1": "http://proxy.example.com:8080"},
+		errors: map[string]error{"proxy-pool:2": errors.New("missing proxy")},
+	}
+	manager := NewSystemSettingsManager()
+	manager.SetProxyURLResolver(resolver)
+
+	resolved := manager.ResolveRuntimeProxyURLs(context.Background(), []string{"proxy-pool:1", "proxy-pool:2"})
+
+	assert.Equal(t, []string{"proxy-pool:1", "proxy-pool:2"}, resolver.calls)
+	assert.Equal(t, "http://proxy.example.com:8080", resolved["proxy-pool:1"])
+	assert.Equal(t, "proxy-pool:2", resolved["proxy-pool:2"])
+}
+
+func TestResolveRuntimeProxyURLsContinuesAfterFailure(t *testing.T) {
+	t.Parallel()
+
+	resolver := &sequenceProxyURLResolver{
+		values: map[string]string{"proxy-pool:2": "http://proxy.example.com:8080"},
+		errors: map[string]error{"proxy-pool:1": errors.New("missing proxy")},
+	}
+	manager := NewSystemSettingsManager()
+	manager.SetProxyURLResolver(resolver)
+
+	resolved := manager.ResolveRuntimeProxyURLs(context.Background(), []string{"proxy-pool:1", "proxy-pool:2"})
+
+	assert.Equal(t, []string{"proxy-pool:1", "proxy-pool:2"}, resolver.calls)
+	assert.Equal(t, "proxy-pool:1", resolved["proxy-pool:1"])
+	assert.Equal(t, "http://proxy.example.com:8080", resolved["proxy-pool:2"])
+}
+
+func TestResolveRuntimeProxyURLsStopsAfterContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resolver := &sequenceProxyURLResolver{
+		values: map[string]string{
+			"proxy-pool:1": "http://first.example.com:8080",
+			"proxy-pool:2": "http://second.example.com:8080",
+		},
+		afterCall: func(ref string) {
+			if ref == "proxy-pool:1" {
+				cancel()
+			}
+		},
+	}
+	manager := NewSystemSettingsManager()
+	manager.SetProxyURLResolver(resolver)
+
+	resolved := manager.ResolveRuntimeProxyURLs(ctx, []string{"proxy-pool:1", "proxy-pool:2"})
+
+	assert.Equal(t, []string{"proxy-pool:1"}, resolver.calls)
+	assert.Equal(t, "http://first.example.com:8080", resolved["proxy-pool:1"])
+	assert.Equal(t, "proxy-pool:2", resolved["proxy-pool:2"])
 }
 
 func setupSystemSettingsTestDB(t *testing.T) *gorm.DB {

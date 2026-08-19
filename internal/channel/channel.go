@@ -13,6 +13,7 @@ import (
 type UpstreamSelection struct {
 	Identity     string // Non-empty opaque identity for this active upstream configuration.
 	URL          string
+	TargetURL    string // Direct upstream URL before an optional gateway rewrite.
 	HTTPClient   *http.Client
 	StreamClient *http.Client
 	ProxyURL     *string // The proxy URL used by this upstream (for logging/observability)

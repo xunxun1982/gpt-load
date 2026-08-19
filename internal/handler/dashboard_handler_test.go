@@ -48,8 +48,8 @@ func setupTestServerWithDB(t *testing.T, db *gorm.DB) *Server {
 }
 
 func TestStats(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name           string
@@ -121,8 +121,8 @@ func TestStats(t *testing.T) {
 }
 
 func TestStatsIncludesAggregateRoutedTokenUsage(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	standard := models.Group{Name: "standard", DisplayName: "Standard", GroupType: "standard", Enabled: true, Upstreams: datatypes.JSON("[]"), ChannelType: "openai", TestModel: "gpt-4o"}
@@ -173,8 +173,8 @@ func TestStatsIncludesAggregateRoutedTokenUsage(t *testing.T) {
 }
 
 func TestChart(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	tests := []struct {
 		name           string
@@ -278,8 +278,8 @@ func TestDashboardChartTimeRangeRollingRanges(t *testing.T) {
 }
 
 func TestTokenUsage(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	standard := models.Group{Name: "standard", DisplayName: "Standard", GroupType: "standard", Enabled: true, Upstreams: datatypes.JSON("[]"), ChannelType: "openai", TestModel: "gpt-4o"}
@@ -393,8 +393,8 @@ func TestTokenUsage(t *testing.T) {
 }
 
 func TestTokenUsageGroupFilterErrors(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	server := setupTestServerWithDB(t, db)
@@ -427,8 +427,8 @@ func sumChartDataset(t *testing.T, dataset any) float64 {
 }
 
 func TestEncryptionStatus(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	server := setupTestServerWithDB(t, db)

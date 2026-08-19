@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 
@@ -65,17 +66,55 @@ func mustParseGatewayProxyBaseURL(rawBaseURL string) url.URL {
 
 // GatewayProxyBaseURL returns the current runtime base URL for a built-in gateway proxy.
 func GatewayProxyBaseURL(gatewayProxyID string) string {
+	base, ok := GatewayProxyBaseURLParsed(gatewayProxyID)
+	if !ok {
+		return ""
+	}
+	return base.String()
+}
+
+// GatewayProxyProviderIDs returns the sorted IDs of all registered built-in
+// gateway proxies, derived from the provider registry. The registry is static
+// at runtime, so callers may cache the result at package initialization.
+func GatewayProxyProviderIDs() []string {
+	ids := make([]string, 0, len(gatewayProxyProviders))
+	for id := range gatewayProxyProviders {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// GatewayProxyPathPrefix returns the gateway route path prefix registered for
+// a provider, so consumers stay aligned with the provider registry instead of
+// hardcoding route shapes. Returns "" when the gateway or provider is unknown.
+func GatewayProxyPathPrefix(gatewayProxyID, providerID string) string {
+	// Normalize like GatewayProxyBaseURLParsed so lookups never miss on case
+	// or surrounding whitespace.
 	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))
 	if trimmedID == "" {
 		return ""
+	}
+	provider, ok := gatewayProxyProviders[trimmedID]
+	if !ok {
+		return ""
+	}
+	return provider.Prefixes[providerID]
+}
+
+// GatewayProxyBaseURLParsed returns a value copy of the parsed runtime base URL.
+func GatewayProxyBaseURLParsed(gatewayProxyID string) (url.URL, bool) {
+	trimmedID := strings.ToLower(strings.TrimSpace(gatewayProxyID))
+	if trimmedID == "" {
+		return url.URL{}, false
 	}
 	gatewayProxyBaseURLMu.RLock()
 	defer gatewayProxyBaseURLMu.RUnlock()
 	base, ok := gatewayProxyBaseURLs[trimmedID]
 	if !ok {
-		return ""
+		return url.URL{}, false
 	}
-	return base.String()
+	return base, true
 }
 
 // SetGatewayProxyBaseURL updates the runtime base URL for a built-in gateway proxy.

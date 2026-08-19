@@ -235,7 +235,8 @@ const handleLogin = async () => {
   padding-bottom: 16px;
 }
 
-:deep(.n-card__content) {
+/* Naive UI 2.44.1 renders n-card-content; keep the legacy selector out of this override. */
+:deep(.n-card-content) {
   padding-top: 0;
 }
 

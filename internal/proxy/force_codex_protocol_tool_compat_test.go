@@ -79,7 +79,8 @@ func TestProtocolToolCompatDeduplicatesDiscoveredToolsAfterExplicitTools(t *test
 		}},
 		Input: json.RawMessage(`[
 			{"type":"additional_tools","tools":[{"type":"function","name":"lookup","description":"discovered definition","parameters":{"type":"object"}}]},
-			{"type":"tool_search_output","tools":[{"type":"function","name":"lookup","description":"replayed definition","parameters":{"type":"object"}}]}
+			{"type":"tool_search_output","tools":[{"type":"function","name":"lookup","description":"replayed definition","parameters":{"type":"object"}}]},
+			{"type":"message","role":"user","content":"continue"}
 		]`),
 	}
 
@@ -139,36 +140,508 @@ func TestProtocolToolCompatConvertsCustomTools(t *testing.T) {
 	}
 }
 
-func TestProtocolToolCompatRejectsNonReversibleTools(t *testing.T) {
-	for _, toolType := range []string{
-		"web_search", "web_search_preview", "file_search", "computer", "computer_use",
-		"computer_use_preview", "code_interpreter", "image_generation", "mcp", "shell", "local_shell",
-	} {
-		for _, channelType := range []string{"openai", "anthropic"} {
-			t.Run(channelType+"_"+toolType, func(t *testing.T) {
-				tool := `{"type":"` + toolType + `","name":"unsafe"}`
-				body := []byte(`{"model":"gpt-test","input":"hello","tools":[` + tool + `]}`)
-				w := &ProxyServer{}
-				c, _ := gin.CreateTestContext(nil)
-				_, converted, err := w.applyForceCodexRequestConversion(c, &models.Group{ChannelType: channelType}, body)
-				require.Error(t, err)
-				assert.False(t, converted)
-				assert.Contains(t, err.Error(), "unsupported_tool")
-				assert.Contains(t, err.Error(), "Not Supported")
-			})
-		}
+func TestProtocolToolCompatConvertsUnknownCodexToolsThroughFunctionShell(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Tools: []CodexTool{
+			{Type: "web_search", Name: "web_search", Description: "Search", Parameters: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}}}`)},
+			{Type: "future_tool_2026", Name: "future_lookup", Description: "Future", Parameters: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"}}}`)},
+		},
+		Input: json.RawMessage(`[
+			{"type":"web_search_call","call_id":"call_web","name":"web_search","arguments":"{\"query\":\"go\"}"},
+			{"type":"future_tool_call","call_id":"call_future","name":"future_lookup","arguments":"{\"id\":9007199254740993}"},
+			{"type":"web_search_call_output","call_id":"call_web","output":"result"}
+		]`),
+	}
+
+	chat, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+	require.Len(t, chat.Tools, 2)
+	assert.Equal(t, "web_search", chat.Tools[0].Function.Name)
+	assert.Equal(t, "future_lookup", chat.Tools[1].Function.Name)
+	require.Len(t, chat.Messages, 3)
+	assert.Equal(t, "web_search", chat.Messages[0].ToolCalls[0].Function.Name)
+	assert.Equal(t, `{"id":9007199254740993}`, chat.Messages[1].ToolCalls[0].Function.Arguments)
+	assert.Equal(t, "call_web", chat.Messages[2].ToolCallID)
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Tools, 2)
+	assert.Equal(t, "web_search", claude.Tools[0].Name)
+	assert.Equal(t, "future_lookup", claude.Tools[1].Name)
+	require.Len(t, claude.Messages, 2)
+	assert.JSONEq(t, `[
+		{"type":"tool_use","id":"call_web","name":"web_search","input":{"query":"go"}},
+		{"type":"tool_use","id":"call_future","name":"future_lookup","input":{"id":9007199254740993}}
+	]`, string(claude.Messages[0].Content))
+	assert.JSONEq(t, `[{"type":"tool_result","tool_use_id":"call_web","content":"result"}]`, string(claude.Messages[1].Content))
+}
+
+func TestProtocolToolCompatAggregatesConsecutiveClaudeToolBlocks(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_a","name":"lookup_a","arguments":"{}"},
+			{"type":"function_call","call_id":"call_b","name":"lookup_b","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_a","output":"a"},
+			{"type":"function_call_output","call_id":"call_b","output":"b"}
+		]`),
+	}
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 2)
+	assert.Equal(t, "assistant", claude.Messages[0].Role)
+	assert.Equal(t, "user", claude.Messages[1].Role)
+
+	var assistantBlocks []ClaudeContentBlock
+	require.NoError(t, json.Unmarshal(claude.Messages[0].Content, &assistantBlocks))
+	require.Len(t, assistantBlocks, 2)
+	assert.Equal(t, []string{"call_a", "call_b"}, []string{assistantBlocks[0].ID, assistantBlocks[1].ID})
+
+	var userBlocks []ClaudeContentBlock
+	require.NoError(t, json.Unmarshal(claude.Messages[1].Content, &userBlocks))
+	require.Len(t, userBlocks, 2)
+	assert.Equal(t, []string{"call_a", "call_b"}, []string{userBlocks[0].ToolUseID, userBlocks[1].ToolUseID})
+}
+
+func TestProtocolToolCompatAggregatesClaudeAssistantTextWithToolUse(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"assistant","content":"checking"},
+			{"type":"function_call","call_id":"call_a","name":"lookup","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_a","output":"done"}
+		]`),
+	}
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 2)
+	assert.Equal(t, "assistant", claude.Messages[0].Role)
+	assert.Equal(t, "user", claude.Messages[1].Role)
+	assert.JSONEq(t, `[
+		{"type":"text","text":"checking"},
+		{"type":"tool_use","id":"call_a","name":"lookup","input":{}}
+	]`, string(claude.Messages[0].Content))
+}
+
+func TestProtocolToolCompatAggregatesToolOutputWithFollowingUserText(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_lookup","name":"lookup","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_lookup","output":"done"},
+			{"type":"message","role":"user","content":"and now?"}
+		]`),
+	}
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 2)
+	assert.Equal(t, "assistant", claude.Messages[0].Role)
+	assert.Equal(t, "user", claude.Messages[1].Role)
+	assert.JSONEq(t, `[
+		{"type":"tool_result","tool_use_id":"call_lookup","content":"done"},
+		{"type":"text","text":"and now?"}
+	]`, string(claude.Messages[1].Content))
+}
+
+func TestProtocolToolCompatOrdersToolOutputBeforePrecedingUserText(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_lookup","name":"lookup","arguments":"{}"},
+			{"type":"message","role":"user","content":"and now?"},
+			{"type":"function_call_output","call_id":"call_lookup","output":"done"}
+		]`),
+	}
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 2)
+	assert.Equal(t, "assistant", claude.Messages[0].Role)
+	assert.Equal(t, "user", claude.Messages[1].Role)
+	assert.JSONEq(t, `[
+		{"type":"tool_result","tool_use_id":"call_lookup","content":"done"},
+		{"type":"text","text":"and now?"}
+	]`, string(claude.Messages[1].Content))
+}
+
+func TestProtocolToolCompatSkipsOrphanedFutureToolOutputs(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"future_tool_output","output":"orphan"},
+			{"type":"future_tool_result","call_id":"call_valid","output":{"ok":true}}
+		]`),
+	}
+
+	chat, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+	require.Len(t, chat.Messages, 1)
+	assert.Equal(t, "tool", chat.Messages[0].Role)
+	assert.Equal(t, "call_valid", chat.Messages[0].ToolCallID)
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 1)
+	var blocks []ClaudeContentBlock
+	require.NoError(t, json.Unmarshal(claude.Messages[0].Content, &blocks))
+	require.Len(t, blocks, 1)
+	assert.Equal(t, "tool_result", blocks[0].Type)
+	assert.Equal(t, "call_valid", blocks[0].ToolUseID)
+}
+
+func TestProtocolToolCompatPreservesCodexReasoningHistory(t *testing.T) {
+	// Thinking must be explicitly enabled on the request for reasoning
+	// summaries to be attached: Anthropic rejects thinking blocks when
+	// extended thinking is off. When thinking is not enabled the summaries
+	// are omitted (see TestCodexInputToClaudeMessagesGatesThinkingOnRequest).
+	req := &CodexRequest{
+		Model:     "gpt-test",
+		Reasoning: &CodexReasoning{Effort: "adaptive"},
+		Input: json.RawMessage(`[
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"plan before lookup"}]},
+			{"type":"function_call","call_id":"call_lookup","name":"lookup","arguments":"{}"}
+		]`),
+	}
+
+	chat, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+	require.Len(t, chat.Messages, 1)
+	require.NotNil(t, chat.Messages[0].ReasoningContent)
+	assert.Equal(t, "plan before lookup", *chat.Messages[0].ReasoningContent)
+	require.Len(t, chat.Messages[0].ToolCalls, 1)
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 1)
+	assert.JSONEq(t, `[
+		{"type":"thinking","thinking":"plan before lookup"},
+		{"type":"tool_use","id":"call_lookup","name":"lookup","input":{}}
+	]`, string(claude.Messages[0].Content))
+}
+
+func TestProtocolToolCompatNormalizesNullCodexToolArguments(t *testing.T) {
+	tests := []struct {
+		name  string
+		input json.RawMessage
+	}{
+		{
+			name:  "function arguments",
+			input: json.RawMessage(`[{"type":"function_call","call_id":"call_lookup","name":"lookup","arguments":null}]`),
+		},
+		{
+			name:  "custom input",
+			input: json.RawMessage(`[{"type":"custom_tool_call","call_id":"call_patch","name":"apply_patch","input":null}]`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &CodexRequest{Model: "gpt-test", Input: tt.input}
+
+			chat, err := convertCodexRequestToOpenAIChat(req)
+			require.NoError(t, err)
+			require.Len(t, chat.Messages, 1)
+			assert.Equal(t, "{}", chat.Messages[0].ToolCalls[0].Function.Arguments)
+
+			claude, err := convertCodexRequestToClaude(req)
+			require.NoError(t, err)
+			require.Len(t, claude.Messages, 1)
+			var blocks []ClaudeContentBlock
+			require.NoError(t, json.Unmarshal(claude.Messages[0].Content, &blocks))
+			require.Len(t, blocks, 1)
+			assert.JSONEq(t, `{}`, string(blocks[0].Input))
+		})
 	}
 }
 
-func TestProtocolToolCompatRejectsUnnamedFunctionsBeforeConversion(t *testing.T) {
-	for _, tool := range []string{
-		`{"type":"function","parameters":{"type":"object"}}`,
-		`{"type":"namespace","name":"mail","tools":[{"type":"function","parameters":{"type":"object"}}]}`,
-	} {
-		t.Run(tool, func(t *testing.T) {
-			body := []byte(`{"model":"gpt-test","input":"hello","tools":[` + tool + `]}`)
+func TestProtocolToolCompatNormalizesNullToolArgumentsForClaude(t *testing.T) {
+	// JSON null, blank and invalid arguments normalize to an empty object;
+	// valid non-object payloads (arrays/scalars) stay verbatim per the
+	// passthrough contract locked by PreservesNonObjectToolPayloads and
+	// DefaultsInvalidToolArguments (the Anthropic object-input wrapping from
+	// the AI review was rejected there).
+	directTests := []struct {
+		name      string
+		arguments string
+		want      string
+	}{
+		{name: "object preserved", arguments: `{"a":1}`, want: `{"a":1}`},
+		{name: "array preserved verbatim", arguments: `[1,2]`, want: `[1,2]`},
+		{name: "null stays empty object", arguments: `null`, want: `{}`},
+		{name: "blank stays empty object", arguments: `   `, want: `{}`},
+		{name: "invalid stays empty object", arguments: `not json`, want: `{}`},
+	}
+	for _, tt := range directTests {
+		t.Run("direct/"+tt.name, func(t *testing.T) {
+			assert.JSONEq(t, tt.want, string(codexToolArgumentsRawMessage(tt.arguments)))
+		})
+	}
+
+	// Codex response tool call with null arguments must produce an empty
+	// object for the Claude tool_use block.
+	got := convertCodexToClaudeResponse(&CodexResponse{
+		ID: "resp_test", Status: "completed", Model: "gpt-test",
+		Output: []CodexOutputItem{{
+			Type: "function_call", CallID: "call_null", Name: "list_items", Arguments: `null`,
+		}},
+	}, nil)
+	require.Len(t, got.Content, 1)
+	assert.JSONEq(t, `{}`, string(got.Content[0].Input))
+}
+
+func TestProtocolToolCompatNormalizesNullClaudeToolInputToCodex(t *testing.T) {
+	// Request conversion: Claude tool_use with blank/null input must produce
+	// valid "{}" arguments for Codex, matching the OpenAI conversion.
+	req := &ClaudeRequest{
+		Model: "gpt-test",
+		Messages: []ClaudeMessage{{
+			Role: "assistant",
+			Content: json.RawMessage(`[
+				{"type":"tool_use","id":"call_null","name":"lookup","input":null}
+			]`),
+		}},
+	}
+	got, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(got.Input, &input))
+	require.Len(t, input, 1)
+	assert.Equal(t, "{}", input[0]["arguments"])
+
+	// Response conversion: the same normalization applies when a Claude
+	// upstream response carries a tool_use block.
+	resp := convertClaudeToCodexResponse(&ClaudeResponse{
+		ID: "msg_null", Model: "gpt-test",
+		Content: []ClaudeContentBlock{{
+			Type: "tool_use", ID: "call_null", Name: "lookup", Input: json.RawMessage(`null`),
+		}},
+	}, nil)
+	require.Len(t, resp.Output, 1)
+	assert.Equal(t, "{}", resp.Output[0].Arguments)
+}
+
+func TestProtocolToolCompatRejectsClaudeToolUseWithoutIDOrNameForCodex(t *testing.T) {
+	tests := []struct {
+		name  string
+		block string
+	}{
+		{name: "missing ID", block: `{"type":"server_tool_use","name":"lookup","input":{}}`},
+		{name: "missing name", block: `{"type":"future_tool_call","id":"call_lookup","input":{}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &ClaudeRequest{
+				Model: "gpt-test",
+				Messages: []ClaudeMessage{{
+					Role:    "assistant",
+					Content: json.RawMessage("[" + tt.block + "]"),
+				}},
+			}
+
+			_, chatErr := convertClaudeToOpenAI(req, nil)
+			_, codexErr := convertClaudeToCodex(req, "", nil)
+			require.EqualError(t, chatErr, "failed to convert Claude message: Anthropic tool_use requires id and name")
+			require.EqualError(t, codexErr, chatErr.Error())
+		})
+	}
+}
+
+func TestProtocolToolCompatRejectsClaudeToolResultWithoutIDForCodex(t *testing.T) {
+	req := &ClaudeRequest{
+		Model: "gpt-test",
+		Messages: []ClaudeMessage{{
+			Role:    "user",
+			Content: json.RawMessage(`[{"type":"future_tool_result","content":"done"}]`),
+		}},
+	}
+
+	_, chatErr := convertClaudeToOpenAI(req, nil)
+	_, codexErr := convertClaudeToCodex(req, "", nil)
+	require.EqualError(t, chatErr, "failed to convert Claude message: Anthropic tool_result requires tool_use_id")
+	require.EqualError(t, codexErr, chatErr.Error())
+}
+
+func TestProtocolToolCompatDropsOrphanReasoning(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   json.RawMessage
+		wantErr bool
+	}{
+		{
+			name: "trailing reasoning",
+			input: json.RawMessage(`[
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"trailing plan"}]}
+		]`),
+			wantErr: true,
+		},
+		{
+			name: "reasoning before user",
+			input: json.RawMessage(`[
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"prior plan"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &CodexRequest{Model: "gpt-test", Input: tt.input}
+
+			chat, err := convertCodexRequestToOpenAIChat(req)
+			if tt.wantErr {
+				require.ErrorIs(t, err, errCodexInputNoConvertibleMessages)
+			} else {
+				require.NoError(t, err)
+			}
+
+			claude, err := convertCodexRequestToClaude(req)
+			if tt.wantErr {
+				require.ErrorIs(t, err, errCodexInputNoConvertibleMessages)
+				assert.Nil(t, chat)
+				assert.Nil(t, claude)
+				return
+			}
+			require.NoError(t, err)
+
+			require.Len(t, chat.Messages, 1)
+			assert.Nil(t, chat.Messages[0].ReasoningContent)
+			assert.Equal(t, json.RawMessage(`"continue"`), chat.Messages[0].Content)
+			require.Len(t, claude.Messages, 1)
+			assert.JSONEq(t, `[{"type":"text","text":"continue"}]`, string(claude.Messages[0].Content))
+		})
+	}
+}
+
+func TestProtocolToolCompatOmitsEmptyCodexEffortOnReverseConversion(t *testing.T) {
+	req := &CodexRequest{
+		Model:     "gpt-test",
+		Reasoning: &CodexReasoning{Summary: "auto"},
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+		]`),
+	}
+
+	chat, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+	chatJSON, err := json.Marshal(chat)
+	require.NoError(t, err)
+	assert.NotContains(t, string(chatJSON), `"reasoning_effort"`)
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	claudeJSON, err := json.Marshal(claude)
+	require.NoError(t, err)
+	assert.NotContains(t, string(claudeJSON), `"thinking"`)
+	assert.NotContains(t, string(claudeJSON), `"effort"`)
+}
+
+func TestProtocolToolCompatPreservesNonObjectToolPayloads(t *testing.T) {
+	req := &CodexRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"future_tool_call","call_id":"call_array","name":"future_lookup","arguments":["a",9007199254740993]},
+			{"type":"future_tool_call_output","call_id":"call_array","output":{"path":"F:\\work\\file.txt","ok":true}}
+		]`),
+	}
+
+	chat, err := convertCodexRequestToOpenAIChat(req)
+	require.NoError(t, err)
+	require.Len(t, chat.Messages, 2)
+	assert.Equal(t, `["a",9007199254740993]`, chat.Messages[0].ToolCalls[0].Function.Arguments)
+	chatOutput := decodeCompatObject(t, []byte(rawMessageString(t, chat.Messages[1].Content)))
+	assert.Equal(t, `F:\work\file.txt`, chatOutput["path"])
+	assert.Equal(t, true, chatOutput["ok"])
+
+	claude, err := convertCodexRequestToClaude(req)
+	require.NoError(t, err)
+	require.Len(t, claude.Messages, 2)
+	var toolUse []struct {
+		Input []any `json:"input"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(claude.Messages[0].Content))
+	decoder.UseNumber()
+	require.NoError(t, decoder.Decode(&toolUse))
+	require.Len(t, toolUse, 1)
+	assert.Equal(t, "a", toolUse[0].Input[0])
+	assert.Equal(t, json.Number("9007199254740993"), toolUse[0].Input[1])
+	var toolResult []struct {
+		Content map[string]any `json:"content"`
+	}
+	decoder = json.NewDecoder(bytes.NewReader(claude.Messages[1].Content))
+	decoder.UseNumber()
+	require.NoError(t, decoder.Decode(&toolResult))
+	require.Len(t, toolResult, 1)
+	assert.Equal(t, `F:\work\file.txt`, toolResult[0].Content["path"])
+	assert.Equal(t, true, toolResult[0].Content["ok"])
+}
+
+func TestProtocolToolCompatDerivesNameForUnknownCodexToolType(t *testing.T) {
+	body := []byte(`{"model":"gpt-test","input":"hello","tools":[{"type":"web_search"}]}`)
+	for _, channelType := range []string{"openai", "anthropic"} {
+		t.Run(channelType, func(t *testing.T) {
+			out := applyForceCodexCompat(t, channelType, body)
+			tools := decodeCompatObject(t, out)["tools"].([]any)
+			tool := tools[0].(map[string]any)
+			if channelType == "openai" {
+				tool = tool["function"].(map[string]any)
+			}
+			assert.Equal(t, "web_search", tool["name"])
+		})
+	}
+}
+
+func TestProtocolToolCompatRestoresUnknownClaudeToolUseResponse(t *testing.T) {
+	toolCtx := newCodexToolContext([]CodexTool{{Type: "future_tool_2026", Name: "future_lookup"}})
+	got := convertClaudeToCodexResponse(&ClaudeResponse{
+		ID: "msg_future", Model: "gpt-test",
+		Content: []ClaudeContentBlock{{
+			Type: "server_tool_use", ID: "call_future", Name: "future_lookup", Input: json.RawMessage(`{"id":9007199254740993}`),
+		}},
+	}, toolCtx)
+	require.Len(t, got.Output, 1)
+	assert.Equal(t, "function_call", got.Output[0].Type)
+	assert.Equal(t, "call_future", got.Output[0].CallID)
+	assert.Equal(t, "future_lookup", got.Output[0].Name)
+	assert.Equal(t, `{"id":9007199254740993}`, got.Output[0].Arguments)
+}
+
+func TestProtocolToolCompatRejectsToolsWithoutConvertibleNames(t *testing.T) {
+	tests := []struct {
+		name       string
+		tool       string
+		wantDetail string
+	}{
+		{name: "function without name", tool: `{"type":"function","parameters":{"type":"object"}}`, wantDetail: "name is required"},
+		{name: "namespace child without name", tool: `{"type":"namespace","name":"mail","tools":[{"type":"function","parameters":{"type":"object"}}]}`, wantDetail: "name is required"},
+		{name: "blank type", tool: `{"type":"   "}`, wantDetail: "type is required"},
+		{name: "blank type with name", tool: `{"type":"   ","name":"named"}`, wantDetail: "type is required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-test","input":"hello","tools":[` + tt.tool + `]}`)
 			c, _ := gin.CreateTestContext(nil)
 			_, converted, err := (&ProxyServer{}).applyForceCodexRequestConversion(c, &models.Group{ChannelType: "openai"}, body)
+			require.Error(t, err)
+			assert.False(t, converted)
+			assert.Contains(t, err.Error(), "unsupported_tool")
+			assert.Contains(t, err.Error(), tt.wantDetail)
+		})
+	}
+}
+
+func TestProtocolToolCompatRejectsUnnamedFunctionHiddenByDuplicate(t *testing.T) {
+	for _, channelType := range []string{"openai", "anthropic"} {
+		t.Run(channelType, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-test","input":"hello","tools":[` +
+				`{"type":"function","name":"function","parameters":{"type":"object"}},` +
+				`{"type":"function","parameters":{"type":"object"}}]}`)
+			c, _ := gin.CreateTestContext(nil)
+			_, converted, err := (&ProxyServer{}).applyForceCodexRequestConversion(c, &models.Group{ChannelType: channelType}, body)
 			require.Error(t, err)
 			assert.False(t, converted)
 			assert.Contains(t, err.Error(), "unsupported_tool")
@@ -186,6 +659,32 @@ func applyForceCodexCompat(t *testing.T, channelType string, body []byte) []byte
 	return out
 }
 
+func TestCodexInputToClaudeMessagesGatesThinkingOnRequest(t *testing.T) {
+	// Codex reasoning summaries carry no Anthropic signature; the Messages API
+	// only accepts thinking blocks when extended thinking is enabled on the
+	// request. Summaries must be omitted when thinking is not active.
+	input := json.RawMessage(`[
+		{"type":"reasoning","summary":[{"type":"summary_text","text":"draft plan"}]},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}
+	]`)
+
+	messages, err := convertCodexInputToClaudeMessages(input, false)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	var blocks []ClaudeContentBlock
+	require.NoError(t, json.Unmarshal(messages[0].Content, &blocks))
+	require.Len(t, blocks, 1)
+	assert.Equal(t, "text", blocks[0].Type)
+
+	messages, err = convertCodexInputToClaudeMessages(input, true)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.NoError(t, json.Unmarshal(messages[0].Content, &blocks))
+	require.Len(t, blocks, 2)
+	assert.Equal(t, "thinking", blocks[0].Type)
+	assert.Equal(t, "text", blocks[1].Type)
+}
+
 func decodeCompatObject(t *testing.T, data []byte) map[string]any {
 	t.Helper()
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -193,4 +692,49 @@ func decodeCompatObject(t *testing.T, data []byte) map[string]any {
 	var value map[string]any
 	require.NoError(t, decoder.Decode(&value))
 	return value
+}
+
+func TestProtocolToolCompatNormalizesCodexEffortControlValue(t *testing.T) {
+	tests := []struct {
+		name         string
+		effort       string
+		wantDisabled bool
+	}{
+		{name: "empty", effort: ""},
+		{name: "lowercase none", effort: "none", wantDisabled: true},
+		{name: "titlecase none", effort: "None", wantDisabled: true},
+		{name: "uppercase none", effort: "NONE", wantDisabled: true},
+		{name: "padded none", effort: "  none  ", wantDisabled: true},
+		{name: "adaptive passthrough", effort: "High"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &CodexRequest{
+				Model:     "gpt-test",
+				Reasoning: &CodexReasoning{Effort: tt.effort},
+				Input:     json.RawMessage(`"hello"`),
+			}
+			claude, err := convertCodexRequestToClaude(req)
+			require.NoError(t, err)
+
+			if tt.wantDisabled {
+				require.NotNil(t, claude.Thinking)
+				assert.Equal(t, "disabled", claude.Thinking.Type)
+				assert.Nil(t, claude.OutputConfig)
+				return
+			}
+			if tt.effort == "" {
+				assert.Nil(t, claude.Thinking)
+				assert.Nil(t, claude.OutputConfig)
+				return
+			}
+			// Effort values are provider-defined and forwarded without
+			// normalization; only the none/empty control signals are normalized.
+			require.NotNil(t, claude.Thinking)
+			assert.Equal(t, "adaptive", claude.Thinking.Type)
+			require.NotNil(t, claude.OutputConfig)
+			assert.Equal(t, tt.effort, claude.OutputConfig.Effort)
+		})
+	}
 }

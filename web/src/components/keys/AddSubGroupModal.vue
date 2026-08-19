@@ -508,7 +508,7 @@ function filterOption(pattern: string, option: SelectOption): boolean {
   padding: 24px 28px 16px;
 }
 
-.add-sub-group-modal :deep(.n-card__content) {
+.add-sub-group-modal :deep(.n-card-content) {
   padding: 0 28px 18px;
 }
 

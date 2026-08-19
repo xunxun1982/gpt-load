@@ -371,7 +371,7 @@ function adjustWeight(delta: number) {
   padding: 24px 28px 16px;
 }
 
-.edit-weight-card :deep(.n-card__content) {
+.edit-weight-card :deep(.n-card-content) {
   padding: 0 28px 18px;
 }
 

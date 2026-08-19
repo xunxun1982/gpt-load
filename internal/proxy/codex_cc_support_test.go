@@ -12,8 +12,27 @@ import (
 	"gpt-load/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestToolResultOutputPreservesErrorMarker(t *testing.T) {
+	tests := []struct {
+		name    string
+		content json.RawMessage
+		want    any
+	}{
+		{name: "empty", want: map[string]any{"is_error": true, "content": ""}},
+		{name: "JSON", content: json.RawMessage(`{"code":9007199254740993}`), want: map[string]any{"is_error": true, "content": map[string]any{"code": json.Number("9007199254740993")}}},
+		{name: "plain text", content: json.RawMessage(`failed`), want: map[string]any{"is_error": true, "content": "failed"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, toolResultOutput(ClaudeContentBlock{Content: tt.content, IsError: true}))
+		})
+	}
+}
 
 func TestCodexOutputItemMarshalPreservesLargeNestedInteger(t *testing.T) {
 	item := CodexOutputItem{
@@ -27,6 +46,56 @@ func TestCodexOutputItemMarshalPreservesLargeNestedInteger(t *testing.T) {
 	require.Contains(t, string(encoded), `"query_id":9007199254740993`)
 	require.Contains(t, string(encoded), `"id":9007199254740993`)
 	require.NotContains(t, string(encoded), "9007199254740992")
+}
+
+func TestConvertClaudeToCodexPreservesPromptWithOnlyInlineSystemMessage(t *testing.T) {
+	t.Parallel()
+
+	req, err := convertClaudeToCodex(&ClaudeRequest{
+		Model:  "claude-test",
+		Prompt: "  continue this task  ",
+		Messages: []ClaudeMessage{{
+			Role:    "system",
+			Content: json.RawMessage(`"Use concise answers."`),
+		}},
+	}, "", nil)
+	require.NoError(t, err)
+
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(req.Input, &input))
+	require.Len(t, input, 2)
+	assert.Equal(t, "developer", input[0]["role"])
+	assert.Equal(t, "user", input[1]["role"])
+	content, err := json.Marshal(input[1]["content"])
+	require.NoError(t, err)
+	assert.JSONEq(t, `[{"type":"input_text","text":"continue this task"}]`, string(content))
+}
+
+func TestConvertCodexToClaudeUsesItemIDWhenCallIDMissing(t *testing.T) {
+	t.Parallel()
+
+	resp := convertCodexToClaudeResponse(&CodexResponse{Output: []CodexOutputItem{{
+		Type:      "tool_search_call",
+		ID:        "search_item_1",
+		Name:      "ignored",
+		Arguments: `{"query":"mail"}`,
+	}}}, nil)
+
+	require.Len(t, resp.Content, 1)
+	assert.Equal(t, "tool_use", resp.Content[0].Type)
+	assert.Equal(t, "search_item_1", resp.Content[0].ID)
+}
+
+func TestCodexStreamUsesItemIDWhenCallIDMissing(t *testing.T) {
+	state := newCodexStreamState(nil)
+	events := state.processCodexStreamEvent(&CodexStreamEvent{
+		Type: "response.output_item.added",
+		Item: &CodexOutputItem{Type: "tool_search_call", ID: "search_item_2"},
+	})
+
+	require.NotEmpty(t, events)
+	require.NotNil(t, events[0].ContentBlock)
+	assert.Equal(t, "search_item_2", events[0].ContentBlock.ID)
 }
 
 // TestCodexCCWindowsPathPreservation tests that Windows paths are preserved correctly
@@ -108,11 +177,12 @@ func TestApplyCodexCCRequestConversionStoresModelRedirectTargetIndex(t *testing.
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	body := []byte(`{"model":"virtual-model","messages":[{"role":"user","content":"hello"}]}`)
 	group := &models.Group{
-		ID:          42,
-		Name:        "responses-group",
-		ChannelType: "openai-response",
-		GroupType:   "standard",
-		Config:      map[string]any{"cc_support": true},
+		ID:                  42,
+		Name:                "responses-group",
+		ChannelType:         "openai-response",
+		GroupType:           "standard",
+		Config:              map[string]any{"cc_support": true},
+		ModelRedirectStrict: true,
 		ModelRedirectMapV2: map[string]*models.ModelRedirectRuleV2{
 			"virtual-model": {
 				Targets: []models.ModelRedirectTarget{
@@ -698,8 +768,8 @@ func TestConvertClaudeToCodex(t *testing.T) {
 				if req.Reasoning == nil {
 					t.Fatal("expected reasoning to be set")
 				}
-				if req.Reasoning.Effort == "" {
-					t.Error("expected reasoning effort to be set")
+				if req.Reasoning.Effort != "" {
+					t.Errorf("expected budget_tokens not to derive effort, got %s", req.Reasoning.Effort)
 				}
 				if req.Reasoning.Summary != "auto" {
 					t.Errorf("expected reasoning summary auto, got %s", req.Reasoning.Summary)
@@ -1205,6 +1275,94 @@ func TestHandleCodexCCNormalResponseSanitizesCodexErrorLog(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, "[REDACTED_API_KEY]") {
 		t.Fatalf("expected redacted API key marker in log output, got %s", logOutput)
+	}
+}
+
+func TestCodexStreamUnresolvedToolNameClearsToolState(t *testing.T) {
+	state := newCodexStreamState(map[string]string{"short_tool": ""})
+	state.currentToolID = "call_previous"
+	state.currentToolName = "previous_tool"
+	state.currentToolArgs.WriteString(`{"stale":true}`)
+	state.toolInputSent = true
+	state.openBlockType = "tool"
+
+	events := state.processCodexStreamEvent(&CodexStreamEvent{
+		Type: "response.output_item.added",
+		Item: &CodexOutputItem{Type: "function_call", CallID: "call_unresolved", Name: "short_tool"},
+	})
+
+	require.Len(t, events, 1)
+	assert.Equal(t, "content_block_stop", events[0].Type)
+	assert.Empty(t, state.currentToolID)
+	assert.Empty(t, state.currentToolName)
+	assert.Zero(t, state.currentToolArgs.Len())
+	assert.False(t, state.toolInputSent)
+	assert.True(t, state.skipActiveToolItem)
+
+	// Argument deltas for the skipped item must be ignored entirely: emitting a
+	// block here would fabricate an unknown_tool call with a generated ID.
+	deltaEvents := state.processCodexStreamEvent(&CodexStreamEvent{
+		Type:  "response.function_call_arguments.delta",
+		Delta: `{"query":"test"}`,
+	})
+	assert.Empty(t, deltaEvents)
+
+	customEvents := state.processCodexStreamEvent(&CodexStreamEvent{
+		Type:  "response.custom_tool_call_input.delta",
+		Delta: "*** Begin Patch",
+	})
+	assert.Empty(t, customEvents)
+
+	// A new output item resets the skip state so subsequent tool calls stream normally.
+	nextEvents := state.processCodexStreamEvent(&CodexStreamEvent{
+		Type: "response.output_item.added",
+		Item: &CodexOutputItem{Type: "function_call", CallID: "call_next", Name: "resolved_tool"},
+	})
+	assert.False(t, state.skipActiveToolItem)
+	require.NotEmpty(t, nextEvents)
+	require.NotNil(t, nextEvents[0].ContentBlock)
+	assert.Equal(t, "resolved_tool", nextEvents[0].ContentBlock.Name)
+	assert.Equal(t, "call_next", nextEvents[0].ContentBlock.ID)
+}
+
+func TestCodexStreamInvalidToolItemClearsToolState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		item CodexOutputItem
+	}{
+		{name: "missing call ID", item: CodexOutputItem{Type: "function_call", Name: "lookup"}},
+		{name: "missing name", item: CodexOutputItem{Type: "function_call", CallID: "call_missing_name"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newCodexStreamState(nil)
+			state.currentToolID = "call_previous"
+			state.currentToolName = "previous_tool"
+			state.currentToolArgs.WriteString(`{"stale":true}`)
+			state.toolInputSent = true
+			state.openBlockType = "tool"
+
+			events := state.processCodexStreamEvent(&CodexStreamEvent{
+				Type: "response.output_item.added",
+				Item: &tt.item,
+			})
+
+			require.Len(t, events, 1)
+			assert.Equal(t, "content_block_stop", events[0].Type)
+			assert.Empty(t, state.currentToolID)
+			assert.Empty(t, state.currentToolName)
+			assert.Zero(t, state.currentToolArgs.Len())
+			assert.False(t, state.toolInputSent)
+			assert.True(t, state.skipActiveToolItem)
+
+			deltaEvents := state.processCodexStreamEvent(&CodexStreamEvent{
+				Type:  "response.function_call_arguments.delta",
+				Delta: `{"query":"test"}`,
+			})
+			assert.Empty(t, deltaEvents)
+		})
 	}
 }
 

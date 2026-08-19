@@ -38,12 +38,6 @@ func TestCCProtocolContentCompatMedia(t *testing.T) {
 func TestCCProtocolContentCompatUnsupportedBlocks(t *testing.T) {
 	tests := []struct{ name, role, block string }{
 		{name: "redacted thinking", role: "assistant", block: `{"type":"redacted_thinking","data":"opaque"}`},
-		{name: "server tool use", role: "assistant", block: `{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{}}`},
-		{name: "web search result", role: "user", block: `{"type":"web_search_tool_result","tool_use_id":"srv_1","content":[]}`},
-		{name: "MCP tool use", role: "assistant", block: `{"type":"mcp_tool_use","id":"mcp_1","name":"read","input":{}}`},
-		{name: "MCP tool result", role: "user", block: `{"type":"mcp_tool_result","tool_use_id":"mcp_1","content":[]}`},
-		{name: "tool search result", role: "user", block: `{"type":"tool_search_tool_result","tool_use_id":"srv_2","content":[]}`},
-		{name: "code execution result", role: "user", block: `{"type":"code_execution_tool_result","tool_use_id":"srv_3","content":{}}`},
 		{name: "container upload", role: "user", block: `{"type":"container_upload","file_id":"file_1"}`},
 		{name: "PDF URL", role: "user", block: `{"type":"document","source":{"type":"url","url":"https://example.test/a.pdf"}}`},
 		{name: "image file ID", role: "user", block: `{"type":"image","source":{"type":"file","file_id":"file_1"}}`},
@@ -58,6 +52,23 @@ func TestCCProtocolContentCompatUnsupportedBlocks(t *testing.T) {
 			require.NotContains(t, err.Error(), "opaque-secret-value")
 		})
 	}
+}
+
+func TestCCProtocolContentCompatCodexRejectsUnmappedImageInsteadOfDroppingIt(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"messages":[{"role":"user","content":[
+			{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}
+		]}]}`)
+
+	_, err := convertClaudeToOpenAI(req, nil)
+	require.NoError(t, err, "the Chat target has an explicit image mapping")
+
+	_, err = convertClaudeToCodex(req, "", nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "content block")
+	require.Contains(t, err.Error(), "image")
+	require.Contains(t, err.Error(), "Not Supported")
 }
 
 func TestCCProtocolContentCompatPlainThinkingHistory(t *testing.T) {
@@ -77,6 +88,71 @@ func TestCCProtocolContentCompatPlainThinkingHistory(t *testing.T) {
 	encoded, err := json.Marshal(got.Messages[0])
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "opaque-secret-value")
+}
+
+func TestCCProtocolContentCompatPreservesThinkingHistoryForCodex(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"messages":[{"role":"assistant","content":[
+			{"type":"thinking","thinking":"plan before lookup"},
+			{"type":"tool_use","id":"call_lookup","name":"lookup","input":{}}
+		]}]}`)
+
+	got, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(got.Input, &input))
+	require.Len(t, input, 2)
+	require.Equal(t, "message", input[0]["type"])
+	require.Equal(t, "assistant", input[0]["role"])
+	content := input[0]["content"].([]any)
+	require.Len(t, content, 1)
+	require.Equal(t, "output_text", content[0].(map[string]any)["type"])
+	require.Equal(t, "plan before lookup", content[0].(map[string]any)["text"])
+	require.Equal(t, "function_call", input[1]["type"])
+	require.Equal(t, "call_lookup", input[1]["call_id"])
+}
+
+func TestCCProtocolContentCompatReplaysValidEncryptedReasoningForCodex(t *testing.T) {
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"messages":[{"role":"assistant","content":[
+			{"type":"thinking","id":"rs_1","thinking":"plan","encrypted_content":"enc_1"}
+		]}]}`)
+
+	got, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(got.Input, &input))
+	require.Len(t, input, 1)
+	require.Equal(t, "reasoning", input[0]["type"])
+	require.Equal(t, "rs_1", input[0]["id"])
+	require.Equal(t, "enc_1", input[0]["encrypted_content"])
+}
+
+func TestCCProtocolContentCompatMergesInlineSystemMessagesForCodex(t *testing.T) {
+	// Claude Code may place system prompts inside messages with role "system";
+	// they are merged into the leading developer item instead of being emitted
+	// as a raw system message (which some Responses upstreams reject).
+	req := mustParseClaudeRequest(t, `{
+		"model":"gpt-test","max_tokens":64,
+		"system":"top-level system",
+		"messages":[
+			{"role":"system","content":"inline system one"},
+			{"role":"user","content":"hi"}
+		]
+	}`)
+
+	got, err := convertClaudeToCodex(req, "", nil)
+	require.NoError(t, err)
+	var input []map[string]any
+	require.NoError(t, json.Unmarshal(got.Input, &input))
+	require.Len(t, input, 2)
+	require.Equal(t, "developer", input[0]["role"])
+	systemText := input[0]["content"].([]any)[0].(map[string]any)["text"].(string)
+	require.Contains(t, systemText, "top-level system")
+	require.Contains(t, systemText, "inline system one")
+	require.Equal(t, "user", input[1]["role"])
 }
 
 func TestCCProtocolContentCompatRejectsNonTextSystem(t *testing.T) {

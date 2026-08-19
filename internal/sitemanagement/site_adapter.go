@@ -111,7 +111,7 @@ func resolveSiteCapabilities(siteType string) SiteCapabilities {
 
 func isKnownCapabilitylessSiteType(siteType string) bool {
 	switch siteType {
-	case "", SiteTypeUnknown, SiteTypeBrand, "Veloera":
+	case "", SiteTypeUnknown, SiteTypeBrand, SiteTypeCommercial, "Veloera":
 		return true
 	default:
 		return false

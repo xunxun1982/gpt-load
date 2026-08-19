@@ -159,6 +159,26 @@ test("AnyRouter balance capability is exposed by the site table", () => {
   assert.match(panel, /"wong-gongyi",\s+"anyrouter"/);
 });
 
+test("legacy empty site types are normalized before table state and balance updates", async () => {
+  assert.match(
+    panel,
+    /const normalizedSites = result\.sites\.map\(site => \(\{[\s\S]*site_type: normalizeManagedSiteType\(site\.site_type\)[\s\S]*\}\)\)/
+  );
+  const normalizeFunction = panel.match(
+    /function normalizeManagedSiteType\([^)]*\)[^{]*\{[\s\S]*?\n\}/
+  );
+  assert.ok(normalizeFunction);
+  const { outputText } = ts.transpileModule(`export ${normalizeFunction[0]}`, {
+    compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+  });
+  const { normalizeManagedSiteType } = await import(
+    `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
+  );
+  assert.equal(normalizeManagedSiteType(""), "unknown");
+  assert.match(panel, /sites\.value = normalizedSites/);
+  assert.match(panel, /updateSiteBalances\(normalizedSites, siteBalanceRevision\)/);
+});
+
 test("site auth hints explain AnyRouter user ID and browser-bound cookies", () => {
   assert.match(zhSiteLocale, /AnyRouter[^\n]*Cookie/);
   assert.match(zhSiteLocale, /anyrouterUserIDHint[^\n]*(必须|必填)/);
@@ -174,6 +194,22 @@ test("site auth hints explain AnyRouter user ID and browser-bound cookies", () =
   assert.match(jaSiteLocale, /ユーザーID[^\n]*(推奨|必要)/);
   assert.match(jaSiteLocale, /ブラウザ指紋|送信元IP/);
   assert.doesNotMatch(jaSiteLocale, /AnyRouter[^\n]*ユーザーIDは空欄/);
+});
+
+test("commercial site type is positioned between Brand and Other and uses an explicit warning tag", () => {
+  assert.match(siteManagementApi, /ManagedSiteType[\s\S]*\| "commercial"/);
+  assert.match(
+    panel,
+    /siteTypeBrand[\s\S]*value: "brand"[\s\S]*siteTypeCommercial[\s\S]*value: "commercial"[\s\S]*siteTypeOther[\s\S]*value: "unknown"/
+  );
+  assert.match(panel, /function renderSiteTypeTag[\s\S]*type === "commercial" \? "warning"/);
+  assert.match(panel, /render: row => renderSiteTypeTag\(row\.site_type\)/);
+  assert.match(panel, /:render-label="renderSiteTypeOptionLabel"/);
+  assert.match(panel, /capabilitylessSiteTypes[\s\S]*"brand"[\s\S]*"commercial"[\s\S]*"Veloera"/);
+  assert.match(panel, /function isCapabilitylessSiteType/);
+  assert.match(zhSiteLocale, /siteTypeCommercial:\s*"商业"/);
+  assert.match(enSiteLocale, /siteTypeCommercial:\s*"Commercial"/);
+  assert.match(jaSiteLocale, /siteTypeCommercial:\s*"商用"/);
 });
 
 test("provider-specific required fields are validated before submit", () => {

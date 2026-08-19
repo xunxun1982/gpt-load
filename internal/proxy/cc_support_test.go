@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,7 +21,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 )
 
 func captureGlobalLogrusEntries(t *testing.T) *logrustest.Hook {
@@ -52,17 +57,37 @@ func logrusHookText(hook *logrustest.Hook) string {
 	return b.String()
 }
 
+func TestClaudeOutputEffortTrimsWhitespace(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name   string
+		effort string
+		want   string
+	}{
+		{name: "known value", effort: " high ", want: "high"},
+		{name: "provider-defined value", effort: " future_effort ", want: "future_effort"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			effort, err := claudeOutputEffort(&ClaudeOutputConfig{Effort: tt.effort})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, effort)
+		})
+	}
+}
+
 func TestApplyCCRequestConversionDirectStoresModelRedirectTargetIndex(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	body := []byte(`{"model":"virtual-model","messages":[{"role":"user","content":"hello"}]}`)
 	group := &models.Group{
-		ID:          43,
-		Name:        "openai-group",
-		ChannelType: "openai",
-		GroupType:   "standard",
-		Config:      map[string]any{"cc_support": true},
+		ID:                  43,
+		Name:                "openai-group",
+		ChannelType:         "openai",
+		GroupType:           "standard",
+		Config:              map[string]any{"cc_support": true},
+		ModelRedirectStrict: true,
 		ModelRedirectMapV2: map[string]*models.ModelRedirectRuleV2{
 			"virtual-model": {
 				Targets: []models.ModelRedirectTarget{
@@ -87,6 +112,324 @@ func TestApplyCCRequestConversionDirectStoresModelRedirectTargetIndex(t *testing
 	targetIndex, exists := ctx.Get(ctxKeyModelRedirectTargetIndex)
 	require.True(t, exists)
 	require.Equal(t, 0, targetIndex)
+}
+
+func TestHandleProxyForceCCStrictModelRedirectRetries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Parallel()
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	var requestCount atomic.Int64
+	receivedModels := make(chan string, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		model, ok := payload["model"].(string)
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// requestCount assertion below instead of hanging the handler goroutine.
+		select {
+		case receivedModels <- model:
+		default:
+		}
+		attempt := requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if attempt == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"error":{"message":"retry"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_cc_retry","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	group := createTestGroup(t, db, "force-cc-strict-redirect", "openai")
+	group.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	group.Config = map[string]any{"cc_support": true, "max_retries": 1, "blacklist_threshold": 100}
+	group.ModelRedirectRulesV2 = datatypes.JSON(`{"deepseek-v4-flash":{"targets":[{"model":"deepseek-v4-flash-free","weight":100}]}}`)
+	group.ModelRedirectStrict = true
+	require.NoError(t, db.Save(group).Error)
+	createTestKey(t, db, group.ID, "sk-force-cc-strict-redirect", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	body := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}],"max_tokens":16,"stream":false}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+group.Name+"/claude/v1/messages", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: group.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.Equal(t, int64(2), requestCount.Load())
+	require.Equal(t, []string{"deepseek-v4-flash-free", "deepseek-v4-flash-free"}, []string{<-receivedModels, <-receivedModels})
+}
+
+func TestHandleProxyAggregateForceCCAppliesOverridesAfterConversion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps, memStore := setupTestProxyServerWithStore(t, db)
+
+	var requestCount atomic.Int64
+	receivedPath := make(chan string, 1)
+	receivedBody := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// requestCount assertion below instead of hanging the handler goroutine.
+		select {
+		case receivedPath <- r.URL.Path:
+		default:
+		}
+		select {
+		case receivedBody <- body:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_agg_cc","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "agg-cc-sub", "openai")
+	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	subGroup.Config = map[string]any{
+		"cc_support":          true,
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	subGroup.ParamOverrides = datatypes.JSONMap{"reasoning_effort": "xhigh"}
+	require.NoError(t, db.Save(subGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-force-cc",
+		ChannelType: "openai",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[]`),
+		Config:      map[string]any{"max_retries": 0},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      subGroup.ID,
+		SubGroupName:    subGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, subGroup.ID, "sk-agg-force-cc", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, memStore.Delete(activeKeysListKeyForTest(uint64(aggregateGroup.ID))))
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	body := []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}],"max_tokens":16,"stream":false}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/claude/v1/messages", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: aggregateGroup.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.Equal(t, int64(1), requestCount.Load())
+	require.Equal(t, "/v1/chat/completions", <-receivedPath)
+	var upstreamPayload map[string]any
+	require.NoError(t, json.Unmarshal(<-receivedBody, &upstreamPayload))
+	require.Contains(t, upstreamPayload, "messages")
+	require.NotContains(t, upstreamPayload, "max_tokens_to_sample")
+	require.Equal(t, "xhigh", upstreamPayload["reasoning_effort"])
+}
+
+func TestHandleProxyAggregateForceCCCountTokensAppliesOverridesBeforeInterception(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupTestDB(t)
+	ps, memStore := setupTestProxyServerWithStore(t, db)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(upstream.Close)
+
+	subGroup := createTestGroup(t, db, "agg-cc-count-sub", "openai")
+	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	subGroup.Config = map[string]any{
+		"cc_support":          true,
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	subGroup.ParamOverrides = datatypes.JSONMap{"prompt": strings.Repeat("x", 4000)}
+	require.NoError(t, db.Save(subGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-force-cc-count",
+		ChannelType: "openai",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[]`),
+		Config:      map[string]any{"max_retries": 0},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	require.NoError(t, db.Create(&models.GroupSubGroup{
+		GroupID:         aggregateGroup.ID,
+		SubGroupID:      subGroup.ID,
+		SubGroupName:    subGroup.Name,
+		SubGroupEnabled: true,
+		Weight:          100,
+	}).Error)
+
+	createTestKey(t, db, subGroup.ID, "sk-agg-force-cc-count", ps.encryptionSvc)
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, memStore.Delete(activeKeysListKeyForTest(uint64(aggregateGroup.ID))))
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	body := []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"x"}]}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/claude/v1/messages/count_tokens", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "group_name", Value: aggregateGroup.Name}}
+
+	ps.HandleProxy(c)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var result struct {
+		InputTokens int `json:"input_tokens"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	assert.Greater(t, result.InputTokens, 100)
+}
+
+func TestAggregateForceCCFailureFallsBackToNativeAnthropicSubGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Parallel()
+
+	db := setupTestDB(t)
+	ps := setupTestProxyServer(t, db)
+
+	type receivedRequest struct {
+		path     string
+		rawQuery string
+		body     map[string]any
+	}
+	received := make(chan receivedRequest, 2)
+	var attempts atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// Non-blocking: an unexpected extra attempt must fail via the
+		// attempts assertion below instead of hanging the handler goroutine.
+		select {
+		case received <- receivedRequest{path: r.URL.Path, rawQuery: r.URL.RawQuery, body: payload}:
+		default:
+		}
+		attempt := attempts.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if attempt == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"error":{"message":"fail forced CC subgroup"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"msg_native_fallback","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"native fallback ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	forcedSubGroup := createTestGroup(t, db, "agg-cc-fail-forced", "openai")
+	forcedSubGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	forcedSubGroup.Config = map[string]any{
+		"cc_support":          true,
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	require.NoError(t, db.Save(forcedSubGroup).Error)
+
+	nativeSubGroup := createTestGroup(t, db, "agg-cc-pass-native", "anthropic")
+	nativeSubGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
+	nativeSubGroup.Config = map[string]any{
+		"max_retries":         0,
+		"blacklist_threshold": 100,
+	}
+	require.NoError(t, db.Save(nativeSubGroup).Error)
+
+	aggregateGroup := &models.Group{
+		Name:        "agg-cc-force-to-native",
+		ChannelType: "anthropic",
+		GroupType:   "aggregate",
+		Enabled:     true,
+		Upstreams:   []byte(`[]`),
+		Config:      map[string]any{"max_retries": 1, "sub_max_retries": 0},
+	}
+	require.NoError(t, db.Create(aggregateGroup).Error)
+	for _, subGroup := range []*models.Group{forcedSubGroup, nativeSubGroup} {
+		require.NoError(t, db.Create(&models.GroupSubGroup{
+			GroupID:         aggregateGroup.ID,
+			SubGroupID:      subGroup.ID,
+			SubGroupName:    subGroup.Name,
+			SubGroupEnabled: true,
+			Weight:          100,
+		}).Error)
+		createTestKey(t, db, subGroup.ID, "sk-"+subGroup.Name, ps.encryptionSvc)
+	}
+	require.NoError(t, ps.keyProvider.LoadKeysFromDB())
+	require.NoError(t, ps.groupManager.Initialize())
+	t.Cleanup(func() { ps.groupManager.Stop(context.Background()) })
+
+	cachedAggregate, err := ps.groupManager.GetGroupByName(aggregateGroup.Name)
+	require.NoError(t, err)
+	body := []byte(`{"model":"claude-test","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy/"+aggregateGroup.Name+"/claude/v1/messages?beta=true&trace=keep", bytes.NewReader(body))
+	retryCtx := &retryContext{
+		excludedSubGroups:   make(map[uint]bool, len(cachedAggregate.SubGroups)),
+		originalBodyBytes:   body,
+		originalPath:        c.Request.URL.Path,
+		originalRawQuery:    c.Request.URL.RawQuery,
+		subGroupKeyRetryMap: make(map[uint]int, len(cachedAggregate.SubGroups)),
+		forcedSubGroupID:    forcedSubGroup.ID,
+	}
+
+	ps.executeRequestWithAggregateRetry(c, nil, cachedAggregate, body, false, time.Now(), retryCtx)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	// Assert the upstream attempt count before draining the observation
+	// channel: a missing attempt must fail here instead of blocking the
+	// receives, and an unexpected extra attempt must not be dropped silently.
+	require.Equal(t, int64(2), attempts.Load())
+	first := <-received
+	second := <-received
+	assert.Equal(t, "/v1/chat/completions", first.path)
+	assert.Equal(t, "trace=keep", first.rawQuery)
+	assert.Contains(t, first.body, "messages")
+	assert.Contains(t, first.body, "max_tokens")
+	assert.Equal(t, "/v1/messages", second.path)
+	assert.Equal(t, "beta=true&trace=keep", second.rawQuery)
+	assert.Contains(t, second.body, "messages")
+	assert.Equal(t, float64(64), second.body["max_tokens"])
+	assert.NotContains(t, second.body, "reasoning_effort")
+	assert.False(t, isCCEnabled(c))
+	assert.False(t, isCodexEnabled(c))
+	assert.False(t, isFunctionCallEnabled(c))
+	assert.JSONEq(t, `{"id":"msg_native_fallback","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"native fallback ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`, w.Body.String())
 }
 
 // TestParseFunctionCallsFromContentForCC_TodoWriteNormalization verifies that
@@ -6051,6 +6394,23 @@ func TestConvertClaudeToOpenAI(t *testing.T) {
 	}
 }
 
+func TestConvertClaudeToOpenAIKeepsPromptWhenInlineMessagesAreSystemOnly(t *testing.T) {
+	t.Parallel()
+
+	got, err := convertClaudeToOpenAI(&ClaudeRequest{
+		Prompt: "  continue the task  ",
+		Messages: []ClaudeMessage{{
+			Role:    "system",
+			Content: json.RawMessage(`"system context"`),
+		}},
+	}, nil)
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 2)
+	assert.Equal(t, "system", got.Messages[0].Role)
+	assert.Equal(t, "user", got.Messages[1].Role)
+	assert.JSONEq(t, `"continue the task"`, string(got.Messages[1].Content))
+}
+
 // TestNormalizeArgsLooseMode tests parameter normalization in loose mode
 // Loose mode automatically converts JSON strings to objects/arrays and infers types
 func TestNormalizeArgsLooseMode(t *testing.T) {
@@ -6351,6 +6711,19 @@ func TestGitBashPathConversion(t *testing.T) {
 }
 
 // TestHandleCCNormalResponse tests non-streaming response conversion
+func TestMapStatusToClaudeErrorTypeMaps529ToOverloaded(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "overloaded_error", mapStatusToClaudeErrorType(529))
+}
+
+func TestClaudeErrorTypeMappingsPreserveTimeout(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "timeout_error", mapStatusToClaudeErrorType(http.StatusGatewayTimeout))
+	assert.Equal(t, "timeout_error", apiErrorTypeToClaudeErrorType("timeout_error"))
+}
+
 func TestHandleCCNormalResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

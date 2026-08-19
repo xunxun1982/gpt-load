@@ -85,17 +85,6 @@ func isValidToolCallArguments(toolName, arguments string) bool {
 
 // maxContentBufferBytes is declared in function_call.go (same package proxy).
 // We keep the single source of truth there to avoid drift without adding extra files.
-const (
-	// Thinking hints injected into user messages when extended thinking is enabled.
-	// Format follows b4u2cc reference implementation using ANTML-style tags with
-	// backslash-b escape sequence. The upstream parser looks for these generic
-	// </antml> closers rather than matching the opening tag name.
-	// NOTE: The \b in the tag name is intentional - it's a marker used by some
-	// models to identify internal control tags that should not be echoed to users.
-	ThinkingHintInterleaved = "<antml\\b:thinking_mode>interleaved</antml>"
-	ThinkingHintMaxLength   = "<antml\\b:max_thinking_length>%d</antml>"
-)
-
 // clearUpstreamEncodingHeaders removes upstream transfer-related headers before
 // writing a synthesized response body for CC support. This avoids mismatches
 // between headers and the rewritten body (for example after decompression).
@@ -182,6 +171,16 @@ func isCCSupportEnabled(group *models.Group) bool {
 		return false
 	}
 	return getGroupConfigBool(group, "cc_support")
+}
+
+func isClaudeEndpointSupported(group *models.Group) bool {
+	if group == nil {
+		return false
+	}
+	if group.ChannelType == "anthropic" {
+		return true
+	}
+	return isCCSupportEnabled(group)
 }
 
 // isInterceptEventLogEnabled checks whether the intercept_event_log flag is enabled for the given group.
@@ -363,19 +362,22 @@ type ClaudeMessage struct {
 
 // ClaudeContentBlock represents a content block in Claude format.
 type ClaudeContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	Thinking  string          `json:"thinking,omitempty"`
-	Signature string          `json:"signature,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"`
-	Source    json.RawMessage `json:"source,omitempty"`
-	Title     string          `json:"title,omitempty"`
-	Context   string          `json:"context,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	// EncryptedContent is accepted for Responses reasoning replay when a client
+	// provides the original opaque reasoning item metadata.
+	EncryptedContent string          `json:"encrypted_content,omitempty"`
+	ID               string          `json:"id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Input            json.RawMessage `json:"input,omitempty"`
+	ToolUseID        string          `json:"tool_use_id,omitempty"`
+	Content          json.RawMessage `json:"content,omitempty"`
+	Source           json.RawMessage `json:"source,omitempty"`
+	Title            string          `json:"title,omitempty"`
+	Context          string          `json:"context,omitempty"`
+	IsError          bool            `json:"is_error,omitempty"`
 }
 
 // ClaudeTool represents a tool definition in Claude format.
@@ -517,8 +519,7 @@ type OpenAIRequest struct {
 	// ParallelToolCalls is preserved when converting Responses requests to Chat Completions
 	// for the explicit /codex force endpoint.
 	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
-	// ReasoningEffort enables reasoning for models that support it (e.g., o1, o3 series).
-	// Valid values: "low", "medium", "high". Only sent when thinking is enabled.
+	// ReasoningEffort is provider-defined and is forwarded without value normalization.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	ServiceTier     string `json:"service_tier,omitempty"`
 	User            string `json:"user,omitempty"`
@@ -596,13 +597,8 @@ func claudeOutputEffort(config *ClaudeOutputConfig) (string, error) {
 	if ccRawJSONPresent(config.Format) {
 		return "", ccUnsupported("output_config field", "format")
 	}
-	effort := strings.ToLower(strings.TrimSpace(config.Effort))
-	switch effort {
-	case "", "low", "medium", "high":
-		return effort, nil
-	default:
-		return "", ccUnsupported("output_config effort", effort)
-	}
+	// Values stay provider-defined, but surrounding whitespace is never meaningful.
+	return strings.TrimSpace(config.Effort), nil
 }
 
 func claudeServiceTierToOpenAI(value string) (string, error) {
@@ -618,18 +614,13 @@ func claudeServiceTierToOpenAI(value string) (string, error) {
 	}
 }
 
-func claudeThinkingActive(config *ThinkingConfig) (bool, error) {
-	if config == nil {
-		return false, nil
-	}
-	switch strings.ToLower(strings.TrimSpace(config.Type)) {
-	case "", "disabled":
-		return false, nil
-	case "enabled", "adaptive":
-		return true, nil
-	default:
-		return false, ccUnsupported("thinking type", config.Type)
-	}
+func claudeThinkingActive(config *ThinkingConfig) bool {
+	return config != nil && strings.TrimSpace(config.Type) != "" &&
+		!strings.EqualFold(strings.TrimSpace(config.Type), "disabled")
+}
+
+func claudeThinkingDisabled(config *ThinkingConfig) bool {
+	return config != nil && strings.EqualFold(strings.TrimSpace(config.Type), "disabled")
 }
 
 func convertClaudeSystemContent(raw json.RawMessage) (string, error) {
@@ -807,14 +798,14 @@ func claudeToolResultContent(block ClaudeContentBlock) (string, error) {
 		return "", nil
 	}
 	var value any
-	if err := json.Unmarshal(block.Content, &value); err != nil {
+	if err := decodeCodexJSONUseNumber(block.Content, &value); err != nil {
 		return "", fmt.Errorf("invalid Anthropic tool_result content: %w", err)
 	}
 	if block.IsError {
 		value = map[string]any{"is_error": true, "content": value}
 	}
 	if text, ok := value.(string); ok {
-		return convertWindowsPathsInToolResult(text), nil
+		return text, nil
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -847,10 +838,7 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 	if err != nil {
 		return nil, err
 	}
-	thinkingActive, err := claudeThinkingActive(claudeReq.Thinking)
-	if err != nil {
-		return nil, err
-	}
+	thinkingActive := claudeThinkingActive(claudeReq.Thinking)
 	serviceTier, err := claudeServiceTierToOpenAI(claudeReq.ServiceTier)
 	if err != nil {
 		return nil, err
@@ -875,39 +863,58 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 		openaiReq.MaxTokens = &effectiveMaxTokens
 	}
 
+	// Claude Code may (non-conformingly) place system prompts inside messages
+	// with role "system". Merge those into the leading system message instead
+	// of failing the conversion; OpenAI requires system to be the first
+	// message when present.
+	inlineSystem, nonSystemMessages, err := collectInlineClaudeSystemMessages(claudeReq.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert Claude message: %w", err)
+	}
+	var convertedMessages []OpenAIMessage
+	for _, msg := range nonSystemMessages {
+		openaiMsg, err := convertClaudeMessageToOpenAI(msg, toolNameShortMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
+		}
+		convertedMessages = append(convertedMessages, openaiMsg...)
+	}
+
 	// Convert system message
-	messages := make([]OpenAIMessage, 0, len(claudeReq.Messages)+1)
+	systemContent := ""
 	if len(claudeReq.System) > 0 {
-		systemContent, err := convertClaudeSystemContent(claudeReq.System)
+		var err error
+		systemContent, err = convertClaudeSystemContent(claudeReq.System)
 		if err != nil {
 			return nil, err
 		}
+	}
+	if inlineSystem != "" {
 		if systemContent != "" {
-			contentJSON := marshalStringAsJSONRaw("system", systemContent)
-			messages = append(messages, OpenAIMessage{
-				Role:    "system",
-				Content: contentJSON,
-			})
+			systemContent += "\n\n" + inlineSystem
+		} else {
+			systemContent = inlineSystem
 		}
 	}
 
-	// Treat prompt as a single user message when no explicit messages are provided.
-	if len(claudeReq.Messages) == 0 && strings.TrimSpace(claudeReq.Prompt) != "" {
+	messages := make([]OpenAIMessage, 0, len(convertedMessages)+1)
+	if systemContent != "" {
+		contentJSON := marshalStringAsJSONRaw("system", systemContent)
+		messages = append(messages, OpenAIMessage{
+			Role:    "system",
+			Content: contentJSON,
+		})
+	}
+	messages = append(messages, convertedMessages...)
+
+	// Treat prompt as a single user message when no non-system messages are provided.
+	if len(nonSystemMessages) == 0 && strings.TrimSpace(claudeReq.Prompt) != "" {
 		promptText := strings.TrimSpace(claudeReq.Prompt)
 		contentJSON := marshalStringAsJSONRaw("prompt", promptText)
 		messages = append(messages, OpenAIMessage{
 			Role:    "user",
 			Content: contentJSON,
 		})
-	}
-
-	// Convert messages
-	for _, msg := range claudeReq.Messages {
-		openaiMsg, err := convertClaudeMessageToOpenAI(msg, toolNameShortMap)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert Claude message: %w", err)
-		}
-		messages = append(messages, openaiMsg...)
 	}
 
 	// Some upstream providers (including GLM chat-completion) require that the
@@ -931,29 +938,10 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 
 	openaiReq.Messages = messages
 
-	// Inject thinking hints when extended thinking is enabled.
-	// NOTE: Only "enabled" type is currently supported. Other values like "disabled"
-	// are silently ignored to allow graceful degradation.
-	if thinkingActive {
-		for i := len(openaiReq.Messages) - 1; i >= 0; i-- {
-			if openaiReq.Messages[i].Role == "user" {
-				hint := ThinkingHintInterleaved
-				if claudeReq.Thinking.BudgetTokens > 0 {
-					hint += fmt.Sprintf(ThinkingHintMaxLength, claudeReq.Thinking.BudgetTokens)
-				}
-				openaiReq.Messages[i].Content = appendToContent(openaiReq.Messages[i].Content, hint)
-				break
-			}
-		}
-	}
-
 	// Convert tools with optional name shortening for OpenAI's 64-char limit
 	if len(claudeReq.Tools) > 0 {
 		tools := make([]OpenAITool, 0, len(claudeReq.Tools))
 		for _, tool := range claudeReq.Tools {
-			if tool.Type != "" && tool.Type != "custom" {
-				return nil, ccUnsupported("tool type", tool.Type)
-			}
 			// Apply shortened name if available
 			toolName := tool.Name
 			if toolNameShortMap != nil {
@@ -992,22 +980,81 @@ func convertClaudeToOpenAI(claudeReq *ClaudeRequest, toolNameShortMap map[string
 	openaiReq.ToolChoice = toolChoice
 	openaiReq.ParallelToolCalls = parallelToolCalls
 
-	// Set reasoning_effort for models that support native reasoning (e.g., o1, o3 series).
-	// This is complementary to thinking hints - some models use reasoning_effort instead of ANTML tags.
-	// OpenAI Chat Completions API uses flat "reasoning_effort" field (vs Codex's nested "reasoning.effort").
-	if effort != "" {
+	// Explicit effort only changes protocol field location. A token budget has no
+	// lossless equivalent and must not be guessed into an effort level.
+	// Explicitly disabled thinking takes precedence over a conflicting effort
+	// value; forwarding both can re-enable reasoning or yield 400 upstream.
+	if claudeThinkingDisabled(claudeReq.Thinking) {
+		// Do not gate explicit disable by model name: upstream model sets are dynamic,
+		// while omitting the field can silently restore the provider's reasoning default.
+		openaiReq.ReasoningEffort = "none"
+	} else if effort != "" {
 		openaiReq.ReasoningEffort = effort
-	} else if thinkingActive && claudeReq.Thinking != nil && strings.EqualFold(claudeReq.Thinking.Type, "enabled") {
-		openaiReq.ReasoningEffort = thinkingBudgetToReasoningEffortOpenAI(claudeReq.Thinking.BudgetTokens)
 	}
 	if thinkingActive {
 		logrus.WithFields(logrus.Fields{
-			"budget_tokens":    claudeReq.Thinking.BudgetTokens,
 			"reasoning_effort": openaiReq.ReasoningEffort,
-		}).Debug("CC: Set reasoning_effort for thinking mode")
+		}).Debug("CC: Preserved explicit reasoning effort for thinking mode")
 	}
 
 	return openaiReq, nil
+}
+
+// claudeMessageSystemText extracts the text of a Claude message that carries
+// role "system" (a non-conforming but real-world placement of system prompts
+// used by Claude Code). Non-text blocks are skipped; returns "" when empty.
+func claudeMessageSystemText(msg ClaudeMessage) (string, error) {
+	var contentStr string
+	if err := json.Unmarshal(msg.Content, &contentStr); err == nil {
+		return contentStr, nil
+	}
+	var blocks []ClaudeContentBlock
+	if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+		return "", fmt.Errorf("failed to parse content blocks: %w", err)
+	}
+	var textParts []string
+	for _, block := range blocks {
+		if block.Type == "text" {
+			textParts = append(textParts, block.Text)
+			continue
+		}
+		// Inline system messages are a non-conforming Claude Code placement and
+		// stay tolerant: unlike the top-level system field (convertClaudeSystemContent,
+		// which fails closed on non-text blocks), the dropped block is only logged
+		// so real-world traffic is not rejected while the loss stays observable.
+		logrus.WithField("block_type", block.Type).
+			Warn("CC: Dropped non-text block from inline system message")
+	}
+	return strings.Join(textParts, "\n"), nil
+}
+
+// collectInlineClaudeSystemMessages keeps non-system message order while
+// centralizing the non-conforming Claude Code system-message merge policy.
+func collectInlineClaudeSystemMessages(messages []ClaudeMessage) (string, []ClaudeMessage, error) {
+	inlineSystemParts := make([]string, 0)
+	nonSystemMessages := messages
+	foundSystem := false
+	for i, msg := range messages {
+		if msg.Role != "system" {
+			if foundSystem {
+				nonSystemMessages = append(nonSystemMessages, msg)
+			}
+			continue
+		}
+		if !foundSystem {
+			foundSystem = true
+			nonSystemMessages = make([]ClaudeMessage, 0, len(messages)-1)
+			nonSystemMessages = append(nonSystemMessages, messages[:i]...)
+		}
+		text, err := claudeMessageSystemText(msg)
+		if err != nil {
+			return "", nil, err
+		}
+		if text != "" {
+			inlineSystemParts = append(inlineSystemParts, text)
+		}
+	}
+	return strings.Join(inlineSystemParts, "\n\n"), nonSystemMessages, nil
 }
 
 // convertClaudeMessageToOpenAI converts a single Claude message to OpenAI format.
@@ -1037,15 +1084,15 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 		var textParts, thinkingParts []string
 		var toolCalls []OpenAIToolCall
 		for _, block := range blocks {
-			switch block.Type {
-			case "text":
+			switch {
+			case block.Type == "text":
 				textParts = append(textParts, block.Text)
-			case "thinking":
+			case block.Type == "thinking":
 				// The target has no signature field; preserve visible thinking text and drop the opaque signature.
 				if block.Thinking != "" {
 					thinkingParts = append(thinkingParts, block.Thinking)
 				}
-			case "tool_use":
+			case isClaudeToolUseBlock(block):
 				if block.ID == "" || block.Name == "" {
 					return nil, fmt.Errorf("Anthropic tool_use requires id and name")
 				}
@@ -1053,20 +1100,24 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 				if short, ok := toolNameShortMap[block.Name]; ok {
 					toolName = short
 				}
-				arguments := strings.TrimSpace(string(block.Input))
-				if arguments == "" || arguments == "null" {
+				arguments := string(block.Input)
+				if strings.TrimSpace(arguments) == "" || strings.TrimSpace(arguments) == "null" {
 					arguments = "{}"
 				}
-				var input map[string]any
-				if err := json.Unmarshal([]byte(arguments), &input); err != nil {
-					return nil, fmt.Errorf("Anthropic tool_use input must be an object: %w", err)
+				var input any
+				if err := decodeCodexJSONUseNumber([]byte(arguments), &input); err != nil {
+					return nil, fmt.Errorf("Anthropic tool_use input must be valid JSON: %w", err)
 				}
 				toolCalls = append(toolCalls, OpenAIToolCall{
 					ID: block.ID, Type: "function",
 					Function: OpenAIFunctionCall{Name: toolName, Arguments: arguments},
 				})
-			case "redacted_thinking":
-				return nil, ccUnsupported("content block", block.Type)
+			case isClaudeToolResultBlock(block):
+				// Anthropic only allows tool_result blocks in user messages, so an
+				// assistant-role tool result is non-conformant input with no OpenAI
+				// equivalent. Reject it explicitly instead of the generic default,
+				// keeping the same policy as the Codex converter.
+				return nil, ccUnsupported("content block in assistant message", block.Type)
 			default:
 				return nil, ccUnsupported("content block", block.Type)
 			}
@@ -1109,14 +1160,14 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 		return nil
 	}
 	for _, block := range blocks {
-		switch block.Type {
-		case "text", "image", "document":
+		switch {
+		case block.Type == "text" || block.Type == "image" || block.Type == "document":
 			part, err := claudeBlockToOpenAIUserPart(block)
 			if err != nil {
 				return nil, err
 			}
 			userParts = append(userParts, part)
-		case "tool_result":
+		case isClaudeToolResultBlock(block):
 			if block.ToolUseID == "" {
 				return nil, fmt.Errorf("Anthropic tool_result requires tool_use_id")
 			}
@@ -1138,6 +1189,27 @@ func convertClaudeMessageToOpenAI(msg ClaudeMessage, toolNameShortMap map[string
 	return result, nil
 }
 
+func isClaudeToolUseBlock(block ClaudeContentBlock) bool {
+	if block.Type == "tool_use" {
+		return true
+	}
+	// Suffix forms cover Anthropic namespaced variants (server_tool_use,
+	// future_tool_call). Substring matching would also capture unrelated
+	// error-qualified variants (e.g. mcp_tool_use_error) that must fall
+	// through to the unsupported-block handling.
+	return strings.HasSuffix(block.Type, "_tool_use") || strings.HasSuffix(block.Type, "_tool_call")
+}
+
+func isClaudeToolResultBlock(block ClaudeContentBlock) bool {
+	if block.Type == "tool_result" {
+		return true
+	}
+	// Same policy as isClaudeToolUseBlock: accept namespaced suffix forms
+	// (web_search_tool_result, code_execution_tool_result) but not their
+	// error variants (*_tool_result_error).
+	return strings.HasSuffix(block.Type, "_tool_result") || strings.HasSuffix(block.Type, "_tool_output")
+}
+
 // getThinkingModel returns the thinking model configured for the group.
 // Returns empty string if not configured.
 func getThinkingModel(group *models.Group) string {
@@ -1156,43 +1228,6 @@ func getThinkingModel(group *models.Group) string {
 	default:
 		return ""
 	}
-}
-
-// thinkingBudgetToReasoningEffortOpenAI converts Claude thinking budget_tokens to OpenAI reasoning effort.
-// Returns the effort level ("low", "medium", "high") based on token budget.
-// This is used for OpenAI models that support native reasoning (e.g., o1, o3, o4-mini, GPT-5 series).
-//
-// COMPATIBILITY NOTE: We intentionally use only "low", "medium", "high" values for maximum compatibility.
-// While newer models (GPT-5.2) support additional levels like "minimal", "none", and "xhigh", these are
-// not universally supported across all reasoning models:
-// - o1, o3, o3-mini, o4-mini: only support "low", "medium", "high"
-// - GPT-5, GPT-5-mini, GPT-5-nano: support "none", "minimal", "low", "medium", "high"
-// - GPT-5.2: supports "none", "minimal", "low", "medium", "high", "xhigh"
-// Using unsupported values would cause API errors. The three-level mapping provides safe coverage
-// for all reasoning models while still offering meaningful differentiation.
-//
-// AI REVIEW NOTE: Suggestion to use proportional allocation (budgetTokens/maxTokens) was rejected.
-// OpenAI's reasoning_effort is an independent parameter controlling reasoning depth, NOT a proportion
-// of max_tokens. Per OpenAI API docs, it accepts discrete values that control how many reasoning
-// tokens the model generates internally. Claude's budget_tokens represents user's expected thinking
-// depth, which maps naturally to OpenAI's effort levels using absolute thresholds.
-// Reference: https://platform.openai.com/docs/guides/reasoning
-func thinkingBudgetToReasoningEffortOpenAI(budgetTokens int) string {
-	// Mapping based on typical token budgets:
-	// - low: < 1000 tokens (quick responses)
-	// - medium: 1000-10000 tokens (default, balanced)
-	// - high: > 10000 tokens (deep reasoning)
-	// NOTE: We don't use "xhigh" (GPT-5.2 only) or "minimal"/"none" (GPT-5+ only) for compatibility.
-	if budgetTokens <= 0 {
-		return "medium" // Default when not specified
-	}
-	if budgetTokens < 1000 {
-		return "low"
-	}
-	if budgetTokens > 10000 {
-		return "high"
-	}
-	return "medium"
 }
 
 // applyCCRequestConversionDirect converts Claude request to OpenAI format directly.
@@ -1423,7 +1458,10 @@ func mapStatusToClaudeErrorType(statusCode int) string {
 		return "not_found_error"
 	case statusCode == 429:
 		return "rate_limit_error"
-	case statusCode == 502 || statusCode == 503:
+	case statusCode == 504:
+		return "timeout_error"
+	case statusCode == 502 || statusCode == 503 || statusCode == 529:
+		// Anthropic documents 529 as overloaded_error; keep proxy-generated errors protocol-correct.
 		return "overloaded_error"
 	case statusCode >= 500 && statusCode < 600:
 		return "api_error"
@@ -1446,6 +1484,8 @@ func apiErrorTypeToClaudeErrorType(errorType string) string {
 		return "rate_limit_error"
 	case "overloaded_error":
 		return "overloaded_error"
+	case "timeout_error":
+		return "timeout_error"
 	case "server_error", "internal_error":
 		return "api_error"
 	default:
@@ -4235,15 +4275,12 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 				logrus.WithError(err).Warn("CC: SSE read timeout, sending error to client")
 				isErrorRecovery = true
 				// Send error event to client
-				// NOTE: Using "api_error" instead of "timeout_error" per Claude API documentation.
-				// Claude's standard error types are: invalid_request_error, authentication_error,
-				// permission_error, not_found_error, request_too_large, rate_limit_error, api_error,
-				// overloaded_error. "timeout_error" is not a standard type, so we use "api_error"
-				// which maps to HTTP 500 for unexpected server-side failures including timeouts.
+				// Anthropic documents timeout_error as HTTP 504. Preserve that protocol
+				// distinction so clients can classify this transient failure correctly.
 				errorEvent := ClaudeStreamEvent{
 					Type: "error",
 					Error: &ClaudeError{
-						Type:    "api_error",
+						Type:    "timeout_error",
 						Message: "Upstream did not respond within the expected time. The model may be processing a complex request.",
 					},
 				}

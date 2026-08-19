@@ -18,6 +18,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 type proxyPoolSettingsProviderStub struct {
@@ -54,6 +55,34 @@ func TestProxyPoolServiceResolveProxyReferenceUsesManualProxyPoolItem(t *testing
 	resolved, err := svc.ResolveProxyURL(context.Background(), utils.BuildProxyPoolItemRef(item.ID))
 	require.NoError(t, err)
 	assert.Equal(t, "http://user:pass@manual.example.com:8080", resolved)
+}
+
+func TestProxyPoolServiceResolveProxyURLsUsesSingleBatchQuery(t *testing.T) {
+	t.Parallel()
+
+	svc := setupProxyPoolService(t)
+	first, err := svc.Create(context.Background(), ProxyPoolInput{Name: "batch first", URL: "http://first.example.com:8080"})
+	require.NoError(t, err)
+	second, err := svc.Create(context.Background(), ProxyPoolInput{Name: "batch second", URL: "http://second.example.com:8080"})
+	require.NoError(t, err)
+
+	queryCount := 0
+	const callbackName = "test:count_proxy_batch_queries"
+	require.NoError(t, svc.db.Callback().Query().Before("gorm:query").Register(callbackName, func(*gorm.DB) {
+		queryCount++
+	}))
+	t.Cleanup(func() {
+		require.NoError(t, svc.db.Callback().Query().Remove(callbackName))
+	})
+
+	firstRef := utils.BuildProxyPoolItemRef(first.ID)
+	secondRef := utils.BuildProxyPoolItemRef(second.ID)
+	resolved, err := svc.ResolveProxyURLs(context.Background(), []string{firstRef, secondRef, firstRef})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, queryCount)
+	assert.Equal(t, first.URL, resolved[firstRef])
+	assert.Equal(t, second.URL, resolved[secondRef])
 }
 
 func TestProxyPoolServiceResolveProxyReferenceRejectsMissingManualProxyPoolItem(t *testing.T) {

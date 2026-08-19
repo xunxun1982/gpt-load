@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -28,6 +29,10 @@ const (
 
 	codexToolSearchProxyName = "tool_search"
 )
+
+// ST1005: error strings must not be capitalized. The message is only matched
+// via errors.Is, so lowercasing keeps behavior identical.
+var errCodexInputNoConvertibleMessages = errors.New("codex input contains no convertible messages")
 
 // isCodexPath detects the explicit /codex force endpoint without confusing it
 // with a group that is literally named "codex".
@@ -153,7 +158,26 @@ func (ctx *codexToolContext) addTool(tool CodexTool, namespace string) {
 		for _, child := range codexNamespaceChildren(tool) {
 			ctx.addTool(child, nextNamespace)
 		}
+	default:
+		// Future/unknown tool kinds have no gateway executor here. Convert them
+		// through the target protocol's function shell and retain their name.
+		name := codexToolName(tool)
+		chatName := codexChatToolName(name, namespace)
+		if chatName != "" {
+			ctx.byChatName[chatName] = codexToolSpec{
+				Kind:      codexToolKindFunction,
+				Name:      name,
+				Namespace: namespace,
+			}
+		}
 	}
+}
+
+func codexToolName(tool CodexTool) string {
+	if strings.TrimSpace(tool.Name) != "" {
+		return tool.Name
+	}
+	return tool.Type
 }
 
 func isValidCodexToolCallArguments(toolName, arguments string, toolCtx *codexToolContext) bool {
@@ -201,6 +225,16 @@ func codexNamespaceChildren(tool CodexTool) []CodexTool {
 }
 
 func codexRequestTools(req *CodexRequest) ([]CodexTool, error) {
+	candidates, err := codexRequestToolCandidates(req)
+	if err != nil {
+		return nil, err
+	}
+	return deduplicateCodexToolCandidates(candidates), nil
+}
+
+// codexRequestToolCandidates returns the original definitions before name-based
+// deduplication so conversion validation cannot be bypassed by an earlier name.
+func codexRequestToolCandidates(req *CodexRequest) ([]CodexTool, error) {
 	if req == nil {
 		return nil, nil
 	}
@@ -209,16 +243,21 @@ func codexRequestTools(req *CodexRequest) ([]CodexTool, error) {
 		return nil, err
 	}
 	total := len(req.Tools) + len(inputTools)
-	seen := make(map[string]struct{}, total)
-	tools := make([]CodexTool, 0, total)
-	for _, candidates := range [...][]CodexTool{req.Tools, inputTools} {
-		for _, tool := range candidates {
-			if filtered, ok := deduplicateCodexTool(tool, "", seen); ok {
-				tools = append(tools, filtered)
-			}
+	candidates := make([]CodexTool, 0, total)
+	candidates = append(candidates, req.Tools...)
+	candidates = append(candidates, inputTools...)
+	return candidates, nil
+}
+
+func deduplicateCodexToolCandidates(candidates []CodexTool) []CodexTool {
+	seen := make(map[string]struct{}, len(candidates))
+	tools := make([]CodexTool, 0, len(candidates))
+	for _, tool := range candidates {
+		if filtered, ok := deduplicateCodexTool(tool, "", seen); ok {
+			tools = append(tools, filtered)
 		}
 	}
-	return tools, nil
+	return tools
 }
 
 func deduplicateCodexTool(tool CodexTool, namespace string, seen map[string]struct{}) (CodexTool, bool) {
@@ -242,7 +281,7 @@ func deduplicateCodexTool(tool CodexTool, namespace string, seen map[string]stru
 		return tool, true
 	}
 
-	chatName := codexChatToolName(tool.Name, namespace)
+	chatName := codexChatToolName(codexToolName(tool), namespace)
 	switch tool.Type {
 	case "custom":
 		chatName = tool.Name
@@ -292,6 +331,41 @@ func codexInputToolDefinitions(input json.RawMessage) ([]CodexTool, error) {
 	return tools, nil
 }
 
+func codexToolCallItemType(itemType string) bool {
+	if codexToolOutputItemType(itemType) {
+		return false
+	}
+	if itemType == "function_call" || itemType == "custom_tool_call" || itemType == "tool_search_call" || itemType == "mcp_tool_call" {
+		return true
+	}
+	return strings.HasSuffix(itemType, "_call") || strings.Contains(itemType, "_tool_call")
+}
+
+func codexToolOutputItemType(itemType string) bool {
+	if itemType == "function_call_output" || itemType == "custom_tool_call_output" || itemType == "tool_search_output" || itemType == "mcp_tool_call_output" ||
+		itemType == "response_computer_tool_call_output_item" || itemType == "response_custom_tool_call_output_item" ||
+		itemType == "response_function_tool_call_output_item" || itemType == "response_tool_search_output_item" {
+		return true
+	}
+	return strings.HasSuffix(itemType, "_output") || strings.HasSuffix(itemType, "_result") || strings.Contains(itemType, "_tool_result")
+}
+
+func codexToolCallArguments(item map[string]any, itemType string) string {
+	if raw, ok := item["arguments"]; ok && raw != nil {
+		return stringFromValue(raw)
+	}
+	input, ok := item["input"]
+	if !ok || input == nil {
+		return ""
+	}
+	if strings.Contains(itemType, "custom_tool_call") {
+		encoded, _ := json.Marshal(map[string]any{"input": input})
+		return string(encoded)
+	}
+	encoded, _ := json.Marshal(input)
+	return string(encoded)
+}
+
 func codexInputSystemText(input json.RawMessage) ([]string, error) {
 	var raw any
 	if err := decodeCodexJSONUseNumber(input, &raw); err != nil {
@@ -328,15 +402,17 @@ func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, er
 	}
 	toolCtx := newCodexToolContext(requestTools)
 	req := &OpenAIRequest{
-		Model:             codexReq.Model,
-		Stream:            codexReq.Stream,
-		Temperature:       codexReq.Temperature,
-		TopP:              codexReq.TopP,
-		MaxTokens:         codexReq.MaxOutputTokens,
-		ParallelToolCalls: codexReq.ParallelToolCalls,
+		Model:       codexReq.Model,
+		Stream:      codexReq.Stream,
+		Temperature: codexReq.Temperature,
+		TopP:        codexReq.TopP,
+		MaxTokens:   codexReq.MaxOutputTokens,
 	}
 	if codexReq.Reasoning != nil {
-		req.ReasoningEffort = strings.ToLower(strings.TrimSpace(codexReq.Reasoning.Effort))
+		// Effort is provider-defined. Move the field between protocol shapes
+		// without normalizing or validating values so newly introduced levels
+		// continue to pass through unchanged.
+		req.ReasoningEffort = codexReq.Reasoning.Effort
 	}
 
 	if strings.TrimSpace(codexReq.Instructions) != "" {
@@ -351,14 +427,18 @@ func convertCodexRequestToOpenAIChat(codexReq *CodexRequest) (*OpenAIRequest, er
 		return nil, err
 	}
 	req.Messages = append(req.Messages, messages...)
+	if len(req.Messages) == 0 {
+		return nil, errCodexInputNoConvertibleMessages
+	}
 
 	if len(requestTools) > 0 {
 		req.Tools = make([]OpenAITool, 0, len(requestTools))
 		for _, tool := range requestTools {
 			appendCodexToolToOpenAIChat(&req.Tools, tool, "")
 		}
+		req.ToolChoice = convertResponsesToolChoiceToOpenAIChat(codexReq.ToolChoice, toolCtx)
+		req.ParallelToolCalls = codexReq.ParallelToolCalls
 	}
-	req.ToolChoice = convertResponsesToolChoiceToOpenAIChat(codexReq.ToolChoice, toolCtx)
 	return req, nil
 }
 
@@ -381,18 +461,21 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 		req.MaxTokens = *codexReq.MaxOutputTokens
 	}
 	if codexReq.Reasoning != nil {
-		effort := strings.ToLower(strings.TrimSpace(codexReq.Reasoning.Effort))
-		switch effort {
+		effort := codexReq.Reasoning.Effort
+		// Only the none/empty control signals are normalized (case-insensitive
+		// and trimmed); effort values themselves are provider-defined and stay
+		// verbatim on ClaudeOutputConfig.Effort (see CodexReasoning.Effort).
+		switch strings.ToLower(strings.TrimSpace(effort)) {
 		case "":
+			// An empty effort carries no portable enable/disable signal; omit
+			// Claude thinking fields and let the target model choose its default.
 		case "none":
 			req.Thinking = &ThinkingConfig{Type: "disabled"}
-		case "low", "medium", "high", "max":
+		default:
 			req.Thinking = &ThinkingConfig{Type: "adaptive"}
 			req.OutputConfig = &ClaudeOutputConfig{Effort: effort}
 			req.Temperature = nil
 			req.TopP = nil
-		default:
-			return nil, unsupportedCodexRequestOption("reasoning.effort", codexUpstreamClaude, "effort has no equivalent Anthropic adaptive-thinking value")
 		}
 	}
 	systemText := make([]string, 0, 3)
@@ -408,7 +491,7 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 		req.System = marshalStringAsJSONRaw("codex_instructions", strings.Join(systemText, "\n\n"))
 	}
 
-	messages, err := convertCodexInputToClaudeMessages(codexReq.Input, toolCtx)
+	messages, err := convertCodexInputToClaudeMessages(codexReq.Input, claudeThinkingActive(req.Thinking), toolCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -419,11 +502,16 @@ func convertCodexRequestToClaude(codexReq *CodexRequest) (*ClaudeRequest, error)
 		for _, tool := range requestTools {
 			appendCodexToolToClaude(&req.Tools, tool, "")
 		}
-	}
-	req.ToolChoice = convertResponsesToolChoiceToClaude(codexReq.ToolChoice, toolCtx)
-	req.ToolChoice, err = codexClaudeToolChoiceWithParallel(req.ToolChoice, codexReq.ParallelToolCalls, len(req.Tools) > 0)
-	if err != nil {
-		return nil, err
+		// tool_choice is only emitted alongside tools, matching the Chat
+		// conversion. Anthropic treats "none" as the default when no tools are
+		// provided, and a forced tool selector without a matching tool is a
+		// request error, so omitting it for tool-less requests is both safe
+		// and required to avoid an invalid payload.
+		req.ToolChoice = convertResponsesToolChoiceToClaude(codexReq.ToolChoice, toolCtx)
+		req.ToolChoice, err = codexClaudeToolChoiceWithParallel(req.ToolChoice, codexReq.ParallelToolCalls, true)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return req, nil
 }
@@ -597,8 +685,8 @@ func convertClaudeToCodexResponse(claudeResp *ClaudeResponse, toolCtxOpt ...*cod
 		toolCtx = toolCtxOpt[0]
 	}
 	for _, block := range claudeResp.Content {
-		switch block.Type {
-		case "text":
+		switch {
+		case block.Type == "text":
 			if block.Text != "" {
 				resp.Output = append(resp.Output, CodexOutputItem{
 					Type:   "message",
@@ -610,7 +698,7 @@ func convertClaudeToCodexResponse(claudeResp *ClaudeResponse, toolCtxOpt ...*cod
 					}},
 				})
 			}
-		case "thinking":
+		case block.Type == "thinking":
 			if block.Thinking != "" {
 				resp.Output = append(resp.Output, CodexOutputItem{
 					Type:   "reasoning",
@@ -621,9 +709,16 @@ func convertClaudeToCodexResponse(claudeResp *ClaudeResponse, toolCtxOpt ...*cod
 					}},
 				})
 			}
-		case "tool_use":
+		case isClaudeToolUseBlock(block):
 			if block.ID != "" && block.Name != "" {
-				resp.Output = append(resp.Output, codexOutputItemFromChatToolCall("call_"+block.ID, block.Name, string(block.Input), toolCtx))
+				argsStr := string(block.Input)
+				// Normalize blank or JSON null input to "{}" like the request
+				// conversion (convertClaudeMessageToCodexFormatWithToolMap), so
+				// Codex clients always receive valid JSON arguments.
+				if trimmed := strings.TrimSpace(argsStr); trimmed == "" || trimmed == "null" {
+					argsStr = "{}"
+				}
+				resp.Output = append(resp.Output, codexOutputItemFromChatToolCall(block.ID, block.Name, argsStr, toolCtx))
 			}
 		}
 	}
@@ -735,18 +830,53 @@ func codexCustomToolInputString(input any) string {
 	}
 }
 
+// codexToolArgumentsRawMessage converts Codex tool arguments into a Claude
+// tool_use input. Blank or invalid arguments become an empty object; JSON null
+// keeps the existing "arguments:null means no arguments" empty-object
+// semantics (see CodexOutputItem.UnmarshalJSON). Valid non-object payloads
+// (arrays and scalars) are preserved verbatim because the protocol converter
+// must not reinterpret or rewrite provider-specific tool payloads. Per AI
+// review, Anthropic requires tool_use.input to
+// be a JSON object; wrapping arrays/scalars under {"input": ...} was rejected
+// because existing tests lock the verbatim passthrough contract for non-object
+// payloads (TestProtocolToolCompatPreservesNonObjectToolPayloads and
+// TestConvertCodexRequestToClaudeDefaultsInvalidToolArguments).
 func codexToolArgumentsRawMessage(arguments string) json.RawMessage {
 	arguments = strings.TrimSpace(arguments)
 	if arguments == "" {
 		return json.RawMessage(`{}`)
 	}
 
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil || parsed == nil {
+	var parsed any
+	if err := decodeCodexJSONUseNumber([]byte(arguments), &parsed); err != nil {
 		return json.RawMessage(`{}`)
 	}
-
+	if parsed == nil {
+		// JSON null means no arguments; keep the existing empty-object semantics.
+		return json.RawMessage(`{}`)
+	}
 	return json.RawMessage(arguments)
+}
+
+func codexReasoningText(item map[string]any) string {
+	var parts []string
+	if summary, ok := item["summary"].([]any); ok {
+		for _, raw := range summary {
+			part, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text := stringFromMap(part, "text"); text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		if text := codexContentText(item["content"], "assistant"); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 func codexInputTokenDetailsFromOpenAI(details *TokenUsageDetails) *TokenUsageDetails {
@@ -771,52 +901,86 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 	items, ok := raw.([]any)
 	if !ok {
 		if s, ok := raw.(string); ok {
+			// Keep an instructions-only Chat request valid; the caller performs the
+			// final non-empty-message check after adding instructions.
+			if s == "" {
+				return nil, nil
+			}
 			return []OpenAIMessage{{Role: "user", Content: marshalStringAsJSONRaw("codex_input", s)}}, nil
 		}
 		return nil, fmt.Errorf("unsupported Codex input format")
 	}
 	messages := make([]OpenAIMessage, 0, len(items))
+	var pendingReasoning []string
+	takeReasoning := func() *string {
+		if len(pendingReasoning) == 0 {
+			return nil
+		}
+		text := strings.Join(pendingReasoning, "")
+		pendingReasoning = nil
+		return &text
+	}
+	discardReasoning := func() {
+		pendingReasoning = nil
+	}
 	for _, item := range items {
 		m, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
 		itemType, _ := m["type"].(string)
-		switch itemType {
-		case "message", "":
+		switch {
+		case itemType == "reasoning":
+			if text := codexReasoningText(m); text != "" {
+				pendingReasoning = append(pendingReasoning, text)
+			}
+		case itemType == "message" || itemType == "":
 			role, _ := m["role"].(string)
 			if role == "" {
 				role = "user"
 			}
 			text := codexContentText(m["content"], role)
+			// Non-assistant boundaries discard pending reasoning even when the
+			// message text is empty and the item is skipped, so reasoning never
+			// leaks across a user/system boundary.
+			if role != "assistant" {
+				discardReasoning()
+			}
 			if text == "" {
 				continue
 			}
 			if role == "developer" {
 				role = "system"
 			}
-			messages = append(messages, OpenAIMessage{Role: role, Content: marshalStringAsJSONRaw("codex_message", text)})
-		case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
+			message := OpenAIMessage{Role: role, Content: marshalStringAsJSONRaw("codex_message", text)}
+			if role == "assistant" {
+				message.ReasoningContent = takeReasoning()
+			}
+			messages = append(messages, message)
+		case codexToolCallItemType(itemType):
 			callID := stringFromMap(m, "call_id")
 			if callID == "" {
 				callID = stringFromMap(m, "id")
 			}
 			name := stringFromMap(m, "name")
-			arguments := stringFromMap(m, "arguments")
-			if itemType == "custom_tool_call" {
-				inputValue := m["input"]
-				inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
-				arguments = string(inputBytes)
-			} else if itemType == "tool_search_call" {
+			arguments := codexToolCallArguments(m, itemType)
+			if itemType == "tool_search_call" {
 				name = codexToolSearchProxyName
 			} else if len(toolCtx) > 0 && toolCtx[0] != nil {
 				name = toolCtx[0].chatNameFor(name, stringFromMap(m, "namespace"))
 			}
+			if arguments == "" {
+				arguments = "{}"
+			}
+			// A skipped tool call keeps pending reasoning: it belongs to the
+			// assistant turn and attaches to the next assistant item instead of
+			// being lost (unlike the user-boundary tool-output discard above).
 			if callID == "" || name == "" {
 				continue
 			}
 			messages = append(messages, OpenAIMessage{
-				Role: "assistant",
+				Role:             "assistant",
+				ReasoningContent: takeReasoning(),
 				ToolCalls: []OpenAIToolCall{{
 					ID:   callID,
 					Type: "function",
@@ -826,8 +990,14 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 					},
 				}},
 			})
-		case "function_call_output", "custom_tool_call_output", "tool_search_output", "mcp_tool_call_output":
+		case codexToolOutputItemType(itemType):
+			// Discard before the call_id check: a tool-output boundary must
+			// clear pending reasoning even when the item itself is invalid.
+			discardReasoning()
 			callID := stringFromMap(m, "call_id")
+			if callID == "" {
+				continue
+			}
 			output := codexToolOutputText(m, itemType)
 			messages = append(messages, OpenAIMessage{
 				Role:       "tool",
@@ -836,10 +1006,11 @@ func convertCodexInputToOpenAIMessages(input json.RawMessage, toolCtx ...*codexT
 			})
 		}
 	}
+	discardReasoning()
 	return messages, nil
 }
 
-func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexToolContext) ([]ClaudeMessage, error) {
+func convertCodexInputToClaudeMessages(input json.RawMessage, thinkingEnabled bool, toolCtx ...*codexToolContext) ([]ClaudeMessage, error) {
 	var raw any
 	if err := decodeCodexJSONUseNumber(input, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse Codex input: %w", err)
@@ -847,66 +1018,152 @@ func convertCodexInputToClaudeMessages(input json.RawMessage, toolCtx ...*codexT
 	items, ok := raw.([]any)
 	if !ok {
 		if s, ok := raw.(string); ok {
+			if s == "" {
+				return nil, errCodexInputNoConvertibleMessages
+			}
 			content, _ := json.Marshal([]ClaudeContentBlock{{Type: "text", Text: s}})
 			return []ClaudeMessage{{Role: "user", Content: content}}, nil
 		}
 		return nil, fmt.Errorf("unsupported Codex input format")
 	}
 	messages := make([]ClaudeMessage, 0, len(items))
+	var pendingThinking []ClaudeContentBlock
+	var pendingToolBlocks []ClaudeContentBlock
+	var pendingUserToolResults []ClaudeContentBlock
+	var pendingUserTextBlocks []ClaudeContentBlock
+	pendingToolRole := ""
+	takeThinking := func() []ClaudeContentBlock {
+		thinking := pendingThinking
+		pendingThinking = nil
+		return thinking
+	}
+	discardThinking := func() {
+		pendingThinking = nil
+	}
+	flushToolBlocks := func() {
+		if pendingToolRole == "user" {
+			if len(pendingUserToolResults) == 0 && len(pendingUserTextBlocks) == 0 {
+				pendingToolRole = ""
+				return
+			}
+			pendingToolBlocks = append(pendingToolBlocks, pendingUserToolResults...)
+			pendingToolBlocks = append(pendingToolBlocks, pendingUserTextBlocks...)
+			pendingUserToolResults = nil
+			pendingUserTextBlocks = nil
+		}
+		if len(pendingToolBlocks) == 0 {
+			pendingToolRole = ""
+			return
+		}
+		content, _ := json.Marshal(pendingToolBlocks)
+		messages = append(messages, ClaudeMessage{Role: pendingToolRole, Content: content})
+		pendingToolBlocks = nil
+		pendingToolRole = ""
+	}
+	appendToolBlocks := func(role string, blocks ...ClaudeContentBlock) {
+		if pendingToolRole != "" && pendingToolRole != role {
+			flushToolBlocks()
+		}
+		if pendingToolRole == "" {
+			pendingToolRole = role
+		}
+		if role == "user" {
+			// Anthropic requires all tool_result blocks before user text. Keep two
+			// append-only slices so final ordering is stable without O(n²) inserts.
+			for _, block := range blocks {
+				if block.Type == "tool_result" {
+					pendingUserToolResults = append(pendingUserToolResults, block)
+				} else {
+					pendingUserTextBlocks = append(pendingUserTextBlocks, block)
+				}
+			}
+			return
+		}
+		pendingToolBlocks = append(pendingToolBlocks, blocks...)
+	}
 	for _, item := range items {
 		m, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
 		itemType, _ := m["type"].(string)
-		switch itemType {
-		case "message", "":
-			role, _ := m["role"].(string)
-			if role == "developer" || role == "system" {
-				continue
+		switch {
+		case itemType == "reasoning":
+			// Anthropic only accepts assistant thinking blocks when extended
+			// thinking is enabled on the request, and multi-turn history must
+			// carry the original unmodified signature. Codex reasoning
+			// summaries carry no signature, so attach them only when thinking
+			// is explicitly active; otherwise omit them rather than risk a
+			// 400 from the upstream.
+			if thinkingEnabled {
+				if text := codexReasoningText(m); text != "" {
+					pendingThinking = append(pendingThinking, ClaudeContentBlock{Type: "thinking", Thinking: text})
+				}
 			}
+		case itemType == "message" || itemType == "":
+			role, _ := m["role"].(string)
 			if role == "" {
 				role = "user"
 			}
 			text := codexContentText(m["content"], role)
+			if role != "assistant" {
+				discardThinking()
+			}
+			if role == "developer" || role == "system" {
+				continue
+			}
 			if text == "" {
 				continue
 			}
-			content, _ := json.Marshal([]ClaudeContentBlock{{Type: "text", Text: text}})
-			messages = append(messages, ClaudeMessage{Role: role, Content: content})
-		case "function_call", "custom_tool_call", "tool_search_call", "mcp_tool_call":
-			callID := strings.TrimPrefix(stringFromMap(m, "call_id"), "call_")
+			blocks := takeThinking()
+			blocks = append(blocks, ClaudeContentBlock{Type: "text", Text: text})
+			appendToolBlocks(role, blocks...)
+		case codexToolCallItemType(itemType):
+			callID := stringFromMap(m, "call_id")
+			if callID == "" {
+				callID = stringFromMap(m, "id")
+			}
 			name := stringFromMap(m, "name")
-			arguments := stringFromMap(m, "arguments")
-			if itemType == "custom_tool_call" {
-				inputValue := m["input"]
-				inputBytes, _ := json.Marshal(map[string]any{"input": inputValue})
-				arguments = string(inputBytes)
-			} else if itemType == "tool_search_call" {
+			arguments := codexToolCallArguments(m, itemType)
+			if itemType == "tool_search_call" {
 				name = codexToolSearchProxyName
 			} else if len(toolCtx) > 0 && toolCtx[0] != nil {
 				name = toolCtx[0].chatNameFor(name, stringFromMap(m, "namespace"))
 			}
+			// A skipped tool call keeps pending thinking: it belongs to the
+			// assistant turn and attaches to the next assistant item instead of
+			// being lost (unlike the user-boundary tool-output discard above).
 			if callID == "" || name == "" {
 				continue
 			}
-			content, _ := json.Marshal([]ClaudeContentBlock{{
+			blocks := takeThinking()
+			blocks = append(blocks, ClaudeContentBlock{
 				Type:  "tool_use",
 				ID:    callID,
 				Name:  name,
 				Input: codexToolArgumentsRawMessage(arguments),
-			}})
-			messages = append(messages, ClaudeMessage{Role: "assistant", Content: content})
-		case "function_call_output", "custom_tool_call_output", "tool_search_output", "mcp_tool_call_output":
-			callID := strings.TrimPrefix(stringFromMap(m, "call_id"), "call_")
-			output := codexToolOutputText(m, itemType)
-			content, _ := json.Marshal([]ClaudeContentBlock{{
+			})
+			appendToolBlocks("assistant", blocks...)
+		case codexToolOutputItemType(itemType):
+			// Discard before the call_id check: a tool-output boundary must
+			// clear pending thinking even when the item itself is invalid.
+			discardThinking()
+			callID := stringFromMap(m, "call_id")
+			if callID == "" {
+				continue
+			}
+			blocks := []ClaudeContentBlock{{
 				Type:      "tool_result",
 				ToolUseID: callID,
-				Content:   marshalStringAsJSONRaw("codex_tool_output", output),
-			}})
-			messages = append(messages, ClaudeMessage{Role: "user", Content: content})
+				Content:   codexToolOutputRawMessage(m, itemType),
+			}}
+			appendToolBlocks("user", blocks...)
 		}
+	}
+	flushToolBlocks()
+	discardThinking()
+	if len(messages) == 0 {
+		return nil, errCodexInputNoConvertibleMessages
 	}
 	return messages, nil
 }
@@ -946,6 +1203,10 @@ func stringFromMap(m map[string]any, key string) string {
 	if !ok || v == nil {
 		return ""
 	}
+	return stringFromValue(v)
+}
+
+func stringFromValue(v any) string {
 	switch s := v.(type) {
 	case string:
 		return s
@@ -959,15 +1220,35 @@ func stringFromMap(m map[string]any, key string) string {
 }
 
 func codexToolOutputText(item map[string]any, itemType string) string {
+	value := codexToolOutputValue(item, itemType)
+	if text, ok := value.(string); ok {
+		return text
+	}
+	out, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(out)
+}
+
+func codexToolOutputRawMessage(item map[string]any, itemType string) json.RawMessage {
+	out, err := json.Marshal(codexToolOutputValue(item, itemType))
+	if err != nil {
+		return json.RawMessage(`""`)
+	}
+	return out
+}
+
+func codexToolOutputValue(item map[string]any, itemType string) any {
 	if itemType == "tool_search_output" {
 		if tools, ok := item["tools"]; ok {
-			out, err := json.Marshal(tools)
-			if err == nil {
-				return string(out)
-			}
+			return tools
 		}
 	}
-	return stringFromMap(item, "output")
+	if output, ok := item["output"]; ok {
+		return output
+	}
+	return ""
 }
 
 func appendCodexToolToOpenAIChat(tools *[]OpenAITool, tool CodexTool, namespace string) {
@@ -977,7 +1258,7 @@ func appendCodexToolToOpenAIChat(tools *[]OpenAITool, tool CodexTool, namespace 
 func appendCodexToolToOpenAIChatWithDescription(tools *[]OpenAITool, tool CodexTool, namespace, namespaceDescription string) {
 	switch tool.Type {
 	case "", "function":
-		name := codexChatToolName(tool.Name, namespace)
+		name := codexChatToolName(codexToolName(tool), namespace)
 		if name == "" {
 			return
 		}
@@ -1024,6 +1305,14 @@ func appendCodexToolToOpenAIChatWithDescription(tools *[]OpenAITool, tool CodexT
 		for _, child := range codexNamespaceChildren(tool) {
 			appendCodexToolToOpenAIChatWithDescription(tools, child, nextNamespace, nextDescription)
 		}
+	default:
+		name := codexChatToolName(codexToolName(tool), namespace)
+		if name == "" {
+			return
+		}
+		*tools = append(*tools, OpenAITool{Type: "function", Function: OpenAIFunction{
+			Name: name, Description: codexNamespacedDescription(namespaceDescription, tool.Description), Parameters: normalizeToolParameters(tool.Parameters),
+		}})
 	}
 }
 
@@ -1034,7 +1323,7 @@ func appendCodexToolToClaude(tools *[]ClaudeTool, tool CodexTool, namespace stri
 func appendCodexToolToClaudeWithDescription(tools *[]ClaudeTool, tool CodexTool, namespace, namespaceDescription string) {
 	switch tool.Type {
 	case "", "function":
-		name := codexChatToolName(tool.Name, namespace)
+		name := codexChatToolName(codexToolName(tool), namespace)
 		if name == "" {
 			return
 		}
@@ -1072,6 +1361,14 @@ func appendCodexToolToClaudeWithDescription(tools *[]ClaudeTool, tool CodexTool,
 		for _, child := range codexNamespaceChildren(tool) {
 			appendCodexToolToClaudeWithDescription(tools, child, nextNamespace, nextDescription)
 		}
+	default:
+		name := codexChatToolName(codexToolName(tool), namespace)
+		if name == "" {
+			return
+		}
+		*tools = append(*tools, ClaudeTool{
+			Name: name, Description: codexNamespacedDescription(namespaceDescription, tool.Description), InputSchema: normalizeToolParameters(tool.Parameters),
+		})
 	}
 }
 
@@ -1107,28 +1404,12 @@ func convertResponsesToolChoiceToOpenAIChat(toolChoice any, toolCtx ...*codexToo
 	case string:
 		return v
 	case map[string]any:
-		if t, _ := v["type"].(string); t == "function" || t == "custom" || t == "tool_search" {
-			if name, _ := v["name"].(string); name != "" {
-				if t == "tool_search" {
-					name = codexToolSearchProxyName
-				} else if len(toolCtx) > 0 && toolCtx[0] != nil {
-					namespace, _ := v["namespace"].(string)
-					name = toolCtx[0].chatNameFor(name, namespace)
-				}
-				return map[string]any{
-					"type": "function",
-					"function": map[string]string{
-						"name": name,
-					},
-				}
-			}
-			if t == "tool_search" {
-				return map[string]any{
-					"type": "function",
-					"function": map[string]string{
-						"name": codexToolSearchProxyName,
-					},
-				}
+		if name := responsesToolChoiceName(v, toolCtx...); name != "" {
+			return map[string]any{
+				"type": "function",
+				"function": map[string]string{
+					"name": name,
+				},
 			}
 		}
 		return v
@@ -1154,24 +1435,28 @@ func convertResponsesToolChoiceToClaude(toolChoice any, toolCtx ...*codexToolCon
 		out, _ := json.Marshal(mapped)
 		return out
 	case map[string]any:
-		if t, _ := v["type"].(string); t == "function" || t == "custom" || t == "tool_search" {
-			if name, _ := v["name"].(string); name != "" {
-				if t == "tool_search" {
-					name = codexToolSearchProxyName
-				} else if len(toolCtx) > 0 && toolCtx[0] != nil {
-					namespace, _ := v["namespace"].(string)
-					name = toolCtx[0].chatNameFor(name, namespace)
-				}
-				out, _ := json.Marshal(map[string]any{"type": "tool", "name": name})
-				return out
-			}
-			if t == "tool_search" {
-				out, _ := json.Marshal(map[string]any{"type": "tool", "name": codexToolSearchProxyName})
-				return out
-			}
+		if name := responsesToolChoiceName(v, toolCtx...); name != "" {
+			out, _ := json.Marshal(map[string]any{"type": "tool", "name": name})
+			return out
 		}
 	}
 	return nil
+}
+
+func responsesToolChoiceName(selector map[string]any, toolCtx ...*codexToolContext) string {
+	selectorType, _ := selector["type"].(string)
+	if selectorType == "tool_search" {
+		return codexToolSearchProxyName
+	}
+	// Use stringFromMap to stay consistent with validateForceCodexToolChoice:
+	// a non-string name (e.g. name:123) passes validation serialized as JSON
+	// text and must not silently drop tool_choice during conversion.
+	name := stringFromMap(selector, "name")
+	if name == "" || len(toolCtx) == 0 || toolCtx[0] == nil {
+		return name
+	}
+	namespace, _ := selector["namespace"].(string)
+	return toolCtx[0].chatNameFor(name, namespace)
 }
 
 func codexClaudeToolChoiceWithParallel(toolChoice json.RawMessage, parallel *bool, hasTools bool) (json.RawMessage, error) {
@@ -1236,7 +1521,14 @@ func validateForceCodexTools(tools []CodexTool, target string) error {
 			}
 			// Missing description and parameters use the shared conversion defaults.
 		default:
-			return unsupportedCodexTool(toolType, target, "the gateway has no equivalent executor or result contract")
+			// Unknown tool kinds are transported as ordinary function tools. The
+			// gateway does not execute or interpret them, so there is no tool-name
+			// allowlist to update when a provider adds a new kind.
+			// A whitespace-only raw type is invalid even when a name is present;
+			// reject it before codexToolName can fall back to an unusable value.
+			if strings.TrimSpace(tool.Type) == "" {
+				return unsupportedCodexTool(toolType, target, "type is required for function-shell conversion")
+			}
 		}
 	}
 	return nil
@@ -1276,29 +1568,7 @@ func validateForceCodexRequestOptions(req *CodexRequest, target string) error {
 			return unsupportedCodexRequestOption("text.verbosity", target, "expected low, medium, or high")
 		}
 	}
-	if target == codexUpstreamClaude {
-		if strings.TrimSpace(req.ServiceTier) != "" {
-			return unsupportedCodexRequestOption("service_tier", target, "Anthropic Messages has no confirmed equivalent service-tier contract")
-		}
-		if strings.TrimSpace(req.PromptCacheKey) != "" {
-			return unsupportedCodexRequestOption("prompt_cache_key", target, "Anthropic Messages has no equivalent prompt-cache routing key")
-		}
-	}
 	if req.Reasoning != nil {
-		effort := strings.ToLower(strings.TrimSpace(req.Reasoning.Effort))
-		if target == codexUpstreamClaude {
-			switch effort {
-			case "", "none", "low", "medium", "high", "max":
-			default:
-				return unsupportedCodexRequestOption("reasoning.effort", target, "expected none, low, medium, high, or max")
-			}
-		} else {
-			switch effort {
-			case "", "none", "minimal", "low", "medium", "high", "max", "xhigh":
-			default:
-				return unsupportedCodexRequestOption("reasoning.effort", target, "unsupported Chat Completions reasoning effort")
-			}
-		}
 		context := strings.ToLower(strings.TrimSpace(req.Reasoning.Context))
 		switch context {
 		case "", "auto", "current_turn":
@@ -1333,7 +1603,10 @@ func validateForceCodexToolChoice(toolChoice any, target string) error {
 		case "tool_search":
 			return nil
 		default:
-			return unsupportedCodexRequestOption("tool_choice", target, "selector type has no equivalent target-protocol contract")
+			if strings.TrimSpace(stringFromMap(value, "name")) != "" {
+				return nil
+			}
+			return unsupportedCodexRequestOption("tool_choice", target, "selector requires a named tool for function-shell conversion")
 		}
 	default:
 		return unsupportedCodexRequestOption("tool_choice", target, "tool_choice must be a string or object")
@@ -1513,6 +1786,9 @@ func marshalForceCodexClaudeRequest(req *ClaudeRequest, sourceTools []CodexTool,
 			}
 		}
 	}
+	// Responses-only routing hints such as service_tier and prompt_cache_key
+	// have no Anthropic wire equivalent. Claude conversion rebuilds the request
+	// from modeled Anthropic fields and omits them instead of rejecting it.
 	if source != nil && source.Text != nil {
 		outputConfig, err := codexTextFormatForTarget(source.Text.Format, codexUpstreamClaude)
 		if err != nil {
@@ -1559,10 +1835,11 @@ func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *m
 	if err := json.Unmarshal(bodyBytes, &codexReq); err != nil {
 		return bodyBytes, false, fmt.Errorf("failed to parse Codex request: %w", err)
 	}
-	requestTools, err := codexRequestTools(&codexReq)
+	originalTools, err := codexRequestToolCandidates(&codexReq)
 	if err != nil {
 		return bodyBytes, false, err
 	}
+	requestTools := deduplicateCodexToolCandidates(originalTools)
 	toolCtx := newCodexToolContext(requestTools)
 	c.Set(ctxKeyCodexToolContext, toolCtx)
 
@@ -1571,7 +1848,7 @@ func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *m
 		if err := validateForceCodexRequestOptions(&codexReq, codexUpstreamOpenAIChat); err != nil {
 			return bodyBytes, false, err
 		}
-		if err := validateForceCodexTools(requestTools, codexUpstreamOpenAIChat); err != nil {
+		if err := validateForceCodexTools(originalTools, codexUpstreamOpenAIChat); err != nil {
 			return bodyBytes, false, err
 		}
 		chatReq, err := convertCodexRequestToOpenAIChat(&codexReq)
@@ -1589,7 +1866,7 @@ func (ps *ProxyServer) applyForceCodexRequestConversion(c *gin.Context, group *m
 		if err := validateForceCodexRequestOptions(&codexReq, codexUpstreamClaude); err != nil {
 			return bodyBytes, false, err
 		}
-		if err := validateForceCodexTools(requestTools, codexUpstreamClaude); err != nil {
+		if err := validateForceCodexTools(originalTools, codexUpstreamClaude); err != nil {
 			return bodyBytes, false, err
 		}
 		claudeReq, err := convertCodexRequestToClaude(&codexReq)

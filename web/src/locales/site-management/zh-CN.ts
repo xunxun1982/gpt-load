@@ -121,6 +121,7 @@ export default {
   // Site types
   siteTypeOther: "其他",
   siteTypeBrand: "品牌",
+  siteTypeCommercial: "商业",
   siteTypeNewApi: "New API",
   siteTypeSub2Api: "Sub2API",
   siteTypeOneHub: "One Hub",

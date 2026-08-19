@@ -696,6 +696,66 @@ func TestCreateGroupRejectsGatewayProxyWithUpstreamProxy(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestUpdateGroupRefreshesCachedUpstreamProxyModeImmediately(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	svc := setupTestGroupService(t, db)
+
+	group, err := svc.CreateGroup(context.Background(), GroupCreateParams{
+		Name:        "proxy-mode-switch",
+		GroupType:   "standard",
+		Upstreams:   json.RawMessage(`[{"url":"https://api.anthropic.com","weight":100,"gateway_proxy":"betterclaude"}]`),
+		ChannelType: "anthropic",
+		TestModel:   "claude-3-haiku-20240307",
+	})
+	require.NoError(t, err)
+
+	// Stop the listener so the test observes only the synchronous local refresh.
+	svc.groupManager.Stop(context.Background())
+	svc.settingsManager.SetProxyURLResolver(groupManagerProxyResolverStub{})
+	manualProxyRef := "proxy-pool:1"
+	manualProxyURL := "http://proxy.example.com:8080"
+	updated, err := svc.UpdateGroup(context.Background(), group.ID, GroupUpdateParams{
+		HasUpstreams: true,
+		Upstreams:    json.RawMessage(`[{"url":"https://api.anthropic.com","weight":100,"proxy_url":"` + manualProxyRef + `"}]`),
+	})
+	require.NoError(t, err)
+
+	var upstreams []struct {
+		ProxyURL     *string `json:"proxy_url,omitempty"`
+		GatewayProxy string  `json:"gateway_proxy,omitempty"`
+	}
+	require.NoError(t, json.Unmarshal(updated.Upstreams, &upstreams))
+	require.Len(t, upstreams, 1)
+	require.NotNil(t, upstreams[0].ProxyURL)
+	assert.Equal(t, manualProxyRef, *upstreams[0].ProxyURL)
+
+	cached, err := svc.groupManager.GetGroupByID(group.ID)
+	require.NoError(t, err)
+	var cachedUpstreams []struct {
+		ProxyURL     *string `json:"proxy_url,omitempty"`
+		GatewayProxy string  `json:"gateway_proxy,omitempty"`
+	}
+	require.NoError(t, json.Unmarshal(cached.Upstreams, &cachedUpstreams))
+	require.Len(t, cachedUpstreams, 1)
+	require.NotNil(t, cachedUpstreams[0].ProxyURL)
+	assert.Equal(t, manualProxyURL, *cachedUpstreams[0].ProxyURL)
+	assert.Empty(t, cachedUpstreams[0].GatewayProxy)
+
+	_, err = svc.UpdateGroup(context.Background(), group.ID, GroupUpdateParams{
+		HasUpstreams: true,
+		Upstreams:    json.RawMessage(`[{"url":"https://api.anthropic.com","weight":100,"gateway_proxy":"betterclaude"}]`),
+	})
+	require.NoError(t, err)
+	cached, err = svc.groupManager.GetGroupByID(group.ID)
+	require.NoError(t, err)
+	cachedUpstreams = nil
+	require.NoError(t, json.Unmarshal(cached.Upstreams, &cachedUpstreams))
+	require.Len(t, cachedUpstreams, 1)
+	assert.Nil(t, cachedUpstreams[0].ProxyURL)
+	assert.Equal(t, "betterclaude", cachedUpstreams[0].GatewayProxy)
+}
+
 func TestUpdateGroupSavesProxyPoolSelectedConfigProxy(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
@@ -1811,31 +1871,47 @@ func TestUpdateGroupWithChildGroupCacheInvalidation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Create child group
-	childUpstreams := []map[string]interface{}{
-		{
-			"url":    expectedProxyURL("parent-cache-test"),
-			"weight": 1,
-		},
-	}
+	// Create child groups.
+	childUpstreams := []map[string]interface{}{{
+		"url":    expectedProxyURL("parent-cache-test"),
+		"weight": 1,
+	}}
 	childUpstreamsJSON, err := json.Marshal(childUpstreams)
 	require.NoError(t, err)
 
-	childGroup := models.Group{
-		Name:               "parent-cache-test_child1",
-		DisplayName:        "Parent Cache Test (Child1)",
-		GroupType:          "standard",
-		Enabled:            true,
-		Upstreams:          datatypes.JSON(childUpstreamsJSON),
-		ChannelType:        parentGroup.ChannelType,
-		TestModel:          parentGroup.TestModel,
-		ValidationEndpoint: parentGroup.ValidationEndpoint,
-		ParentGroupID:      &parentGroup.ID,
-		ProxyKeys:          "sk-child-key",
-		Sort:               parentGroup.Sort,
+	childGroups := []models.Group{
+		{
+			Name:               "parent-cache-test_child1",
+			DisplayName:        "Parent Cache Test (Child1)",
+			GroupType:          "standard",
+			Enabled:            true,
+			Upstreams:          datatypes.JSON(childUpstreamsJSON),
+			ChannelType:        parentGroup.ChannelType,
+			TestModel:          parentGroup.TestModel,
+			ValidationEndpoint: parentGroup.ValidationEndpoint,
+			ParentGroupID:      &parentGroup.ID,
+			ProxyKeys:          "sk-child-key-1",
+			Sort:               parentGroup.Sort,
+		},
+		{
+			Name:               "parent-cache-test_child2",
+			DisplayName:        "Parent Cache Test (Child2)",
+			GroupType:          "standard",
+			Enabled:            true,
+			Upstreams:          datatypes.JSON(childUpstreamsJSON),
+			ChannelType:        parentGroup.ChannelType,
+			TestModel:          parentGroup.TestModel,
+			ValidationEndpoint: parentGroup.ValidationEndpoint,
+			ParentGroupID:      &parentGroup.ID,
+			ProxyKeys:          "sk-child-key-2",
+			Sort:               parentGroup.Sort,
+		},
 	}
-	err = db.Create(&childGroup).Error
+	err = db.Create(&childGroups).Error
 	require.NoError(t, err)
+	require.NoError(t, svc.groupManager.Reload())
+	// Stop the listener so only the synchronous local refresh can update the cache.
+	svc.groupManager.Stop(context.Background())
 
 	// Reset cache invalidation flag
 	cacheInvalidated = false
@@ -1850,18 +1926,25 @@ func TestUpdateGroupWithChildGroupCacheInvalidation(t *testing.T) {
 	// Verify cache was invalidated
 	assert.True(t, cacheInvalidated, "Child groups cache should be invalidated when parent name changes")
 
-	// Verify child group upstream was updated in database
-	var updatedChild models.Group
-	err = db.First(&updatedChild, childGroup.ID).Error
-	require.NoError(t, err)
-
-	var upstreams []map[string]interface{}
-	err = json.Unmarshal(updatedChild.Upstreams, &upstreams)
-	require.NoError(t, err)
-	require.Len(t, upstreams, 1)
-
 	expectedURL := expectedProxyURL("parent-cache-test-renamed")
-	assert.Equal(t, expectedURL, upstreams[0]["url"])
+	for _, childGroup := range childGroups {
+		var updatedChild models.Group
+		err = db.First(&updatedChild, childGroup.ID).Error
+		require.NoError(t, err)
+
+		var upstreams []map[string]interface{}
+		err = json.Unmarshal(updatedChild.Upstreams, &upstreams)
+		require.NoError(t, err)
+		require.Len(t, upstreams, 1)
+		assert.Equal(t, expectedURL, upstreams[0]["url"])
+
+		cachedChild, cacheErr := svc.groupManager.GetGroupByID(childGroup.ID)
+		require.NoError(t, cacheErr)
+		upstreams = nil
+		require.NoError(t, json.Unmarshal(cachedChild.Upstreams, &upstreams))
+		require.Len(t, upstreams, 1)
+		assert.Equal(t, expectedURL, upstreams[0]["url"])
+	}
 }
 
 // TestUpdateGroupWithChildGroupProxyKeysSync tests that child groups' API keys are synced

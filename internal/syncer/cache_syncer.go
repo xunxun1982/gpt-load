@@ -22,6 +22,7 @@ type CacheSyncer[T any] struct {
 	channelName string
 	logger      *logrus.Entry
 	stopChan    chan struct{}
+	stopOnce    sync.Once
 	wg          sync.WaitGroup
 	afterReload func(newValue T)
 }
@@ -60,6 +61,15 @@ func (s *CacheSyncer[T]) Get() T {
 	return s.cache
 }
 
+// Update atomically replaces the cached value using a caller-provided transform.
+// Callers must return a copy when the cached value contains maps or pointers that
+// may still be referenced after Get returns.
+func (s *CacheSyncer[T]) Update(transform func(T) T) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cache = transform(s.cache)
+}
+
 // Invalidate publishes a notification to all instances to reload their cache.
 func (s *CacheSyncer[T]) Invalidate() error {
 	s.logger.Debug("publishing invalidation notification")
@@ -74,7 +84,7 @@ func (s *CacheSyncer[T]) Reload() error {
 
 // Stop gracefully shuts down the syncer's background goroutine.
 func (s *CacheSyncer[T]) Stop() {
-	close(s.stopChan)
+	s.stopOnce.Do(func() { close(s.stopChan) })
 	s.wg.Wait()
 	s.logger.Info("cache syncer stopped.")
 }

@@ -175,8 +175,8 @@ func TestUpdateManagedSiteRequest_Validation(t *testing.T) {
 }
 
 func TestListManagedSites_FocusSiteIDUsesPaginatedPath(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	err := db.AutoMigrate(&sitemanagement.ManagedSite{}, &models.Group{})
@@ -232,8 +232,8 @@ func TestListManagedSites_FocusSiteIDUsesPaginatedPath(t *testing.T) {
 }
 
 func TestImportManagedSitesSuccessMessageInterpolatesCounts(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	db := setupTestDB(t)
 	require.NoError(t, db.AutoMigrate(&sitemanagement.ManagedSite{}, &sitemanagement.ManagedSiteSetting{}))
@@ -302,8 +302,8 @@ func TestImportManagedSitesRejectsEmptyPayloadWithSupportedConfigMessage(t *test
 }
 
 func TestUpdateAutoBalanceConfigRejectsInvalidJSON(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
+	t.Parallel()
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)

@@ -13,6 +13,7 @@ import (
 	"gpt-load/internal/utils"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -45,6 +46,41 @@ func getDBLookupTimeout() time.Duration {
 type groupCache struct {
 	ByName map[string]*models.Group
 	ByID   map[uint]*models.Group
+}
+
+type groupUpstreamDefinition struct {
+	ProxyURL *string
+	fields   map[string]json.RawMessage
+}
+
+func (d *groupUpstreamDefinition) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &d.fields); err != nil {
+		return err
+	}
+	if rawProxyURL, ok := d.fields["proxy_url"]; ok {
+		if err := json.Unmarshal(rawProxyURL, &d.ProxyURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d groupUpstreamDefinition) MarshalJSON() ([]byte, error) {
+	fields := d.fields
+	if d.ProxyURL != nil {
+		encodedProxyURL, err := json.Marshal(*d.ProxyURL)
+		if err != nil {
+			return nil, err
+		}
+		fields = make(map[string]json.RawMessage, len(d.fields)+1)
+		for key, value := range d.fields {
+			fields[key] = value
+		}
+		// Keep the parsed definition immutable: callers may marshal it repeatedly
+		// while cache refreshes retain the original raw fields.
+		fields["proxy_url"] = encodedProxyURL
+	}
+	return json.Marshal(fields)
 }
 
 // GroupManager manages the caching of group data.
@@ -169,10 +205,17 @@ func (gm *GroupManager) Initialize() error {
 			ByID:   make(map[uint]*models.Group, len(groups)),
 		}
 		proxyResolveCache := make(map[string]string)
+		preloadCtx, preloadCancel := context.WithTimeout(context.Background(), timeout)
+		gm.preloadUpstreamProxyReferences(preloadCtx, groups, proxyResolveCache)
+		preloadCancel()
 		for _, group := range groups {
 			g := *group
 			g.EffectiveConfig = gm.settingsManager.GetEffectiveConfig(g.Config)
-			g.Upstreams = gm.resolveUpstreamProxyReferences(context.Background(), g.Upstreams, proxyResolveCache)
+			if bytes.Contains(g.Upstreams, []byte("proxy-pool:")) {
+				resolveCtx, resolveCancel := context.WithTimeout(context.Background(), timeout)
+				g.Upstreams = gm.resolveUpstreamProxyReferences(resolveCtx, g.Upstreams, proxyResolveCache)
+				resolveCancel()
+			}
 			statusMatcher, err := failover.ParseStatusCodeMatcher(g.EffectiveConfig.FailoverStatusCodes)
 			if err != nil {
 				logrus.WithError(err).WithField("group_name", g.Name).Warn("Invalid failover status code pattern, using default")
@@ -256,7 +299,6 @@ func (gm *GroupManager) Initialize() error {
 			cache.ByName[g.Name] = &g
 			cache.ByID[g.ID] = &g
 		}
-
 		return cache, nil
 	}
 
@@ -316,6 +358,95 @@ func (gm *GroupManager) Invalidate() error {
 	return gm.syncer.Invalidate()
 }
 
+// RefreshCachedUpstreams makes an upstream edit visible to local requests before
+// the cross-instance invalidation is delivered. Copy-on-write keeps readers that
+// already hold the previous group snapshot race-free.
+func (gm *GroupManager) RefreshCachedUpstreams(ctx context.Context, groupID uint, groupName string, upstreams []byte) {
+	gm.refreshCachedUpstreamsBatch(ctx, []cachedUpstreamRefresh{{
+		groupID: groupID, groupName: groupName, upstreams: upstreams,
+	}})
+}
+
+type cachedUpstreamRefresh struct {
+	groupID   uint
+	groupName string
+	upstreams []byte
+}
+
+func (gm *GroupManager) refreshCachedUpstreamsBatch(ctx context.Context, refreshes []cachedUpstreamRefresh) {
+	if gm.syncer == nil || len(refreshes) == 0 {
+		return
+	}
+
+	// Proxy-pool resolution may perform external I/O. Resolve every update outside
+	// the cache write lock and share results across the batch.
+	proxyResolveCache := make(map[string]string)
+	resolved := make([]cachedUpstreamRefresh, len(refreshes))
+	// skip[i] marks entries whose proxy-pool references failed to resolve
+	// (e.g. context cancellation or resolver error). Publishing the raw
+	// "proxy-pool:<id>" reference would make the group fail closed until the
+	// next full reload, so those entries keep their previous resolved snapshot.
+	skip := make([]bool, len(refreshes))
+	for i, refresh := range refreshes {
+		resolved[i] = refresh
+		resolved[i].upstreams = gm.resolveUpstreamProxyReferences(ctx, refresh.upstreams, proxyResolveCache)
+		skip[i] = upstreamsContainUnresolvedProxyRefs(resolved[i].upstreams)
+	}
+
+	gm.syncer.Update(func(current groupCache) groupCache {
+		found := false
+		for i, refresh := range resolved {
+			if skip[i] {
+				continue
+			}
+			if _, ok := current.ByID[refresh.groupID]; ok {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return current
+		}
+
+		nextByID := make(map[uint]*models.Group, len(current.ByID))
+		for id, group := range current.ByID {
+			nextByID[id] = group
+		}
+		nextByName := make(map[string]*models.Group, len(current.ByName))
+		for name, group := range current.ByName {
+			nextByName[name] = group
+		}
+
+		// Delete every previous name before inserting replacements so A<->B swaps
+		// cannot remove a route that was already inserted earlier in this batch.
+		for i, refresh := range resolved {
+			if skip[i] {
+				continue
+			}
+			cached, ok := nextByID[refresh.groupID]
+			if ok && cached.Name != refresh.groupName {
+				delete(nextByName, cached.Name)
+			}
+		}
+		for i, refresh := range resolved {
+			if skip[i] {
+				continue
+			}
+			cached, ok := nextByID[refresh.groupID]
+			if !ok {
+				continue
+			}
+			updated := *cached
+			updated.Name = refresh.groupName
+			updated.Upstreams = append(updated.Upstreams[:0:0], refresh.upstreams...)
+			nextByID[refresh.groupID] = &updated
+			nextByName[updated.Name] = &updated
+		}
+
+		return groupCache{ByName: nextByName, ByID: nextByID}
+	})
+}
+
 // Reload forces an immediate synchronous reload of the cache from the database.
 // This is useful when you need to ensure the cache is updated immediately after database changes.
 // Unlike Invalidate(), this method blocks until the cache is fully reloaded.
@@ -338,34 +469,31 @@ func (gm *GroupManager) Stop(ctx context.Context) {
 }
 
 func (gm *GroupManager) resolveUpstreamProxyReferences(ctx context.Context, upstreams []byte, cache map[string]string) []byte {
+	// This substring guard intentionally tolerates false positives: they cost one bounded JSON parse only.
 	if gm.settingsManager == nil || !bytes.Contains(upstreams, []byte("proxy-pool:")) {
 		return upstreams
 	}
-	var defs []struct {
-		URL          string  `json:"url"`
-		Weight       int     `json:"weight"`
-		ProxyURL     *string `json:"proxy_url,omitempty"`
-		GatewayProxy string  `json:"gateway_proxy,omitempty"`
-	}
+	var defs []groupUpstreamDefinition
 	if err := json.Unmarshal(upstreams, &defs); err != nil {
 		return upstreams
 	}
+	pending := collectUpstreamProxyReferences(defs, cache)
+	cacheResolvedProxyURLs(cache, gm.settingsManager.ResolveRuntimeProxyURLs(ctx, pending))
 	changed := false
 	for i := range defs {
-		if defs[i].ProxyURL == nil || !utils.IsProxyPoolRef(*defs[i].ProxyURL) {
+		if defs[i].ProxyURL == nil {
 			continue
 		}
-		ref := *defs[i].ProxyURL
-		resolved, ok := cache[ref]
-		if !ok {
-			resolved = gm.settingsManager.ResolveRuntimeProxyURL(ctx, ref)
-			cache[ref] = resolved
+		ref := strings.TrimSpace(*defs[i].ProxyURL)
+		if !utils.IsProxyPoolRef(ref) {
+			continue
 		}
+		resolved := cache[ref]
 		if resolved == "" {
-			defs[i].ProxyURL = nil
-		} else {
-			defs[i].ProxyURL = &resolved
+			// Preserve the reference so a resolver/cache anomaly fails closed instead of routing directly.
+			resolved = ref
 		}
+		defs[i].ProxyURL = &resolved
 		changed = true
 	}
 	if !changed {
@@ -376,6 +504,86 @@ func (gm *GroupManager) resolveUpstreamProxyReferences(ctx context.Context, upst
 		return upstreams
 	}
 	return resolvedUpstreams
+}
+
+// upstreamsContainUnresolvedProxyRefs reports whether the given upstreams still
+// carry a proxy-pool reference. resolveUpstreamProxyReferences preserves the raw
+// reference verbatim when resolution fails (fail closed), so a leftover marker
+// means the caller must not overwrite the previous resolved snapshot.
+func upstreamsContainUnresolvedProxyRefs(upstreams []byte) bool {
+	if !bytes.Contains(upstreams, []byte("proxy-pool:")) {
+		return false
+	}
+	var defs []groupUpstreamDefinition
+	if err := json.Unmarshal(upstreams, &defs); err != nil {
+		// Unparseable data would also fail closed downstream; keep the old snapshot.
+		return true
+	}
+	for i := range defs {
+		if defs[i].ProxyURL == nil {
+			continue
+		}
+		if utils.IsProxyPoolRef(strings.TrimSpace(*defs[i].ProxyURL)) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectUpstreamProxyReferences(defs []groupUpstreamDefinition, known map[string]string) []string {
+	refs := make([]string, 0, len(defs))
+	seen := make(map[string]struct{}, len(defs))
+	for i := range defs {
+		if defs[i].ProxyURL == nil {
+			continue
+		}
+		ref := strings.TrimSpace(*defs[i].ProxyURL)
+		if !utils.IsProxyPoolRef(ref) {
+			continue
+		}
+		if _, exists := known[ref]; exists {
+			continue
+		}
+		if _, duplicate := seen[ref]; duplicate {
+			continue
+		}
+		seen[ref] = struct{}{}
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+// cacheResolvedProxyURLs keeps unresolved identity fallbacks retryable across groups.
+func cacheResolvedProxyURLs(cache, resolvedURLs map[string]string) {
+	for ref, resolved := range resolvedURLs {
+		if resolved != ref {
+			cache[ref] = resolved
+		}
+	}
+}
+
+func (gm *GroupManager) preloadUpstreamProxyReferences(ctx context.Context, groups []*models.Group, cache map[string]string) {
+	if gm.settingsManager == nil {
+		return
+	}
+	refs := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, group := range groups {
+		if group == nil || !bytes.Contains(group.Upstreams, []byte("proxy-pool:")) {
+			continue
+		}
+		var defs []groupUpstreamDefinition
+		if err := json.Unmarshal(group.Upstreams, &defs); err != nil {
+			continue
+		}
+		for _, ref := range collectUpstreamProxyReferences(defs, nil) {
+			if _, duplicate := seen[ref]; !duplicate {
+				seen[ref] = struct{}{}
+				refs = append(refs, ref)
+			}
+		}
+	}
+	cacheResolvedProxyURLs(cache, gm.settingsManager.ResolveRuntimeProxyURLs(ctx, refs))
 }
 
 // parseModelRedirectRulesV2 parses V2 model redirect rules from JSON.

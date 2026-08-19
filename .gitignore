@@ -153,6 +153,7 @@ patches/
 implementation-notes.md
 .omo/
 .codex/skills/
+.agents/
 skills/gpt-load-code-review/
 .playwright-mcp/
 /.playwright-cli/
