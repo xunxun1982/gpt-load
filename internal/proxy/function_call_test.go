@@ -5972,10 +5972,11 @@ func TestRepairMalformedJSON_ProductionLogPatternsExtended(t *testing.T) {
 			forbiddenFields: []string{`"Form"`},
 		},
 		{
-			name:        "state_to_status",
-			input:       `[{"id":"1","content":"task","state":"pending"}]`,
-			shouldParse: true,
-			wantFields:  []string{`"status"`},
+			name:            "state_to_status",
+			input:           `[{"id":"1","content":"task","state":"pending"}]`,
+			shouldParse:     true,
+			wantFields:      []string{`"status"`},
+			forbiddenFields: []string{`"state"`},
 		},
 		{
 			name:        "unquoted_status_value",

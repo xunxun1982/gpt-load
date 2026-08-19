@@ -295,19 +295,23 @@ func TestMergeModelRedirectRulesV2(t *testing.T) {
 				assert.Len(t, resultObj, 1)
 				assert.Contains(t, resultObj, "gpt-4")
 
-				// Verify targets contain both models
-				gpt4Rule := resultObj["gpt-4"].(map[string]interface{})
-				targets := gpt4Rule["targets"].([]interface{})
-				assert.Len(t, targets, 2)
+				gpt4Rule, ok := resultObj["gpt-4"].(map[string]interface{})
+				require.True(t, ok, "gpt-4 rule should be an object")
+				actualTargets, ok := gpt4Rule["targets"].([]interface{})
+				require.True(t, ok, "gpt-4 targets should be an array")
 
-				// Extract model names from targets
-				modelNames := make(map[string]bool)
-				for _, tgt := range targets {
-					target := tgt.(map[string]interface{})
-					modelNames[target["model"].(string)] = true
-				}
-				assert.True(t, modelNames["gpt-4-turbo"], "should contain gpt-4-turbo")
-				assert.True(t, modelNames["gpt-4-0125"], "should contain gpt-4-0125")
+				// Compare complete target objects (model, weight, enabled)
+				// without depending on map iteration order, so incorrect
+				// weight/enabled values cannot pass.
+				var expectedObj map[string]interface{}
+				err = json.Unmarshal([]byte(tt.expected), &expectedObj)
+				require.NoError(t, err, "expected JSON should be valid")
+				expectedRule, ok := expectedObj["gpt-4"].(map[string]interface{})
+				require.True(t, ok, "expected gpt-4 rule should be an object")
+				expectedTargets, ok := expectedRule["targets"].([]interface{})
+				require.True(t, ok, "expected gpt-4 targets should be an array")
+
+				assert.ElementsMatch(t, expectedTargets, actualTargets)
 				return
 			}
 

@@ -207,9 +207,9 @@ test("commercial site type is positioned between Brand and Other and uses an exp
   assert.match(panel, /:render-label="renderSiteTypeOptionLabel"/);
   assert.match(panel, /capabilitylessSiteTypes[\s\S]*"brand"[\s\S]*"commercial"[\s\S]*"Veloera"/);
   assert.match(panel, /function isCapabilitylessSiteType/);
-  for (const locale of [zhSiteLocale, enSiteLocale, jaSiteLocale]) {
-    assert.match(locale, /siteTypeCommercial:/);
-  }
+  assert.match(zhSiteLocale, /siteTypeCommercial:\s*"商业"/);
+  assert.match(enSiteLocale, /siteTypeCommercial:\s*"Commercial"/);
+  assert.match(jaSiteLocale, /siteTypeCommercial:\s*"商用"/);
 });
 
 test("provider-specific required fields are validated before submit", () => {

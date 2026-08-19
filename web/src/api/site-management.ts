@@ -19,6 +19,12 @@ export type SingleAuthType = "none" | "access_token" | "cookie";
 export type ManagedSiteAuthType = SingleAuthType | `${SingleAuthType},${SingleAuthType}`;
 export type ManagedSiteBypassMethod = "" | "none" | "stealth";
 
+// Response-only site type: the backend returns the stored value verbatim, and
+// legacy records may still carry the raw empty string. UI code normalizes ""
+// to "unknown" before display (normalizeManagedSiteType in the panel), while
+// requests only ever send known ManagedSiteType values.
+export type ManagedSiteResponseType = ManagedSiteType | "";
+
 export type ManagedSiteCheckinStatus = "success" | "failed" | "skipped" | "already_checked" | "";
 
 // Pagination parameters for site listing
@@ -68,7 +74,7 @@ export interface ManagedSiteDTO {
   enabled: boolean;
 
   base_url: string;
-  site_type: ManagedSiteType;
+  site_type: ManagedSiteResponseType;
   user_id: string;
   checkin_page_url: string;
 

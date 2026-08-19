@@ -30,7 +30,9 @@ const (
 	codexToolSearchProxyName = "tool_search"
 )
 
-var errCodexInputNoConvertibleMessages = errors.New("Codex input contains no convertible messages")
+// ST1005: error strings must not be capitalized. The message is only matched
+// via errors.Is, so lowercasing keeps behavior identical.
+var errCodexInputNoConvertibleMessages = errors.New("codex input contains no convertible messages")
 
 // isCodexPath detects the explicit /codex force endpoint without confusing it
 // with a group that is literally named "codex".
