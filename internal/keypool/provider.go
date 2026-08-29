@@ -307,6 +307,13 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 		return fmt.Errorf("failed to get key details from store: %w", err)
 	}
 
+	// The key may be deleted while a failure task is still queued. An empty
+	// store hash means the key no longer exists: bail out instead of letting
+	// HIncrBy recreate an orphan hash for a deleted key.
+	if keyDetails["id"] == "" {
+		return nil
+	}
+
 	if keyDetails["status"] == models.KeyStatusInvalid {
 		return nil
 	}
@@ -329,12 +336,27 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 	// 4. The divergence only affects failure_count, not key availability
 	// Adding a compensating mechanism (periodic sync) was considered but rejected as over-engineering
 	// for this use case where eventual consistency is sufficient.
+	var dbRowsAffected int64
 	if err := p.executeWithRetry(func(db *gorm.DB) error {
-		return db.Model(&models.APIKey{}).
+		result := db.Model(&models.APIKey{}).
 			Where("id = ?", apiKey.ID).
-			UpdateColumn("failure_count", gorm.Expr("failure_count + ?", 1)).Error
+			UpdateColumn("failure_count", gorm.Expr("failure_count + ?", 1))
+		if result.Error != nil {
+			return result.Error
+		}
+		dbRowsAffected = result.RowsAffected
+		return nil
 	}); err != nil {
 		return fmt.Errorf("failed to increment failure_count in DB: %w", err)
+	}
+
+	// The key was deleted from the DB before this failure landed. Remove any
+	// residual store hash (deletion race) instead of writing to it.
+	if dbRowsAffected == 0 {
+		if err := p.store.Delete(keyHashKey); err != nil {
+			return fmt.Errorf("failed to clean up deleted key %d from store: %w", apiKey.ID, err)
+		}
+		return nil
 	}
 
 	newFailureCount, err := p.store.HIncrBy(keyHashKey, "failure_count", 1)
