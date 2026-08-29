@@ -143,3 +143,77 @@ func TestHandleSuccess_DeletedKeyDoesNotResurrectStoreHash(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, details, "deleted key hash must not be resurrected by a success update")
 }
+
+// TestResetGroupActiveKeysFailureCountSkipsMissingStoreHash locks the reset
+// behavior: resetting failure_count must not create an id-less orphan hash
+// when key:<id> is absent from the store (such a hash would make
+// handleSuccess/handleFailure bail out early and linger as an orphan).
+func TestResetGroupActiveKeysFailureCountSkipsMissingStoreHash(t *testing.T) {
+	provider, db, memStore := setupTestProvider(t)
+	defer provider.Stop()
+
+	group := createTestGroup(t, db, "test-group")
+	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encryptedKey, err := encSvc.Encrypt("sk-reset-key")
+	require.NoError(t, err)
+	apiKey := &models.APIKey{
+		GroupID:      group.ID,
+		KeyValue:     encryptedKey,
+		KeyHash:      encSvc.Hash("sk-reset-key"),
+		Status:       models.KeyStatusActive,
+		FailureCount: 3,
+	}
+	require.NoError(t, db.Create(apiKey).Error)
+
+	// Deliberately do NOT seed the store hash: the reset must skip instead of
+	// creating a hash that lacks the "id" field.
+	reset, err := provider.ResetGroupActiveKeysFailureCount(group.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), reset)
+
+	details, err := memStore.HGetAll(fmt.Sprintf("key:%d", apiKey.ID))
+	require.NoError(t, err)
+	require.Empty(t, details, "reset must not create an id-less orphan hash")
+}
+
+// TestHandleSuccess_RecoversInvalidKeyToActiveList locks the normal recovery
+// path: a key leaving the invalid state is re-added to the active list and its
+// store hash is refreshed with the active status.
+func TestHandleSuccess_RecoversInvalidKeyToActiveList(t *testing.T) {
+	provider, db, memStore := setupTestProvider(t)
+	defer provider.Stop()
+
+	group := createTestGroup(t, db, "test-group")
+	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encryptedKey, err := encSvc.Encrypt("sk-recover-key")
+	require.NoError(t, err)
+	apiKey := &models.APIKey{
+		GroupID:      group.ID,
+		KeyValue:     encryptedKey,
+		KeyHash:      encSvc.Hash("sk-recover-key"),
+		Status:       models.KeyStatusInvalid,
+		FailureCount: 2,
+	}
+	require.NoError(t, db.Create(apiKey).Error)
+
+	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
+	keyDetails := map[string]any{
+		"id":            fmt.Sprintf("%d", apiKey.ID),
+		"key_string":    encryptedKey,
+		"status":        models.KeyStatusInvalid,
+		"failure_count": "2",
+		"created_at":    time.Now().Unix(),
+	}
+	require.NoError(t, memStore.HSet(keyHashKey, keyDetails))
+
+	require.NoError(t, provider.handleSuccess(apiKey.ID, keyHashKey, activeKeysListKey, group.ID))
+
+	n, err := memStore.LLen(activeKeysListKey)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n, "recovered key must be re-added to the active list")
+
+	details, err := memStore.HGetAll(keyHashKey)
+	require.NoError(t, err)
+	require.Equal(t, models.KeyStatusActive, details["status"])
+}

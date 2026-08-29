@@ -307,6 +307,21 @@ func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey st
 	}
 
 	if !isActive {
+		// Re-confirm the key still exists before re-adding it to the active
+		// list: a deletion could land between the DB update above and here.
+		// The HSet above lacks "id" when the original hash was concurrently
+		// deleted, so an empty "id" here means the key is gone — clean up the
+		// orphan instead of pushing a deleted key back into selection.
+		current, err := p.store.HGetAll(keyHashKey)
+		if err != nil {
+			return fmt.Errorf("failed to re-check key details in store: %w", err)
+		}
+		if current["id"] == "" {
+			if err := p.store.Delete(keyHashKey); err != nil {
+				return fmt.Errorf("failed to clean up deleted key %d from store: %w", keyID, err)
+			}
+			return nil
+		}
 		logrus.WithField("keyID", keyID).Debug("Key has recovered and is being restored to active pool")
 		if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
 			return fmt.Errorf("failed to LRem key before LPush on recovery: %w", err)
@@ -927,6 +942,21 @@ func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, err
 
 		for _, key := range batchKeys {
 			keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
+			// Skip keys whose store hash is absent: HSet would create an id-less
+			// orphan hash that handleSuccess/handleFailure would then bail out on.
+			exists, err := p.store.Exists(keyHashKey)
+			if err != nil {
+				logrus.WithFields(logrus.Fields{
+					"keyID": key.ID,
+					"error": err,
+				}).Warn("Failed to check key existence in store, continuing with other keys")
+				lastID = key.ID
+				continue
+			}
+			if !exists {
+				lastID = key.ID
+				continue
+			}
 			if err := p.store.HSet(keyHashKey, map[string]any{"failure_count": 0}); err != nil {
 				logrus.WithFields(logrus.Fields{
 					"keyID": key.ID,
@@ -1004,6 +1034,19 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 		// Update failure_count in Redis store for each key
 		for _, key := range keys {
 			keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
+			// Skip keys whose store hash is absent: HSet would create an id-less
+			// orphan hash that handleSuccess/handleFailure would then bail out on.
+			exists, err := p.store.Exists(keyHashKey)
+			if err != nil {
+				logrus.WithFields(logrus.Fields{
+					"keyID": key.ID,
+					"error": err,
+				}).Warn("Failed to check key existence in store, continuing with other keys")
+				continue
+			}
+			if !exists {
+				continue
+			}
 			if err := p.store.HSet(keyHashKey, map[string]any{"failure_count": 0}); err != nil {
 				logrus.WithFields(logrus.Fields{
 					"keyID": key.ID,
