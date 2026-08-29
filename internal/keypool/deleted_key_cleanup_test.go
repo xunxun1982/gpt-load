@@ -2,14 +2,33 @@ package keypool
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"gpt-load/internal/encryption"
 	"gpt-load/internal/models"
+	"gpt-load/internal/store"
 
 	"github.com/stretchr/testify/require"
 )
+
+// recoveryBarrierStore pauses the recovery LRem after the existence check has
+// completed, making the deletion/recovery ordering deterministic.
+type recoveryBarrierStore struct {
+	store.Store
+	startLRem chan struct{}
+	release   chan struct{}
+	once      sync.Once
+}
+
+func (s *recoveryBarrierStore) LRem(key string, count int64, value any) error {
+	s.once.Do(func() {
+		close(s.startLRem)
+		<-s.release
+	})
+	return s.Store.LRem(key, count, value)
+}
 
 // TestHandleFailure_DeletedKeyDoesNotResurrectStoreHash locks the guard against
 // resurrecting a deleted key's store hash. A failure task may still be queued
@@ -216,4 +235,67 @@ func TestHandleSuccess_RecoversInvalidKeyToActiveList(t *testing.T) {
 	details, err := memStore.HGetAll(keyHashKey)
 	require.NoError(t, err)
 	require.Equal(t, models.KeyStatusActive, details["status"])
+}
+
+// TestHandleSuccess_RecoveryDeletionBarrierKeepsActiveListClean verifies that
+// deletion cannot interleave between recovery's existence check and LPush.
+func TestHandleSuccess_RecoveryDeletionBarrierKeepsActiveListClean(t *testing.T) {
+	provider, db, memStore := setupTestProvider(t)
+	defer provider.Stop()
+
+	group := createTestGroup(t, db, "test-group")
+	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encryptedKey, err := encSvc.Encrypt("sk-recovery-race-key")
+	require.NoError(t, err)
+	apiKey := &models.APIKey{
+		GroupID:      group.ID,
+		KeyValue:     encryptedKey,
+		KeyHash:      encSvc.Hash("sk-recovery-race-key"),
+		Status:       models.KeyStatusInvalid,
+		FailureCount: 2,
+	}
+	require.NoError(t, db.Create(apiKey).Error)
+
+	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
+	require.NoError(t, memStore.HSet(keyHashKey, map[string]any{
+		"id":            fmt.Sprintf("%d", apiKey.ID),
+		"key_string":    encryptedKey,
+		"status":        models.KeyStatusInvalid,
+		"failure_count": "2",
+		"created_at":    time.Now().Unix(),
+	}))
+
+	barrier := &recoveryBarrierStore{
+		Store:     memStore,
+		startLRem: make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	provider.store = barrier
+
+	recoveryDone := make(chan error, 1)
+	go func() {
+		recoveryDone <- provider.handleSuccess(apiKey.ID, keyHashKey, activeKeysListKey, group.ID)
+	}()
+	<-barrier.startLRem
+
+	dbDeleted := make(chan struct{})
+	deleteDone := make(chan error, 1)
+	go func() {
+		if err := db.Delete(&models.APIKey{}, apiKey.ID).Error; err != nil {
+			deleteDone <- err
+			return
+		}
+		close(dbDeleted)
+		deleteDone <- provider.removeKeyFromStore(apiKey.ID, group.ID)
+	}()
+	<-dbDeleted
+	close(barrier.release)
+
+	require.NoError(t, <-recoveryDone)
+	require.NoError(t, <-deleteDone)
+
+	length, err := memStore.LLen(activeKeysListKey)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), length, "deleted key must not remain in active list")
 }

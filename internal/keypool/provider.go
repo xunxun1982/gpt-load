@@ -44,6 +44,9 @@ type KeyProvider struct {
 	workerWg         sync.WaitGroup
 	stopOnce         sync.Once
 	stopChan         chan struct{}
+	// lifecycleMu serializes store lifecycle changes so recovery cannot add a
+	// key to active_keys after deletion has removed it.
+	lifecycleMu sync.Mutex
 }
 
 // NewProvider creates a new KeyProvider instance with worker pool.
@@ -302,39 +305,50 @@ func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey st
 		return nil
 	}
 
-	if err := p.store.HSet(keyHashKey, dbUpdates); err != nil {
+	if !isActive {
+		if err := p.restoreRecoveredKey(keyID, keyHashKey, activeKeysListKey, dbUpdates); err != nil {
+			return err
+		}
+
+	} else if err := p.store.HSet(keyHashKey, dbUpdates); err != nil {
 		return fmt.Errorf("failed to update key details in store: %w", err)
 	}
 
-	if !isActive {
-		// Re-confirm the key still exists before re-adding it to the active
-		// list: a deletion could land between the DB update above and here.
-		// The HSet above lacks "id" when the original hash was concurrently
-		// deleted, so an empty "id" here means the key is gone — clean up the
-		// orphan instead of pushing a deleted key back into selection.
-		current, err := p.store.HGetAll(keyHashKey)
-		if err != nil {
-			return fmt.Errorf("failed to re-check key details in store: %w", err)
-		}
-		if current["id"] == "" {
-			if err := p.store.Delete(keyHashKey); err != nil {
-				return fmt.Errorf("failed to clean up deleted key %d from store: %w", keyID, err)
-			}
-			return nil
-		}
-		logrus.WithField("keyID", keyID).Debug("Key has recovered and is being restored to active pool")
-		if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
-			return fmt.Errorf("failed to LRem key before LPush on recovery: %w", err)
-		}
-		if err := p.store.LPush(activeKeysListKey, keyID); err != nil {
-			return fmt.Errorf("failed to LPush key back to active list: %w", err)
-		}
-
-		if p.CacheInvalidationCallback != nil {
-			p.CacheInvalidationCallback(groupID)
-		}
+	if !isActive && p.CacheInvalidationCallback != nil {
+		p.CacheInvalidationCallback(groupID)
 	}
 
+	return nil
+}
+
+// restoreRecoveredKey updates the cache and active list under the same
+// lifecycle lock as deletion, then releases the lock before returning.
+func (p *KeyProvider) restoreRecoveredKey(keyID uint, keyHashKey, activeKeysListKey string, updates map[string]any) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
+	if err := p.store.HSet(keyHashKey, updates); err != nil {
+		return fmt.Errorf("failed to update key details in store: %w", err)
+	}
+	// Re-confirm after HSet while deletion is excluded by lifecycleMu.
+	current, err := p.store.HGetAll(keyHashKey)
+	if err != nil {
+		return fmt.Errorf("failed to re-check key details in store: %w", err)
+	}
+	if current["id"] == "" {
+		if err := p.store.Delete(keyHashKey); err != nil {
+			return fmt.Errorf("failed to clean up deleted key %d from store: %w", keyID, err)
+		}
+		return nil
+	}
+
+	logrus.WithField("keyID", keyID).Debug("Key has recovered and is being restored to active pool")
+	if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
+		return fmt.Errorf("failed to LRem key before LPush on recovery: %w", err)
+	}
+	if err := p.store.LPush(activeKeysListKey, keyID); err != nil {
+		return fmt.Errorf("failed to LPush key back to active list: %w", err)
+	}
 	return nil
 }
 
@@ -1367,6 +1381,8 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 	if len(keyIDs) == 0 {
 		return nil
 	}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 
 	// Use strconv instead of fmt.Sprintf for better performance
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
@@ -1417,6 +1433,9 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 // RemoveOrphanedKeysFromStore removes any orphaned keys for a group that no longer exists
 // This is a best-effort cleanup operation for idempotent delete scenarios
 func (p *KeyProvider) RemoveOrphanedKeysFromStore(groupID uint) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
 	// Use strconv instead of fmt.Sprintf for better performance
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 
@@ -1624,6 +1643,9 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 
 // removeKeyFromStore is a helper to remove a single key from the cache.
 func (p *KeyProvider) removeKeyFromStore(keyID, groupID uint) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
 	// Use strconv instead of fmt.Sprintf for better performance
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 	if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
