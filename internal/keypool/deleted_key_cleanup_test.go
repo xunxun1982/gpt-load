@@ -100,3 +100,46 @@ func TestHandleFailure_DeletedKeyCleansUpResidualStoreHash(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, details, "residual store hash of a deleted key must be cleaned up")
 }
+
+// TestHandleSuccess_DeletedKeyDoesNotResurrectStoreHash locks the same guard
+// for the success path: a queued success task for a deleted key must not
+// recreate the orphan store hash via HSet.
+func TestHandleSuccess_DeletedKeyDoesNotResurrectStoreHash(t *testing.T) {
+	provider, db, memStore := setupTestProvider(t)
+	defer provider.Stop()
+
+	group := createTestGroup(t, db, "test-group")
+	encSvc, _ := encryption.NewService("test-key-32-bytes-long-enough!!")
+	encryptedKey, err := encSvc.Encrypt("sk-deleted-key")
+	require.NoError(t, err)
+	apiKey := &models.APIKey{
+		GroupID:      group.ID,
+		KeyValue:     encryptedKey,
+		KeyHash:      encSvc.Hash("sk-deleted-key"),
+		Status:       models.KeyStatusActive,
+		FailureCount: 1,
+	}
+	require.NoError(t, db.Create(apiKey).Error)
+
+	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
+	keyDetails := map[string]any{
+		"id":            fmt.Sprintf("%d", apiKey.ID),
+		"key_string":    encryptedKey,
+		"status":        models.KeyStatusActive,
+		"failure_count": "1",
+		"created_at":    time.Now().Unix(),
+	}
+	require.NoError(t, memStore.HSet(keyHashKey, keyDetails))
+	require.NoError(t, memStore.LPush(activeKeysListKey, apiKey.ID))
+
+	// Simulate the key being deleted while a success task is still in flight.
+	require.NoError(t, db.Delete(&models.APIKey{}, apiKey.ID).Error)
+	require.NoError(t, memStore.Delete(keyHashKey))
+
+	require.NoError(t, provider.handleSuccess(apiKey.ID, keyHashKey, activeKeysListKey, group.ID))
+
+	details, err := memStore.HGetAll(keyHashKey)
+	require.NoError(t, err)
+	require.Empty(t, details, "deleted key hash must not be resurrected by a success update")
+}

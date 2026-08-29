@@ -172,6 +172,7 @@ func TestUpdateStatus_Success(t *testing.T) {
 	keyHashKey := fmt.Sprintf("key:%d", apiKey.ID)
 	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", group.ID)
 	keyDetails := map[string]any{
+		"id":            fmt.Sprintf("%d", apiKey.ID),
 		"key_string":    encryptedKey,
 		"status":        models.KeyStatusActive,
 		"failure_count": "1",
