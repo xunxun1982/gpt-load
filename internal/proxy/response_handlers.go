@@ -589,13 +589,30 @@ func logicalFailureStatusCode(errorCode, errorMessage string) int {
 	return http.StatusBadGateway
 }
 
-func isPermanentLogicalFailure(errorCode string) bool {
-	switch strings.ToLower(strings.TrimSpace(errorCode)) {
+func isPermanentLogicalFailure(errorCode, errorMessage string) bool {
+	lowerCode := strings.ToLower(strings.TrimSpace(errorCode))
+	if lowerCode == "invalid_request_error" && isReasoningContentPassbackFailure(errorMessage) {
+		return false
+	}
+	switch lowerCode {
 	case "invalid_request_error", "model_not_found":
 		return true
 	default:
 		return false
 	}
+}
+
+// isReasoningContentPassbackFailure reports whether the error is a DeepSeek
+// thinking-mode reasoning_content passback rejection. The upstream rejects
+// the request before any output, so failover (retry) on a different key or
+// upstream may succeed — this is recoverable, not permanent. Wording varies
+// between deployments, so the match requires the three stable keywords
+// reasoning_content, thinking and back rather than one fixed phrase.
+func isReasoningContentPassbackFailure(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "reasoning_content") &&
+		strings.Contains(lower, "thinking") &&
+		strings.Contains(lower, "back")
 }
 
 func equivalentNumericLogicalFailureStatusCode(errorCode string) int {
