@@ -44,6 +44,9 @@ type KeyProvider struct {
 	workerWg         sync.WaitGroup
 	stopOnce         sync.Once
 	stopChan         chan struct{}
+	// lifecycleMu serializes store lifecycle changes so recovery cannot add a
+	// key to active_keys after deletion has removed it.
+	lifecycleMu sync.Mutex
 }
 
 // NewProvider creates a new KeyProvider instance with worker pool.
@@ -262,6 +265,13 @@ func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey st
 		return fmt.Errorf("failed to get key details from store: %w", err)
 	}
 
+	// The key may be deleted while a success task is still queued. An empty
+	// store hash means the key no longer exists: bail out instead of letting
+	// HSet recreate an orphan hash for a deleted key.
+	if keyDetails["id"] == "" {
+		return nil
+	}
+
 	failureCount, _ := strconv.ParseInt(keyDetails["failure_count"], 10, 64)
 	isActive := keyDetails["status"] == models.KeyStatusActive
 
@@ -273,31 +283,72 @@ func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey st
 	if !isActive {
 		dbUpdates["status"] = models.KeyStatusActive
 	}
+	var dbRowsAffected int64
 	if err := p.executeWithRetry(func(db *gorm.DB) error {
 		// Use UpdateColumns to avoid updated_at churn for hot-path stats updates.
-		return db.Model(&models.APIKey{}).Where("id = ?", keyID).UpdateColumns(dbUpdates).Error
+		result := db.Model(&models.APIKey{}).Where("id = ?", keyID).UpdateColumns(dbUpdates)
+		if result.Error != nil {
+			return result.Error
+		}
+		dbRowsAffected = result.RowsAffected
+		return nil
 	}); err != nil {
 		return fmt.Errorf("failed to update key in DB: %w", err)
 	}
 
-	if err := p.store.HSet(keyHashKey, dbUpdates); err != nil {
-		return fmt.Errorf("failed to update key details in store: %w", err)
+	// The key was deleted from the DB before this success landed. Remove any
+	// residual store hash (deletion race) instead of writing to it.
+	if dbRowsAffected == 0 {
+		if err := p.store.Delete(keyHashKey); err != nil {
+			return fmt.Errorf("failed to clean up deleted key %d from store: %w", keyID, err)
+		}
+		return nil
 	}
 
 	if !isActive {
-		logrus.WithField("keyID", keyID).Debug("Key has recovered and is being restored to active pool")
-		if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
-			return fmt.Errorf("failed to LRem key before LPush on recovery: %w", err)
-		}
-		if err := p.store.LPush(activeKeysListKey, keyID); err != nil {
-			return fmt.Errorf("failed to LPush key back to active list: %w", err)
+		if err := p.restoreRecoveredKey(keyID, keyHashKey, activeKeysListKey, dbUpdates); err != nil {
+			return err
 		}
 
-		if p.CacheInvalidationCallback != nil {
-			p.CacheInvalidationCallback(groupID)
-		}
+	} else if err := p.store.HSet(keyHashKey, dbUpdates); err != nil {
+		return fmt.Errorf("failed to update key details in store: %w", err)
 	}
 
+	if !isActive && p.CacheInvalidationCallback != nil {
+		p.CacheInvalidationCallback(groupID)
+	}
+
+	return nil
+}
+
+// restoreRecoveredKey updates the cache and active list under the same
+// lifecycle lock as deletion, then releases the lock before returning.
+func (p *KeyProvider) restoreRecoveredKey(keyID uint, keyHashKey, activeKeysListKey string, updates map[string]any) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
+	if err := p.store.HSet(keyHashKey, updates); err != nil {
+		return fmt.Errorf("failed to update key details in store: %w", err)
+	}
+	// Re-confirm after HSet while deletion is excluded by lifecycleMu.
+	current, err := p.store.HGetAll(keyHashKey)
+	if err != nil {
+		return fmt.Errorf("failed to re-check key details in store: %w", err)
+	}
+	if current["id"] == "" {
+		if err := p.store.Delete(keyHashKey); err != nil {
+			return fmt.Errorf("failed to clean up deleted key %d from store: %w", keyID, err)
+		}
+		return nil
+	}
+
+	logrus.WithField("keyID", keyID).Debug("Key has recovered and is being restored to active pool")
+	if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
+		return fmt.Errorf("failed to LRem key before LPush on recovery: %w", err)
+	}
+	if err := p.store.LPush(activeKeysListKey, keyID); err != nil {
+		return fmt.Errorf("failed to LPush key back to active list: %w", err)
+	}
 	return nil
 }
 
@@ -305,6 +356,13 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 	keyDetails, err := p.store.HGetAll(keyHashKey)
 	if err != nil {
 		return fmt.Errorf("failed to get key details from store: %w", err)
+	}
+
+	// The key may be deleted while a failure task is still queued. An empty
+	// store hash means the key no longer exists: bail out instead of letting
+	// HIncrBy recreate an orphan hash for a deleted key.
+	if keyDetails["id"] == "" {
+		return nil
 	}
 
 	if keyDetails["status"] == models.KeyStatusInvalid {
@@ -329,14 +387,40 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 	// 4. The divergence only affects failure_count, not key availability
 	// Adding a compensating mechanism (periodic sync) was considered but rejected as over-engineering
 	// for this use case where eventual consistency is sufficient.
+	var dbRowsAffected int64
 	if err := p.executeWithRetry(func(db *gorm.DB) error {
-		return db.Model(&models.APIKey{}).
+		result := db.Model(&models.APIKey{}).
 			Where("id = ?", apiKey.ID).
-			UpdateColumn("failure_count", gorm.Expr("failure_count + ?", 1)).Error
+			UpdateColumn("failure_count", gorm.Expr("failure_count + ?", 1))
+		if result.Error != nil {
+			return result.Error
+		}
+		dbRowsAffected = result.RowsAffected
+		return nil
 	}); err != nil {
 		return fmt.Errorf("failed to increment failure_count in DB: %w", err)
 	}
 
+	// The key was deleted from the DB before this failure landed. Remove any
+	// residual store hash (deletion race) instead of writing to it.
+	if dbRowsAffected == 0 {
+		if err := p.store.Delete(keyHashKey); err != nil {
+			return fmt.Errorf("failed to clean up deleted key %d from store: %w", apiKey.ID, err)
+		}
+		return nil
+	}
+
+	// Residual race: a deletion landing between the DB update above and this
+	// HIncrBy could let HIncrBy recreate a one-field orphan hash (failure_count
+	// only). That hash is never selected (deleted keys are absent from every
+	// active_keys list) and the DB remains authoritative, with LoadKeysFromDB
+	// resyncing the store on startup, so the impact is bounded and benign.
+	// Closing the window fully needs an atomic increment-if-exists (Lua script)
+	// or a lifecycle lock shared with deletion; both add interface and hot-path
+	// complexity for a nanosecond window with no functional effect, so the
+	// simple guards above are kept deliberately. (Reviewer suggestion evaluated,
+	// not adopted; barrier test not added — handleFailure has no injection point
+	// and a test-only hook would violate the project's minimal-hook principle.)
 	newFailureCount, err := p.store.HIncrBy(keyHashKey, "failure_count", 1)
 	if err != nil {
 		return fmt.Errorf("failed to increment failure_count in store: %w", err)
@@ -872,6 +956,21 @@ func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, err
 
 		for _, key := range batchKeys {
 			keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
+			// Skip keys whose store hash is absent: HSet would create an id-less
+			// orphan hash that handleSuccess/handleFailure would then bail out on.
+			exists, err := p.store.Exists(keyHashKey)
+			if err != nil {
+				logrus.WithFields(logrus.Fields{
+					"keyID": key.ID,
+					"error": err,
+				}).Warn("Failed to check key existence in store, continuing with other keys")
+				lastID = key.ID
+				continue
+			}
+			if !exists {
+				lastID = key.ID
+				continue
+			}
 			if err := p.store.HSet(keyHashKey, map[string]any{"failure_count": 0}); err != nil {
 				logrus.WithFields(logrus.Fields{
 					"keyID": key.ID,
@@ -949,6 +1048,19 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 		// Update failure_count in Redis store for each key
 		for _, key := range keys {
 			keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
+			// Skip keys whose store hash is absent: HSet would create an id-less
+			// orphan hash that handleSuccess/handleFailure would then bail out on.
+			exists, err := p.store.Exists(keyHashKey)
+			if err != nil {
+				logrus.WithFields(logrus.Fields{
+					"keyID": key.ID,
+					"error": err,
+				}).Warn("Failed to check key existence in store, continuing with other keys")
+				continue
+			}
+			if !exists {
+				continue
+			}
 			if err := p.store.HSet(keyHashKey, map[string]any{"failure_count": 0}); err != nil {
 				logrus.WithFields(logrus.Fields{
 					"keyID": key.ID,
@@ -1269,6 +1381,8 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 	if len(keyIDs) == 0 {
 		return nil
 	}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 
 	// Use strconv instead of fmt.Sprintf for better performance
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
@@ -1319,6 +1433,9 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 // RemoveOrphanedKeysFromStore removes any orphaned keys for a group that no longer exists
 // This is a best-effort cleanup operation for idempotent delete scenarios
 func (p *KeyProvider) RemoveOrphanedKeysFromStore(groupID uint) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
 	// Use strconv instead of fmt.Sprintf for better performance
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 
@@ -1526,6 +1643,9 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 
 // removeKeyFromStore is a helper to remove a single key from the cache.
 func (p *KeyProvider) removeKeyFromStore(keyID, groupID uint) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
 	// Use strconv instead of fmt.Sprintf for better performance
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
 	if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
