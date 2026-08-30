@@ -16,6 +16,17 @@ type memoryStoreItem struct {
 	expiresAt int64 // Unix-nano timestamp. 0 for no expiry.
 }
 
+// memoryList keeps list values in a circular logical order. Rotate only moves
+// the head cursor, so the request hot path remains O(1) and allocation-free.
+type memoryList struct {
+	values []string
+	head   int
+}
+
+func (l *memoryList) at(index int) string {
+	return l.values[(l.head+index)%len(l.values)]
+}
+
 // MemoryStore is an in-memory key-value store that is safe for concurrent use.
 type MemoryStore struct {
 	mu              sync.RWMutex
@@ -99,9 +110,7 @@ func (s *MemoryStore) Get(key string) ([]byte, error) {
 	}
 
 	if item.expiresAt > 0 && time.Now().UnixNano() > item.expiresAt {
-		s.mu.Lock()
-		delete(s.data, key)
-		s.mu.Unlock()
+		s.deleteExpired(key)
 		return nil, ErrNotFound
 	}
 
@@ -138,14 +147,27 @@ func (s *MemoryStore) Exists(key string) (bool, error) {
 
 	if item, ok := rawItem.(memoryStoreItem); ok {
 		if item.expiresAt > 0 && time.Now().UnixNano() > item.expiresAt {
-			s.mu.Lock()
-			delete(s.data, key)
-			s.mu.Unlock()
+			s.deleteExpired(key)
 			return false, nil
 		}
 	}
 
 	return true, nil
+}
+
+func (s *MemoryStore) deleteExpired(key string) {
+	now := time.Now().UnixNano()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rawItem, exists := s.data[key]
+	if !exists {
+		return
+	}
+	item, ok := rawItem.(memoryStoreItem)
+	if ok && item.expiresAt > 0 && now > item.expiresAt {
+		delete(s.data, key)
+	}
 }
 
 // SetNX sets a key-value pair if the key does not already exist.
@@ -254,24 +276,32 @@ func (s *MemoryStore) LPush(key string, values ...any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var list []string
+	var list *memoryList
 	rawList, exists := s.data[key]
 	if !exists {
-		list = make([]string, 0)
+		list = &memoryList{}
+		s.data[key] = list
 	} else {
 		var ok bool
-		list, ok = rawList.([]string)
+		list, ok = rawList.(*memoryList)
 		if !ok {
 			return fmt.Errorf("type mismatch: key '%s' holds a different data type", key)
 		}
 	}
 
-	strValues := make([]string, len(values))
-	for i, v := range values {
-		strValues[i] = fmt.Sprint(v)
+	if len(values) == 0 {
+		return nil
 	}
 
-	s.data[key] = append(strValues, list...) // Prepend
+	newValues := make([]string, len(values)+len(list.values))
+	for i, value := range values {
+		newValues[i] = fmt.Sprint(value)
+	}
+	for i := range list.values {
+		newValues[len(values)+i] = list.at(i)
+	}
+	list.values = newValues
+	list.head = 0
 	return nil
 }
 
@@ -284,24 +314,36 @@ func (s *MemoryStore) LRem(key string, count int64, value any) error {
 		return nil
 	}
 
-	list, ok := rawList.([]string)
+	list, ok := rawList.(*memoryList)
 	if !ok {
 		return fmt.Errorf("type mismatch: key '%s' holds a different data type", key)
 	}
 
 	strValue := fmt.Sprint(value)
-	newList := make([]string, 0, len(list))
 
 	if count != 0 {
 		return fmt.Errorf("LRem with non-zero count is not implemented in MemoryStore")
 	}
 
-	for _, item := range list {
-		if item != strValue {
-			newList = append(newList, item)
+	remaining := 0
+	for i := range list.values {
+		if list.at(i) != strValue {
+			remaining++
 		}
 	}
-	s.data[key] = newList
+	if remaining == len(list.values) {
+		return nil
+	}
+
+	newValues := make([]string, 0, remaining)
+	for i := range list.values {
+		item := list.at(i)
+		if item != strValue {
+			newValues = append(newValues, item)
+		}
+	}
+	list.values = newValues
+	list.head = 0
 	return nil
 }
 
@@ -314,23 +356,21 @@ func (s *MemoryStore) Rotate(key string) (string, error) {
 		return "", ErrNotFound
 	}
 
-	list, ok := rawList.([]string)
+	list, ok := rawList.(*memoryList)
 	if !ok {
 		return "", fmt.Errorf("type mismatch: key '%s' holds a different data type", key)
 	}
 
-	if len(list) == 0 {
+	if len(list.values) == 0 {
 		return "", ErrNotFound
 	}
 
-	lastIndex := len(list) - 1
-	item := list[lastIndex]
-
-	// "LPUSH"
-	newList := append([]string{item}, list[:lastIndex]...)
-	s.data[key] = newList
-
-	return item, nil
+	if list.head == 0 {
+		list.head = len(list.values) - 1
+	} else {
+		list.head--
+	}
+	return list.values[list.head], nil
 }
 
 // LLen returns the length of a list.
@@ -344,12 +384,12 @@ func (s *MemoryStore) LLen(key string) (int64, error) {
 		return 0, nil
 	}
 
-	list, ok := rawItem.([]string)
+	list, ok := rawItem.(*memoryList)
 	if !ok {
 		return 0, fmt.Errorf("type mismatch: key '%s' is not a list", key)
 	}
 
-	return int64(len(list)), nil
+	return int64(len(list.values)), nil
 }
 
 // SCard returns the cardinality (number of elements) of a set.

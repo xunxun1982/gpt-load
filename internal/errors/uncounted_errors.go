@@ -14,11 +14,27 @@ func IsUnCounted(errorMsg string) bool {
 		return false
 	}
 
-	errorLower := strings.ToLower(errorMsg)
+	needsFold := false
+	for _, pattern := range unCountedSubstrings {
+		if strings.Contains(errorMsg, pattern) {
+			return true
+		}
+	}
+	for i := 0; i < len(errorMsg); i++ {
+		if errorMsg[i] >= 'A' && errorMsg[i] <= 'Z' {
+			needsFold = true
+			break
+		}
+	}
+	if !needsFold {
+		return false
+	}
 
 	for _, pattern := range unCountedSubstrings {
-		if strings.Contains(errorLower, pattern) {
-			return true
+		for offset := 0; offset+len(pattern) <= len(errorMsg); offset++ {
+			if strings.EqualFold(errorMsg[offset:offset+len(pattern)], pattern) {
+				return true
+			}
 		}
 	}
 

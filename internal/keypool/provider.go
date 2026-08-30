@@ -10,6 +10,7 @@ import (
 	"gpt-load/internal/models"
 	"gpt-load/internal/store"
 	"gpt-load/internal/utils"
+	"math"
 	"math/rand"
 	"runtime"
 	"strconv"
@@ -21,12 +22,25 @@ import (
 	"gorm.io/gorm"
 )
 
-// statusUpdateTask represents a key status update task for the worker pool.
-type statusUpdateTask struct {
-	apiKey       *models.APIKey
+const largeStatusQueueSize = 4096
+
+// statusUpdateBatch coalesces pending events for one key. A success supersedes
+// earlier failures; failures after the latest success are counted together.
+type statusUpdateBatch struct {
+	keyID        uint
 	group        *models.Group
-	isSuccess    bool
-	errorMessage string
+	reset        bool
+	failureCount int64
+}
+
+func (b statusUpdateBatch) empty() bool {
+	return !b.reset && b.failureCount == 0
+}
+
+type statusUpdateEntry struct {
+	batch    statusUpdateBatch
+	queued   bool
+	inFlight bool
 }
 
 type KeyProvider struct {
@@ -35,39 +49,55 @@ type KeyProvider struct {
 	settingsManager *config.SystemSettingsManager
 	encryptionSvc   encryption.Service
 	// CacheInvalidationCallback is an optional callback for cache invalidation.
-	// Note: This callback will be invoked from a goroutine (spawned in UpdateStatus),
+	// Note: This callback will be invoked from a status worker goroutine,
 	// so implementers must handle concurrent access if the callback accesses shared state.
 	CacheInvalidationCallback func(groupID uint)
 
-	// Worker pool for status updates to control concurrency
-	statusUpdateChan chan statusUpdateTask
-	workerWg         sync.WaitGroup
-	stopOnce         sync.Once
-	stopChan         chan struct{}
-	// lifecycleMu serializes store lifecycle changes so recovery cannot add a
-	// key to active_keys after deletion has removed it.
-	lifecycleMu sync.Mutex
+	// Status updates use a per-key coalescing queue. This keeps request
+	// submission non-blocking while bounding pending state by active key count.
+	statusMu        sync.Mutex
+	statusCond      *sync.Cond
+	statusEntries   map[uint]statusUpdateEntry
+	statusReadyKeys []uint
+	statusReadyHead int
+	statusEntryPeak int
+	statusStopping  bool
+	workerWg        sync.WaitGroup
+	stopOnce        sync.Once
+	// lifecycleMu serializes deletion with short Store mutation sections. Status
+	// workers use read locks, preserving cross-key concurrency.
+	lifecycleMu sync.RWMutex
+}
+
+func statusUpdateWorkerCount(db *gorm.DB) int {
+	if db != nil && db.Dialector != nil {
+		switch db.Dialector.Name() {
+		case "sqlite", "sqlite3":
+			return 1
+		}
+	}
+	workerCount := runtime.NumCPU() * 2
+	if workerCount < 4 {
+		return 4
+	}
+	if workerCount > 16 {
+		return 16
+	}
+	return workerCount
 }
 
 // NewProvider creates a new KeyProvider instance with worker pool.
 func NewProvider(db *gorm.DB, store store.Store, settingsManager *config.SystemSettingsManager, encryptionSvc encryption.Service) *KeyProvider {
-	// Calculate worker count based on CPU cores
-	workerCount := runtime.NumCPU() * 2
-	if workerCount < 4 {
-		workerCount = 4
-	}
-	if workerCount > 16 {
-		workerCount = 16
-	}
+	workerCount := statusUpdateWorkerCount(db)
 
 	p := &KeyProvider{
-		db:               db,
-		store:            store,
-		settingsManager:  settingsManager,
-		encryptionSvc:    encryptionSvc,
-		statusUpdateChan: make(chan statusUpdateTask, 1000), // Buffered channel for backpressure
-		stopChan:         make(chan struct{}),
+		db:              db,
+		store:           store,
+		settingsManager: settingsManager,
+		encryptionSvc:   encryptionSvc,
+		statusEntries:   make(map[uint]statusUpdateEntry),
 	}
+	p.statusCond = sync.NewCond(&p.statusMu)
 
 	// Start worker pool
 	for i := 0; i < workerCount; i++ {
@@ -84,49 +114,123 @@ func (p *KeyProvider) statusUpdateWorker() {
 	defer p.workerWg.Done()
 
 	for {
-		select {
-		case task, ok := <-p.statusUpdateChan:
-			if !ok {
-				return
-			}
-			p.processStatusUpdate(task)
-		case <-p.stopChan:
-			// Drain remaining tasks before exiting
-			for {
-				select {
-				case task, ok := <-p.statusUpdateChan:
-					if !ok {
-						return
-					}
-					p.processStatusUpdate(task)
-				default:
-					return
-				}
-			}
+		batch, ok := p.nextStatusUpdate()
+		if !ok {
+			return
 		}
+		p.processStatusUpdate(batch)
+		p.finishStatusUpdate(batch.keyID)
 	}
 }
 
-// processStatusUpdate handles a single status update task.
-func (p *KeyProvider) processStatusUpdate(task statusUpdateTask) {
-	// Use strconv instead of fmt.Sprintf for better performance
-	keyHashKey := "key:" + strconv.FormatUint(uint64(task.apiKey.ID), 10)
-	activeKeysListKey := "group:" + strconv.FormatUint(uint64(task.group.ID), 10) + ":active_keys"
+func (p *KeyProvider) nextStatusUpdate() (statusUpdateBatch, bool) {
+	p.statusMu.Lock()
+	defer p.statusMu.Unlock()
 
-	if task.isSuccess {
-		if err := p.handleSuccess(task.apiKey.ID, keyHashKey, activeKeysListKey, task.group.ID); err != nil {
-			logrus.WithFields(logrus.Fields{"keyID": task.apiKey.ID, "error": err}).Error("Failed to handle key success")
+	for {
+		if p.statusReadyHead < len(p.statusReadyKeys) {
+			keyID := p.statusReadyKeys[p.statusReadyHead]
+			p.statusReadyKeys[p.statusReadyHead] = 0
+			p.statusReadyHead++
+			p.compactStatusReadyLocked()
+
+			entry := p.statusEntries[keyID]
+			entry.queued = false
+			entry.inFlight = true
+			batch := entry.batch
+			entry.batch = statusUpdateBatch{}
+			p.statusEntries[keyID] = entry
+			return batch, true
 		}
-	} else {
-		if app_errors.IsUnCounted(task.errorMessage) {
-			logrus.WithFields(logrus.Fields{
-				"keyID": task.apiKey.ID,
-				"error": task.errorMessage,
-			}).Debug("Uncounted error, skipping failure handling")
+
+		if p.statusStopping && len(p.statusEntries) == 0 {
+			return statusUpdateBatch{}, false
+		}
+		p.statusCond.Wait()
+	}
+}
+
+func (p *KeyProvider) finishStatusUpdate(keyID uint) {
+	p.statusMu.Lock()
+	defer p.statusMu.Unlock()
+
+	entry, exists := p.statusEntries[keyID]
+	if !exists {
+		return
+	}
+	entry.inFlight = false
+	if !entry.batch.empty() {
+		entry.queued = true
+		p.statusEntries[keyID] = entry
+		p.enqueueStatusKeyLocked(keyID)
+		p.statusCond.Signal()
+		return
+	}
+
+	delete(p.statusEntries, keyID)
+	if p.statusEntryPeak > largeStatusQueueSize &&
+		len(p.statusEntries) <= largeStatusQueueSize &&
+		len(p.statusEntries)*2 <= p.statusEntryPeak {
+		compacted := make(map[uint]statusUpdateEntry, len(p.statusEntries))
+		for id, pending := range p.statusEntries {
+			compacted[id] = pending
+		}
+		p.statusEntries = compacted
+		p.statusEntryPeak = len(compacted)
+	}
+	if p.statusStopping {
+		p.statusCond.Broadcast()
+	}
+}
+
+func (p *KeyProvider) enqueueStatusKeyLocked(keyID uint) {
+	p.statusReadyKeys = append(p.statusReadyKeys, keyID)
+}
+
+func (p *KeyProvider) compactStatusReadyLocked() {
+	if p.statusReadyHead == 0 {
+		return
+	}
+	if p.statusReadyHead == len(p.statusReadyKeys) {
+		if cap(p.statusReadyKeys) > largeStatusQueueSize {
+			p.statusReadyKeys = nil
 		} else {
-			if err := p.handleFailure(task.apiKey, task.group, keyHashKey, activeKeysListKey); err != nil {
-				logrus.WithFields(logrus.Fields{"keyID": task.apiKey.ID, "error": err}).Error("Failed to handle key failure")
-			}
+			p.statusReadyKeys = p.statusReadyKeys[:0]
+		}
+		p.statusReadyHead = 0
+		return
+	}
+	if p.statusReadyHead >= 1024 && p.statusReadyHead*2 >= len(p.statusReadyKeys) {
+		remaining := len(p.statusReadyKeys) - p.statusReadyHead
+		if cap(p.statusReadyKeys) > largeStatusQueueSize && remaining <= largeStatusQueueSize {
+			compacted := make([]uint, remaining)
+			copy(compacted, p.statusReadyKeys[p.statusReadyHead:])
+			p.statusReadyKeys = compacted
+		} else {
+			copy(p.statusReadyKeys, p.statusReadyKeys[p.statusReadyHead:])
+			p.statusReadyKeys = p.statusReadyKeys[:remaining]
+		}
+		p.statusReadyHead = 0
+	}
+}
+
+// processStatusUpdate applies one coalesced status batch.
+func (p *KeyProvider) processStatusUpdate(batch statusUpdateBatch) {
+	if batch.group == nil {
+		return
+	}
+	// Use strconv instead of fmt.Sprintf for better performance
+	keyHashKey := "key:" + strconv.FormatUint(uint64(batch.keyID), 10)
+	activeKeysListKey := "group:" + strconv.FormatUint(uint64(batch.group.ID), 10) + ":active_keys"
+
+	if batch.reset {
+		if err := p.handleSuccess(batch.keyID, keyHashKey, activeKeysListKey, batch.group.ID); err != nil {
+			logrus.WithFields(logrus.Fields{"keyID": batch.keyID, "error": err}).Error("Failed to handle key success")
+		}
+	}
+	if batch.failureCount > 0 {
+		if err := p.handleFailures(batch.keyID, batch.group, keyHashKey, activeKeysListKey, batch.failureCount); err != nil {
+			logrus.WithFields(logrus.Fields{"keyID": batch.keyID, "error": err}).Error("Failed to handle key failure")
 		}
 	}
 }
@@ -134,20 +238,15 @@ func (p *KeyProvider) processStatusUpdate(task statusUpdateTask) {
 // Stop gracefully shuts down the worker pool.
 func (p *KeyProvider) Stop() {
 	p.stopOnce.Do(func() {
-		close(p.stopChan)
-		// Wait for workers to finish with timeout
-		done := make(chan struct{})
-		go func() {
-			p.workerWg.Wait()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-			logrus.Debug("KeyProvider worker pool stopped gracefully")
-		case <-time.After(5 * time.Second):
-			logrus.Warn("KeyProvider worker pool stop timed out")
-		}
+		p.statusMu.Lock()
+		p.statusStopping = true
+		p.statusCond.Broadcast()
+		p.statusMu.Unlock()
+		// Wait until every in-flight operation finishes before its Store/DB
+		// dependencies are closed. The application-level shutdown context and
+		// forced-exit path provide the outer timeout when a dependency is stuck.
+		p.workerWg.Wait()
+		logrus.Debug("KeyProvider worker pool stopped gracefully")
 	})
 }
 
@@ -201,34 +300,42 @@ func (p *KeyProvider) SelectKey(groupID uint) (*models.APIKey, error) {
 	return apiKey, nil
 }
 
-// UpdateStatus submits a key status update task to the worker pool.
-// Uses bounded concurrency to prevent resource exhaustion.
-// Logs a warning when channel is full to enable monitoring of backpressure.
-// Note: Synchronous fallback blocks callers (proxy error handlers) on store operations,
-// which may increase client response latency under sustained load. This is acceptable
-// as it provides backpressure to prevent unbounded goroutine creation.
+// UpdateStatus merges a key status event into the fixed worker pool queue.
+// It never performs Store or database I/O in the caller's request goroutine.
 func (p *KeyProvider) UpdateStatus(apiKey *models.APIKey, group *models.Group, isSuccess bool, errorMessage string) {
-	task := statusUpdateTask{
-		apiKey:       apiKey,
-		group:        group,
-		isSuccess:    isSuccess,
-		errorMessage: errorMessage,
+	if !isSuccess && app_errors.IsUnCounted(errorMessage) {
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"keyID": apiKey.ID,
+				"error": errorMessage,
+			}).Debug("Uncounted error, skipping failure handling")
+		}
+		return
 	}
 
-	select {
-	case p.statusUpdateChan <- task:
-		// Task submitted successfully
-	default:
-		// Channel full, process synchronously to avoid data loss
-		// Note: Using sync processing instead of spawning goroutine to prevent
-		// unbounded goroutine creation when channel is persistently full
-		// Log warning to enable monitoring of channel overflow events
-		logrus.WithFields(logrus.Fields{
-			"key_id":     apiKey.ID,
-			"group_id":   group.ID,
-			"is_success": isSuccess,
-		}).Warn("Status update channel full (1000 capacity), processing synchronously - may increase client latency")
-		p.processStatusUpdate(task)
+	p.statusMu.Lock()
+	defer p.statusMu.Unlock()
+	if p.statusStopping {
+		return
+	}
+
+	entry := p.statusEntries[apiKey.ID]
+	entry.batch.keyID = apiKey.ID
+	entry.batch.group = group
+	if isSuccess {
+		entry.batch.reset = true
+		entry.batch.failureCount = 0
+	} else if entry.batch.failureCount < math.MaxInt64 {
+		entry.batch.failureCount++
+	}
+	if !entry.queued && !entry.inFlight {
+		entry.queued = true
+		p.enqueueStatusKeyLocked(apiKey.ID)
+		p.statusCond.Signal()
+	}
+	p.statusEntries[apiKey.ID] = entry
+	if len(p.statusEntries) > p.statusEntryPeak {
+		p.statusEntryPeak = len(p.statusEntries)
 	}
 }
 
@@ -260,7 +367,9 @@ func (p *KeyProvider) executeWithRetry(operation func(db *gorm.DB) error) error 
 }
 
 func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey string, groupID uint) error {
+	p.lifecycleMu.RLock()
 	keyDetails, err := p.store.HGetAll(keyHashKey)
+	p.lifecycleMu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("failed to get key details from store: %w", err)
 	}
@@ -269,7 +378,7 @@ func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey st
 	// store hash means the key no longer exists: bail out instead of letting
 	// HSet recreate an orphan hash for a deleted key.
 	if keyDetails["id"] == "" {
-		return nil
+		return p.cleanupDeletedKey(keyID, keyHashKey, activeKeysListKey)
 	}
 
 	failureCount, _ := strconv.ParseInt(keyDetails["failure_count"], 10, 64)
@@ -296,22 +405,32 @@ func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey st
 		return fmt.Errorf("failed to update key in DB: %w", err)
 	}
 
-	// The key was deleted from the DB before this success landed. Remove any
-	// residual store hash (deletion race) instead of writing to it.
+	// MySQL reports zero affected rows when the row already has these values.
+	// Confirm existence before treating that result as a concurrent deletion.
 	if dbRowsAffected == 0 {
-		if err := p.store.Delete(keyHashKey); err != nil {
-			return fmt.Errorf("failed to clean up deleted key %d from store: %w", keyID, err)
+		exists, err := p.apiKeyExists(keyID)
+		if err != nil {
+			return fmt.Errorf("failed to verify key existence in DB: %w", err)
 		}
-		return nil
+		if !exists {
+			return p.cleanupDeletedKey(keyID, keyHashKey, activeKeysListKey)
+		}
 	}
 
 	if !isActive {
 		if err := p.restoreRecoveredKey(keyID, keyHashKey, activeKeysListKey, dbUpdates); err != nil {
 			return err
 		}
-
-	} else if err := p.store.HSet(keyHashKey, dbUpdates); err != nil {
-		return fmt.Errorf("failed to update key details in store: %w", err)
+	} else {
+		exists, err := p.withExistingKeyStore(keyID, keyHashKey, activeKeysListKey, func() error {
+			return p.store.HSet(keyHashKey, dbUpdates)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to update key details in store: %w", err)
+		}
+		if !exists {
+			return nil
+		}
 	}
 
 	if !isActive && p.CacheInvalidationCallback != nil {
@@ -324,25 +443,23 @@ func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey st
 // restoreRecoveredKey updates the cache and active list under the same
 // lifecycle lock as deletion, then releases the lock before returning.
 func (p *KeyProvider) restoreRecoveredKey(keyID uint, keyHashKey, activeKeysListKey string, updates map[string]any) error {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
 
+	current, err := p.store.HGetAll(keyHashKey)
+	if err != nil {
+		return fmt.Errorf("failed to check key details in store: %w", err)
+	}
+	if current["id"] == "" {
+		return p.cleanupDeletedKeyLocked(keyID, keyHashKey, activeKeysListKey)
+	}
 	if err := p.store.HSet(keyHashKey, updates); err != nil {
 		return fmt.Errorf("failed to update key details in store: %w", err)
 	}
-	// Re-confirm after HSet while deletion is excluded by lifecycleMu.
-	current, err := p.store.HGetAll(keyHashKey)
-	if err != nil {
-		return fmt.Errorf("failed to re-check key details in store: %w", err)
-	}
-	if current["id"] == "" {
-		if err := p.store.Delete(keyHashKey); err != nil {
-			return fmt.Errorf("failed to clean up deleted key %d from store: %w", keyID, err)
-		}
-		return nil
-	}
 
-	logrus.WithField("keyID", keyID).Debug("Key has recovered and is being restored to active pool")
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithField("keyID", keyID).Debug("Key has recovered and is being restored to active pool")
+	}
 	if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
 		return fmt.Errorf("failed to LRem key before LPush on recovery: %w", err)
 	}
@@ -353,7 +470,81 @@ func (p *KeyProvider) restoreRecoveredKey(keyID uint, keyHashKey, activeKeysList
 }
 
 func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, keyHashKey, activeKeysListKey string) error {
+	return p.handleFailures(apiKey.ID, group, keyHashKey, activeKeysListKey, 1)
+}
+
+func (p *KeyProvider) cleanupDeletedKey(keyID uint, keyHashKey, activeKeysListKey string) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	return p.cleanupDeletedKeyLocked(keyID, keyHashKey, activeKeysListKey)
+}
+
+func (p *KeyProvider) cleanupDeletedKeyLocked(keyID uint, keyHashKey, activeKeysListKey string) error {
+	if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
+		return fmt.Errorf("failed to LRem deleted key from active list: %w", err)
+	}
+	if err := p.store.Delete(keyHashKey); err != nil {
+		return fmt.Errorf("failed to clean up deleted key %d from store: %w", keyID, err)
+	}
+	return nil
+}
+
+func (p *KeyProvider) withExistingKeyStore(keyID uint, keyHashKey, activeKeysListKey string, operation func() error) (bool, error) {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+
+	current, err := p.store.HGetAll(keyHashKey)
+	if err != nil {
+		return false, fmt.Errorf("failed to re-check key details in store: %w", err)
+	}
+	if current["id"] == "" {
+		return false, p.cleanupDeletedKeyLocked(keyID, keyHashKey, activeKeysListKey)
+	}
+	if err := operation(); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func (p *KeyProvider) apiKeyExists(keyID uint) (bool, error) {
+	var count int64
+	err := p.executeWithRetry(func(db *gorm.DB) error {
+		return db.Model(&models.APIKey{}).Where("id = ?", keyID).Count(&count).Error
+	})
+	return count > 0, err
+}
+
+func (p *KeyProvider) resetStoreFailureCount(keyID uint) (bool, error) {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	return p.resetStoreFailureCountLocked(keyID)
+}
+
+// resetStoreFailureCountLocked updates an existing hash while the caller
+// holds lifecycleMu. It intentionally does not create missing hashes.
+func (p *KeyProvider) resetStoreFailureCountLocked(keyID uint) (bool, error) {
+	keyHashKey := "key:" + strconv.FormatUint(uint64(keyID), 10)
+	exists, err := p.store.Exists(keyHashKey)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	if err := p.store.HSet(keyHashKey, map[string]any{"failure_count": 0}); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func (p *KeyProvider) handleFailures(keyID uint, group *models.Group, keyHashKey, activeKeysListKey string, failureCount int64) error {
+	if failureCount <= 0 {
+		return nil
+	}
+
+	p.lifecycleMu.RLock()
 	keyDetails, err := p.store.HGetAll(keyHashKey)
+	p.lifecycleMu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("failed to get key details from store: %w", err)
 	}
@@ -362,68 +553,73 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 	// store hash means the key no longer exists: bail out instead of letting
 	// HIncrBy recreate an orphan hash for a deleted key.
 	if keyDetails["id"] == "" {
-		return nil
+		return p.cleanupDeletedKey(keyID, keyHashKey, activeKeysListKey)
 	}
 
 	if keyDetails["status"] == models.KeyStatusInvalid {
 		return nil
 	}
 
-	// Ensure EffectiveConfig is set for this group (use group-level config which may override system settings)
-	// This ensures validation uses the correct group-specific blacklist_threshold, not just system settings
-	// Always call GetEffectiveConfig as it is idempotent and cached, avoiding fragile sentinel checks
-	group.EffectiveConfig = p.settingsManager.GetEffectiveConfig(group.Config)
-
-	// Get the effective configuration for this group
-	// This will use group-specific blacklist_threshold if set, otherwise fall back to system settings
-	blacklistThreshold := group.EffectiveConfig.BlacklistThreshold
-
-	// First update the DB, then update the store. This keeps DB as the source of truth when store updates fail.
-	// Design note: If DB succeeds but store fails, there will be temporary divergence between DB and store.
-	// This is acceptable because:
-	// 1. DB is the authoritative source of truth
-	// 2. Store is a cache for fast key selection
-	// 3. On startup, LoadKeysFromDB() resyncs store from DB
-	// 4. The divergence only affects failure_count, not key availability
-	// Adding a compensating mechanism (periodic sync) was considered but rejected as over-engineering
-	// for this use case where eventual consistency is sufficient.
-	var dbRowsAffected int64
-	if err := p.executeWithRetry(func(db *gorm.DB) error {
-		result := db.Model(&models.APIKey{}).
-			Where("id = ?", apiKey.ID).
-			UpdateColumn("failure_count", gorm.Expr("failure_count + ?", 1))
-		if result.Error != nil {
-			return result.Error
+	blacklistThreshold := p.settingsManager.GetEffectiveConfig(group.Config).BlacklistThreshold
+	currentFailureCount, _ := strconv.ParseInt(keyDetails["failure_count"], 10, 64)
+	increment := failureCount
+	if blacklistThreshold > 0 {
+		remaining := int64(blacklistThreshold) - currentFailureCount
+		if remaining <= 0 {
+			increment = 0
+		} else if increment > remaining {
+			increment = remaining
 		}
-		dbRowsAffected = result.RowsAffected
-		return nil
-	}); err != nil {
-		return fmt.Errorf("failed to increment failure_count in DB: %w", err)
 	}
 
-	// The key was deleted from the DB before this failure landed. Remove any
-	// residual store hash (deletion race) instead of writing to it.
-	if dbRowsAffected == 0 {
-		if err := p.store.Delete(keyHashKey); err != nil {
-			return fmt.Errorf("failed to clean up deleted key %d from store: %w", apiKey.ID, err)
+	newFailureCount := currentFailureCount
+	if increment > 0 {
+		// First update the DB, then update the store. This keeps DB as the source
+		// of truth when store updates fail.
+		var dbRowsAffected int64
+		if err := p.executeWithRetry(func(db *gorm.DB) error {
+			result := db.Model(&models.APIKey{}).
+				Where("id = ?", keyID).
+				UpdateColumn("failure_count", gorm.Expr("failure_count + ?", increment))
+			if result.Error != nil {
+				return result.Error
+			}
+			dbRowsAffected = result.RowsAffected
+			return nil
+		}); err != nil {
+			return fmt.Errorf("failed to increment failure_count in DB: %w", err)
 		}
-		return nil
-	}
 
-	// Residual race: a deletion landing between the DB update above and this
-	// HIncrBy could let HIncrBy recreate a one-field orphan hash (failure_count
-	// only). That hash is never selected (deleted keys are absent from every
-	// active_keys list) and the DB remains authoritative, with LoadKeysFromDB
-	// resyncing the store on startup, so the impact is bounded and benign.
-	// Closing the window fully needs an atomic increment-if-exists (Lua script)
-	// or a lifecycle lock shared with deletion; both add interface and hot-path
-	// complexity for a nanosecond window with no functional effect, so the
-	// simple guards above are kept deliberately. (Reviewer suggestion evaluated,
-	// not adopted; barrier test not added — handleFailure has no injection point
-	// and a test-only hook would violate the project's minimal-hook principle.)
-	newFailureCount, err := p.store.HIncrBy(keyHashKey, "failure_count", 1)
-	if err != nil {
-		return fmt.Errorf("failed to increment failure_count in store: %w", err)
+		// The key was deleted from the DB before this failure landed. Remove any
+		// residual store hash (deletion race) instead of writing to it.
+		if dbRowsAffected == 0 {
+			exists, err := p.apiKeyExists(keyID)
+			if err != nil {
+				return fmt.Errorf("failed to verify key existence in DB: %w", err)
+			}
+			if !exists {
+				return p.cleanupDeletedKey(keyID, keyHashKey, activeKeysListKey)
+			}
+		}
+
+		exists, err := p.withExistingKeyStore(keyID, keyHashKey, activeKeysListKey, func() error {
+			newFailureCount, err = p.store.HIncrBy(keyHashKey, "failure_count", increment)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("failed to increment failure_count in store: %w", err)
+		}
+		if !exists {
+			return nil
+		}
+	} else {
+		exists, err := p.apiKeyExists(keyID)
+		if err != nil {
+			return fmt.Errorf("failed to verify key existence in DB: %w", err)
+		}
+		if !exists {
+			return p.cleanupDeletedKey(keyID, keyHashKey, activeKeysListKey)
+		}
 	}
 
 	shouldBlacklist := blacklistThreshold > 0 && newFailureCount >= int64(blacklistThreshold)
@@ -431,22 +627,31 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 		return nil
 	}
 
-	logrus.WithFields(logrus.Fields{"keyID": apiKey.ID, "threshold": blacklistThreshold}).Warn("Key has reached blacklist threshold, disabling")
+	logrus.WithFields(logrus.Fields{"keyID": keyID, "threshold": blacklistThreshold}).Warn("Key has reached blacklist threshold, disabling")
 
 	// Best-effort DB status update. Even if it fails, the key is disabled in store (selection source of truth).
 	if err := p.executeWithRetry(func(db *gorm.DB) error {
 		return db.Model(&models.APIKey{}).
-			Where("id = ?", apiKey.ID).
+			Where("id = ?", keyID).
 			UpdateColumn("status", models.KeyStatusInvalid).Error
 	}); err != nil {
-		logrus.WithFields(logrus.Fields{"keyID": apiKey.ID, "error": err}).Error("Failed to mark key invalid in DB")
+		logrus.WithFields(logrus.Fields{"keyID": keyID, "error": err}).Error("Failed to mark key invalid in DB")
 	}
 
-	if err := p.store.LRem(activeKeysListKey, 0, apiKey.ID); err != nil {
-		return fmt.Errorf("failed to LRem key from active list: %w", err)
+	exists, err := p.withExistingKeyStore(keyID, keyHashKey, activeKeysListKey, func() error {
+		if err := p.store.LRem(activeKeysListKey, 0, keyID); err != nil {
+			return fmt.Errorf("failed to LRem key from active list: %w", err)
+		}
+		if err := p.store.HSet(keyHashKey, map[string]any{"status": models.KeyStatusInvalid}); err != nil {
+			return fmt.Errorf("failed to update key status to invalid in store: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	if err := p.store.HSet(keyHashKey, map[string]any{"status": models.KeyStatusInvalid}); err != nil {
-		return fmt.Errorf("failed to update key status to invalid in store: %w", err)
+	if !exists {
+		return nil
 	}
 
 	if p.CacheInvalidationCallback != nil {
@@ -459,6 +664,12 @@ func (p *KeyProvider) handleFailure(apiKey *models.APIKey, group *models.Group, 
 // LoadKeysFromDB loads all groups and keys from the database and populates the Store.
 // Uses parallel loading with work-stealing to improve startup performance for large datasets.
 func (p *KeyProvider) LoadKeysFromDB() error {
+	// Loading replaces the active-list snapshot. Use the exclusive lifecycle
+	// lock so AddKeys, restores, status workers, and deletions cannot mutate the
+	// store while the snapshot is being rebuilt.
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
 	startTime := time.Now()
 
 	// Get total count and ID range for parallel loading
@@ -586,7 +797,7 @@ func (p *KeyProvider) LoadKeysFromDB() error {
 					// Use cursor-based query to minimize lock time
 					// Only select necessary fields to reduce data transfer and improve performance
 					query := p.db.Model(&models.APIKey{}).
-						Select("id", "key_value", "status", "failure_count", "group_id", "created_at").
+						Select("id", "key_value", "key_hash", "status", "failure_count", "group_id", "created_at").
 						Where("id > ? AND id <= ?", lastID, t.endID).
 						Order("id ASC").
 						Limit(batchSize)
@@ -738,17 +949,24 @@ func (p *KeyProvider) AddKeys(groupID uint, keys []models.APIKey) error {
 		}
 		batch := keys[i:end]
 
+		// Serialize the database insert and cache update with deletion. Taking the
+		// lifecycle read lock before opening the transaction prevents a deleter
+		// from removing the row while this batch is waiting to populate the store.
+		p.lifecycleMu.RLock()
+
 		// Step 1: Insert this batch in a short transaction
 		if err := p.db.Transaction(func(tx *gorm.DB) error {
 			return tx.Create(&batch).Error
 		}); err != nil {
+			p.lifecycleMu.RUnlock()
 			return err
 		}
 
 		// Step 2: Update in-memory store outside the transaction using batch method
-		if err := p.addKeysToCacheBatch(groupID, batch); err != nil {
+		if err := p.addKeysToCacheBatchLocked(groupID, batch); err != nil {
 			logrus.WithFields(logrus.Fields{"batchSize": len(batch), "error": err}).Warn("Failed to add batch to store; will be refreshed on next reload")
 		}
+		p.lifecycleMu.RUnlock()
 
 		// Short delay between batches to avoid monopolizing the DB
 		// Increased delay for better concurrency with other operations
@@ -768,6 +986,12 @@ func (p *KeyProvider) RemoveKeys(groupID uint, keyValues []string) (int64, error
 
 	var keysToDelete []models.APIKey
 	var deletedCount int64
+
+	// The lifecycle write lock must be acquired before opening the transaction.
+	// Loaders hold a read lock while reading the DB and writing the store; taking
+	// the lock afterwards would allow a transaction/lock cycle on SQLite.
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 
 	err := p.db.Transaction(func(tx *gorm.DB) error {
 		var keyHashes []string
@@ -799,7 +1023,7 @@ func (p *KeyProvider) RemoveKeys(groupID uint, keyValues []string) (int64, error
 		deletedCount = result.RowsAffected
 
 		for _, key := range keysToDelete {
-			if err := p.removeKeyFromStore(key.ID, key.GroupID); err != nil {
+			if err := p.removeKeyFromStoreLocked(key.ID, key.GroupID); err != nil {
 				logrus.WithFields(logrus.Fields{"keyID": key.ID, "error": err}).Error("Failed to remove key from store after DB deletion, rolling back transaction")
 				return err
 			}
@@ -815,6 +1039,11 @@ func (p *KeyProvider) RemoveKeys(groupID uint, keyValues []string) (int64, error
 func (p *KeyProvider) RestoreKeys(groupID uint) (int64, error) {
 	var invalidKeys []models.APIKey
 	var restoredCount int64
+
+	// Keep the DB transition and cache restoration under one lifecycle write lock
+	// so concurrent restores cannot interleave list mutations and deletion cannot
+	// remove the row between the two operations.
+	p.lifecycleMu.Lock()
 
 	err := p.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("group_id = ? AND status = ?", groupID, models.KeyStatusInvalid).Find(&invalidKeys).Error; err != nil {
@@ -838,13 +1067,14 @@ func (p *KeyProvider) RestoreKeys(groupID uint) (int64, error) {
 		for _, key := range invalidKeys {
 			key.Status = models.KeyStatusActive
 			key.FailureCount = 0
-			if err := p.addKeyToStore(&key); err != nil {
+			if err := p.addKeyToStoreLocked(&key); err != nil {
 				logrus.WithFields(logrus.Fields{"keyID": key.ID, "error": err}).Error("Failed to restore key in store after DB update, rolling back transaction")
 				return err
 			}
 		}
 		return nil
 	})
+	p.lifecycleMu.Unlock()
 
 	// Invalidate cache after restoring keys (status changed from invalid to active)
 	if err == nil && restoredCount > 0 && p.CacheInvalidationCallback != nil {
@@ -862,6 +1092,10 @@ func (p *KeyProvider) RestoreMultipleKeys(groupID uint, keyValues []string) (int
 
 	var keysToRestore []models.APIKey
 	var restoredCount int64
+
+	// See RestoreKeys: acquire the lifecycle write lock before starting the DB
+	// transaction to keep restore, deletion, and list mutations in one order.
+	p.lifecycleMu.Lock()
 
 	err := p.db.Transaction(func(tx *gorm.DB) error {
 		var keyHashes []string
@@ -899,7 +1133,7 @@ func (p *KeyProvider) RestoreMultipleKeys(groupID uint, keyValues []string) (int
 		for _, key := range keysToRestore {
 			key.Status = models.KeyStatusActive
 			key.FailureCount = 0
-			if err := p.addKeyToStore(&key); err != nil {
+			if err := p.addKeyToStoreLocked(&key); err != nil {
 				logrus.WithFields(logrus.Fields{"keyID": key.ID, "error": err}).Error("Failed to restore key in store after DB update")
 				return err
 			}
@@ -907,6 +1141,7 @@ func (p *KeyProvider) RestoreMultipleKeys(groupID uint, keyValues []string) (int
 
 		return nil
 	})
+	p.lifecycleMu.Unlock()
 
 	// Invalidate cache after restoring keys (status changed from invalid to active)
 	if err == nil && restoredCount > 0 && p.CacheInvalidationCallback != nil {
@@ -920,6 +1155,19 @@ func (p *KeyProvider) RestoreMultipleKeys(groupID uint, keyValues []string) (int
 // This is useful when importing a group, treating it as a fresh import.
 // Note: For newly imported keys, failure_count is already 0, so this is a no-op in that case.
 func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, error) {
+	p.lifecycleMu.RLock()
+	resetCount, err := p.resetGroupActiveKeysFailureCountLocked(groupID)
+	p.lifecycleMu.RUnlock()
+	if err != nil {
+		return resetCount, err
+	}
+	if resetCount > 0 && p.CacheInvalidationCallback != nil {
+		p.CacheInvalidationCallback(groupID)
+	}
+	return resetCount, nil
+}
+
+func (p *KeyProvider) resetGroupActiveKeysFailureCountLocked(groupID uint) (int64, error) {
 	// Update failure_count to 0 in database for all active keys with failure_count > 0
 	result := p.db.Model(&models.APIKey{}).
 		Where("group_id = ? AND status = ? AND failure_count > 0", groupID, models.KeyStatusActive).
@@ -955,10 +1203,9 @@ func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, err
 		}
 
 		for _, key := range batchKeys {
-			keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
 			// Skip keys whose store hash is absent: HSet would create an id-less
 			// orphan hash that handleSuccess/handleFailure would then bail out on.
-			exists, err := p.store.Exists(keyHashKey)
+			_, err := p.resetStoreFailureCountLocked(key.ID)
 			if err != nil {
 				logrus.WithFields(logrus.Fields{
 					"keyID": key.ID,
@@ -966,16 +1213,6 @@ func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, err
 				}).Warn("Failed to check key existence in store, continuing with other keys")
 				lastID = key.ID
 				continue
-			}
-			if !exists {
-				lastID = key.ID
-				continue
-			}
-			if err := p.store.HSet(keyHashKey, map[string]any{"failure_count": 0}); err != nil {
-				logrus.WithFields(logrus.Fields{
-					"keyID": key.ID,
-					"error": err,
-				}).Warn("Failed to reset failure_count in store, continuing with other keys")
 			}
 			lastID = key.ID
 		}
@@ -987,10 +1224,6 @@ func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, err
 
 	logrus.Infof("Reset failure_count for %d active keys in group %d", result.RowsAffected, groupID)
 
-	if p.CacheInvalidationCallback != nil {
-		p.CacheInvalidationCallback(groupID)
-	}
-
 	return result.RowsAffected, nil
 }
 
@@ -998,7 +1231,20 @@ func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, err
 // This is useful when system configuration changes (e.g., blacklist_threshold) and we want to
 // reset the failure history to avoid immediate blacklisting with new thresholds.
 func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
+	p.lifecycleMu.RLock()
+	totalReset, affectedGroups, err := p.resetAllActiveKeysFailureCountLocked()
+	p.lifecycleMu.RUnlock()
+	if err == nil && p.CacheInvalidationCallback != nil {
+		for groupID := range affectedGroups {
+			p.CacheInvalidationCallback(groupID)
+		}
+	}
+	return totalReset, err
+}
+
+func (p *KeyProvider) resetAllActiveKeysFailureCountLocked() (int64, map[uint]struct{}, error) {
 	var totalReset int64
+	affectedGroups := make(map[uint]struct{})
 
 	// Process in batches to avoid memory issues and improve performance
 	batchSize := 1000
@@ -1020,7 +1266,7 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 		}
 
 		if err := query.Find(&keys).Error; err != nil {
-			return totalReset, fmt.Errorf("failed to query active keys: %w", err)
+			return totalReset, affectedGroups, fmt.Errorf("failed to query active keys: %w", err)
 		}
 
 		if len(keys) == 0 {
@@ -1039,7 +1285,7 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 			Where("id IN ?", keyIDs).
 			Update("failure_count", 0)
 		if result.Error != nil {
-			return totalReset, fmt.Errorf("failed to reset failure_count in database: %w", result.Error)
+			return totalReset, affectedGroups, fmt.Errorf("failed to reset failure_count in database: %w", result.Error)
 		}
 
 		batchReset := result.RowsAffected
@@ -1047,10 +1293,9 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 
 		// Update failure_count in Redis store for each key
 		for _, key := range keys {
-			keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
 			// Skip keys whose store hash is absent: HSet would create an id-less
 			// orphan hash that handleSuccess/handleFailure would then bail out on.
-			exists, err := p.store.Exists(keyHashKey)
+			_, err := p.resetStoreFailureCountLocked(key.ID)
 			if err != nil {
 				logrus.WithFields(logrus.Fields{
 					"keyID": key.ID,
@@ -1058,23 +1303,11 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 				}).Warn("Failed to check key existence in store, continuing with other keys")
 				continue
 			}
-			if !exists {
-				continue
-			}
-			if err := p.store.HSet(keyHashKey, map[string]any{"failure_count": 0}); err != nil {
-				logrus.WithFields(logrus.Fields{
-					"keyID": key.ID,
-					"error": err,
-				}).Warn("Failed to reset failure_count in store, continuing with other keys")
-				// Continue processing other keys even if one fails
-			}
 		}
 
 		// Invalidate cache for affected groups
 		for groupID := range groupIDMap {
-			if p.CacheInvalidationCallback != nil {
-				p.CacheInvalidationCallback(groupID)
-			}
+			affectedGroups[groupID] = struct{}{}
 		}
 
 		// Update lastID for cursor-based pagination
@@ -1090,7 +1323,7 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 		logrus.Infof("Reset failure_count for %d active keys", totalReset)
 	}
 
-	return totalReset, nil
+	return totalReset, affectedGroups, nil
 }
 
 // RemoveInvalidKeys removes all invalid keys in the group.
@@ -1213,6 +1446,10 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 		var res *gorm.DB
 		var ids []uint
 		batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
+		// Keep each database batch and its corresponding cache cleanup in one
+		// lifecycle critical section. This gives deletion a consistent order with
+		// loaders/recovery while releasing the lock between batches.
+		p.lifecycleMu.Lock()
 
 		// Fetch IDs first for all dialects to enable consistent cache cleanup
 		// This ensures we can delete both DB records and cache entries
@@ -1222,6 +1459,7 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 			Order("id ASC").
 			Limit(chunkSize).
 			Pluck("id", &ids).Error; err != nil {
+			p.lifecycleMu.Unlock()
 			cancel()
 			if utils.IsTransientDBError(err) {
 				if retries >= maxRetries {
@@ -1243,15 +1481,16 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 			return totalDeleted, err
 		}
 		if len(ids) == 0 {
+			p.lifecycleMu.Unlock()
 			cancel()
 			break
 		}
 
 		// Delete by ID list using primary key index (fast for all databases)
 		res = p.db.WithContext(batchCtx).Where("id IN ?", ids).Delete(&models.APIKey{})
-		cancel()
-
 		if res.Error != nil {
+			p.lifecycleMu.Unlock()
+			cancel()
 			// Retry with exponential backoff on transient/timeout errors
 			if utils.IsTransientDBError(res.Error) {
 				if retries >= maxRetries {
@@ -1273,6 +1512,24 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 			return totalDeleted, res.Error
 		}
 
+		// Best-effort cache cleanup: delete key hashes from store while the
+		// lifecycle lock is still held, so a concurrent restore/add cannot be
+		// removed by this batch's cleanup. Redis can delete the whole batch in
+		// one round trip; MemoryStore uses the same interface without extra cost.
+		keyHashKeys := make([]string, len(ids))
+		for i, id := range ids {
+			keyHashKeys[i] = "key:" + strconv.FormatUint(uint64(id), 10)
+		}
+		if err := p.store.Del(keyHashKeys...); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"groupID": groupID,
+				"count":   len(keyHashKeys),
+				"error":   err,
+			}).Warn("Failed to delete key hashes from store")
+		}
+		p.lifecycleMu.Unlock()
+		cancel()
+
 		// Log successful recovery after retries
 		if retries > 0 {
 			logrus.Infof("Recovered from transient errors after %d retries (progress: %d/%d keys)", retries, totalDeleted, totalCount)
@@ -1281,19 +1538,6 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 
 		affected := res.RowsAffected
 		totalDeleted += affected
-
-		// Best-effort cache cleanup: delete key hashes from store
-		// This prevents memory bloat from deleted keys remaining in Redis/MemoryStore
-		for _, id := range ids {
-			keyHashKey := "key:" + strconv.FormatUint(uint64(id), 10)
-			if err := p.store.Delete(keyHashKey); err != nil {
-				logrus.WithFields(logrus.Fields{
-					"keyID": id,
-					"error": err,
-				}).Warn("Failed to delete key hash from store")
-				// Continue with other keys even if one fails
-			}
-		}
 
 		// Progress callback for task tracking
 		if progressCallback != nil {
@@ -1320,9 +1564,32 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 		time.Sleep(batchDelay)
 	}
 
-	// Clear active key list for the group to prevent stale usage
+	// Rebuild the active list from the database while holding the lifecycle lock.
+	// A progress callback may have added a new key after the last delete batch;
+	// blindly deleting the list here would remove that valid key.
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
-	_ = p.store.Delete(activeKeysListKey)
+	p.lifecycleMu.Lock()
+	var activeKeyIDs []uint
+	if err := p.db.Model(&models.APIKey{}).
+		Select("id").
+		Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).
+		Order("id ASC").
+		Pluck("id", &activeKeyIDs).Error; err != nil {
+		logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to rebuild active key list after deletion")
+	} else {
+		if err := p.store.Delete(activeKeysListKey); err != nil {
+			logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to clear active key list after deletion")
+		} else if len(activeKeyIDs) > 0 {
+			activeKeyValues := make([]any, len(activeKeyIDs))
+			for i, id := range activeKeyIDs {
+				activeKeyValues[i] = id
+			}
+			if err := p.store.LPush(activeKeysListKey, activeKeyValues...); err != nil {
+				logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to rebuild active key list after deletion")
+			}
+		}
+	}
+	p.lifecycleMu.Unlock()
 
 	// Log completion with retry statistics if any retries occurred
 	if totalRetries > 0 {
@@ -1338,6 +1605,9 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 func (p *KeyProvider) removeKeysByStatus(groupID uint, status ...string) (int64, error) {
 	var keysToRemove []models.APIKey
 	var removedCount int64
+
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 
 	err := p.db.Transaction(func(tx *gorm.DB) error {
 		query := tx.Where("group_id = ?", groupID)
@@ -1364,7 +1634,7 @@ func (p *KeyProvider) removeKeysByStatus(groupID uint, status ...string) (int64,
 		removedCount = result.RowsAffected
 
 		for _, key := range keysToRemove {
-			if err := p.removeKeyFromStore(key.ID, key.GroupID); err != nil {
+			if err := p.removeKeyFromStoreLocked(key.ID, key.GroupID); err != nil {
 				logrus.WithFields(logrus.Fields{"keyID": key.ID, "error": err}).Error("Failed to remove key from store after DB deletion, rolling back transaction")
 				return err
 			}
@@ -1381,11 +1651,14 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 	if len(keyIDs) == 0 {
 		return nil
 	}
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
 
 	// Use strconv instead of fmt.Sprintf for better performance
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
+
+	// Hold one write lock for the complete cleanup. Releasing it between the
+	// list and hash deletions would let a queued recovery repopulate the list.
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
 
 	// Step 1: Delete the entire active_keys list
 	if err := p.store.Delete(activeKeysListKey); err != nil {
@@ -1417,11 +1690,13 @@ func (p *KeyProvider) RemoveKeysFromStore(groupID uint, keyIDs []uint) error {
 				}).Debug("Failed to delete key hash")
 			}
 		}
+	}
 
-		// Small yield to avoid blocking other operations
-		if i+batchSize < len(keyIDs) {
-			time.Sleep(10 * time.Millisecond)
-		}
+	// A recovery that started before its hash was deleted may have recreated the
+	// group list between batches. Clear it once more after every hash is gone.
+	err := p.store.Delete(activeKeysListKey)
+	if err != nil {
+		return err
 	}
 
 	// Don't log here - let the caller log with appropriate context and timing
@@ -1467,6 +1742,9 @@ func (p *KeyProvider) RemoveOrphanedKeysFromStore(groupID uint) error {
 func (p *KeyProvider) ClearAllKeys() error {
 	logrus.Warn("ClearAllKeys called - this will remove ALL keys from memory store")
 
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
 	// Clear the entire store
 	// This removes all keys, active key lists, and any other cached data
 	if err := p.store.Clear(); err != nil {
@@ -1480,6 +1758,14 @@ func (p *KeyProvider) ClearAllKeys() error {
 
 // addKeyToStore is a helper to add a single key to the cache.
 func (p *KeyProvider) addKeyToStore(key *models.APIKey) error {
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	return p.addKeyToStoreLocked(key)
+}
+
+// addKeyToStoreLocked updates the cache while the caller holds lifecycleMu.
+func (p *KeyProvider) addKeyToStoreLocked(key *models.APIKey) error {
+
 	// 1. Store key details in HASH
 	// Use strconv instead of fmt.Sprintf for better performance
 	keyHashKey := "key:" + strconv.FormatUint(uint64(key.ID), 10)
@@ -1505,6 +1791,18 @@ func (p *KeyProvider) addKeyToStore(key *models.APIKey) error {
 // addKeysToCacheBatch batch adds keys to cache (optimized for bulk import scenarios).
 // Uses Redis Pipeline for efficient batch operations when available.
 func (p *KeyProvider) addKeysToCacheBatch(groupID uint, keys []models.APIKey) error {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	p.lifecycleMu.RLock()
+	defer p.lifecycleMu.RUnlock()
+	return p.addKeysToCacheBatchLocked(groupID, keys)
+}
+
+// addKeysToCacheBatchLocked updates the cache while the caller holds
+// lifecycleMu.RLock.
+func (p *KeyProvider) addKeysToCacheBatchLocked(groupID uint, keys []models.APIKey) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -1562,6 +1860,12 @@ func (p *KeyProvider) addKeysToCacheBatch(groupID uint, keys []models.APIKey) er
 // LoadGroupKeysToStore loads all keys for a specific group from database to Redis store
 // This is optimized for bulk loading after import operations
 func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
+	// Rebuilding the list is a replacement operation, so hold the exclusive
+	// lifecycle lock for the whole load. Otherwise AddKeys can insert a key
+	// after the list is cleared and have that key overwritten by this snapshot.
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
 	startTime := time.Now()
 
 	// Batch size for database queries
@@ -1645,6 +1949,11 @@ func (p *KeyProvider) LoadGroupKeysToStore(groupID uint) error {
 func (p *KeyProvider) removeKeyFromStore(keyID, groupID uint) error {
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
+	return p.removeKeyFromStoreLocked(keyID, groupID)
+}
+
+// removeKeyFromStoreLocked removes a key while the caller holds lifecycleMu.
+func (p *KeyProvider) removeKeyFromStoreLocked(keyID, groupID uint) error {
 
 	// Use strconv instead of fmt.Sprintf for better performance
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"

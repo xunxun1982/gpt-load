@@ -151,7 +151,16 @@ func BenchmarkSelectKeyConcurrentPerformance(b *testing.B) {
 // BenchmarkUpdateStatusSuccessPerformance benchmarks successful status updates
 func BenchmarkUpdateStatusSuccessPerformance(b *testing.B) {
 	provider, db, memStore := setupBenchProvider(b)
-	defer provider.Stop()
+	blockingStore := &blockingHGetAllStore{
+		Store:   memStore,
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	provider.store = blockingStore
+	defer func() {
+		close(blockingStore.release)
+		provider.Stop()
+	}()
 
 	group := &models.Group{
 		Name:        fmt.Sprintf("status-group-%d", time.Now().UnixNano()),
@@ -198,26 +207,17 @@ func BenchmarkUpdateStatusSuccessPerformance(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	// Keep the worker in its dependency path so the benchmark measures only
+	// non-blocking status submission, not database/cache processing.
+	provider.UpdateStatus(apiKey, group, true, "")
+	select {
+	case <-blockingStore.started:
+	case <-time.After(2 * time.Second):
+		b.Fatal("status update worker did not reach the blocking store")
+	}
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		// Reset key state to measure consistent behavior
-		apiKey.Status = models.KeyStatusActive
-		apiKey.FailureCount = 1
-		if err := db.Model(&models.APIKey{}).Where("id = ?", apiKey.ID).Updates(map[string]any{
-			"status":        models.KeyStatusActive,
-			"failure_count": 1,
-		}).Error; err != nil {
-			b.Fatal(err)
-		}
-		if err := memStore.HSet(keyHashKey, map[string]any{
-			"status":        models.KeyStatusActive,
-			"failure_count": "1",
-		}); err != nil {
-			b.Fatal(err)
-		}
-		b.StartTimer()
-
 		provider.UpdateStatus(apiKey, group, true, "")
 	}
 }
@@ -225,7 +225,16 @@ func BenchmarkUpdateStatusSuccessPerformance(b *testing.B) {
 // BenchmarkUpdateStatusFailurePerformance benchmarks failure status updates
 func BenchmarkUpdateStatusFailurePerformance(b *testing.B) {
 	provider, db, memStore := setupBenchProvider(b)
-	defer provider.Stop()
+	blockingStore := &blockingHGetAllStore{
+		Store:   memStore,
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	provider.store = blockingStore
+	defer func() {
+		close(blockingStore.release)
+		provider.Stop()
+	}()
 
 	group := &models.Group{
 		Name:        fmt.Sprintf("failure-group-%d", time.Now().UnixNano()),
@@ -272,26 +281,17 @@ func BenchmarkUpdateStatusFailurePerformance(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	// Keep the worker in its dependency path so the benchmark measures only
+	// non-blocking status submission, not database/cache processing.
+	provider.UpdateStatus(apiKey, group, false, "API error")
+	select {
+	case <-blockingStore.started:
+	case <-time.After(2 * time.Second):
+		b.Fatal("status update worker did not reach the blocking store")
+	}
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		// Reset key state to measure consistent behavior
-		apiKey.Status = models.KeyStatusActive
-		apiKey.FailureCount = 0
-		if err := db.Model(&models.APIKey{}).Where("id = ?", apiKey.ID).Updates(map[string]any{
-			"status":        models.KeyStatusActive,
-			"failure_count": 0,
-		}).Error; err != nil {
-			b.Fatal(err)
-		}
-		if err := memStore.HSet(keyHashKey, map[string]any{
-			"status":        models.KeyStatusActive,
-			"failure_count": "0",
-		}); err != nil {
-			b.Fatal(err)
-		}
-		b.StartTimer()
-
 		provider.UpdateStatus(apiKey, group, false, "API error")
 	}
 }
