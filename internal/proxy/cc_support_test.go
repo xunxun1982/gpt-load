@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -5455,6 +5456,97 @@ func TestSSEReaderWithTimeout_SkipsComments(t *testing.T) {
 
 	if event.Data != `{"test": true}` {
 		t.Errorf("expected data to skip comments, got: %s", event.Data)
+	}
+}
+
+// TestSSEReaderWithTimeout_NoOrphanGoroutineGrowth verifies the Plan A fix:
+// repeated timeouts must not accumulate one goroutine per timeout. The stream
+// holds exactly one long-lived reader goroutine, and closing the underlying
+// reader releases it.
+func TestSSEReaderWithTimeout_NoOrphanGoroutineGrowth(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	reader := NewSSEReaderWithTimeout(pr, 5*time.Millisecond, 5*time.Millisecond)
+
+	// Let unrelated goroutines from the test runner settle before measuring.
+	time.Sleep(50 * time.Millisecond)
+	base := runtime.NumGoroutine()
+
+	const timeouts = 50
+	for i := 0; i < timeouts; i++ {
+		_, err := reader.ReadEvent()
+		if !errors.Is(err, ErrSSETimeout) {
+			t.Fatalf("iteration %d: expected ErrSSETimeout, got %v", i, err)
+		}
+	}
+
+	// Allow any transient scheduler work to settle.
+	time.Sleep(20 * time.Millisecond)
+	after := runtime.NumGoroutine()
+	growth := after - base
+	t.Logf("SSEReaderWithTimeout: base=%d after %d timeouts=%d growth=%d",
+		base, timeouts, after, growth)
+	if growth > 3 {
+		t.Fatalf("goroutine growth %d after %d timeouts: want <= 3 (no per-timeout orphan goroutine)", growth, timeouts)
+	}
+
+	// Closing the stream must release the single long-lived reader goroutine.
+	pw.Close()
+	waitForGoroutines(t, base, 2*time.Second)
+	final := runtime.NumGoroutine()
+	t.Logf("SSEReaderWithTimeout: after stream close=%d (base=%d)", final, base)
+	if final > base+3 {
+		t.Fatalf("goroutines did not fall back after stream close: base=%d final=%d", base, final)
+	}
+}
+
+// waitForGoroutines polls until the goroutine count drops to target+1 or the
+// deadline expires. Used to verify that closing a stream releases its reader
+// goroutines.
+func waitForGoroutines(t *testing.T, target int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= target+1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Logf("goroutine count did not reach %d within %v (current=%d)",
+		target+1, timeout, runtime.NumGoroutine())
+}
+
+// TestSSEReaderWithTimeout_TimeoutThenDataAndEOF verifies Plan A semantics:
+// an idle stream times out with ErrSSETimeout, data written after a timeout is
+// still delivered by the long-lived goroutine, and EOF is reported normally.
+func TestSSEReaderWithTimeout_TimeoutThenDataAndEOF(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	reader := NewSSEReaderWithTimeout(pr, 30*time.Millisecond, 30*time.Millisecond)
+
+	// Idle stream: first read times out.
+	if _, err := reader.ReadEvent(); !errors.Is(err, ErrSSETimeout) {
+		t.Fatalf("expected ErrSSETimeout on idle stream, got %v", err)
+	}
+
+	// Data written after a timeout is picked up by the long-lived goroutine.
+	go func() {
+		_, _ = pw.Write([]byte("data: {\"x\":1}\n\n"))
+	}()
+	event, err := reader.ReadEvent()
+	if err != nil {
+		t.Fatalf("expected event after write, got %v", err)
+	}
+	if event == nil || event.Data != `{"x":1}` {
+		t.Fatalf("unexpected event: %+v", event)
+	}
+
+	// Close the stream: next read reports io.EOF.
+	pw.Close()
+	if _, err := reader.ReadEvent(); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected io.EOF after stream close, got %v", err)
 	}
 }
 

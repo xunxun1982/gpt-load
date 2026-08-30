@@ -1,13 +1,17 @@
 package proxy
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"gpt-load/internal/models"
 
@@ -1834,4 +1838,92 @@ func TestCodexHelperFunctions(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestCodexLineReader_NoOrphanGoroutineGrowth verifies the Plan A fix for the
+// Codex CC streaming loop: repeated timeouts must not accumulate one goroutine
+// per timeout. The stream holds exactly one long-lived reader goroutine, and
+// closing the underlying reader releases it.
+func TestCodexLineReader_NoOrphanGoroutineGrowth(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	lr := newCodexLineReader(bufio.NewReader(pr))
+
+	// Let unrelated goroutines from the test runner settle before measuring.
+	time.Sleep(50 * time.Millisecond)
+	base := runtime.NumGoroutine()
+
+	const timeouts = 50
+	for i := 0; i < timeouts; i++ {
+		_, err := lr.readLine(5 * time.Millisecond)
+		if !errors.Is(err, ErrSSETimeout) {
+			t.Fatalf("iteration %d: expected ErrSSETimeout, got %v", i, err)
+		}
+	}
+
+	// Allow any transient scheduler work to settle.
+	time.Sleep(20 * time.Millisecond)
+	after := runtime.NumGoroutine()
+	growth := after - base
+	t.Logf("codexLineReader: base=%d after %d timeouts=%d growth=%d",
+		base, timeouts, after, growth)
+	if growth > 3 {
+		t.Fatalf("goroutine growth %d after %d timeouts: want <= 3 (no per-timeout orphan goroutine)", growth, timeouts)
+	}
+
+	// Closing the stream must release the single long-lived reader goroutine.
+	pw.Close()
+	waitForGoroutines(t, base, 2*time.Second)
+	final := runtime.NumGoroutine()
+	t.Logf("codexLineReader: after stream close=%d (base=%d)", final, base)
+	if final > base+3 {
+		t.Fatalf("goroutines did not fall back after stream close: base=%d final=%d", base, final)
+	}
+}
+
+// TestCodexLineReader_TimeoutThenDataAndEOF verifies Plan A semantics: an idle
+// stream times out with ErrSSETimeout, a line written after a timeout is still
+// delivered by the long-lived goroutine, and EOF is reported normally.
+func TestCodexLineReader_TimeoutThenDataAndEOF(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	lr := newCodexLineReader(bufio.NewReader(pr))
+
+	// Idle stream: read times out.
+	if _, err := lr.readLine(30 * time.Millisecond); !errors.Is(err, ErrSSETimeout) {
+		t.Fatalf("expected ErrSSETimeout on idle stream, got %v", err)
+	}
+
+	// A line written after a timeout is picked up by the long-lived goroutine.
+	go func() {
+		_, _ = pw.Write([]byte("event: test\ndata: {\"x\":1}\n\n"))
+	}()
+	line, err := lr.readLine(200 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected line after write, got %v", err)
+	}
+	if line != "event: test\n" {
+		t.Fatalf("unexpected line: %q", line)
+	}
+
+	// Close the stream, then drain every buffered line: EOF must arrive once
+	// the underlying reader reports the closed pipe.
+	pw.Close()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	seenEOF := false
+	for time.Now().Before(deadline) {
+		_, err := lr.readLine(100 * time.Millisecond)
+		if errors.Is(err, io.EOF) {
+			seenEOF = true
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error while draining: %v", err)
+		}
+	}
+	if !seenEOF {
+		t.Fatalf("expected io.EOF after stream close, never observed")
+	}
 }

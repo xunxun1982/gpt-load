@@ -4713,6 +4713,17 @@ type SSEReaderWithTimeout struct {
 	firstByteTimeout  time.Duration
 	subsequentTimeout time.Duration
 	receivedFirst     bool
+
+	// startOnce + eventCh + readLoop implement a single long-lived reader
+	// goroutine per stream (see readLoop for the lifecycle contract).
+	startOnce sync.Once
+	eventCh   chan sseReadResult
+}
+
+// sseReadResult is one event (or read error) produced by the reader goroutine.
+type sseReadResult struct {
+	event *SSEEvent
+	err   error
 }
 
 // NewSSEReaderWithTimeout creates a new SSE reader with timeout support.
@@ -4724,52 +4735,80 @@ func NewSSEReaderWithTimeout(r io.Reader, firstByteTimeout, subsequentTimeout ti
 		firstByteTimeout:  firstByteTimeout,
 		subsequentTimeout: subsequentTimeout,
 		receivedFirst:     false,
+		eventCh:           make(chan sseReadResult, 1),
+	}
+}
+
+// readLoop is the single long-lived reader goroutine per stream.
+//
+// Lifecycle contract: it reads SSE events from the underlying reader in a loop
+// and pushes each one (or the terminating error) into eventCh (buffered, size
+// 1). It exits exactly when readEventInternal returns an error — i.e. on EOF
+// or when the underlying connection/body is closed — and closes eventCh so
+// consumers observe io.EOF. A ReadEvent timeout neither kills nor spawns
+// goroutines: the timed-out caller simply leaves this goroutine parked on the
+// reader/channel, so the stream holds exactly 1 goroutine regardless of how
+// many timeouts occur. This replaces the previous per-read goroutine pattern,
+// which leaked one goroutine (~2KB stack) per timeout until the connection
+// closed.
+func (r *SSEReaderWithTimeout) readLoop() {
+	defer close(r.eventCh)
+	for {
+		event, err := r.readEventInternal()
+		if err != nil {
+			// Terminal result (EOF / connection close): deliver it if the
+			// consumer is still waiting, but never block. If a timed-out caller
+			// abandoned the stream and left a buffered result unconsumed, the
+			// channel is full — dropping this error is fine (nobody will read
+			// it) and guarantees this goroutine exits as soon as the underlying
+			// reader errors.
+			select {
+			case r.eventCh <- sseReadResult{event: event, err: err}:
+			default:
+			}
+			return
+		}
+		r.eventCh <- sseReadResult{event: event, err: err}
 	}
 }
 
 // ReadEvent reads the next SSE event with timeout support.
-// Uses goroutine + channel pattern since bufio.Reader doesn't support timeouts directly.
-//
-// KNOWN LIMITATION: When timeout fires, the goroutine spawned for readEventInternal()
-// will remain blocked on bufio.Reader.ReadString('\n') until the underlying HTTP
-// response body is closed. This is a known limitation of this pattern - the goroutine
-// (~2KB stack) will be released when the connection terminates. The buffered channel
-// (size 1) prevents send-side blocking. This trade-off is acceptable because:
-// 1. HTTP connections eventually close (upstream timeout, client disconnect, server close)
-// 2. User-facing behavior is correct (timeout error returned promptly)
-// 3. This pattern is commonly used for timeout support on non-cancellable readers
+// The read itself happens in the single long-lived reader goroutine (readLoop);
+// this method only receives from eventCh with an optional timeout, so timeouts
+// never leave orphan goroutines behind.
 func (r *SSEReaderWithTimeout) ReadEvent() (*SSEEvent, error) {
+	r.startOnce.Do(func() {
+		go r.readLoop()
+	})
+
 	timeout := r.subsequentTimeout
 	if !r.receivedFirst {
 		timeout = r.firstByteTimeout
 	}
 	if timeout <= 0 {
-		event, err := r.readEventInternal()
-		if err == nil && event != nil {
-			r.receivedFirst = true
+		result, ok := <-r.eventCh
+		if !ok {
+			return nil, io.EOF
 		}
-		return event, err
-	}
-
-	type readResult struct {
-		event *SSEEvent
-		err   error
-	}
-
-	resultCh := make(chan readResult, 1)
-
-	go func() {
-		event, err := r.readEventInternal()
-		resultCh <- readResult{event: event, err: err}
-	}()
-
-	select {
-	case result := <-resultCh:
 		if result.err == nil && result.event != nil {
 			r.receivedFirst = true
 		}
 		return result.event, result.err
-	case <-time.After(timeout):
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case result, ok := <-r.eventCh:
+		if !ok {
+			return nil, io.EOF
+		}
+		if result.err == nil && result.event != nil {
+			r.receivedFirst = true
+		}
+		return result.event, result.err
+	case <-timer.C:
 		timeoutType := "subsequent"
 		if !r.receivedFirst {
 			timeoutType = "first-byte"

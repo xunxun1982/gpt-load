@@ -2,9 +2,11 @@ package httpclient
 
 import (
 	"crypto/tls"
+	"fmt"
 	"gpt-load/internal/utils"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -738,4 +740,71 @@ func BenchmarkFingerprintGeneration(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		benchSink = config.getFingerprint()
 	}
+}
+
+func TestGetClient_EvictsExcessClients(t *testing.T) {
+	manager := NewHTTPClientManager()
+	manager.maxClients = 3
+
+	cfg1 := &Config{RequestTimeout: 1 * time.Second}
+	cfg2 := &Config{RequestTimeout: 2 * time.Second}
+	cfg3 := &Config{RequestTimeout: 3 * time.Second}
+
+	c1 := manager.GetClient(cfg1)
+	c2 := manager.GetClient(cfg2)
+	c3 := manager.GetClient(cfg3)
+	require.NotNil(t, c1)
+	require.NotNil(t, c2)
+	require.NotNil(t, c3)
+
+	// Make c1 the least-recently-used so adding a 4th client evicts it.
+
+	fp1 := cfg1.getFingerprint()
+	manager.lock.Lock()
+	manager.clients[fp1].lastUsed.Store(1)
+	manager.lock.Unlock()
+
+	c4 := manager.GetClient(&Config{RequestTimeout: 4 * time.Second})
+	require.NotNil(t, c4)
+
+	assert.Len(t, manager.clients, 3, "cache should be capped at maxClients")
+
+	manager.lock.RLock()
+	_, c1exists := manager.clients[fp1]
+	manager.lock.RUnlock()
+	assert.False(t, c1exists, "least-recently-used client should be evicted")
+
+	// Reusing a surviving config returns the same client instance.
+
+	assert.Same(t, c2, manager.GetClient(cfg2))
+	assert.Same(t, c3, manager.GetClient(cfg3))
+}
+
+func TestGetClient_EvictedClientConnectionsClosed(t *testing.T) {
+	manager := NewHTTPClientManager()
+	manager.maxClients = 1
+
+	tr := &closeTrackingTransport{}
+	fp := "tracked-fp"
+	manager.lock.Lock()
+	manager.clients[fp] = &clientCacheEntry{client: &http.Client{Transport: tr}}
+	manager.clients[fp].lastUsed.Store(1)
+	manager.lock.Unlock()
+
+	// Adding a new client evicts the only existing one; its connections close.
+
+	manager.GetClient(&Config{RequestTimeout: 5 * time.Second})
+	assert.True(t, tr.closed.Load(), "connections of the evicted client must be closed")
+}
+
+type closeTrackingTransport struct {
+	closed atomic.Bool
+}
+
+func (t *closeTrackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("not used")
+}
+
+func (t *closeTrackingTransport) CloseIdleConnections() {
+	t.closed.Store(true)
 }

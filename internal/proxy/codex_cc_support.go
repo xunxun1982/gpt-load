@@ -1848,6 +1848,83 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 	c.Data(resp.StatusCode, "application/json", claudeBody)
 }
 
+// codexLineReadResult is one line (or read error) produced by the codexLineReader goroutine.
+type codexLineReadResult struct {
+	line string
+	err  error
+}
+
+// codexLineReader reads lines from an upstream stream using a single long-lived
+// reader goroutine per stream (Plan A), so per-read timeouts never leave orphan
+// goroutines behind.
+type codexLineReader struct {
+	reader *bufio.Reader
+	lines  chan codexLineReadResult
+}
+
+// newCodexLineReader starts one long-lived reader goroutine for the stream.
+func newCodexLineReader(reader *bufio.Reader) *codexLineReader {
+	lr := &codexLineReader{
+		reader: reader,
+		lines:  make(chan codexLineReadResult, 1),
+	}
+	go lr.readLoop()
+	return lr
+}
+
+// readLoop is the single long-lived reader goroutine per stream.
+//
+// Lifecycle contract: it reads lines from the upstream stream in a loop and
+// pushes each one (or the terminating error) into lines (buffered, size 1).
+// It exits exactly when ReadString returns an error — i.e. on EOF or when the
+// underlying connection/body is closed — and closes lines so consumers observe
+// io.EOF. A readLine timeout does not kill or spawn goroutines: the timed-out
+// caller simply leaves this goroutine parked on the reader/channel, so the
+// stream holds exactly 1 goroutine regardless of how many timeouts occur.
+func (lr *codexLineReader) readLoop() {
+	defer close(lr.lines)
+	for {
+		line, err := lr.reader.ReadString('\n')
+		if err != nil {
+			// Terminal result (EOF / connection close): deliver it if the
+			// consumer is still waiting, but never block. If a timed-out caller
+			// abandoned the stream and left a buffered line unconsumed, the
+			// channel is full — dropping this error is fine (nobody will read
+			// it) and guarantees this goroutine exits as soon as the underlying
+			// reader errors.
+			select {
+			case lr.lines <- codexLineReadResult{line: line, err: err}:
+			default:
+			}
+			return
+		}
+		lr.lines <- codexLineReadResult{line: line, err: err}
+	}
+}
+
+// readLine waits up to timeout for the next line. It returns ErrSSETimeout on
+// timeout, io.EOF once the stream has ended, or the line and nil error.
+func (lr *codexLineReader) readLine(timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		result, ok := <-lr.lines
+		if !ok {
+			return "", io.EOF
+		}
+		return result.line, result.err
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result, ok := <-lr.lines:
+		if !ok {
+			return "", io.EOF
+		}
+		return result.line, result.err
+	case <-timer.C:
+		return "", ErrSSETimeout
+	}
+}
+
 // handleCodexCCStreamingResponse handles streaming Codex response conversion to Claude format.
 func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http.Response) {
 	// Log response headers for debugging
@@ -1934,6 +2011,8 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	}
 
 	bufReader := bufio.NewReader(reader)
+	// Wrap with a single long-lived reader goroutine for timeout reads without orphans.
+	lineReader := newCodexLineReader(bufReader)
 
 	// Timeout state for CC streaming to prevent hanging when upstream is in thinking phase
 	// Timeout values are derived from group/system config with preset upper bounds.
@@ -1973,34 +2052,13 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	}
 
 	for {
-		// Use goroutine + channel pattern for timeout support since bufio.Reader doesn't support timeouts.
-		// KNOWN LIMITATION: When timeout fires, the goroutine blocked on ReadString('\n') will remain
-		// alive until the connection closes. This is acceptable as HTTP connections eventually terminate.
-		// See SSEReaderWithTimeout.ReadEvent() in cc_support.go for detailed explanation.
-		type readResult struct {
-			line string
-			err  error
-		}
-		resultCh := make(chan readResult, 1)
-
-		go func() {
-			line, err := bufReader.ReadString('\n')
-			resultCh <- readResult{line: line, err: err}
-		}()
-
-		// Cache timeout value before select to avoid calling getTimeout() twice
+		// The single long-lived reader goroutine (codexLineReader) does the actual
+		// read; readLine applies the timeout while waiting, so timeouts no longer
+		// spawn orphan goroutines (see codexLineReader.readLoop lifecycle contract).
+		// Cache timeout value before read to avoid calling getTimeout() twice.
 		timeoutDuration := getTimeout()
-
-		var line string
-		var err error
-		select {
-		case result := <-resultCh:
-			line = result.line
-			err = result.err
-			if err == nil {
-				firstByteReceived = true
-			}
-		case <-time.After(timeoutDuration):
+		line, err := lineReader.readLine(timeoutDuration)
+		if err == ErrSSETimeout {
 			timeoutType := "subsequent"
 			if !firstByteReceived {
 				timeoutType = "first-byte"
@@ -2026,6 +2084,9 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 				_ = writeClaudeEvent(event)
 			}
 			return
+		}
+		if err == nil {
+			firstByteReceived = true
 		}
 
 		lineCount++

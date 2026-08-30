@@ -3,8 +3,10 @@ package centralizedmgmt
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"gpt-load/internal/encryption"
 
@@ -1004,6 +1006,160 @@ func TestAccessKeyImportUniqueNames(t *testing.T) {
 	_, err = svc.ValidateAccessKey(ctx, newKeyValue)
 	if err != nil {
 		t.Errorf("Imported key should be valid: %v", err)
+	}
+}
+
+func TestAccessKeyCacheLazyEvictionOnExpiredHit(t *testing.T) {
+	svc, db := setupTestService(t)
+	ctx := context.Background()
+
+	dto, originalKey, err := svc.CreateAccessKey(ctx, CreateAccessKeyParams{
+		Name:          "lazy-evict-key",
+		AllowedModels: []string{},
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if _, err := svc.ValidateAccessKey(ctx, originalKey); err != nil {
+		t.Fatalf("Initial validation failed: %v", err)
+	}
+
+	hash := svc.encryptionSvc.Hash(originalKey)
+
+	// Direct DB delete (bypassing the service, which would invalidate the cache)
+	// makes the stale cached entry describe a key that no longer exists.
+
+	if err := db.Delete(&HubAccessKey{}, dto.ID).Error; err != nil {
+		t.Fatalf("Direct DB delete failed: %v", err)
+	}
+
+	svc.keyCacheMu.Lock()
+	svc.keyCache[hash].ExpiresAt = time.Now().Add(-time.Second)
+	before := len(svc.keyCache)
+	svc.keyCacheMu.Unlock()
+
+	if _, err := svc.ValidateAccessKey(ctx, originalKey); err == nil {
+		t.Fatal("stale cached value must not be reused")
+	}
+
+	svc.keyCacheMu.RLock()
+	defer svc.keyCacheMu.RUnlock()
+	if got := len(svc.keyCache); got != before {
+		t.Errorf("cache size changed: got %d, want %d", got, before)
+	}
+	entry, ok := svc.keyCache[hash]
+	if !ok {
+		t.Fatal("negative entry should be re-cached")
+	}
+	if entry.Key != nil {
+		t.Error("re-loaded entry should be negative")
+	}
+	if !time.Now().Before(entry.ExpiresAt) {
+		t.Error("re-loaded entry should have a fresh ExpiresAt")
+	}
+}
+func TestAccessKeyCacheNegativeLazyEviction(t *testing.T) {
+	svc, _ := setupTestService(t)
+	ctx := context.Background()
+
+	invalidKey := "hk-non-existent-key-123456789"
+	if _, err := svc.ValidateAccessKey(ctx, invalidKey); err == nil {
+		t.Fatal("invalid key should be rejected")
+	}
+
+	hash := svc.encryptionSvc.Hash(invalidKey)
+
+	svc.keyCacheMu.Lock()
+	entry, ok := svc.keyCache[hash]
+	if !ok || entry.Key != nil {
+		svc.keyCacheMu.Unlock()
+		t.Fatal("negative cache entry should exist with nil Key")
+	}
+	entry.ExpiresAt = time.Now().Add(-time.Second)
+
+	before := len(svc.keyCache)
+	svc.keyCacheMu.Unlock()
+
+	if _, err := svc.ValidateAccessKey(ctx, invalidKey); err == nil {
+		t.Fatal("invalid key should still be rejected")
+	}
+
+	svc.keyCacheMu.RLock()
+	defer svc.keyCacheMu.RUnlock()
+	if got := len(svc.keyCache); got != before {
+		t.Errorf("cache size changed: got %d, want %d", got, before)
+	}
+	fresh, ok := svc.keyCache[hash]
+	if !ok {
+		t.Fatal("negative entry should be re-cached")
+	}
+	if fresh.Key != nil {
+		t.Error("re-loaded entry should stay negative")
+	}
+	if !time.Now().Before(fresh.ExpiresAt) {
+		t.Error("re-loaded negative entry should have a fresh ExpiresAt")
+	}
+}
+func TestAccessKeyCacheCapacityEviction(t *testing.T) {
+	svc, _ := setupTestService(t)
+
+	// Phase 1: fill cache past cap with half entries expired.
+	svc.keyCacheMu.Lock()
+	now := time.Now()
+	for i := 0; i < maxKeyCacheEntries; i++ {
+		hash := fmt.Sprintf("hk-cap-%d", i)
+		expiry := now.Add(time.Minute)
+		if i%2 == 0 {
+			expiry = now.Add(-time.Second)
+		}
+		svc.keyCache[hash] = &accessKeyCacheEntry{
+			Key: nil, ExpiresAt: expiry,
+			CreatedAt: now.Add(time.Duration(i) * time.Nanosecond),
+		}
+	}
+	svc.keyCacheMu.Unlock()
+
+	// Trigger eviction: cacheKey takes its own lock, so we must not hold it.
+
+	svc.cacheKey("hk-cap-trigger-1", nil)
+
+	svc.keyCacheMu.Lock()
+	if len(svc.keyCache) > maxKeyCacheEntries {
+		svc.keyCacheMu.Unlock()
+		t.Fatalf("cache exceeded cap after expired purge: %d", len(svc.keyCache))
+	}
+	for i := 0; i < maxKeyCacheEntries; i++ {
+		if i%2 == 0 {
+			if _, exists := svc.keyCache[fmt.Sprintf("hk-cap-%d", i)]; exists {
+				svc.keyCacheMu.Unlock()
+				t.Fatalf("expired entry hk-cap-%d should have been purged", i)
+			}
+		}
+	}
+	svc.keyCacheMu.Unlock()
+
+	// Phase 2: fill entirely with fresh entries; one more write forces oldest eviction.
+
+	svc.keyCacheMu.Lock()
+	for i := 0; i < maxKeyCacheEntries; i++ {
+		hash := fmt.Sprintf("hk-cap-fresh-%d", i)
+		svc.keyCache[hash] = &accessKeyCacheEntry{
+			Key: nil, ExpiresAt: now.Add(time.Hour),
+			CreatedAt: now.Add(time.Duration(i+maxKeyCacheEntries) * time.Nanosecond),
+		}
+	}
+	svc.keyCacheMu.Unlock()
+
+	svc.cacheKey("hk-cap-trigger-2", nil)
+
+	svc.keyCacheMu.Lock()
+	defer svc.keyCacheMu.Unlock()
+	if len(svc.keyCache) != maxKeyCacheEntries {
+		t.Fatalf("cache should be trimmed to %d, got %d", maxKeyCacheEntries, len(svc.keyCache))
+	}
+	if _, exists := svc.keyCache["hk-cap-fresh-0"]; exists {
+		t.Fatal("oldest entry should have been evicted")
 	}
 }
 

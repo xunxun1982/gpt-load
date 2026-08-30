@@ -2,6 +2,7 @@ package store
 
 import (
 	"testing"
+	"time"
 
 	"gpt-load/internal/types"
 
@@ -105,4 +106,25 @@ func TestNewStore_RedisConnectionFailed(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, store)
 	assert.Contains(t, err.Error(), "failed to connect to redis")
+}
+
+func TestBuildRedisOptions_ExplicitPoolLimits(t *testing.T) {
+	t.Parallel()
+
+	opts, err := buildRedisOptions("redis://localhost:6379/0")
+	require.NoError(t, err)
+
+	// Pool limits must be explicit so long-running deployments do not rely on
+	// go-redis defaults (ConnMaxLifetime=0 reuses connections forever).
+	assert.GreaterOrEqual(t, opts.PoolSize, int(1))
+	assert.GreaterOrEqual(t, opts.MinIdleConns, int(0))
+	assert.Greater(t, opts.ConnMaxIdleTime, time.Duration(0))
+	assert.Greater(t, opts.ConnMaxLifetime, time.Duration(0))
+}
+
+func TestBuildRedisOptions_InvalidDSN(t *testing.T) {
+	t.Parallel()
+
+	_, err := buildRedisOptions("not-a-url")
+	require.Error(t, err)
 }

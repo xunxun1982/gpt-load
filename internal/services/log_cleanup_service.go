@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"gpt-load/internal/config"
 	"gpt-load/internal/models"
 	"gpt-load/internal/utils"
@@ -68,6 +69,7 @@ func (s *LogCleanupService) run() {
 
 	// Perform initial cleanup after delay
 	s.cleanupExpiredLogs()
+	s.cleanupExpiredStats()
 
 	ticker := time.NewTicker(2 * time.Hour)
 	defer ticker.Stop()
@@ -76,6 +78,7 @@ func (s *LogCleanupService) run() {
 		select {
 		case <-ticker.C:
 			s.cleanupExpiredLogs()
+			s.cleanupExpiredStats()
 		case <-s.stopCh:
 			return
 		}
@@ -214,4 +217,130 @@ func (s *LogCleanupService) deleteSQLiteExpiredLogsBatch(ctx context.Context, cu
 			LIMIT ?
 		)
 	`, cutoffTime, batchSize)
+}
+
+// statsTables lists the hourly stats tables cleaned by cleanupExpiredStats.
+// Both have a single-column time index (added by migration v1.30.0) so the
+// time-prefixed batch deletes below use the index instead of scanning.
+var statsTables = []string{"group_hourly_stats", "model_token_hourly_stats"}
+
+// cleanupExpiredStats deletes rows older than StatsRetentionDays from the two
+// hourly stats tables. Dialect branches mirror cleanupExpiredLogs; each table
+// is cleaned independently with bounded batches so the time index is always
+// used (the index was added by migration v1.30.0).
+func (s *LogCleanupService) cleanupExpiredStats() {
+	cutoffTime := time.Now().AddDate(0, 0, -StatsRetentionDays).UTC()
+	dialect := s.db.Dialector.Name()
+	batchSize := LogCleanupBatchSize
+	if dialect == "sqlite" {
+		batchSize = SQLiteLogCleanupBatchSize
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"cutoff_time":    cutoffTime.Format(time.RFC3339),
+		"retention_days": StatsRetentionDays,
+		"dialect":        dialect,
+	}).Debug("Starting stats cleanup")
+
+	for _, table := range statsTables {
+		s.deleteExpiredStatsTable(table, cutoffTime, dialect, batchSize)
+	}
+}
+
+// deleteExpiredStatsTable deletes expired rows from one stats table using
+// dialect-specific batch deletion. The table name is drawn from the fixed set
+// statsTables and is never user-supplied, so fmt.Sprintf is safe here.
+func (s *LogCleanupService) deleteExpiredStatsTable(table string, cutoffTime time.Time, dialect string, batchSize int) {
+	totalDeleted := int64(0)
+	nextLogAt := int64(LargeCleanupThreshold)
+
+	logrus.WithFields(logrus.Fields{
+		"table": table,
+	}).Debug("Cleaning up expired stats table")
+
+	for {
+		batchCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		var result *gorm.DB
+
+		switch dialect {
+		case "postgres":
+			result = s.db.WithContext(batchCtx).Exec(fmt.Sprintf(`
+				DELETE FROM %s
+				WHERE ctid IN (
+					SELECT ctid FROM %s
+					WHERE time < $1
+					LIMIT $2
+				)
+			`, table, table), cutoffTime, batchSize)
+		case "mysql":
+			result = s.db.WithContext(batchCtx).Exec(
+				fmt.Sprintf("DELETE FROM %s WHERE time < ? ORDER BY time LIMIT ?", table),
+				cutoffTime, batchSize,
+			)
+		case "sqlite":
+			result = s.db.WithContext(batchCtx).Exec(fmt.Sprintf(`
+				DELETE FROM %s
+				WHERE rowid IN (
+					SELECT rowid FROM %s
+					WHERE time < ?
+					ORDER BY time
+					LIMIT ?
+				)
+			`, table, table), cutoffTime, batchSize)
+		default:
+			// Fallback for unsupported dialects: select IDs then delete.
+			logrus.Warnf("Stats cleanup using fallback deletion for unsupported dialect: %s", dialect)
+			var ids []uint
+			err := s.db.WithContext(batchCtx).Table(table).
+				Where("time < ?", cutoffTime).
+				Limit(batchSize).
+				Pluck("id", &ids).Error
+			if err != nil {
+				result = &gorm.DB{Error: err}
+			} else if len(ids) == 0 {
+				result = &gorm.DB{RowsAffected: 0}
+			} else {
+				result = s.db.WithContext(batchCtx).Table(table).
+					Where("id IN ?", ids).
+					Delete(nil)
+			}
+		}
+		cancel()
+
+		if result.Error != nil {
+			if utils.IsTransientDBError(result.Error) {
+				logrus.WithError(result.Error).Warnf("Cleanup of %s failed due to transient DB error", table)
+				return
+			}
+			logrus.WithError(result.Error).Errorf("Failed to cleanup expired %s", table)
+			return
+		}
+
+		deletedCount := result.RowsAffected
+		totalDeleted += deletedCount
+
+		if totalDeleted >= nextLogAt {
+			logrus.WithFields(logrus.Fields{
+				"table":          table,
+				"deleted_so_far": totalDeleted,
+			}).Debug("Stats cleanup progress")
+			nextLogAt += int64(LargeCleanupThreshold)
+		}
+
+		if deletedCount < int64(batchSize) {
+			break
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if totalDeleted > 0 {
+		logrus.WithFields(logrus.Fields{
+			"table":         table,
+			"deleted_count": totalDeleted,
+			"cutoff_time":   cutoffTime.Format(time.RFC3339),
+		}).Info("Successfully cleaned up expired stats")
+	} else {
+		logrus.Debugf("No expired %s rows found to cleanup", table)
+	}
 }

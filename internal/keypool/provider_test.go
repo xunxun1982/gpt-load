@@ -356,7 +356,7 @@ func TestRemoveKeysWaitsForLifecycleLockBeforeDeletingFromDB(t *testing.T) {
 		default:
 		}
 	}))
-	defer db.Callback().Delete().Remove(callbackName)
+	defer func() { require.NoError(t, db.Callback().Delete().Remove(callbackName)) }()
 
 	provider.lifecycleMu.RLock()
 	lockHeld = true

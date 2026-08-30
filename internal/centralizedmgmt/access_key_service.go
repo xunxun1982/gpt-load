@@ -26,6 +26,13 @@ const (
 
 	// Default key length (excluding prefix)
 	defaultKeyLength = 48
+
+	// maxKeyCacheEntries is the hard capacity cap for the key validation cache.
+	// Eviction contract: expired entries are removed first (lazy on lookup and
+	// proactively when the cap is hit); if the cache is still over the limit,
+	// the oldest entries (by insertion time) are evicted. This bounds memory
+	// growth from unique/invalid access keys without limiting legitimate use.
+	maxKeyCacheEntries = 10000
 )
 
 // HubAccessKeyService manages Hub access keys with caching support.
@@ -40,10 +47,12 @@ type HubAccessKeyService struct {
 	keyCacheTTL time.Duration
 }
 
-// accessKeyCacheEntry holds cached access key data with expiration
+// accessKeyCacheEntry holds cached access key data with expiration.
+// CreatedAt backs the capacity-limit eviction policy (oldest inserted evicted first).
 type accessKeyCacheEntry struct {
 	Key       *HubAccessKey
 	ExpiresAt time.Time
+	CreatedAt time.Time
 }
 
 // NewHubAccessKeyService creates a new HubAccessKeyService instance
@@ -146,7 +155,8 @@ func (s *HubAccessKeyService) ValidateAccessKey(ctx context.Context, keyValue st
 
 	// Check cache first (fast path)
 	s.keyCacheMu.RLock()
-	if entry, ok := s.keyCache[keyHash]; ok && time.Now().Before(entry.ExpiresAt) {
+	entry, ok := s.keyCache[keyHash]
+	if ok && time.Now().Before(entry.ExpiresAt) {
 		key := entry.Key
 		s.keyCacheMu.RUnlock()
 		if key == nil {
@@ -158,6 +168,18 @@ func (s *HubAccessKeyService) ValidateAccessKey(ctx context.Context, keyValue st
 		return key, nil
 	}
 	s.keyCacheMu.RUnlock()
+
+	// Lazy eviction: an expired entry found on lookup is deleted immediately so
+	// expired (including negative) entries cannot accumulate in the map. The key
+	// is then reloaded from the database below, which re-caches a fresh entry.
+	if ok {
+		s.keyCacheMu.Lock()
+		// Double-check under the write lock: another goroutine may have reloaded it.
+		if current, still := s.keyCache[keyHash]; still && !time.Now().Before(current.ExpiresAt) {
+			delete(s.keyCache, keyHash)
+		}
+		s.keyCacheMu.Unlock()
+	}
 
 	// Cache miss - query database using hash
 	var key HubAccessKey
@@ -368,14 +390,51 @@ func (s *HubAccessKeyService) toDTO(key *HubAccessKey) *HubAccessKeyDTO {
 	}
 }
 
-// cacheKey stores a key in the cache with TTL
+// cacheKey stores a key in the cache with TTL and enforces the capacity cap.
 func (s *HubAccessKeyService) cacheKey(encryptedKey string, key *HubAccessKey) {
 	s.keyCacheMu.Lock()
+	defer s.keyCacheMu.Unlock()
 	s.keyCache[encryptedKey] = &accessKeyCacheEntry{
 		Key:       key,
 		ExpiresAt: time.Now().Add(s.keyCacheTTL),
+		CreatedAt: time.Now(),
 	}
-	s.keyCacheMu.Unlock()
+	s.evictKeyCacheIfNeededLocked()
+}
+
+// evictKeyCacheIfNeededLocked enforces the cache capacity limit.
+// Contract: keyCache never holds more than maxKeyCacheEntries entries.
+// Expired entries are removed first (frees capacity without dropping hot data);
+// if the cache is still over the limit, the oldest entries by insertion time
+// are evicted. Caller must hold keyCacheMu.
+func (s *HubAccessKeyService) evictKeyCacheIfNeededLocked() {
+	if len(s.keyCache) <= maxKeyCacheEntries {
+		return
+	}
+
+	// First pass: drop all expired entries.
+	now := time.Now()
+	for hash, entry := range s.keyCache {
+		if !now.Before(entry.ExpiresAt) {
+			delete(s.keyCache, hash)
+		}
+	}
+	if len(s.keyCache) <= maxKeyCacheEntries {
+		return
+	}
+
+	// Second pass: evict oldest entries until back under the limit.
+	for len(s.keyCache) > maxKeyCacheEntries {
+		oldestHash := ""
+		var oldestTime time.Time
+		for hash, entry := range s.keyCache {
+			if oldestHash == "" || entry.CreatedAt.Before(oldestTime) {
+				oldestHash = hash
+				oldestTime = entry.CreatedAt
+			}
+		}
+		delete(s.keyCache, oldestHash)
+	}
 }
 
 // invalidateKeyCache removes a specific key from the cache

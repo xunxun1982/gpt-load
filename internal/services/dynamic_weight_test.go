@@ -3,6 +3,8 @@ package services
 import (
 	"math"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -847,6 +849,130 @@ func BenchmarkDynamicWeightManager_RecordSuccess(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		dwm.RecordSubGroupSuccess(aggregateGroupID, subGroupID)
 	}
+}
+
+// TestDynamicWeightManager_ConcurrentRecordsDifferentKeys verifies that concurrent
+// recordSuccess/recordFailure calls on DIFFERENT keys lose no counts and leave each
+// key fully isolated. Each worker hammers its own distinct key, so this exercises the
+// sharded-lock parallel paths. With a correct implementation every key ends with exactly
+// its own call counts; any lost read-modify-write would under-count.
+func TestDynamicWeightManager_ConcurrentRecordsDifferentKeys(t *testing.T) {
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	const (
+		workers          = 16
+		recordsPerWorker = 400
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func(w int) {
+			defer wg.Done()
+			groupID := uint(w + 1)
+			for i := 0; i < recordsPerWorker; i++ {
+				if i%2 == 0 {
+					dwm.RecordSubGroupSuccess(groupID, 1)
+				} else {
+					dwm.RecordSubGroupFailure(groupID, 1, false)
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	// Successes happen at i%2==0 (recordsPerWorker/2 of the calls); all calls bump requests.
+	wantRequests := int64(recordsPerWorker)
+	wantSuccesses := int64(recordsPerWorker / 2)
+	for w := 0; w < workers; w++ {
+		groupID := uint(w + 1)
+		metrics, err := dwm.GetSubGroupMetrics(groupID, 1)
+		require.NoError(t, err)
+		assert.Equal(t, wantRequests, metrics.Requests180d,
+			"requests must not be lost for different-key concurrent group %d", groupID)
+		assert.Equal(t, wantRequests, metrics.Requests7d,
+			"requests must not be lost across time windows for group %d", groupID)
+		assert.Equal(t, wantSuccesses, metrics.Successes180d,
+			"successes must not be lost for group %d", groupID)
+		// The last call per worker is a hard failure (i = recordsPerWorker-1 is odd),
+		// so each key must end with exactly one consecutive hard failure and no cross-key
+		// contamination of the rate-limit counter.
+		assert.Equal(t, int64(1), metrics.ConsecutiveFailures,
+			"consecutive failures must match per key for group %d", groupID)
+		assert.Equal(t, int64(0), metrics.ConsecutiveRateLimits,
+			"rate-limit counters must stay isolated per key for group %d", groupID)
+	}
+}
+
+// TestDynamicWeightManager_ConcurrentRecordsSameKey verifies that concurrent
+// recordSuccess calls on the SAME key remain atomic: the total count must equal the
+// exact number of calls. Same-key read-modify-write serialization is the core contract
+// of the sharded locks, and any lost update under contention would fail this test.
+func TestDynamicWeightManager_ConcurrentRecordsSameKey(t *testing.T) {
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	const (
+		workers          = 16
+		recordsPerWorker = 250
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < recordsPerWorker; i++ {
+				dwm.RecordSubGroupSuccess(1, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	want := int64(workers * recordsPerWorker)
+	metrics, err := dwm.GetSubGroupMetrics(1, 1)
+	require.NoError(t, err)
+	assert.Equal(t, want, metrics.Requests180d,
+		"same-key concurrent updates must not lose counts")
+	assert.Equal(t, want, metrics.Successes180d,
+		"same-key concurrent successes must not lose counts")
+}
+
+// BenchmarkDynamicWeightManager_RecordParallelDifferentKeys benchmarks concurrent success
+// recording where each parallel worker permanently claims its own distinct key (so keys
+// hash onto different shards). Expected throughput: well above the same-key benchmark,
+// proving the sharded locks let different keys proceed in parallel.
+func BenchmarkDynamicWeightManager_RecordParallelDifferentKeys(b *testing.B) {
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	// Each worker claims a unique slot once, giving it a unique key for the whole run.
+	var nextSlot int32
+	b.SetParallelism(16)
+	b.RunParallel(func(pb *testing.PB) {
+		slot := int(atomic.AddInt32(&nextSlot, 1)) - 1
+		groupID := uint(slot + 1)
+		for pb.Next() {
+			dwm.RecordSubGroupSuccess(groupID, 1)
+		}
+	})
+}
+
+// BenchmarkDynamicWeightManager_RecordParallelSameKey benchmarks concurrent success
+// recording where ALL workers hammer a single key. Every update serializes on the same
+// shard, which is the worst-case contention bound the sharded locks must preserve
+// (correct but not parallel). This is the comparison baseline for the different-keys
+// benchmark above.
+func BenchmarkDynamicWeightManager_RecordParallelSameKey(b *testing.B) {
+	memStore := store.NewMemoryStore()
+	dwm := NewDynamicWeightManager(memStore)
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			dwm.RecordSubGroupSuccess(1, 1)
+		}
+	})
 }
 
 // BenchmarkDynamicWeightManager_CalculateHealthScore benchmarks health score calculation
