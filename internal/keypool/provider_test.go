@@ -893,7 +893,7 @@ func TestRestoreKeys(t *testing.T) {
 func TestRestoreKeysReleasesLifecycleLockBeforeCallback(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
 	defer provider.Stop()
-	defer memStore.Close()
+	defer func() { require.NoError(t, memStore.Close()) }()
 
 	group := createTestGroup(t, db, "restore-callback-lock")
 	key := &models.APIKey{
@@ -931,7 +931,7 @@ func TestRestoreKeysReleasesLifecycleLockBeforeCallback(t *testing.T) {
 func TestRestoreKeysWaitsForLifecycleWriteLock(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
 	defer provider.Stop()
-	defer memStore.Close()
+	defer func() { require.NoError(t, memStore.Close()) }()
 
 	group := createTestGroup(t, db, "restore-write-lock")
 	key := &models.APIKey{
@@ -1086,7 +1086,7 @@ func TestLoadKeysFromDBPreservesKeyHash(t *testing.T) {
 func TestLoadKeysFromDBPreservesConcurrentAdd(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
 	provider.Stop()
-	defer memStore.Close()
+	defer func() { require.NoError(t, memStore.Close()) }()
 
 	group := createTestGroup(t, db, "load-concurrent-add")
 	existing := &models.APIKey{
@@ -1160,7 +1160,7 @@ func TestLoadGroupKeysToStorePreservesKeyHash(t *testing.T) {
 func TestLoadGroupKeysToStoreDoesNotOverwriteConcurrentAdd(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
 	provider.Stop()
-	defer memStore.Close()
+	defer func() { require.NoError(t, memStore.Close()) }()
 
 	group := createTestGroup(t, db, "load-group-concurrent-add")
 	existing := &models.APIKey{

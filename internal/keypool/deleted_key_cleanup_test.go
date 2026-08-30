@@ -169,7 +169,7 @@ func TestHandleFailure_DeletedKeyCleansUpResidualStoreHash(t *testing.T) {
 func TestHandleFailure_DeletionDuringStoreWriteDoesNotRecreateHash(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
 	provider.Stop()
-	defer memStore.Close()
+	defer func() { require.NoError(t, memStore.Close()) }()
 
 	group := createTestGroup(t, db, "test-group")
 	apiKey := createStatusTestKey(t, db, memStore, group.ID, 0)
@@ -216,7 +216,7 @@ func TestHandleFailure_DeletionDuringStoreWriteDoesNotRecreateHash(t *testing.T)
 func TestLoadGroupKeysToStore_DeletionDuringCacheWriteDoesNotResurrectKey(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
 	provider.Stop()
-	defer memStore.Close()
+	defer func() { require.NoError(t, memStore.Close()) }()
 
 	group := createTestGroup(t, db, "load-delete-race")
 	apiKey := createStatusTestKey(t, db, memStore, group.ID, 0)
@@ -314,7 +314,7 @@ func TestHandleSuccess_DeletedKeyDoesNotResurrectStoreHash(t *testing.T) {
 func TestHandleSuccess_MySQLUnchangedRowDoesNotDeleteExistingKey(t *testing.T) {
 	sqlDB, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer sqlDB.Close()
+	defer func() { require.NoError(t, sqlDB.Close()) }()
 
 	db, err := gorm.Open(mysql.New(mysql.Config{
 		Conn:                      sqlDB,
@@ -326,7 +326,7 @@ func TestHandleSuccess_MySQLUnchangedRowDoesNotDeleteExistingKey(t *testing.T) {
 	require.NoError(t, err)
 
 	memStore := store.NewMemoryStore()
-	defer memStore.Close()
+	defer func() { require.NoError(t, memStore.Close()) }()
 	provider := &KeyProvider{
 		db:              db,
 		store:           memStore,
@@ -356,6 +356,8 @@ func TestHandleSuccess_MySQLUnchangedRowDoesNotDeleteExistingKey(t *testing.T) {
 	err = provider.handleSuccess(keyID, keyHashKey, activeKeysListKey, groupID)
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
+	// Queue the deferred Close as the final expectation so its error is asserted.
+	mock.ExpectClose()
 
 	details, err := memStore.HGetAll(keyHashKey)
 	require.NoError(t, err)
@@ -400,7 +402,7 @@ func TestResetGroupActiveKeysFailureCountSkipsMissingStoreHash(t *testing.T) {
 func TestResetStoreFailureCountLockedCanRunUnderLifecycleReadLock(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
 	defer provider.Stop()
-	defer memStore.Close()
+	defer func() { require.NoError(t, memStore.Close()) }()
 
 	group := createTestGroup(t, db, "reset-locked-helper")
 	key := createStatusTestKey(t, db, memStore, group.ID, 3)
@@ -419,7 +421,7 @@ func TestResetStoreFailureCountLockedCanRunUnderLifecycleReadLock(t *testing.T) 
 func TestResetGroupFailureCountReleasesLifecycleLockBeforeCallback(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
 	defer provider.Stop()
-	defer memStore.Close()
+	defer func() { require.NoError(t, memStore.Close()) }()
 
 	group := createTestGroup(t, db, "reset-callback-lock")
 	createStatusTestKey(t, db, memStore, group.ID, 2)
@@ -453,7 +455,7 @@ func TestResetGroupFailureCountReleasesLifecycleLockBeforeCallback(t *testing.T)
 func TestResetAllFailureCountReleasesLifecycleLockBeforeCallback(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
 	defer provider.Stop()
-	defer memStore.Close()
+	defer func() { require.NoError(t, memStore.Close()) }()
 
 	group := createTestGroup(t, db, "reset-all-callback-lock")
 	createStatusTestKey(t, db, memStore, group.ID, 2)

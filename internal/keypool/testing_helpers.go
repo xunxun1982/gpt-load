@@ -23,7 +23,7 @@ func skipIfNoSQLite(tb testing.TB) {
 	if db != nil {
 		sqlDB, err := db.DB()
 		if err == nil && sqlDB != nil {
-			sqlDB.Close()
+			_ = sqlDB.Close()
 		}
 	}
 }

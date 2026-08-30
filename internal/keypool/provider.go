@@ -514,12 +514,6 @@ func (p *KeyProvider) apiKeyExists(keyID uint) (bool, error) {
 	return count > 0, err
 }
 
-func (p *KeyProvider) resetStoreFailureCount(keyID uint) (bool, error) {
-	p.lifecycleMu.RLock()
-	defer p.lifecycleMu.RUnlock()
-	return p.resetStoreFailureCountLocked(keyID)
-}
-
 // resetStoreFailureCountLocked updates an existing hash while the caller
 // holds lifecycleMu. It intentionally does not create missing hashes.
 func (p *KeyProvider) resetStoreFailureCountLocked(keyID uint) (bool, error) {
