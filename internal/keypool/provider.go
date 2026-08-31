@@ -1161,43 +1161,31 @@ func (p *KeyProvider) RestoreMultipleKeys(groupID uint, keyValues []string) (int
 	return restoredCount, err
 }
 
-// ResetGroupActiveKeysFailureCount resets failure_count to 0 for all active keys in a specific group.
-// This is useful when importing a group, treating it as a fresh import.
-// Note: For newly imported keys, failure_count is already 0, so this is a no-op in that case.
+// ResetGroupActiveKeysFailureCount resets failure_count to 0 for all active
+// keys in a specific group, keeping the store in sync. The lifecycle read lock
+// is taken only around each batch's store updates (never across the DB cursor
+// scan), so a queued writer (RemoveKeys/LoadKeysFromDB) does not stall every
+// status worker for the whole reset. Database I/O stays outside the lifecycle
+// lock per the provider lock contract.
 func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, error) {
-	resetCount, err := func() (int64, error) {
-		p.lifecycleMu.RLock()
-		defer p.lifecycleMu.RUnlock()
-		return p.resetGroupActiveKeysFailureCountLocked(groupID)
-	}()
-	if err != nil {
-		return resetCount, err
-	}
-	if resetCount > 0 && p.CacheInvalidationCallback != nil {
-		p.CacheInvalidationCallback(groupID)
-	}
-	return resetCount, nil
-}
-
-func (p *KeyProvider) resetGroupActiveKeysFailureCountLocked(groupID uint) (int64, error) {
-	// Update failure_count to 0 in database for all active keys with failure_count > 0
+	// Update failure_count to 0 in database for all active keys with failure_count > 0.
 	result := p.db.Model(&models.APIKey{}).
 		Where("group_id = ? AND status = ? AND failure_count > 0", groupID, models.KeyStatusActive).
 		Update("failure_count", 0)
 	if result.Error != nil {
 		return 0, fmt.Errorf("failed to reset failure_count in database: %w", result.Error)
 	}
-
 	if result.RowsAffected == 0 {
 		return 0, nil
 	}
 
-	// Database was updated, now sync Redis store
-	// Query all active keys and set failure_count to 0 in Redis
-	// This is a best-effort operation - if it fails, the database is still correct
+	// Sync Redis store in batches, acquiring the lifecycle read lock only for
+	// each batch's store updates. A cursor scan over many keys must not hold
+	// the read lock for its entire duration: once a writer (RemoveKeys/
+	// LoadKeysFromDB) queues behind it, all status worker read locks block
+	// (sync.RWMutex writer preference), stalling request handling.
 	batchSize := 5000
 	var lastID uint = 0
-
 	for {
 		var batchKeys []struct{ ID uint }
 		if err := p.db.Model(&models.APIKey{}).
@@ -1214,20 +1202,22 @@ func (p *KeyProvider) resetGroupActiveKeysFailureCountLocked(groupID uint) (int6
 			break
 		}
 
-		for _, key := range batchKeys {
-			// Skip keys whose store hash is absent: HSet would create an id-less
-			// orphan hash that handleSuccess/handleFailure would then bail out on.
-			_, err := p.resetStoreFailureCountLocked(key.ID)
-			if err != nil {
-				logrus.WithFields(logrus.Fields{
-					"keyID": key.ID,
-					"error": err,
-				}).Warn("Failed to check key existence in store, continuing with other keys")
+		// Per-batch store updates under lifecycle read lock.
+		p.lifecycleMu.RLock()
+		func() {
+			defer p.lifecycleMu.RUnlock()
+			for _, key := range batchKeys {
+				// Skip keys whose store hash is absent: HSet would create an id-less
+				// orphan hash that handleSuccess/handleFailure would then bail out on.
+				if _, err := p.resetStoreFailureCountLocked(key.ID); err != nil {
+					logrus.WithFields(logrus.Fields{
+						"keyID": key.ID,
+						"error": err,
+					}).Warn("Failed to reset failure_count in store, continuing with other keys")
+				}
 				lastID = key.ID
-				continue
 			}
-			lastID = key.ID
-		}
+		}()
 
 		if len(batchKeys) < batchSize {
 			break
@@ -1236,38 +1226,37 @@ func (p *KeyProvider) resetGroupActiveKeysFailureCountLocked(groupID uint) (int6
 
 	logrus.Infof("Reset failure_count for %d active keys in group %d", result.RowsAffected, groupID)
 
+	if p.CacheInvalidationCallback != nil {
+		p.CacheInvalidationCallback(groupID)
+	}
 	return result.RowsAffected, nil
 }
 
-// ResetAllActiveKeysFailureCount resets failure_count to 0 for all active keys across all groups.
-// This is useful when system configuration changes (e.g., blacklist_threshold) and we want to
-// reset the failure history to avoid immediate blacklisting with new thresholds.
+// ResetAllActiveKeysFailureCount resets failure_count to 0 for all active keys
+// across all groups, keeping the store in sync. The lifecycle read lock is
+// taken only around each batch's store updates (never across the DB cursor
+// scan), so a queued writer does not stall every status worker for the whole
+// reset. Database I/O stays outside the lifecycle lock.
 func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
-	totalReset, affectedGroups, err := func() (int64, map[uint]struct{}, error) {
-		p.lifecycleMu.RLock()
-		defer p.lifecycleMu.RUnlock()
-		return p.resetAllActiveKeysFailureCountLocked()
-	}()
-	// Invalidate groups committed before a later batch failure: their store
-	// failure counts are stale otherwise. Error paths carry collected groups.
-	if p.CacheInvalidationCallback != nil {
-		for groupID := range affectedGroups {
-			p.CacheInvalidationCallback(groupID)
-		}
-	}
-	return totalReset, err
-}
-
-func (p *KeyProvider) resetAllActiveKeysFailureCountLocked() (int64, map[uint]struct{}, error) {
 	var totalReset int64
 	affectedGroups := make(map[uint]struct{})
+	defer func() {
+		// Invalidate groups committed before a later batch failure even on
+		// error paths (affectedGroups carries collected groups). Callback
+		// runs outside the lifecycle lock.
+		if p.CacheInvalidationCallback != nil {
+			for groupID := range affectedGroups {
+				p.CacheInvalidationCallback(groupID)
+			}
+		}
+	}()
 
 	// Process in batches to avoid memory issues and improve performance
 	batchSize := 1000
 
-	// Use cursor-based pagination to avoid skipping keys
-	// When we update failure_count to 0, those keys are removed from the result set
-	// So we use WHERE id > lastID to query the next batch, ensuring no keys are skipped
+	// Use cursor-based pagination to avoid skipping keys.
+	// When we update failure_count to 0, those keys are removed from the result set,
+	// so we use WHERE id > lastID to query the next batch, ensuring no keys are skipped.
 	var lastID uint = 0
 	for {
 		var keys []models.APIKey
@@ -1282,14 +1271,13 @@ func (p *KeyProvider) resetAllActiveKeysFailureCountLocked() (int64, map[uint]st
 		}
 
 		if err := query.Find(&keys).Error; err != nil {
-			return totalReset, affectedGroups, fmt.Errorf("failed to query active keys: %w", err)
+			return totalReset, fmt.Errorf("failed to query active keys: %w", err)
 		}
 
 		if len(keys) == 0 {
 			break
 		}
 
-		// Batch update failure_count to 0 in database
 		keyIDs := make([]uint, len(keys))
 		groupIDMap := make(map[uint]struct{})
 		for i, key := range keys {
@@ -1297,31 +1285,36 @@ func (p *KeyProvider) resetAllActiveKeysFailureCountLocked() (int64, map[uint]st
 			groupIDMap[key.GroupID] = struct{}{}
 		}
 
+		// Batch update failure_count to 0 in database (no lifecycle lock needed).
 		result := p.db.Model(&models.APIKey{}).
 			Where("id IN ?", keyIDs).
 			Update("failure_count", 0)
 		if result.Error != nil {
-			return totalReset, affectedGroups, fmt.Errorf("failed to reset failure_count in database: %w", result.Error)
+			return totalReset, fmt.Errorf("failed to reset failure_count in database: %w", result.Error)
 		}
 
-		batchReset := result.RowsAffected
-		totalReset += batchReset
+		totalReset += result.RowsAffected
 
-		// Update failure_count in Redis store for each key
-		for _, key := range keys {
-			// Skip keys whose store hash is absent: HSet would create an id-less
-			// orphan hash that handleSuccess/handleFailure would then bail out on.
-			_, err := p.resetStoreFailureCountLocked(key.ID)
-			if err != nil {
-				logrus.WithFields(logrus.Fields{
-					"keyID": key.ID,
-					"error": err,
-				}).Warn("Failed to check key existence in store, continuing with other keys")
-				continue
+		// Per-batch store updates under lifecycle read lock.
+		// The read lock is released after each batch so a queued writer can
+		// proceed between batches instead of being blocked behind the full
+		// cursor scan.
+		p.lifecycleMu.RLock()
+		func() {
+			defer p.lifecycleMu.RUnlock()
+			for _, key := range keys {
+				// Skip keys whose store hash is absent: HSet would create an id-less
+				// orphan hash that handleSuccess/handleFailure would then bail out on.
+				if _, err := p.resetStoreFailureCountLocked(key.ID); err != nil {
+					logrus.WithFields(logrus.Fields{
+						"keyID": key.ID,
+						"error": err,
+					}).Warn("Failed to reset failure_count in store, continuing with other keys")
+				}
 			}
-		}
+		}()
 
-		// Invalidate cache for affected groups
+		// Collect affected groups for cache invalidation
 		for groupID := range groupIDMap {
 			affectedGroups[groupID] = struct{}{}
 		}
@@ -1339,7 +1332,7 @@ func (p *KeyProvider) resetAllActiveKeysFailureCountLocked() (int64, map[uint]st
 		logrus.Infof("Reset failure_count for %d active keys", totalReset)
 	}
 
-	return totalReset, affectedGroups, nil
+	return totalReset, nil
 }
 
 // RemoveInvalidKeys removes all invalid keys in the group.

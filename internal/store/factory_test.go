@@ -108,8 +108,19 @@ func TestNewStore_RedisConnectionFailed(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to connect to redis")
 }
 
+// clearRedisPoolEnv unsets all four Redis pool environment variables so tests
+// that assert DSN/default precedence are isolated from the ambient process
+// environment. Uses t.Setenv which automatically restores the original value.
+func clearRedisPoolEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(envRedisPoolSize, "")
+	t.Setenv(envRedisMinIdleConns, "")
+	t.Setenv(envRedisConnMaxIdleTimeSeconds, "")
+	t.Setenv(envRedisConnMaxLifetimeSeconds, "")
+}
+
 func TestBuildRedisOptions_ExplicitPoolLimits(t *testing.T) {
-	t.Parallel()
+	clearRedisPoolEnv(t)
 
 	opts, err := buildRedisOptions("redis://localhost:6379/0")
 	require.NoError(t, err)
@@ -127,6 +138,7 @@ func TestBuildRedisOptions_ExplicitPoolLimits(t *testing.T) {
 func TestBuildRedisOptions_DSNParams(t *testing.T) {
 	// DSN pool_size=5, min_idle_conns=2, no env overrides.
 	// MaxActiveConns must follow the final PoolSize.
+	clearRedisPoolEnv(t)
 	opts, err := buildRedisOptions("redis://localhost:6379/0?pool_size=5&min_idle_conns=2")
 	require.NoError(t, err)
 	assert.Equal(t, 5, opts.PoolSize)
@@ -138,6 +150,7 @@ func TestBuildRedisOptions_DSNParams(t *testing.T) {
 func TestBuildRedisOptions_DSNDisableDuration(t *testing.T) {
 	// DSN conn_max_idle_time=0 must produce -1 (sentinel), not the default 30m.
 	// conn_max_lifetime=0 must also produce -1.
+	clearRedisPoolEnv(t)
 	t.Run("conn_max_idle_time=0", func(t *testing.T) {
 		opts, err := buildRedisOptions("redis://localhost:6379/0?conn_max_idle_time=0")
 		require.NoError(t, err)
@@ -153,6 +166,7 @@ func TestBuildRedisOptions_DSNDisableDuration(t *testing.T) {
 func TestBuildRedisOptions_EnvOverridePoolSize(t *testing.T) {
 	// env REDIS_POOL_SIZE=7 overrides DSN pool_size=5 and max_active_conns=9.
 	// MaxActiveConns must be set to the final PoolSize (7).
+	clearRedisPoolEnv(t)
 	t.Setenv(envRedisPoolSize, "7")
 	opts, err := buildRedisOptions("redis://localhost:6379/0?pool_size=5&max_active_conns=9")
 	require.NoError(t, err)
@@ -162,6 +176,7 @@ func TestBuildRedisOptions_EnvOverridePoolSize(t *testing.T) {
 
 func TestBuildRedisOptions_EnvDisableIdleTime(t *testing.T) {
 	// env REDIS_CONN_MAX_IDLE_TIME_SECONDS=0 must produce -1 (explicit disable sentinel).
+	clearRedisPoolEnv(t)
 	t.Setenv(envRedisConnMaxIdleTimeSeconds, "0")
 	opts, err := buildRedisOptions("redis://localhost:6379/0")
 	require.NoError(t, err)
@@ -170,6 +185,7 @@ func TestBuildRedisOptions_EnvDisableIdleTime(t *testing.T) {
 
 func TestBuildRedisOptions_DSNMaxActiveConns(t *testing.T) {
 	// DSN max_active_conns=9 with no env: must be preserved.
+	clearRedisPoolEnv(t)
 	opts, err := buildRedisOptions("redis://localhost:6379/0?max_active_conns=9")
 	require.NoError(t, err)
 	assert.Equal(t, 9, opts.MaxActiveConns)
@@ -178,6 +194,7 @@ func TestBuildRedisOptions_DSNMaxActiveConns(t *testing.T) {
 func TestBuildRedisOptions_InvalidEnvIgnored(t *testing.T) {
 	// DSN pool_size=5, but env REDIS_POOL_SIZE="abc" is invalid.
 	// The invalid env must be logged and ignored, falling back to DSN value.
+	clearRedisPoolEnv(t)
 	t.Setenv(envRedisPoolSize, "abc")
 	opts, err := buildRedisOptions("redis://localhost:6379/0?pool_size=5")
 	require.NoError(t, err)
@@ -197,6 +214,8 @@ func TestBuildRedisOptions_ConnectionCountsAboveMaxInt32(t *testing.T) {
 	// instead of returning a descriptive error. Must reject them at the
 	// validation layer.
 	maxInt32 := int64(^uint32(0) >> 1) // math.MaxInt32
+
+	clearRedisPoolEnv(t)
 
 	t.Run("PoolSize env above MaxInt32", func(t *testing.T) {
 		t.Setenv(envRedisPoolSize, "2147483648") // MaxInt32 + 1
@@ -277,6 +296,7 @@ func TestBuildRedisOptions_EmptyDSNParamSuppressesDefault(t *testing.T) {
 	// An empty DSN query parameter value must NOT suppress the factory default.
 	// go-redis parses an empty value to 0 (duration/int), and the factory
 	// default should apply.
+	clearRedisPoolEnv(t)
 	t.Run("empty conn_max_lifetime falls back to default", func(t *testing.T) {
 		opts, err := buildRedisOptions("redis://localhost:6379/0?conn_max_lifetime=")
 		require.NoError(t, err)
@@ -293,6 +313,7 @@ func TestBuildRedisOptions_EnvDurationOverflow(t *testing.T) {
 	// Values at or below maxDurationSeconds (math.MaxInt64/1e9) must apply;
 	// larger values would overflow time.Duration into a negative duration and
 	// must be ignored so the DSN/default wins instead of a broken sentinel.
+	clearRedisPoolEnv(t)
 	t.Run("conn_max_idle_time at max boundary", func(t *testing.T) {
 		t.Setenv(envRedisConnMaxIdleTimeSeconds, "9223372036")
 		opts, err := buildRedisOptions("redis://localhost:6379/0")

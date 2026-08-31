@@ -74,7 +74,10 @@ func evictIdleCachedClient(clients *sync.Map, key, value any, cutoff int64) {
 		entry.mu.Lock()
 		idle := entry.lastUsed.Load() < cutoff
 		if idle {
-			clients.Delete(key)
+			// Delete only if the map still holds this exact entry, so a newer
+			// entry installed after this sync.Map.Range snapshot was taken is
+			// never removed by an eviction decision made against the stale one.
+			clients.CompareAndDelete(key, entry)
 		}
 		entry.mu.Unlock()
 		// Close idle connections outside the lock so concurrent GetClient hits

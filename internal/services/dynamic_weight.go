@@ -4,7 +4,6 @@ package services
 import (
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"math"
 	"net/url"
 	"sort"
@@ -151,7 +150,7 @@ type DirtyKeyCallback func(key string)
 // Sharding contract: keys hashing to the same shard are serialized — the same key's
 // read-modify-write stays atomic; keys hashing to different shards proceed in parallel,
 // removing the single global lock bottleneck across unrelated keys. Shard selection uses
-// FNV-1a (hash/fnv) of the key string, mod metricsLockShardCount, so a given key always
+// FNV-1a (inlined) of the key string, mod metricsLockShardCount, so a given key always
 // lands on the same shard and never needs a lock held on another shard.
 const metricsLockShardCount = 64
 
@@ -206,14 +205,18 @@ func (m *DynamicWeightManager) GetConfig() *DynamicWeightConfig {
 
 // lockShard returns the per-key shard lock for a key.
 //
-// Shard selection: FNV-1a 32-bit hash (hash/fnv) of the key string, mod
+// Shard selection: FNV-1a 32-bit hash (inlined) of the key string, mod
 // metricsLockShardCount. The same key always maps to the same shard, so its
 // read-modify-write is serialized; different keys may land on the same shard, which only
 // reduces parallelism between those keys, never their correctness.
 func (m *DynamicWeightManager) lockShard(key string) *sync.RWMutex {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return &m.locks[h.Sum32()%metricsLockShardCount]
+	// FNV-1a 32-bit hash inlined to avoid hasher and []byte allocations on the hot path.
+	var h uint32 = 2166136261 // FNV-1a offset basis
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619 // FNV-1a prime
+	}
+	return &m.locks[h%metricsLockShardCount]
 }
 
 // getDirtyCallback returns the dirty callback field under configMu. All reads/writes of

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStealthHeadersMatchChromeProfileVersion(t *testing.T) {
@@ -144,4 +145,29 @@ func TestEvictIdleCachedClient_ConcurrentRefreshRetainsEntry(t *testing.T) {
 
 	_, ok := cache.Load("proxy")
 	assert.True(t, ok, "actively used client must survive concurrent eviction")
+}
+
+// TestEvictIdleCachedClient_ReplacementSurvivesEviction verifies that when a
+// newer entry replaces the inspected one between sync.Map.Range selection and
+// eviction, CompareAndDelete prevents the replacement from being removed.
+func TestEvictIdleCachedClient_ReplacementSurvivesEviction(t *testing.T) {
+	t.Parallel()
+
+	var cache sync.Map
+	stale := &timedHTTPClientEntry{client: &http.Client{}}
+	stale.lastUsed.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	cache.Store("proxy", stale)
+
+	// Simulate a concurrent goroutine replacing the entry between Range selection
+	// (which captured "stale") and the eviction deletion.
+	replacement := &timedHTTPClientEntry{client: &http.Client{}}
+	replacement.lastUsed.Store(time.Now().UnixNano())
+	cache.Store("proxy", replacement)
+
+	cutoff := time.Now().Add(-clientIdleEvictionTimeout).UnixNano()
+	evictIdleCachedClient(&cache, "proxy", stale, cutoff)
+
+	got, ok := cache.Load("proxy")
+	require.True(t, ok, "newer replacement must survive eviction of the stale entry")
+	require.Same(t, replacement, got)
 }
