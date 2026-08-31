@@ -2,6 +2,7 @@ package keypool
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"gpt-load/internal/config"
 	"gpt-load/internal/encryption"
@@ -13,10 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/glebarez/sqlite"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -49,6 +52,14 @@ type loadListDeleteBarrierStore struct {
 	deleteStarted chan struct{}
 	releaseDelete chan struct{}
 	once          sync.Once
+}
+
+type panicStore struct {
+	store.Store
+}
+
+func (s *panicStore) HSet(key string, values map[string]any) error {
+	panic("simulated store panic")
 }
 
 type namedDialector struct {
@@ -926,6 +937,123 @@ func TestRestoreKeysReleasesLifecycleLockBeforeCallback(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("restore callback did not complete")
 	}
+}
+
+func TestRestoreKeysPanicReleasesLifecycleWriteLock(t *testing.T) {
+	provider, db, memStore := setupTestProvider(t)
+	defer provider.Stop()
+	defer func() { require.NoError(t, memStore.Close()) }()
+
+	// Create test group and invalid key with a real key value (the hash must
+	// match that value).
+	group := createTestGroup(t, db, "restore-panic-lock")
+	key := &models.APIKey{
+		GroupID:      group.ID,
+		KeyValue:     "sk-panic-key",
+		KeyHash:      provider.encryptionSvc.Hash("sk-panic-key"),
+		Status:       models.KeyStatusInvalid,
+		FailureCount: 3,
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	// Swap in a store whose HSet panics inside the transaction callback. A
+	// custom Store implementation may panic for any reason; gorm rolls back
+	// the transaction but lets the panic propagate, so any unlock code placed
+	// after Transaction would be skipped.
+
+	provider.store = &panicStore{Store: memStore}
+
+	require.Panics(t, func() {
+		_, _ = provider.RestoreKeys(group.ID)
+	})
+
+	// The lifecycle write lock must be released by the deferred unlock even
+	// though the panic skipped the code after the transaction: otherwise every
+	// subsequent keypool operation blocks forever.
+	done := make(chan struct{})
+	go func() {
+		provider.lifecycleMu.Lock()
+		close(done)
+		provider.lifecycleMu.Unlock()
+	}()
+
+	select {
+	case <-done:
+		// Write lock was released after the panic.
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifecycle write lock leaked after panic during RestoreKeys")
+	}
+}
+
+func TestResetAllActiveKeysFailureCountInvalidatesOnError(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, sqlDB.Close()) }()
+
+	db, err := gorm.Open(mysql.New(mysql.Config{
+		Conn:                      sqlDB,
+		SkipInitializeWithVersion: true,
+	}), &gorm.Config{
+		Logger:                 logger.Default.LogMode(logger.Silent),
+		SkipDefaultTransaction: true,
+	})
+	require.NoError(t, err)
+
+	memStore := store.NewMemoryStore()
+	defer func() { require.NoError(t, memStore.Close()) }()
+
+	const (
+		groupID = uint(11)
+		rows    = 1000
+	)
+
+	var mu sync.Mutex
+	invalidated := make(map[uint]bool)
+	provider := &KeyProvider{
+		db:              db,
+		store:           memStore,
+		settingsManager: config.NewSystemSettingsManager(),
+		CacheInvalidationCallback: func(gid uint) {
+			mu.Lock()
+			invalidated[gid] = true
+			mu.Unlock()
+		},
+	}
+
+	// Batch 1: return exactly batchSize rows so the loop continues.
+	selectRows := sqlmock.NewRows([]string{"id", "group_id"})
+	for i := 1; i <= rows; i++ {
+		selectRows.AddRow(int64(i), int64(groupID))
+	}
+	mock.ExpectQuery("SELECT").
+		WithArgs(models.KeyStatusActive, int64(rows)).
+		WillReturnRows(selectRows)
+
+	// Batch 1 UPDATE: gorm also sets updated_at automatically.
+	updateArgs := make([]driver.Value, 0, 2+rows)
+	updateArgs = append(updateArgs, int64(0), sqlmock.AnyArg())
+	for i := 1; i <= rows; i++ {
+		updateArgs = append(updateArgs, int64(i))
+	}
+	mock.ExpectExec("UPDATE").
+		WithArgs(updateArgs...).
+		WillReturnResult(sqlmock.NewResult(int64(rows), int64(rows)))
+
+	// Batch 2 SELECT fails after batch 1 was committed.
+	mock.ExpectQuery("SELECT").
+		WithArgs(models.KeyStatusActive, int64(rows), int64(rows)).
+		WillReturnError(fmt.Errorf("simulated second-batch query failure"))
+
+	_, err = provider.ResetAllActiveKeysFailureCount()
+	require.Error(t, err)
+
+	mu.Lock()
+	require.True(t, invalidated[groupID], "groups from committed batches must be invalidated even when a later batch fails")
+	mu.Unlock()
+
+	require.NoError(t, mock.ExpectationsWereMet())
+	// Queue the deferred Close as the final expectation so its error is asserted.
+	mock.ExpectClose()
 }
 
 func TestRestoreKeysWaitsForLifecycleWriteLock(t *testing.T) {

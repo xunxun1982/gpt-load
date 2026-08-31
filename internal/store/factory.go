@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"runtime"
 	"strconv"
 	"time"
@@ -18,7 +19,12 @@ import (
 // ConnMaxLifetime=0 (connections reused forever, risking half-dead connections
 // after long runs) and a default PoolSize of 10×GOMAXPROCS even when most
 // connections stay idle. Explicit limits keep the pool bounded and connections
-// fresh; all values are overridable via environment variables.
+// fresh. Precedence for every field: environment variable > DSN query parameter
+// > built-in default. ParseURL parses a DSN duration of 0 or negative to -1, the
+// explicit-disable sentinel; env duration values <= 0 are normalized to the same
+// sentinel, remembering that 0 would be rewritten to 30m by go-redis runtime
+// normalization. MaxActiveConns is the hard pool cap: it follows the final
+// PoolSize unless the DSN explicitly configures it (0 = no hard cap).
 const (
 	defaultRedisMinIdleConns       = 1
 	defaultRedisConnMaxIdleTime    = 30 * time.Minute
@@ -37,43 +43,99 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 		return nil, err
 	}
 
-	// PoolSize: 10×GOMAXPROCS is the go-redis default; allow override.
-	opts.PoolSize = envIntOrDefault(envRedisPoolSize, 10*runtime.GOMAXPROCS(0))
+	// PoolSize: env > DSN > default. ParseURL already resolves the DSN pool_size
+	// into opts.PoolSize (0 when absent or explicit zero). A non-positive value
+	// equals "unconfigured": go-redis treats pool_size=0 identically to a missing
+	// parameter, so it falls through to the default below.
+	poolV, poolOK := envRedisInt(envRedisPoolSize)
+	if poolOK {
+		opts.PoolSize = poolV
+	} else if opts.PoolSize <= 0 {
+		opts.PoolSize = 10 * runtime.GOMAXPROCS(0)
+	}
 	if opts.PoolSize < 1 {
 		opts.PoolSize = 1
 	}
 
-	opts.MinIdleConns = envIntOrDefault(envRedisMinIdleConns, defaultRedisMinIdleConns)
+	// MaxActiveConns: hard cap on the pool, guarding against unbounded
+	// over-allocation. env REDIS_POOL_SIZE also drives this cap; otherwise an
+	// explicit DSN value is preserved (0 = user opted for no hard cap); otherwise
+	// the cap follows the final PoolSize.
+	if poolOK {
+		opts.MaxActiveConns = opts.PoolSize
+	} else if !redisDSNHasQueryParam(redisDSN, "max_active_conns") {
+		opts.MaxActiveConns = opts.PoolSize
+	}
+
+	// MinIdleConns: env > DSN > default. An explicit DSN 0 meaning "no pre-warmed
+	// connections" is preserved; only absence falls back to the default.
+	if v, ok := envRedisInt(envRedisMinIdleConns); ok {
+		opts.MinIdleConns = v
+	} else if !redisDSNHasQueryParam(redisDSN, "min_idle_conns") {
+		opts.MinIdleConns = defaultRedisMinIdleConns
+	}
 	if opts.MinIdleConns < 0 {
 		opts.MinIdleConns = 0
 	}
 
-	opts.ConnMaxIdleTime = time.Duration(envIntOrDefault(envRedisConnMaxIdleTimeSeconds, int(defaultRedisConnMaxIdleTime.Seconds()))) * time.Second
-	if opts.ConnMaxIdleTime <= 0 {
+	// ConnMaxIdleTime: env > DSN > default. env <= 0 and the DSN's -1 sentinel
+	// both mean "explicitly disabled" and must survive: 0 would be normalized to
+	// 30m by go-redis, so it cannot express "disabled".
+	if v, ok := envRedisInt(envRedisConnMaxIdleTimeSeconds); ok {
+		if v > 0 {
+			opts.ConnMaxIdleTime = time.Duration(v) * time.Second
+		} else {
+			opts.ConnMaxIdleTime = -1
+		}
+	} else if !redisDSNHasQueryParam(redisDSN, "conn_max_idle_time", "idle_timeout") {
 		opts.ConnMaxIdleTime = defaultRedisConnMaxIdleTime
 	}
 
-	opts.ConnMaxLifetime = time.Duration(envIntOrDefault(envRedisConnMaxLifetimeSeconds, int(defaultRedisConnMaxLifetime.Seconds()))) * time.Second
-	if opts.ConnMaxLifetime <= 0 {
+	// ConnMaxLifetime: same precedence and sentinel semantics as ConnMaxIdleTime.
+	if v, ok := envRedisInt(envRedisConnMaxLifetimeSeconds); ok {
+		if v > 0 {
+			opts.ConnMaxLifetime = time.Duration(v) * time.Second
+		} else {
+			opts.ConnMaxLifetime = -1
+		}
+	} else if !redisDSNHasQueryParam(redisDSN, "conn_max_lifetime", "max_conn_age") {
 		opts.ConnMaxLifetime = defaultRedisConnMaxLifetime
 	}
 
 	return opts, nil
 }
 
-// envIntOrDefault reads an int environment variable, falling back to def on
-// unset or unparseable values.
-func envIntOrDefault(key string, def int) int {
+// redisDSNHasQueryParam reports whether the DSN query string contains any of the
+// given parameter keys. ParseURL already validated the query, so re-parsing only
+// inspects key presence and cannot introduce a new error path.
+func redisDSNHasQueryParam(redisDSN string, params ...string) bool {
+	u, err := url.Parse(redisDSN)
+	if err != nil {
+		return false
+	}
+	query := u.Query()
+	for _, p := range params {
+		if _, ok := query[p]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// envRedisInt reads an integer environment variable. ok reports whether the
+// variable held a valid integer; invalid values are logged and ignored (treated
+// as unset, so they never override DSN or default values).
+func envRedisInt(key string) (int, bool) {
 	raw := utils.GetEnvOrDefault(key, "")
 	if raw == "" {
-		return def
+		return 0, false
 	}
 	v, err := strconv.Atoi(raw)
 	if err != nil {
-		logrus.WithField("key", key).Warnf("Invalid integer env value %q, using default %d", raw, def)
-		return def
+		logrus.WithField("key", key).Warnf("Invalid integer env value %q, ignoring", raw)
+		return 0, false
 	}
-	return v
+	return v, true
 }
 
 // NewStore creates a new store based on the application configuration.

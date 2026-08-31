@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"gpt-load/internal/models"
@@ -1860,6 +1861,11 @@ type codexLineReadResult struct {
 type codexLineReader struct {
 	reader *bufio.Reader
 	lines  chan codexLineReadResult
+
+	// done + closeOnce implement Close: cancelling the reader goroutine when
+	// the consumer abandons the stream (see Close for the contract).
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // newCodexLineReader starts one long-lived reader goroutine for the stream.
@@ -1867,6 +1873,7 @@ func newCodexLineReader(reader *bufio.Reader) *codexLineReader {
 	lr := &codexLineReader{
 		reader: reader,
 		lines:  make(chan codexLineReadResult, 1),
+		done:   make(chan struct{}),
 	}
 	go lr.readLoop()
 	return lr
@@ -1877,10 +1884,13 @@ func newCodexLineReader(reader *bufio.Reader) *codexLineReader {
 // Lifecycle contract: it reads lines from the upstream stream in a loop and
 // pushes each one (or the terminating error) into lines (buffered, size 1).
 // It exits exactly when ReadString returns an error — i.e. on EOF or when the
-// underlying connection/body is closed — and closes lines so consumers observe
-// io.EOF. A readLine timeout does not kill or spawn goroutines: the timed-out
-// caller simply leaves this goroutine parked on the reader/channel, so the
-// stream holds exactly 1 goroutine regardless of how many timeouts occur.
+// underlying connection/body is closed — or when Close cancels it via done —
+// and closes lines so consumers observe io.EOF. A readLine timeout does not
+// kill or spawn goroutines: the timed-out caller simply leaves this goroutine
+// parked on the reader/channel, so the stream holds exactly 1 goroutine
+// regardless of how many timeouts occur. Once the consumer abandons the stream
+// (e.g. after a read timeout) and the upstream keeps sending, a successful send
+// would otherwise block forever on the full channel; Close (done) releases it.
 func (lr *codexLineReader) readLoop() {
 	defer close(lr.lines)
 	for {
@@ -1898,8 +1908,22 @@ func (lr *codexLineReader) readLoop() {
 			}
 			return
 		}
-		lr.lines <- codexLineReadResult{line: line, err: err}
+		select {
+		case lr.lines <- codexLineReadResult{line: line, err: err}:
+		case <-lr.done:
+			return
+		}
 	}
+}
+
+// Close cancels the single reader goroutine so a blocked successful send cannot
+// leak forever when the consumer abandons the stream (e.g. after a read timeout)
+// while the upstream keeps sending lines. It is idempotent: closing done makes
+// readLoop exit and close lines, so any later readLine call observes io.EOF.
+// It does not close the underlying reader: an in-progress blocking read is
+// released only when the caller closes the stream (body/connection), as before.
+func (lr *codexLineReader) Close() {
+	lr.closeOnce.Do(func() { close(lr.done) })
 }
 
 // readLine waits up to timeout for the next line. It returns ErrSSETimeout on
@@ -2013,6 +2037,10 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 	bufReader := bufio.NewReader(reader)
 	// Wrap with a single long-lived reader goroutine for timeout reads without orphans.
 	lineReader := newCodexLineReader(bufReader)
+	// Release the reader goroutine on every return path (including the ErrSSETimeout
+	// early return and off failure returns), so a blocked successful send cannot
+	// leak it when the client abandons the stream.
+	defer lineReader.Close()
 
 	// Timeout state for CC streaming to prevent hanging when upstream is in thinking phase
 	// Timeout values are derived from group/system config with preset upper bounds.

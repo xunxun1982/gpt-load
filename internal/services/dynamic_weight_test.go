@@ -968,6 +968,9 @@ func BenchmarkDynamicWeightManager_RecordParallelSameKey(b *testing.B) {
 	memStore := store.NewMemoryStore()
 	dwm := NewDynamicWeightManager(memStore)
 
+	// Match the different-keys benchmark's parallelism (16×GOMAXPROCS) so the
+	// two isolate lock-sharding behavior instead of worker-count differences.
+	b.SetParallelism(16)
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			dwm.RecordSubGroupSuccess(1, 1)

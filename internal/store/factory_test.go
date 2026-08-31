@@ -120,6 +120,68 @@ func TestBuildRedisOptions_ExplicitPoolLimits(t *testing.T) {
 	assert.GreaterOrEqual(t, opts.MinIdleConns, int(0))
 	assert.Greater(t, opts.ConnMaxIdleTime, time.Duration(0))
 	assert.Greater(t, opts.ConnMaxLifetime, time.Duration(0))
+	// The hard cap must follow the effective pool size so the pool stays bounded.
+	assert.Equal(t, opts.PoolSize, opts.MaxActiveConns)
+}
+
+func TestBuildRedisOptions_DSNParams(t *testing.T) {
+	// DSN pool_size=5, min_idle_conns=2, no env overrides.
+	// MaxActiveConns must follow the final PoolSize.
+	opts, err := buildRedisOptions("redis://localhost:6379/0?pool_size=5&min_idle_conns=2")
+	require.NoError(t, err)
+	assert.Equal(t, 5, opts.PoolSize)
+	assert.Equal(t, 2, opts.MinIdleConns)
+	assert.Equal(t, 5, opts.MaxActiveConns)
+	assert.Equal(t, 30*time.Minute, opts.ConnMaxIdleTime)
+}
+
+func TestBuildRedisOptions_DSNDisableDuration(t *testing.T) {
+	// DSN conn_max_idle_time=0 must produce -1 (sentinel), not the default 30m.
+	// conn_max_lifetime=0 must also produce -1.
+	t.Run("conn_max_idle_time=0", func(t *testing.T) {
+		opts, err := buildRedisOptions("redis://localhost:6379/0?conn_max_idle_time=0")
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(-1), opts.ConnMaxIdleTime)
+	})
+	t.Run("conn_max_lifetime=0", func(t *testing.T) {
+		opts, err := buildRedisOptions("redis://localhost:6379/0?conn_max_lifetime=0")
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(-1), opts.ConnMaxLifetime)
+	})
+}
+
+func TestBuildRedisOptions_EnvOverridePoolSize(t *testing.T) {
+	// env REDIS_POOL_SIZE=7 overrides DSN pool_size=5 and max_active_conns=9.
+	// MaxActiveConns must be set to the final PoolSize (7).
+	t.Setenv(envRedisPoolSize, "7")
+	opts, err := buildRedisOptions("redis://localhost:6379/0?pool_size=5&max_active_conns=9")
+	require.NoError(t, err)
+	assert.Equal(t, 7, opts.PoolSize)
+	assert.Equal(t, 7, opts.MaxActiveConns)
+}
+
+func TestBuildRedisOptions_EnvDisableIdleTime(t *testing.T) {
+	// env REDIS_CONN_MAX_IDLE_TIME_SECONDS=0 must produce -1 (explicit disable sentinel).
+	t.Setenv(envRedisConnMaxIdleTimeSeconds, "0")
+	opts, err := buildRedisOptions("redis://localhost:6379/0")
+	require.NoError(t, err)
+	assert.Equal(t, time.Duration(-1), opts.ConnMaxIdleTime)
+}
+
+func TestBuildRedisOptions_DSNMaxActiveConns(t *testing.T) {
+	// DSN max_active_conns=9 with no env: must be preserved.
+	opts, err := buildRedisOptions("redis://localhost:6379/0?max_active_conns=9")
+	require.NoError(t, err)
+	assert.Equal(t, 9, opts.MaxActiveConns)
+}
+
+func TestBuildRedisOptions_InvalidEnvIgnored(t *testing.T) {
+	// DSN pool_size=5, but env REDIS_POOL_SIZE="abc" is invalid.
+	// The invalid env must be logged and ignored, falling back to DSN value.
+	t.Setenv(envRedisPoolSize, "abc")
+	opts, err := buildRedisOptions("redis://localhost:6379/0?pool_size=5")
+	require.NoError(t, err)
+	assert.Equal(t, 5, opts.PoolSize)
 }
 
 func TestBuildRedisOptions_InvalidDSN(t *testing.T) {

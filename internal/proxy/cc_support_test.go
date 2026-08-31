@@ -5517,6 +5517,59 @@ func waitForGoroutines(t *testing.T, target int, timeout time.Duration) {
 		target+1, timeout, runtime.NumGoroutine())
 }
 
+// TestSSEReaderWithTimeout_CloseReleasesBlockedSend verifies that Close cancels
+// the single long-lived reader goroutine even when it is blocked on a successful
+// channel send (which happens when the consumer abandoned the stream after a read
+// timeout while the upstream keeps sending data). Without cancellation this leaks
+// the reader goroutine and its upstream resources forever.
+
+// The goroutine cannot be released by closing the underlying reader: it is not
+// parked on a read, it is parked on sending into the full size-1 eventCh.
+func TestSSEReaderWithTimeout_CloseReleasesBlockedSend(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	reader := NewSSEReaderWithTimeout(pr, 50*time.Millisecond, 50*time.Millisecond)
+	defer reader.Close() // idempotent safety net
+
+	// Let unrelated goroutines from the test runner settle before measuring. The
+	// reader goroutine is not started until the first ReadEvent call, so base
+	// does not include it.
+	time.Sleep(50 * time.Millisecond)
+	base := runtime.NumGoroutine()
+
+	// First read times out on the idle stream and starts the reader goroutine.
+	if _, err := reader.ReadEvent(); !errors.Is(err, ErrSSETimeout) {
+		t.Fatalf("expected ErrSSETimeout on idle stream, got %v", err)
+	}
+
+	// Write two events serially to the unbuffered pipe: readLoop consumes the
+	// first (filling the size-1 channel) and then blocks on the send of the
+	// second, because the abandoned consumer no longer reads from eventCh.
+	_, _ = pw.Write([]byte("data: {\"a\":1}\n\n"))
+	_, _ = pw.Write([]byte("data: {\"b\":2}\n\n"))
+
+	// Allow the above interaction to settle, then cancel the reader.
+	time.Sleep(50 * time.Millisecond)
+	reader.Close()
+
+	// The reader goroutine must be fully gone after Close, not merely below
+	// waitForGoroutines' target+1 tolerance (which would pass with exactly one
+	// leaked goroutine). Poll strictly until the count returns to base.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= base {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	after := runtime.NumGoroutine()
+	t.Logf("SSEReaderWithTimeout: after Close released blocked send: base=%d after=%d", base, after)
+	if after > base {
+		t.Fatalf("reader goroutine still blocked on send after Close: base=%d after=%d", base, after)
+	}
+}
+
 // TestSSEReaderWithTimeout_TimeoutThenDataAndEOF verifies Plan A semantics:
 // an idle stream times out with ErrSSETimeout, data written after a timeout is
 // still delivered by the long-lived goroutine, and EOF is reported normally.

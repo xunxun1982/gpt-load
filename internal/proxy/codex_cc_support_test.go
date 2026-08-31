@@ -1927,3 +1927,65 @@ func TestCodexLineReader_TimeoutThenDataAndEOF(t *testing.T) {
 		t.Fatalf("expected io.EOF after stream close, never observed")
 	}
 }
+
+// TestCodexLineReader_CloseReleasesBlockedSend verifies that Close cancels the
+// single reader goroutine even when it is blocked on a successful channel send:
+// after a read timeout abandons the stream, the goroutine fills the buffered
+// channel with the first line and parks forever on sending the second. Close
+// must release it so the goroutine exits and no upstream resources leak; without
+// it the goroutine count never falls back to the pre-stream baseline.
+
+// The baseline is measured before the reader goroutine starts, and the wait uses
+// an inline poll with a strict returned-to-baseline condition: a leaked (still
+// blocked) reader goroutine keeps the count above base and trips the 2s deadline.
+// The shared waitForGoroutines helper does not fit here: it tolerates target+1
+// goroutines and only logs on timeout, so it cannot detect a single leaked
+// goroutine.
+func TestCodexLineReader_CloseReleasesBlockedSend(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	// Let unrelated goroutines from the test runner settle before measuring, and
+	// measure the baseline before starting the reader goroutine so a leaked
+	// blocked send pushes the count above base and is detectable.
+	time.Sleep(50 * time.Millisecond)
+	base := runtime.NumGoroutine()
+
+	lr := newCodexLineReader(bufio.NewReader(pr))
+	defer lr.Close() // idempotent safety net
+
+	// First read times out on the idle stream and abandons it (Plan A: no new
+	// goroutine is spawned, the reader goroutine parks on the reader).
+	if _, err := lr.readLine(50 * time.Millisecond); !errors.Is(err, ErrSSETimeout) {
+		t.Fatalf("expected ErrSSETimeout on idle stream, got %v", err)
+	}
+
+	// Two lines written serially: the reader goroutine reads the first one and
+	// fills the buffered channel, then reads the second and blocks on the
+	// successful send forever (the consumer is no longer reading), unless Close
+	// cancels it.
+	if _, err := pw.Write([]byte("line-one\n")); err != nil {
+		t.Fatalf("write line-one: %v", err)
+	}
+	if _, err := pw.Write([]byte("line-two\n")); err != nil {
+		t.Fatalf("write line-two: %v", err)
+	}
+
+	// Give the goroutine time to reach the blocked send, then Close must unblock
+	// it and return the count to the baseline.
+	time.Sleep(50 * time.Millisecond)
+	lr.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > base {
+		if time.Now().After(deadline) {
+			t.Fatalf("reader goroutine not released after Close: base=%d current=%d", base, runtime.NumGoroutine())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	after := runtime.NumGoroutine()
+	t.Logf("codexLineReader: after Close released blocked send: base=%d after=%d", base, after)
+	if after > base+3 {
+		t.Fatalf("goroutines did not fall back after Close: base=%d after=%d", base, after)
+	}
+}

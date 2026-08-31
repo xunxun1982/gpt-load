@@ -1036,39 +1036,43 @@ func (p *KeyProvider) RestoreKeys(groupID uint) (int64, error) {
 
 	// Keep the DB transition and cache restoration under one lifecycle write lock
 	// so concurrent restores cannot interleave list mutations and deletion cannot
-	// remove the row between the two operations.
-	p.lifecycleMu.Lock()
-
-	err := p.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("group_id = ? AND status = ?", groupID, models.KeyStatusInvalid).Find(&invalidKeys).Error; err != nil {
-			return err
-		}
-
-		if len(invalidKeys) == 0 {
-			return nil
-		}
-
-		updates := map[string]any{
-			"status":        models.KeyStatusActive,
-			"failure_count": 0,
-		}
-		result := tx.Model(&models.APIKey{}).Where("group_id = ? AND status = ?", groupID, models.KeyStatusInvalid).Updates(updates)
-		if result.Error != nil {
-			return result.Error
-		}
-		restoredCount = result.RowsAffected
-
-		for _, key := range invalidKeys {
-			key.Status = models.KeyStatusActive
-			key.FailureCount = 0
-			if err := p.addKeyToStoreLocked(&key); err != nil {
-				logrus.WithFields(logrus.Fields{"keyID": key.ID, "error": err}).Error("Failed to restore key in store after DB update, rolling back transaction")
+	// remove the row between the two operations. The deferred unlock guards against
+	// a panic inside the transaction callback: gorm rolls back and re-panics, so an
+	// explicit unlock after Transaction would leak the write lock and block every
+	// subsequent keypool operation.
+	err := func() error {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
+		return p.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Where("group_id = ? AND status = ?", groupID, models.KeyStatusInvalid).Find(&invalidKeys).Error; err != nil {
 				return err
 			}
-		}
-		return nil
-	})
-	p.lifecycleMu.Unlock()
+
+			if len(invalidKeys) == 0 {
+				return nil
+			}
+
+			updates := map[string]any{
+				"status":        models.KeyStatusActive,
+				"failure_count": 0,
+			}
+			result := tx.Model(&models.APIKey{}).Where("group_id = ? AND status = ?", groupID, models.KeyStatusInvalid).Updates(updates)
+			if result.Error != nil {
+				return result.Error
+			}
+			restoredCount = result.RowsAffected
+
+			for _, key := range invalidKeys {
+				key.Status = models.KeyStatusActive
+				key.FailureCount = 0
+				if err := p.addKeyToStoreLocked(&key); err != nil {
+					logrus.WithFields(logrus.Fields{"keyID": key.ID, "error": err}).Error("Failed to restore key in store after DB update, rolling back transaction")
+					return err
+				}
+			}
+			return nil
+		})
+	}()
 
 	// Invalidate cache after restoring keys (status changed from invalid to active)
 	if err == nil && restoredCount > 0 && p.CacheInvalidationCallback != nil {
@@ -1089,53 +1093,56 @@ func (p *KeyProvider) RestoreMultipleKeys(groupID uint, keyValues []string) (int
 
 	// See RestoreKeys: acquire the lifecycle write lock before starting the DB
 	// transaction to keep restore, deletion, and list mutations in one order.
-	p.lifecycleMu.Lock()
-
-	err := p.db.Transaction(func(tx *gorm.DB) error {
-		var keyHashes []string
-		for _, keyValue := range keyValues {
-			keyHash := p.encryptionSvc.Hash(keyValue)
-			if keyHash != "" {
-				keyHashes = append(keyHashes, keyHash)
+	// The deferred unlock guards against a panic inside the transaction callback
+	// (gorm rolls back and re-panics), which would otherwise leak the write lock.
+	err := func() error {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
+		return p.db.Transaction(func(tx *gorm.DB) error {
+			var keyHashes []string
+			for _, keyValue := range keyValues {
+				keyHash := p.encryptionSvc.Hash(keyValue)
+				if keyHash != "" {
+					keyHashes = append(keyHashes, keyHash)
+				}
 			}
-		}
 
-		if len(keyHashes) == 0 {
-			return nil
-		}
+			if len(keyHashes) == 0 {
+				return nil
+			}
 
-		if err := tx.Where("group_id = ? AND key_hash IN ? AND status = ?", groupID, keyHashes, models.KeyStatusInvalid).Find(&keysToRestore).Error; err != nil {
-			return err
-		}
-
-		if len(keysToRestore) == 0 {
-			return nil
-		}
-
-		keyIDsToRestore := pluckIDs(keysToRestore)
-
-		updates := map[string]any{
-			"status":        models.KeyStatusActive,
-			"failure_count": 0,
-		}
-		result := tx.Model(&models.APIKey{}).Where("id IN ?", keyIDsToRestore).Updates(updates)
-		if result.Error != nil {
-			return result.Error
-		}
-		restoredCount = result.RowsAffected
-
-		for _, key := range keysToRestore {
-			key.Status = models.KeyStatusActive
-			key.FailureCount = 0
-			if err := p.addKeyToStoreLocked(&key); err != nil {
-				logrus.WithFields(logrus.Fields{"keyID": key.ID, "error": err}).Error("Failed to restore key in store after DB update")
+			if err := tx.Where("group_id = ? AND key_hash IN ? AND status = ?", groupID, keyHashes, models.KeyStatusInvalid).Find(&keysToRestore).Error; err != nil {
 				return err
 			}
-		}
 
-		return nil
-	})
-	p.lifecycleMu.Unlock()
+			if len(keysToRestore) == 0 {
+				return nil
+			}
+
+			keyIDsToRestore := pluckIDs(keysToRestore)
+
+			updates := map[string]any{
+				"status":        models.KeyStatusActive,
+				"failure_count": 0,
+			}
+			result := tx.Model(&models.APIKey{}).Where("id IN ?", keyIDsToRestore).Updates(updates)
+			if result.Error != nil {
+				return result.Error
+			}
+			restoredCount = result.RowsAffected
+
+			for _, key := range keysToRestore {
+				key.Status = models.KeyStatusActive
+				key.FailureCount = 0
+				if err := p.addKeyToStoreLocked(&key); err != nil {
+					logrus.WithFields(logrus.Fields{"keyID": key.ID, "error": err}).Error("Failed to restore key in store after DB update")
+					return err
+				}
+			}
+
+			return nil
+		})
+	}()
 
 	// Invalidate cache after restoring keys (status changed from invalid to active)
 	if err == nil && restoredCount > 0 && p.CacheInvalidationCallback != nil {
@@ -1228,7 +1235,9 @@ func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
 	p.lifecycleMu.RLock()
 	totalReset, affectedGroups, err := p.resetAllActiveKeysFailureCountLocked()
 	p.lifecycleMu.RUnlock()
-	if err == nil && p.CacheInvalidationCallback != nil {
+	// Invalidate groups committed before a later batch failure: their store
+	// failure counts are stale otherwise. Error paths carry collected groups.
+	if p.CacheInvalidationCallback != nil {
 		for groupID := range affectedGroups {
 			p.CacheInvalidationCallback(groupID)
 		}
