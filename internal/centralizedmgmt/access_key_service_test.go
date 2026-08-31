@@ -1163,6 +1163,112 @@ func TestAccessKeyCacheCapacityEviction(t *testing.T) {
 	}
 }
 
+// TestAccessKeyCacheCapacityEvictionFIFOOrder verifies the fast eviction path:
+// when entries are written through cacheKey (which maintains the insertion
+// order queue), one write over the capacity cap removes only the oldest entry
+// instead of scanning the whole cache, and the newest entry survives.
+func TestAccessKeyCacheCapacityEvictionFIFOOrder(t *testing.T) {
+	svc, _ := setupTestService(t)
+
+	for i := 0; i < maxKeyCacheEntries+1; i++ {
+		svc.cacheKey(fmt.Sprintf("hk-fifo-%d", i), nil)
+	}
+
+	svc.keyCacheMu.RLock()
+	defer svc.keyCacheMu.RUnlock()
+	if len(svc.keyCache) != maxKeyCacheEntries {
+		t.Fatalf("cache should hold maxKeyCacheEntries after FIFO eviction, got %d", len(svc.keyCache))
+	}
+	if _, exists := svc.keyCache["hk-fifo-0"]; exists {
+		t.Error("oldest inserted entry should have been evicted first")
+	}
+	if _, exists := svc.keyCache[fmt.Sprintf("hk-fifo-%d", maxKeyCacheEntries-1)]; !exists {
+		t.Error("newest inserted entry must survive")
+	}
+}
+
+// TestAccessKeyCacheCapacityEvictionSkipsStaleOrderEntries verifies that the
+// FIFO eviction cursor skips entries which were invalidated after being queued
+// (removed from keyCache but still present in keyCacheOrder) and evicts the
+// oldest live entry instead.
+func TestAccessKeyCacheCapacityEvictionSkipsStaleOrderEntries(t *testing.T) {
+	svc, _ := setupTestService(t)
+
+	now := time.Now()
+	svc.keyCacheMu.Lock()
+	// Stale queue entries at the head: queued but never (or no longer) in the map.
+	for i := 0; i < 1000; i++ {
+		hash := fmt.Sprintf("hk-stale-%d", i)
+		entry := &accessKeyCacheEntry{
+			Key:       nil,
+			ExpiresAt: now.Add(time.Hour),
+			CreatedAt: now.Add(time.Duration(i) * time.Nanosecond),
+		}
+		svc.keyCacheOrder = append(svc.keyCacheOrder, accessKeyCacheOrderItem{hash: hash, entry: entry})
+	}
+	// maxKeyCacheEntries live entries following the stale head, oldest first.
+	for i := 0; i < maxKeyCacheEntries; i++ {
+		hash := fmt.Sprintf("hk-live-%d", i)
+		entry := &accessKeyCacheEntry{
+			Key:       nil,
+			ExpiresAt: now.Add(time.Hour),
+			CreatedAt: now.Add(time.Duration(1000+i) * time.Nanosecond),
+		}
+		svc.keyCache[hash] = entry
+		svc.keyCacheOrder = append(svc.keyCacheOrder, accessKeyCacheOrderItem{hash: hash, entry: entry})
+	}
+	svc.keyCacheMu.Unlock()
+
+	// One more write crosses the capacity cap: map = 10001, order = 11001.
+	svc.cacheKey("hk-live-trigger", nil)
+
+	svc.keyCacheMu.RLock()
+	defer svc.keyCacheMu.RUnlock()
+	if len(svc.keyCache) != maxKeyCacheEntries {
+		t.Fatalf("cache should be trimmed to %d, got %d", maxKeyCacheEntries, len(svc.keyCache))
+	}
+	if _, exists := svc.keyCache["hk-live-0"]; exists {
+		t.Error("oldest live entry should have been evicted")
+	}
+	if _, exists := svc.keyCache["hk-live-1"]; !exists {
+		t.Error("second oldest live entry must survive")
+	}
+}
+
+// TestAccessKeyCacheOrderRebuildBounds verifies that the insertion-order queue
+// is compacted down to the live map size once stale (invalidated) entries make
+// it far larger than the map, so the queue cannot grow without bound while the
+// cache stays under its capacity cap.
+func TestAccessKeyCacheOrderRebuildBounds(t *testing.T) {
+	svc, _ := setupTestService(t)
+
+	for i := 0; i < 100; i++ {
+		svc.cacheKey(fmt.Sprintf("hk-drop-%d", i), nil)
+	}
+	// Invalidate most entries: removed from the map but still queued.
+	for i := 0; i < 90; i++ {
+		svc.invalidateKeyCache(fmt.Sprintf("hk-drop-%d", i))
+	}
+
+	// Next write triggers the rebuild guard (order > 2*map + 8).
+	svc.cacheKey("hk-drop-new", nil)
+
+	svc.keyCacheMu.RLock()
+	defer svc.keyCacheMu.RUnlock()
+	if len(svc.keyCacheOrder) != len(svc.keyCache) {
+		t.Fatalf("order queue should be rebuilt to map size, got order=%d map=%d",
+			len(svc.keyCacheOrder), len(svc.keyCache))
+	}
+	for _, item := range svc.keyCacheOrder {
+		if _, ok := svc.keyCache[item.hash]; !ok {
+			t.Fatalf("rebuilt order contains stale hash %q", item.hash)
+		}
+	}
+	if svc.keyCacheOrderIdx != 0 {
+		t.Fatalf("rebuild should reset the cursor, got %d", svc.keyCacheOrderIdx)
+	}
+}
+
 // TestAccessKeyImportDuplicateKeyValue tests that duplicate key values are skipped
 func TestAccessKeyImportDuplicateKeyValue(t *testing.T) {
 	svc, db := setupTestService(t)

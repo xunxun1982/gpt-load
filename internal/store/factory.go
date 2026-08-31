@@ -118,6 +118,18 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 		}
 	} else if !redisDSNHasQueryParam(redisDSN, "conn_max_idle_time", "idle_timeout") {
 		opts.ConnMaxIdleTime = defaultRedisConnMaxIdleTime
+	} else {
+		// go-redis ParseURL parses a DSN duration in unit form ("0s") to 0,
+		// whereas a plain "0" already becomes the -1 disable sentinel
+		// (options.go duration(): Atoi <= 0 short-circuits before
+		// ParseDuration). NewClient then rewrites ConnMaxIdleTime == 0 to 30m
+		// (options.go), silently losing the explicit "disable idle timeout"
+		// intent. This branch runs only when the DSN explicitly configured the
+		// parameter (redisDSNHasQueryParam), so a parsed 0 can only be a
+		// unit-form zero like "0s": normalize it to -1 to keep the intent.
+		if opts.ConnMaxIdleTime == 0 {
+			opts.ConnMaxIdleTime = -1
+		}
 	}
 
 	// ConnMaxLifetime: same precedence and sentinel semantics as ConnMaxIdleTime.

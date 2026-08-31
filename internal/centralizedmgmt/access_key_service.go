@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,25 @@ type HubAccessKeyService struct {
 	keyCache    map[string]*accessKeyCacheEntry
 	keyCacheMu  sync.RWMutex
 	keyCacheTTL time.Duration
+
+	// keyCacheOrder is the insertion-order queue backing capacity eviction.
+	// Because keyCacheTTL is uniform across every entry, the oldest inserted
+	// entry is also the first to expire, so a single FIFO order satisfies both
+	// the "remove expired first" and "evict oldest" policy without scanning the
+	// whole map on every write. Entries invalidated or replaced in keyCache are
+	// skipped lazily when the eviction cursor reaches them (see
+	// evictKeyCacheIfNeededLocked). keyCacheOrderIdx is the read cursor; the
+	// consumed prefix is compacted once it dominates the slice.
+	keyCacheOrder    []accessKeyCacheOrderItem
+	keyCacheOrderIdx int
+}
+
+// accessKeyCacheOrderItem links a cached entry to its map key for the
+// insertion-order queue. The entry pointer lets the eviction cursor tell an
+// outdated queued entry (already replaced in keyCache) from the current one.
+type accessKeyCacheOrderItem struct {
+	hash  string
+	entry *accessKeyCacheEntry
 }
 
 // accessKeyCacheEntry holds cached access key data with expiration.
@@ -343,6 +363,8 @@ func (s *HubAccessKeyService) DeleteAccessKey(ctx context.Context, id uint) erro
 func (s *HubAccessKeyService) InvalidateAllKeyCache() {
 	s.keyCacheMu.Lock()
 	s.keyCache = make(map[string]*accessKeyCacheEntry)
+	s.keyCacheOrder = nil
+	s.keyCacheOrderIdx = 0
 	s.keyCacheMu.Unlock()
 }
 
@@ -394,25 +416,79 @@ func (s *HubAccessKeyService) toDTO(key *HubAccessKey) *HubAccessKeyDTO {
 func (s *HubAccessKeyService) cacheKey(encryptedKey string, key *HubAccessKey) {
 	s.keyCacheMu.Lock()
 	defer s.keyCacheMu.Unlock()
-	s.keyCache[encryptedKey] = &accessKeyCacheEntry{
+	now := time.Now()
+	entry := &accessKeyCacheEntry{
 		Key:       key,
-		ExpiresAt: time.Now().Add(s.keyCacheTTL),
-		CreatedAt: time.Now(),
+		ExpiresAt: now.Add(s.keyCacheTTL),
+		CreatedAt: now,
+	}
+	s.keyCache[encryptedKey] = entry
+	s.keyCacheOrder = append(s.keyCacheOrder, accessKeyCacheOrderItem{hash: encryptedKey, entry: entry})
+	// Keep the queue within a small multiple of the live map so entries left
+	// behind by invalidations (which remove from keyCache but not from the
+	// queue) cannot grow the queue without bound while the cache is under its
+	// capacity cap.
+	if len(s.keyCacheOrder) > 2*len(s.keyCache)+8 {
+		s.rebuildKeyCacheOrderLocked()
 	}
 	s.evictKeyCacheIfNeededLocked()
 }
 
+// rebuildKeyCacheOrderLocked reconstructs the insertion-order queue from the
+// current keyCache contents sorted by CreatedAt, discarding queue items for
+// entries that were invalidated or replaced. Caller must hold keyCacheMu.
+func (s *HubAccessKeyService) rebuildKeyCacheOrderLocked() {
+	items := make([]accessKeyCacheOrderItem, 0, len(s.keyCache))
+	for hash, entry := range s.keyCache {
+		items = append(items, accessKeyCacheOrderItem{hash: hash, entry: entry})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].entry.CreatedAt.Before(items[j].entry.CreatedAt)
+	})
+	s.keyCacheOrder = items
+	s.keyCacheOrderIdx = 0
+}
+
 // evictKeyCacheIfNeededLocked enforces the cache capacity limit.
 // Contract: keyCache never holds more than maxKeyCacheEntries entries.
-// Expired entries are removed first (frees capacity without dropping hot data);
-// if the cache is still over the limit, the oldest entries by insertion time
-// are evicted. Caller must hold keyCacheMu.
+// When the insertion-order queue covers the live map (the production invariant:
+// every cacheKey write appends to it, so len(keyCacheOrder) >= len(keyCache)),
+// the queue head is both the oldest inserted and — with the uniform TTL — the
+// earliest expiring entry, so consuming it implements "expired first, then
+// oldest" in O(1) amortized instead of scanning every cached entry on each
+// write. Entries invalidated or replaced before the cursor reached them are
+// skipped lazily. If the queue does not cover the map (entries were inserted
+// directly into keyCache, e.g. in tests), a full scan removes expired entries
+// first and then evicts the oldest by insertion time. Caller must hold
+// keyCacheMu.
 func (s *HubAccessKeyService) evictKeyCacheIfNeededLocked() {
 	if len(s.keyCache) <= maxKeyCacheEntries {
 		return
 	}
 
-	// First pass: drop all expired entries.
+	if len(s.keyCacheOrder) >= len(s.keyCache) {
+		for len(s.keyCache) > maxKeyCacheEntries && s.keyCacheOrderIdx < len(s.keyCacheOrder) {
+			item := s.keyCacheOrder[s.keyCacheOrderIdx]
+			s.keyCacheOrderIdx++
+			current, ok := s.keyCache[item.hash]
+			if !ok || current != item.entry {
+				continue // stale: invalidated or replaced before the cursor reached it
+			}
+			delete(s.keyCache, item.hash)
+		}
+		// Drop the consumed prefix once it dominates the slice so the queue
+		// does not keep dead references beyond the live region.
+		if s.keyCacheOrderIdx > 0 && s.keyCacheOrderIdx*2 >= len(s.keyCacheOrder) {
+			s.keyCacheOrder = append([]accessKeyCacheOrderItem(nil), s.keyCacheOrder[s.keyCacheOrderIdx:]...)
+			s.keyCacheOrderIdx = 0
+		}
+		if len(s.keyCache) <= maxKeyCacheEntries {
+			return
+		}
+	}
+
+	// Fallback: remove expired entries first (frees capacity without dropping
+	// hot data), then evict the oldest by insertion time until back under limit.
 	now := time.Now()
 	for hash, entry := range s.keyCache {
 		if !now.Before(entry.ExpiresAt) {
@@ -422,8 +498,6 @@ func (s *HubAccessKeyService) evictKeyCacheIfNeededLocked() {
 	if len(s.keyCache) <= maxKeyCacheEntries {
 		return
 	}
-
-	// Second pass: evict oldest entries until back under the limit.
 	for len(s.keyCache) > maxKeyCacheEntries {
 		oldestHash := ""
 		var oldestTime time.Time

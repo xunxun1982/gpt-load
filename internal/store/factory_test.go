@@ -156,6 +156,23 @@ func TestBuildRedisOptions_DSNDisableDuration(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, time.Duration(-1), opts.ConnMaxIdleTime)
 	})
+	t.Run("conn_max_idle_time=0s", func(t *testing.T) {
+		// go-redis ParseURL parses "0s" via time.ParseDuration to 0, unlike plain
+		// "0" which short-circuits to -1 (options.go duration()). NewClient would
+		// then rewrite that 0 to 30m, so the factory must normalize the unit-form
+		// zero to -1 here to preserve the explicit-disable intent.
+		opts, err := buildRedisOptions("redis://localhost:6379/0?conn_max_idle_time=0s")
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(-1), opts.ConnMaxIdleTime)
+	})
+	t.Run("idle_timeout=0s", func(t *testing.T) {
+		// Same unit-form zero via the idle_timeout alias, which go-redis falls
+		// back to when conn_max_idle_time is absent (options.go); must also
+		// normalize 0 to -1 instead of letting NewClient rewrite it to 30m.
+		opts, err := buildRedisOptions("redis://localhost:6379/0?idle_timeout=0s")
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(-1), opts.ConnMaxIdleTime)
+	})
 	t.Run("conn_max_lifetime=0", func(t *testing.T) {
 		opts, err := buildRedisOptions("redis://localhost:6379/0?conn_max_lifetime=0")
 		require.NoError(t, err)
