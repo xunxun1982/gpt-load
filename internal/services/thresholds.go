@@ -138,10 +138,12 @@ const (
 
 	// HourlyStatsBatchSize is the batch size for upserting hourly statistics
 	// Used for PostgreSQL and MySQL batch upsert operations
+	// Also used for cleanup batch deletion to keep write lock windows short
 	HourlyStatsBatchSize = 500 // stats per batch
 
 	// HourlyStatsBatchSizeSQLite is the batch size for SQLite hourly statistics
 	// Smaller batch size for SQLite due to single-writer model
+	// Also used for cleanup batch deletion to keep write lock windows short
 	HourlyStatsBatchSizeSQLite = 50 // stats per batch
 
 	// DynamicWeightBatchSizeSQLite is the batch size for SQLite dynamic weight persistence

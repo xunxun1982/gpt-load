@@ -231,9 +231,11 @@ var statsTables = []string{"group_hourly_stats", "model_token_hourly_stats"}
 func (s *LogCleanupService) cleanupExpiredStats() {
 	cutoffTime := time.Now().AddDate(0, 0, -StatsRetentionDays).UTC()
 	dialect := s.db.Dialector.Name()
-	batchSize := LogCleanupBatchSize
+	// Stats tables use their own batch sizes: smaller than log cleanup batches so
+	// each delete keeps the write lock window short even though stats rows are large.
+	batchSize := HourlyStatsBatchSize
 	if dialect == "sqlite" {
-		batchSize = SQLiteLogCleanupBatchSize
+		batchSize = HourlyStatsBatchSizeSQLite
 	}
 
 	logrus.WithFields(logrus.Fields{

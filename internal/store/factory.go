@@ -33,6 +33,14 @@ const (
 	envRedisMinIdleConns           = "REDIS_MIN_IDLE_CONNS"
 	envRedisConnMaxIdleTimeSeconds = "REDIS_CONN_MAX_IDLE_TIME_SECONDS"
 	envRedisConnMaxLifetimeSeconds = "REDIS_CONN_MAX_LIFETIME_SECONDS"
+
+	// maxRedisPoolSize is the application-defined safe upper limit for the Redis
+	// connection pool. go-redis v9 pre-allocates an idleConns slice with capacity
+	// equal to PoolSize during NewClient (internal/pool/pool.go:83); values at or
+	// above this limit would needlessly risk memory exhaustion long before the
+	// int32 overflow check (SafeIntToInt32) catches them. 10000 is well above any
+	// reasonable deployment and still well below the server's default maxclients.
+	maxRedisPoolSize = 10000
 )
 
 // maxDurationSeconds is math.MaxInt64 / 1e9: multiplying a larger seconds
@@ -133,8 +141,8 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 	// util.SafeIntToInt32 when the pool is created; a value above math.MaxInt32
 	// makes redis.NewClient panic, so reject it here with a descriptive error
 	// instead of crashing the process.
-	if int64(opts.PoolSize) > maxInt32 {
-		return nil, fmt.Errorf("redis: PoolSize %d exceeds max supported value %d", opts.PoolSize, maxInt32)
+	if int64(opts.PoolSize) >= maxRedisPoolSize {
+		return nil, fmt.Errorf("redis: PoolSize %d exceeds application-defined safe limit %d", opts.PoolSize, maxRedisPoolSize)
 	}
 	if int64(opts.MaxActiveConns) > maxInt32 {
 		return nil, fmt.Errorf("redis: MaxActiveConns %d exceeds max supported value %d", opts.MaxActiveConns, maxInt32)

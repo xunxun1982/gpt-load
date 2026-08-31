@@ -970,7 +970,11 @@ func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http
 	// Check cache first (fast path)
 	if cached, ok := s.proxyClients.Load(proxyURL); ok {
 		if entry, ok := cached.(*timedHTTPClientEntry); ok {
+			// Refresh under the entry lock so eviction cannot delete a client
+			// between the freshness check and this refresh (see evictIdleCachedClient).
+			entry.mu.Lock()
 			entry.lastUsed.Store(time.Now().UnixNano())
+			entry.mu.Unlock()
 			return entry.client
 		}
 		if client, ok := cached.(*http.Client); ok {
@@ -1004,7 +1008,12 @@ func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http
 	entry.lastUsed.Store(time.Now().UnixNano())
 	actual, _ := s.proxyClients.LoadOrStore(proxyURL, entry)
 	if actualEntry, ok := actual.(*timedHTTPClientEntry); ok {
+		// LoadOrStore returned an entry already stored by another goroutine;
+		// refresh it under the entry lock so this use is never lost to a
+		// concurrent eviction check (same contract as the cache-hit path above).
+		actualEntry.mu.Lock()
 		actualEntry.lastUsed.Store(time.Now().UnixNano())
+		actualEntry.mu.Unlock()
 		return actualEntry.client
 	}
 	return actual.(*http.Client)

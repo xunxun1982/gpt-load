@@ -33,6 +33,9 @@ const (
 type timedHTTPClientEntry struct {
 	client   *http.Client
 	lastUsed atomic.Int64 // UnixNano of the last GetClient hit; 0 = never hit
+	// mu serializes lastUsed refreshes against eviction checks so a client
+	// that was just used cannot be evicted as idle (the eviction check-reload race).
+	mu sync.Mutex
 }
 
 // closeHTTPClientIdleConnections closes idle connections of a cached HTTP client.
@@ -66,9 +69,18 @@ func closeCachedHTTPClient(value any) {
 // *http.Client values are closed but never deleted (legacy direct stores).
 func evictIdleCachedClient(clients *sync.Map, key, value any, cutoff int64) {
 	if entry, ok := value.(*timedHTTPClientEntry); ok {
-		closeHTTPClientIdleConnections(entry.client)
-		if entry.lastUsed.Load() < cutoff {
+		// Check idle status and delete under the entry lock so an in-flight
+		// GetClient refresh of lastUsed cannot be lost to this eviction check.
+		entry.mu.Lock()
+		idle := entry.lastUsed.Load() < cutoff
+		if idle {
 			clients.Delete(key)
+		}
+		entry.mu.Unlock()
+		// Close idle connections outside the lock so concurrent GetClient hits
+		// are not blocked while the drained connections are being closed.
+		if idle {
+			closeHTTPClientIdleConnections(entry.client)
 		}
 		return
 	}
@@ -109,7 +121,11 @@ func (m *StealthClientManager) GetClient(proxyURL string) *http.Client {
 	// Check cache first; refresh last-use on every hit.
 	if cached, ok := m.clients.Load(cacheKey); ok {
 		if entry, ok := cached.(*timedHTTPClientEntry); ok {
+			// Refresh under the entry lock so eviction cannot delete a client
+			// between the freshness check and this refresh (see evictIdleCachedClient).
+			entry.mu.Lock()
 			entry.lastUsed.Store(time.Now().UnixNano())
+			entry.mu.Unlock()
 			return entry.client
 		}
 		if client, ok := cached.(*http.Client); ok {
@@ -125,7 +141,12 @@ func (m *StealthClientManager) GetClient(proxyURL string) *http.Client {
 	entry.lastUsed.Store(time.Now().UnixNano())
 	actual, _ := m.clients.LoadOrStore(cacheKey, entry)
 	if actualEntry, ok := actual.(*timedHTTPClientEntry); ok {
+		// LoadOrStore returned an entry already stored by another goroutine;
+		// refresh it under the entry lock too so this use is never lost to a
+		// concurrent eviction check (same contract as the cache-hit path above).
+		actualEntry.mu.Lock()
 		actualEntry.lastUsed.Store(time.Now().UnixNano())
+		actualEntry.mu.Unlock()
 		return actualEntry.client
 	}
 	return actual.(*http.Client)

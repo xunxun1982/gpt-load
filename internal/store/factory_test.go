@@ -203,6 +203,7 @@ func TestBuildRedisOptions_ConnectionCountsAboveMaxInt32(t *testing.T) {
 		_, err := buildRedisOptions("redis://localhost:6379/0")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "PoolSize")
+		assert.Contains(t, err.Error(), "safe limit")
 	})
 	t.Run("MinIdleConns env above MaxInt32", func(t *testing.T) {
 		t.Setenv(envRedisMinIdleConns, "2147483648")
@@ -227,9 +228,27 @@ func TestBuildRedisOptions_ConnectionCountsAboveMaxInt32(t *testing.T) {
 	})
 	t.Run("PoolSize env at MaxInt32 boundary", func(t *testing.T) {
 		t.Setenv(envRedisPoolSize, "2147483647") // MaxInt32
+		_, err := buildRedisOptions("redis://localhost:6379/0")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "PoolSize")
+	})
+	t.Run("PoolSize env at limit", func(t *testing.T) {
+		t.Setenv(envRedisPoolSize, "10000")
+		_, err := buildRedisOptions("redis://localhost:6379/0")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "PoolSize")
+	})
+	t.Run("PoolSize env one over limit", func(t *testing.T) {
+		t.Setenv(envRedisPoolSize, "10001")
+		_, err := buildRedisOptions("redis://localhost:6379/0")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "PoolSize")
+	})
+	t.Run("PoolSize env below limit", func(t *testing.T) {
+		t.Setenv(envRedisPoolSize, "9999")
 		opts, err := buildRedisOptions("redis://localhost:6379/0")
 		require.NoError(t, err)
-		assert.Equal(t, int(maxInt32), opts.PoolSize)
+		assert.Equal(t, 9999, opts.PoolSize)
 	})
 }
 

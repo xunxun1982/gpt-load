@@ -115,7 +115,7 @@ func TestCleanupExpiredStatsMultiBatch(t *testing.T) {
 	db := setupRequestLogServiceTestDB(t, &models.GroupHourlyStat{}, &models.ModelTokenHourlyStat{})
 
 	old := time.Now().UTC().AddDate(0, 0, -(StatsRetentionDays + 1))
-	rows := make([]models.GroupHourlyStat, SQLiteLogCleanupBatchSize*2+17)
+	rows := make([]models.GroupHourlyStat, HourlyStatsBatchSizeSQLite*2+17)
 	for i := range rows {
 		// The (time, group_id unique constraint requires a distinct time per group;
 		// minute offsets stay well below the retention cutoff, so every row is expired.
