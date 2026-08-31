@@ -18,15 +18,26 @@ type LogCleanupService struct {
 	db              *gorm.DB
 	settingsManager *config.SystemSettingsManager
 	stopCh          chan struct{}
-	wg              sync.WaitGroup
+	// ctx/cancel form the shutdown signal for batch cleanup: Stop() cancels
+	// them so batch contexts derived from ctx (and inter-batch waits) abort
+	// promptly instead of draining a large backlog first.
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 // NewLogCleanupService creates a new log cleanup service.
 func NewLogCleanupService(db *gorm.DB, settingsManager *config.SystemSettingsManager) *LogCleanupService {
+	// The cancellable context is the shutdown signal wired into Stop(): closing
+	// stopCh alone would leave in-flight batch contexts and inter-batch delays
+	// running until the batch timeout or the backlog drains.
+	ctx, cancel := context.WithCancel(context.Background())
 	return &LogCleanupService{
 		db:              db,
 		settingsManager: settingsManager,
 		stopCh:          make(chan struct{}),
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 }
 
@@ -40,6 +51,12 @@ func (s *LogCleanupService) Start() {
 // Stop stops the log cleanup service gracefully.
 func (s *LogCleanupService) Stop(ctx context.Context) {
 	close(s.stopCh)
+
+	// Cancel the service context so batch contexts derived from it (see
+	// cleanupExpiredLogs and deleteExpiredStatsTable) abort immediately instead
+	// of timing out or draining a large backlog, letting the wg.Wait() below
+	// return promptly.
+	s.cancel()
 
 	done := make(chan struct{})
 	go func() {
@@ -115,14 +132,26 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 		"dialect":        dialect,
 	}).Debug("Starting log cleanup")
 
+	// Batch contexts and the inter-batch delay derive from the service's
+	// cancellable context so Stop() cancelling s.ctx aborts them promptly,
+	// keeping shutdown responsive even with a large backlog queued. Direct
+	// struct construction (tests bypass NewLogCleanupService) leaves s.ctx nil:
+	// fall back to Background so those callers keep working unchanged.
+	batchParent := s.ctx
+	if batchParent == nil {
+		batchParent = context.Background()
+	}
+
 	for {
 		// Timeout set to 60s for batch deletion operations
 		// Note: This exceeds typical GORM recommendations (5-10s per operation) but is intentional:
 		// 1. Background cleanup task with no user-facing latency requirements
 		// 2. Large batches on slower systems need more time
 		// 3. Testing shows 60s prevents timeout errors while maintaining reasonable progress
-		// 4. Using context.Background() is appropriate as this is a top-level background job
-		batchCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		// 4. The batch context derives from the service's cancellable context
+		//    (batchParent, not context.Background()), so Stop() cancelling s.ctx
+		//    aborts an in-flight batch promptly instead of draining the backlog.
+		batchCtx, cancel := context.WithTimeout(batchParent, 60*time.Second)
 		var result *gorm.DB
 		switch dialect {
 		case "postgres":
@@ -192,7 +221,12 @@ func (s *LogCleanupService) cleanupExpiredLogs() {
 
 		// Small delay between batches to reduce lock contention
 		// Increased from 50ms to 100ms for better concurrency with other operations
-		time.Sleep(100 * time.Millisecond)
+		// Wait for the delay unless the service is stopping: then abort promptly.
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-batchParent.Done():
+			return
+		}
 	}
 
 	if totalDeleted > 0 {
@@ -260,8 +294,16 @@ func (s *LogCleanupService) deleteExpiredStatsTable(table string, cutoffTime tim
 		"table": table,
 	}).Debug("Cleaning up expired stats table")
 
+	// Same pattern as cleanupExpiredLogs: derive batch context from the service's
+	// cancellable context so Stop() cancelling s.ctx aborts in-flight batches;
+	// nil guard for tests that bypass NewLogCleanupService.
+	batchParent := s.ctx
+	if batchParent == nil {
+		batchParent = context.Background()
+	}
+
 	for {
-		batchCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		batchCtx, cancel := context.WithTimeout(batchParent, 60*time.Second)
 		var result *gorm.DB
 
 		switch dialect {
@@ -333,7 +375,13 @@ func (s *LogCleanupService) deleteExpiredStatsTable(table string, cutoffTime tim
 			break
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		// Wait for the inter-batch delay unless the service is stopping: then
+		// abort promptly so Stop() returns without draining the backlog.
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-batchParent.Done():
+			return
+		}
 	}
 
 	if totalDeleted > 0 {

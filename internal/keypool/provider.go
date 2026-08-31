@@ -1373,6 +1373,14 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 	}
 
 	totalDeleted := int64(0)
+
+	// Rebuild the active list on every exit path (normal completion, ctx cancel,
+	// or batch error) so that SelectKey never rotates to a stale/deleted key ID.
+	// This defer must be registered after the deleteSem defer so that it runs
+	// first (LIFO): the rebuild completes while the delete semaphore is still held,
+	// maintaining the lifecycle lock contract (see rebuildActiveKeysList).
+	defer p.rebuildActiveKeysList(groupID)
+
 	retries := 0
 	lastLoggedPercent := 0
 
@@ -1582,36 +1590,6 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 		time.Sleep(batchDelay)
 	}
 
-	// Rebuild the active list from the database while holding the lifecycle lock.
-	// A progress callback may have added a new key after the last delete batch;
-	// blindly deleting the list here would remove that valid key. The lock is
-	// released via defer so a panic in a gorm or Store call cannot leak it.
-	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
-	func() {
-		p.lifecycleMu.Lock()
-		defer p.lifecycleMu.Unlock()
-		var activeKeyIDs []uint
-		if err := p.db.Model(&models.APIKey{}).
-			Select("id").
-			Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).
-			Order("id ASC").
-			Pluck("id", &activeKeyIDs).Error; err != nil {
-			logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to rebuild active key list after deletion")
-		} else {
-			if err := p.store.Delete(activeKeysListKey); err != nil {
-				logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to clear active key list after deletion")
-			} else if len(activeKeyIDs) > 0 {
-				activeKeyValues := make([]any, len(activeKeyIDs))
-				for i, id := range activeKeyIDs {
-					activeKeyValues[i] = id
-				}
-				if err := p.store.LPush(activeKeysListKey, activeKeyValues...); err != nil {
-					logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to rebuild active key list after deletion")
-				}
-			}
-		}
-	}()
-
 	// Log completion with retry statistics if any retries occurred
 	if totalRetries > 0 {
 		logrus.Infof("Completed deletion of %d keys in group %d (recovered from %d transient errors)", totalDeleted, groupID, totalRetries)
@@ -1619,6 +1597,40 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 		logrus.Infof("Completed deletion of %d keys in group %d", totalDeleted, groupID)
 	}
 	return totalDeleted, nil
+}
+
+// rebuildActiveKeysList rebuilds the group's active key list in the store from the
+// database. The lifecycle lock is taken so that a concurrent restore/add cannot
+// be dropped by this rebuild (a key inserted after the last delete batch must
+// survive the list recreation); the lock is released via defer so a panic in a
+// GORM or Store call cannot leak it. Registers as a defer early in
+// RemoveAllKeys so every exit path (normal completion, ctx cancel, batch error)
+// rebuilds the list before the delete semaphore is released, keeping SelectKey
+// from rotating to a stale/deleted key ID.
+func (p *KeyProvider) rebuildActiveKeysList(groupID uint) {
+	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	var activeKeyIDs []uint
+	if err := p.db.Model(&models.APIKey{}).
+		Select("id").
+		Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).
+		Order("id ASC").
+		Pluck("id", &activeKeyIDs).Error; err != nil {
+		logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to rebuild active key list after deletion")
+	} else {
+		if err := p.store.Delete(activeKeysListKey); err != nil {
+			logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to clear active key list after deletion")
+		} else if len(activeKeyIDs) > 0 {
+			activeKeyValues := make([]any, len(activeKeyIDs))
+			for i, id := range activeKeyIDs {
+				activeKeyValues[i] = id
+			}
+			if err := p.store.LPush(activeKeysListKey, activeKeyValues...); err != nil {
+				logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to rebuild active key list after deletion")
+			}
+		}
+	}
 }
 
 // removeKeysByStatus is a generic function to remove keys by status.

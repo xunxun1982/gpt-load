@@ -92,6 +92,37 @@ func evictIdleCachedClient(clients *sync.Map, key, value any, cutoff int64) {
 	}
 }
 
+// getCachedClientRefreshed returns the cached HTTP client for cacheKey,
+// refreshing its lastUsed under the entry lock. Membership is re-validated
+// under that lock: evictIdleCachedClient may remove an entry after a caller's
+// Load (or LoadOrStore) returns it but before the caller acquires entry.mu,
+// and returning a just-evicted entry would hand out a client that is no longer
+// cached (its idle connections were already closed). When the entry is no
+// longer in the map, ok=false is returned so the caller rebuilds a fresh one.
+// Raw *http.Client values (legacy shape) are returned directly.
+func getCachedClientRefreshed(clients *sync.Map, cacheKey string) (*http.Client, bool) {
+	cached, ok := clients.Load(cacheKey)
+	if !ok {
+		return nil, false
+	}
+	if entry, ok := cached.(*timedHTTPClientEntry); ok {
+		entry.mu.Lock()
+		// Re-validate that the map still holds this exact entry while holding
+		// the lock, so a concurrent eviction cannot race this refresh.
+		if current, ok := clients.Load(cacheKey); ok && current == entry {
+			entry.lastUsed.Store(time.Now().UnixNano())
+			entry.mu.Unlock()
+			return entry.client, true
+		}
+		entry.mu.Unlock()
+		return nil, false
+	}
+	if client, ok := cached.(*http.Client); ok {
+		return client, true
+	}
+	return nil, false
+}
+
 // StealthClientManager manages stealth HTTP clients with TLS fingerprint spoofing.
 // It caches clients by proxy URL to enable connection pooling.
 // Uses bogdanfinn/tls-client which properly supports HTTP/2 and modern TLS fingerprinting.
@@ -121,19 +152,11 @@ func (m *StealthClientManager) GetClient(proxyURL string) *http.Client {
 		cacheKey = "__direct__"
 	}
 
-	// Check cache first; refresh last-use on every hit.
-	if cached, ok := m.clients.Load(cacheKey); ok {
-		if entry, ok := cached.(*timedHTTPClientEntry); ok {
-			// Refresh under the entry lock so eviction cannot delete a client
-			// between the freshness check and this refresh (see evictIdleCachedClient).
-			entry.mu.Lock()
-			entry.lastUsed.Store(time.Now().UnixNano())
-			entry.mu.Unlock()
-			return entry.client
-		}
-		if client, ok := cached.(*http.Client); ok {
-			return client
-		}
+	// Check cache first; refresh last-use on every hit. Membership is
+	// re-validated under the entry lock via getCachedClientRefreshed, so a
+	// concurrently evicted entry is never returned as a stale cache hit.
+	if client, ok := getCachedClientRefreshed(&m.clients, cacheKey); ok {
+		return client
 	}
 
 	// Create new client
@@ -143,14 +166,17 @@ func (m *StealthClientManager) GetClient(proxyURL string) *http.Client {
 	entry := &timedHTTPClientEntry{client: client}
 	entry.lastUsed.Store(time.Now().UnixNano())
 	actual, _ := m.clients.LoadOrStore(cacheKey, entry)
-	if actualEntry, ok := actual.(*timedHTTPClientEntry); ok {
-		// LoadOrStore returned an entry already stored by another goroutine;
-		// refresh it under the entry lock too so this use is never lost to a
-		// concurrent eviction check (same contract as the cache-hit path above).
-		actualEntry.mu.Lock()
-		actualEntry.lastUsed.Store(time.Now().UnixNano())
-		actualEntry.mu.Unlock()
-		return actualEntry.client
+	if _, ok := actual.(*timedHTTPClientEntry); ok {
+		// LoadOrStore returned an entry already stored by another goroutine
+		// (or our own first store); refresh it under the entry lock with
+		// membership re-validation, same contract as the cache-hit path above.
+		// The entry cannot have been idle since we just touched lastUsed, so a
+		// re-validation miss only happens in an extreme race where the
+		// fallback below is still a safe, usable client.
+		if refreshed, ok := getCachedClientRefreshed(&m.clients, cacheKey); ok {
+			return refreshed
+		}
+		return client
 	}
 	return actual.(*http.Client)
 }

@@ -881,23 +881,16 @@ func (s *BalanceService) getHTTPClient(ctx context.Context, site *ManagedSite) *
 		return s.client
 	}
 
-	// Check proxy client cache
+	// Resolve effective proxy URL from site settings
 	proxyURL := resolveManagedSiteProxyURL(ctx, s.proxyResolver, site.ProxyURL)
 	if proxyURL == "" {
 		return s.client
 	}
-	if cached, ok := s.proxyClients.Load(proxyURL); ok {
-		if entry, ok := cached.(*timedHTTPClientEntry); ok {
-			// Refresh under the entry lock so eviction cannot delete a client
-			// between the freshness check and this refresh (see evictIdleCachedClient).
-			entry.mu.Lock()
-			entry.lastUsed.Store(time.Now().UnixNano())
-			entry.mu.Unlock()
-			return entry.client
-		}
-		if client, ok := cached.(*http.Client); ok {
-			return client
-		}
+	// Check proxy client cache. Membership is re-validated under the entry
+	// lock via getCachedClientRefreshed, so a concurrently evicted entry is
+	// never returned as a stale cache hit (see evictIdleCachedClient).
+	if client, ok := getCachedClientRefreshed(&s.proxyClients, proxyURL); ok {
+		return client
 	}
 
 	// Parse and validate proxy URL
@@ -919,14 +912,17 @@ func (s *BalanceService) getHTTPClient(ctx context.Context, site *ManagedSite) *
 	entry := &timedHTTPClientEntry{client: client}
 	entry.lastUsed.Store(time.Now().UnixNano())
 	actual, _ := s.proxyClients.LoadOrStore(proxyURL, entry)
-	if actualEntry, ok := actual.(*timedHTTPClientEntry); ok {
-		// LoadOrStore returned an entry already stored by another goroutine;
-		// refresh it under the entry lock so this use is never lost to a
-		// concurrent eviction check (same contract as the cache-hit path above).
-		actualEntry.mu.Lock()
-		actualEntry.lastUsed.Store(time.Now().UnixNano())
-		actualEntry.mu.Unlock()
-		return actualEntry.client
+	if _, ok := actual.(*timedHTTPClientEntry); ok {
+		// LoadOrStore returned an entry already stored by another goroutine
+		// (or our own first store); refresh it under the entry lock with
+		// membership re-validation, same contract as the cache-hit path above.
+		// The entry cannot have been idle since we just touched lastUsed, so a
+		// re-validation miss only happens in an extreme race where the
+		// fallback below is still a safe, usable client.
+		if refreshed, ok := getCachedClientRefreshed(&s.proxyClients, proxyURL); ok {
+			return refreshed
+		}
+		return client
 	}
 	return actual.(*http.Client)
 }
