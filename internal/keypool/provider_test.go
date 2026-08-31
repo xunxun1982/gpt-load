@@ -433,7 +433,10 @@ func TestProviderStopWaitsForInFlightWorker(t *testing.T) {
 	select {
 	case <-stopped:
 		t.Fatal("Provider.Stop returned while a status worker was still using its dependencies")
-	case <-time.After(5200 * time.Millisecond):
+	// Stop blocks purely on workerWg.Wait (no internal timeout), so a few
+	// hundred milliseconds is enough to observe an incorrect early return;
+	// the 2s window below verifies that Stop resumes once the worker releases.
+	case <-time.After(200 * time.Millisecond):
 	}
 
 	releaseWorker()

@@ -109,14 +109,21 @@ func testProxyConnectivity(proxyURL *url.URL) {
 func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	fingerprint := config.getFingerprint()
 
-	// Fast path with read lock
+	// Fast path with read lock. lastUsed is refreshed while the read lock is
+	// still held: eviction (evictExcessClientsLocked) selects the LRU entry
+	// under the same lock, so a hit racing with capacity eviction must publish
+	// its usage timestamp before the lock is released, otherwise eviction can
+	// remove this very entry based on a stale timestamp and lose connection
+	// reuse.
 	m.lock.RLock()
 	entry, exists := m.clients[fingerprint]
-	m.lock.RUnlock()
 	if exists && entry != nil {
 		entry.lastUsed.Store(time.Now().UnixNano())
-		return entry.client
+		client := entry.client
+		m.lock.RUnlock()
+		return client
 	}
+	m.lock.RUnlock()
 
 	// Slow path with write lock
 	m.lock.Lock()

@@ -5492,29 +5492,30 @@ func TestSSEReaderWithTimeout_NoOrphanGoroutineGrowth(t *testing.T) {
 	}
 
 	// Closing the stream must release the single long-lived reader goroutine.
+	// The base was measured before the first ReadEvent, so it excludes the
+	// reader goroutine: any goroutine still alive above base is a leak.
 	pw.Close()
 	waitForGoroutines(t, base, 2*time.Second)
 	final := runtime.NumGoroutine()
 	t.Logf("SSEReaderWithTimeout: after stream close=%d (base=%d)", final, base)
-	if final > base+3 {
-		t.Fatalf("goroutines did not fall back after stream close: base=%d final=%d", base, final)
+	if final > base {
+		t.Fatalf("reader goroutine not released after stream close: base=%d final=%d", base, final)
 	}
 }
 
-// waitForGoroutines polls until the goroutine count drops to target+1 or the
-// deadline expires. Used to verify that closing a stream releases its reader
-// goroutines.
+// waitForGoroutines polls until the goroutine count drops to target or the
+// deadline expires, failing the test otherwise. A leaked goroutine must fail
+// the test rather than pass via a tolerance band.
 func waitForGoroutines(t *testing.T, target int, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if runtime.NumGoroutine() <= target+1 {
+		if runtime.NumGoroutine() <= target {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Logf("goroutine count did not reach %d within %v (current=%d)",
-		target+1, timeout, runtime.NumGoroutine())
+	t.Fatalf("goroutine count did not reach %d within %v (current=%d)", target, timeout, runtime.NumGoroutine())
 }
 
 // TestSSEReaderWithTimeout_CloseReleasesBlockedSend verifies that Close cancels
@@ -5553,9 +5554,9 @@ func TestSSEReaderWithTimeout_CloseReleasesBlockedSend(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	reader.Close()
 
-	// The reader goroutine must be fully gone after Close, not merely below
-	// waitForGoroutines' target+1 tolerance (which would pass with exactly one
-	// leaked goroutine). Poll strictly until the count returns to base.
+	// The reader goroutine must be fully gone after Close: poll strictly until
+	// the count returns to base, because a single leaked goroutine would keep
+	// it above base.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if runtime.NumGoroutine() <= base {

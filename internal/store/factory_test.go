@@ -190,3 +190,33 @@ func TestBuildRedisOptions_InvalidDSN(t *testing.T) {
 	_, err := buildRedisOptions("not-a-url")
 	require.Error(t, err)
 }
+
+func TestBuildRedisOptions_EnvDurationOverflow(t *testing.T) {
+	// Values at or below maxDurationSeconds (math.MaxInt64/1e9) must apply;
+	// larger values would overflow time.Duration into a negative duration and
+	// must be ignored so the DSN/default wins instead of a broken sentinel.
+	t.Run("conn_max_idle_time at max boundary", func(t *testing.T) {
+		t.Setenv(envRedisConnMaxIdleTimeSeconds, "9223372036")
+		opts, err := buildRedisOptions("redis://localhost:6379/0")
+		require.NoError(t, err)
+		assert.Equal(t, 9223372036*time.Second, opts.ConnMaxIdleTime)
+	})
+	t.Run("conn_max_idle_time overflow ignored", func(t *testing.T) {
+		t.Setenv(envRedisConnMaxIdleTimeSeconds, "9223372037")
+		opts, err := buildRedisOptions("redis://localhost:6379/0")
+		require.NoError(t, err)
+		assert.Equal(t, defaultRedisConnMaxIdleTime, opts.ConnMaxIdleTime)
+	})
+	t.Run("conn_max_lifetime at max boundary", func(t *testing.T) {
+		t.Setenv(envRedisConnMaxLifetimeSeconds, "9223372036")
+		opts, err := buildRedisOptions("redis://localhost:6379/0")
+		require.NoError(t, err)
+		assert.Equal(t, 9223372036*time.Second, opts.ConnMaxLifetime)
+	})
+	t.Run("conn_max_lifetime overflow ignored", func(t *testing.T) {
+		t.Setenv(envRedisConnMaxLifetimeSeconds, "9223372037")
+		opts, err := buildRedisOptions("redis://localhost:6379/0")
+		require.NoError(t, err)
+		assert.Equal(t, defaultRedisConnMaxLifetime, opts.ConnMaxLifetime)
+	})
+}

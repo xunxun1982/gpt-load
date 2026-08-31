@@ -6,6 +6,7 @@ import (
 	"gpt-load/internal/utils"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -807,4 +808,86 @@ func (t *closeTrackingTransport) RoundTrip(req *http.Request) (*http.Response, e
 
 func (t *closeTrackingTransport) CloseIdleConnections() {
 	t.closed.Store(true)
+}
+
+// TestGetClientHitRacesCapacityEviction verifies that a cache hit racing with
+// capacity eviction does not lose the recently-used entry.
+// GetClient's fast path must refresh lastUsed while still holding the read lock;
+// otherwise evictExcessClientsLocked (which runs under the write lock) may
+// select the freshly-hit entry based on a stale timestamp, remove it from the
+// cache, and lose connection reuse for subsequent requests.
+// Each round builds a fresh manager, marks A as the LRU candidate (lastUsed=1)
+// and B as the runner-up (lastUsed=2), then races several hits on A against an
+// insert that triggers eviction. The pinned B keeps the LRU choice unambiguous:
+// a refreshed A (now) is never the minimum, so B is evicted; a stale A (1) is
+// the minimum and gets evicted. Observable bug symptom: a fast-path hit returns
+// the original clientA while the entry is concurrently evicted. If A is
+// legitimately evicted before any hit arrives, the hits go through the slow
+// path and return a fresh client, which is fine.
+func TestGetClientHitRacesCapacityEviction(t *testing.T) {
+	const (
+		rounds  = 60
+		hitters = 3
+	)
+
+	for i := 0; i < rounds; i++ {
+		manager := NewHTTPClientManager()
+		manager.maxClients = 2
+
+		// Distinct timeouts per round keep fingerprints unique across rounds.
+		base := time.Duration(i * 10)
+		configA := &Config{RequestTimeout: (1 + base) * time.Second}
+		configB := &Config{RequestTimeout: (2 + base) * time.Second}
+		configC := &Config{RequestTimeout: (3 + base) * time.Second}
+
+		clientA := manager.GetClient(configA)
+		require.NotNil(t, clientA)
+		manager.GetClient(configB) // populate entry B
+
+		fpA := configA.getFingerprint()
+		fpB := configB.getFingerprint()
+
+		// Pin A as the LRU target (1) and B as the runner-up (2). If a hit
+		// refreshes A before eviction scans, A's timestamp becomes current and
+		// B is strictly the oldest; a stale (unrefreshed) A stays the oldest.
+		manager.lock.Lock()
+		manager.clients[fpA].lastUsed.Store(1)
+		manager.clients[fpB].lastUsed.Store(2)
+		manager.lock.Unlock()
+
+		// Race the hits and the insert simultaneously.
+		var start, done sync.WaitGroup
+		start.Add(hitters + 1)
+		done.Add(hitters + 1)
+
+		hits := make([]*http.Client, hitters)
+		for h := 0; h < hitters; h++ {
+			go func(idx int) {
+				start.Done()
+				start.Wait()
+				hits[idx] = manager.GetClient(configA) // hit: refresh lastUsed
+				done.Done()
+			}(h)
+		}
+		go func() {
+			start.Done()
+			start.Wait()
+			manager.GetClient(configC) // insert C: triggers eviction
+			done.Done()
+		}()
+
+		done.Wait()
+
+		// If entry A is gone, no hit may have returned the original clientA:
+		// a fast-path hit followed by eviction of that same entry is the bug.
+		manager.lock.RLock()
+		_, aExists := manager.clients[fpA]
+		manager.lock.RUnlock()
+		for h := 0; h < hitters; h++ {
+			if !aExists {
+				assert.NotSame(t, clientA, hits[h],
+					"hit returned an evicted client: stale lastUsed selected it (round %d, hitter %d)", i, h)
+			}
+		}
+	}
 }

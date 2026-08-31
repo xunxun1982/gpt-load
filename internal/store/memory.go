@@ -111,7 +111,24 @@ func (s *MemoryStore) Get(key string) ([]byte, error) {
 
 	if item.expiresAt > 0 && time.Now().UnixNano() > item.expiresAt {
 		s.deleteExpired(key)
-		return nil, ErrNotFound
+		// A concurrent Set may have refreshed the key between the snapshot above
+		// and the deletion recheck inside deleteExpired; re-read the current
+		// snapshot so a refreshed value is not masked by the stale pre-expiration
+		// item. A miss (or still-expired value) below means the key is truly gone.
+		s.mu.RLock()
+		rawItem, exists = s.data[key]
+		s.mu.RUnlock()
+		if !exists {
+			return nil, ErrNotFound
+		}
+		item, ok = rawItem.(memoryStoreItem)
+		if !ok {
+			return nil, fmt.Errorf("type mismatch: key '%s' holds a different data type", key)
+		}
+		if item.expiresAt > 0 && time.Now().UnixNano() > item.expiresAt {
+			return nil, ErrNotFound
+		}
+		return item.value, nil
 	}
 
 	return item.value, nil
@@ -148,7 +165,21 @@ func (s *MemoryStore) Exists(key string) (bool, error) {
 	if item, ok := rawItem.(memoryStoreItem); ok {
 		if item.expiresAt > 0 && time.Now().UnixNano() > item.expiresAt {
 			s.deleteExpired(key)
-			return false, nil
+			// Re-read after deleteExpired, mirroring Get: a concurrent Set may
+			// have refreshed the key between our snapshot and deleteExpired's
+			// recheck, and the refreshed value must not be masked by the stale
+			// pre-expiration item. Non-item data below still counts as existing.
+			s.mu.RLock()
+			rawItem, exists = s.data[key]
+			s.mu.RUnlock()
+			if !exists {
+				return false, nil
+			}
+			if item2, ok2 := rawItem.(memoryStoreItem); ok2 {
+				if item2.expiresAt > 0 && time.Now().UnixNano() > item2.expiresAt {
+					return false, nil
+				}
+			}
 		}
 	}
 

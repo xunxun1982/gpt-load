@@ -35,6 +35,11 @@ const (
 	envRedisConnMaxLifetimeSeconds = "REDIS_CONN_MAX_LIFETIME_SECONDS"
 )
 
+// maxDurationSeconds is math.MaxInt64 / 1e9: multiplying a larger seconds
+// value overflows time.Duration into a negative duration, which go-redis
+// would interpret as "timeout disabled" instead of the configured value.
+const maxDurationSeconds = int64(^uint64(0)>>1) / int64(time.Second)
+
 // buildRedisOptions parses the DSN and applies explicit pool limits.
 // Extracted for testability: pool fields are asserted without a live server.
 func buildRedisOptions(redisDSN string) (*redis.Options, error) {
@@ -80,23 +85,38 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 
 	// ConnMaxIdleTime: env > DSN > default. env <= 0 and the DSN's -1 sentinel
 	// both mean "explicitly disabled" and must survive: 0 would be normalized to
-	// 30m by go-redis, so it cannot express "disabled".
-	if v, ok := envRedisInt(envRedisConnMaxIdleTimeSeconds); ok {
-		if v > 0 {
-			opts.ConnMaxIdleTime = time.Duration(v) * time.Second
-		} else {
+	// 30m by go-redis, so it cannot express "disabled". Values above
+	// maxDurationSeconds would overflow time.Duration into a negative duration
+	// (interpreted as "disabled" by go-redis), so the env is treated as unset to
+	// keep it from silently corrupting the effective config: DSN or default win.
+	v, ok := envRedisInt(envRedisConnMaxIdleTimeSeconds)
+	if ok && int64(v) > maxDurationSeconds {
+		logrus.WithFields(logrus.Fields{"key": envRedisConnMaxIdleTimeSeconds, "value": v}).
+			Warnf("Ignoring value above %d seconds: it would overflow time.Duration", maxDurationSeconds)
+		ok = false
+	}
+	if ok {
+		if v <= 0 {
 			opts.ConnMaxIdleTime = -1
+		} else {
+			opts.ConnMaxIdleTime = time.Duration(v) * time.Second
 		}
 	} else if !redisDSNHasQueryParam(redisDSN, "conn_max_idle_time", "idle_timeout") {
 		opts.ConnMaxIdleTime = defaultRedisConnMaxIdleTime
 	}
 
 	// ConnMaxLifetime: same precedence and sentinel semantics as ConnMaxIdleTime.
-	if v, ok := envRedisInt(envRedisConnMaxLifetimeSeconds); ok {
-		if v > 0 {
-			opts.ConnMaxLifetime = time.Duration(v) * time.Second
-		} else {
+	v, ok = envRedisInt(envRedisConnMaxLifetimeSeconds)
+	if ok && int64(v) > maxDurationSeconds {
+		logrus.WithFields(logrus.Fields{"key": envRedisConnMaxLifetimeSeconds, "value": v}).
+			Warnf("Ignoring value above %d seconds: it would overflow time.Duration", maxDurationSeconds)
+		ok = false
+	}
+	if ok {
+		if v <= 0 {
 			opts.ConnMaxLifetime = -1
+		} else {
+			opts.ConnMaxLifetime = time.Duration(v) * time.Second
 		}
 	} else if !redisDSNHasQueryParam(redisDSN, "conn_max_lifetime", "max_conn_age") {
 		opts.ConnMaxLifetime = defaultRedisConnMaxLifetime

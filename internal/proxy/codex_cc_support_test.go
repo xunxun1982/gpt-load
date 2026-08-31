@@ -1848,11 +1848,13 @@ func TestCodexLineReader_NoOrphanGoroutineGrowth(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
 
-	lr := newCodexLineReader(bufio.NewReader(pr))
-
-	// Let unrelated goroutines from the test runner settle before measuring.
+	// Let unrelated goroutines from the test runner settle before measuring, and
+	// measure the baseline before the reader goroutine starts, so a leaked reader
+	// keeps the count above base and is detectable at stream close.
 	time.Sleep(50 * time.Millisecond)
 	base := runtime.NumGoroutine()
+
+	lr := newCodexLineReader(bufio.NewReader(pr))
 
 	const timeouts = 50
 	for i := 0; i < timeouts; i++ {
@@ -1877,8 +1879,8 @@ func TestCodexLineReader_NoOrphanGoroutineGrowth(t *testing.T) {
 	waitForGoroutines(t, base, 2*time.Second)
 	final := runtime.NumGoroutine()
 	t.Logf("codexLineReader: after stream close=%d (base=%d)", final, base)
-	if final > base+3 {
-		t.Fatalf("goroutines did not fall back after stream close: base=%d final=%d", base, final)
+	if final > base {
+		t.Fatalf("reader goroutine not released after stream close: base=%d final=%d", base, final)
 	}
 }
 
@@ -1938,9 +1940,6 @@ func TestCodexLineReader_TimeoutThenDataAndEOF(t *testing.T) {
 // The baseline is measured before the reader goroutine starts, and the wait uses
 // an inline poll with a strict returned-to-baseline condition: a leaked (still
 // blocked) reader goroutine keeps the count above base and trips the 2s deadline.
-// The shared waitForGoroutines helper does not fit here: it tolerates target+1
-// goroutines and only logs on timeout, so it cannot detect a single leaked
-// goroutine.
 func TestCodexLineReader_CloseReleasesBlockedSend(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
@@ -1985,7 +1984,7 @@ func TestCodexLineReader_CloseReleasesBlockedSend(t *testing.T) {
 	}
 	after := runtime.NumGoroutine()
 	t.Logf("codexLineReader: after Close released blocked send: base=%d after=%d", base, after)
-	if after > base+3 {
-		t.Fatalf("goroutines did not fall back after Close: base=%d after=%d", base, after)
+	if after > base {
+		t.Fatalf("reader goroutine not released after Close: base=%d after=%d", base, after)
 	}
 }

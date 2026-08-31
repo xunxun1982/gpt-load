@@ -76,6 +76,92 @@ func TestMemoryStore_DeleteExpiredDoesNotDeleteRefreshedValue(t *testing.T) {
 	require.Equal(t, []byte("fresh"), value)
 }
 
+// TestMemoryStore_GetRefreshBetweenExpiryCheckAndDelete guards against a stale
+// snapshot masking a concurrently refreshed value. Get snapshots the item under
+// RLock, releases it, then deleteExpired rechecks under a write lock; if a Set
+// refreshes the key in that window, deleteExpired keeps the fresh value but a
+// pre-fix Get still reported ErrNotFound. The race window is tiny (Get runs pure
+// compute between its snapshot and its deleteExpired write lock, and RWMutex wakes
+// waiting writers FIFO before readers), so no black-box test can deterministically
+// hit it. The test instead races Get against Set across many rounds and asserts the
+// ordering invariant: whenever Get reports ErrNotFound, Set must not have completed
+// yet (otherwise the key holds a fresh value and the miss was based on a stale
+// snapshot). After the fix this invariant holds unconditionally: the post-delete
+// re-read observes a refreshed value, and a miss implies the key is truly absent
+// (which can only have happened before Set finished).
+func TestMemoryStore_GetRefreshBetweenExpiryCheckAndDelete(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	const key = "refresh_key"
+	const rounds = 2000
+
+	for i := 0; i < rounds; i++ {
+		// Start from an already-expired item.
+		require.NoError(t, store.Set(key, []byte("old"), -time.Second))
+
+		getCh := make(chan error, 1)
+		setDone := make(chan struct{})
+		start := make(chan struct{})
+		go func() {
+			<-start
+			_, err := store.Get(key)
+			getCh <- err
+		}()
+		go func() {
+			<-start
+			_ = store.Set(key, []byte("new"), 0)
+			close(setDone)
+		}()
+		close(start)
+
+		err := <-getCh
+		if err == ErrNotFound {
+			select {
+			case <-setDone:
+				t.Fatalf("round %d: Get returned ErrNotFound after Set had already refreshed the key", i)
+			default:
+			}
+		}
+	}
+}
+
+// TestMemoryStore_ExistsRefreshBetweenExpiryCheckAndDelete is the Exists
+// counterpart of TestMemoryStore_GetRefreshBetweenExpiryCheckAndDelete: an
+// Exists miss must never be reported after Set completed, because then the key
+// demonstrably holds a fresh value.
+func TestMemoryStore_ExistsRefreshBetweenExpiryCheckAndDelete(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	const key = "refresh_exists_key"
+	const rounds = 2000
+
+	for i := 0; i < rounds; i++ {
+		require.NoError(t, store.Set(key, []byte("old"), -time.Second))
+
+		existsCh := make(chan bool, 1)
+		setDone := make(chan struct{})
+		go func() {
+			exists, _ := store.Exists(key)
+			existsCh <- exists
+		}()
+		go func() {
+			_ = store.Set(key, []byte("new"), 0)
+			close(setDone)
+		}()
+
+		exists := <-existsCh
+		if !exists {
+			select {
+			case <-setDone:
+				t.Fatalf("round %d: Exists returned false after Set had already refreshed the key", i)
+			default:
+			}
+		}
+	}
+}
+
 // TestMemoryStore_Delete tests delete operation
 func TestMemoryStore_Delete(t *testing.T) {
 	store := NewMemoryStore()
