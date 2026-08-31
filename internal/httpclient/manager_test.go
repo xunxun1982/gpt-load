@@ -835,10 +835,13 @@ func TestGetClientHitRacesCapacityEviction(t *testing.T) {
 		manager.maxClients = 2
 
 		// Distinct timeouts per round keep fingerprints unique across rounds.
-		base := time.Duration(i * 10)
-		configA := &Config{RequestTimeout: (1 + base) * time.Second}
-		configB := &Config{RequestTimeout: (2 + base) * time.Second}
-		configC := &Config{RequestTimeout: (3 + base) * time.Second}
+		// Build the per-round offset in seconds, then add it to the base
+		// timeout: (1+base) would multiply two durations (a durationcheck
+		// error), even though the accidental value happened to be correct.
+		base := time.Duration(i*10) * time.Second
+		configA := &Config{RequestTimeout: time.Second + base}
+		configB := &Config{RequestTimeout: 2*time.Second + base}
+		configC := &Config{RequestTimeout: 3*time.Second + base}
 
 		clientA := manager.GetClient(configA)
 		require.NotNil(t, clientA)

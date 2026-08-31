@@ -1988,3 +1988,76 @@ func TestCodexLineReader_CloseReleasesBlockedSend(t *testing.T) {
 		t.Fatalf("reader goroutine not released after Close: base=%d after=%d", base, after)
 	}
 }
+
+// linesThenErrReader yields r.data once, then blocks on release (if non-nil)
+// before returning r.err. It is shared by the codexLineReader and
+// SSEReaderWithTimeout terminal-error retention tests (in this file and
+// cc_support_test.go): it models an upstream connection that sends one chunk
+// and then fails with a non-EOF transport error. The release gate lets the
+// test deterministically hold the reader goroutine so the buffered result
+// channel is still full when the terminal error branch runs (see the
+// channel-full tests below for the full rationale).
+type linesThenErrReader struct {
+	data    []byte
+	err     error
+	pos     int
+	release chan struct{}
+}
+
+func (r *linesThenErrReader) Read(p []byte) (int, error) {
+	if r.pos < len(r.data) {
+		n := copy(p, r.data[r.pos:])
+		r.pos += n
+		return n, nil
+	}
+	if r.release != nil {
+		<-r.release
+	}
+	return 0, r.err
+}
+
+// TestCodexLineReader_PreservesTerminalErrorWhenChannelFull verifies that a
+// non-EOF terminal transport error is retained when the buffered result channel
+// is full (consumer abandoned the stream after a read timeout) instead of being
+// silently dropped and misread as a normal io.EOF once the channel closes.
+
+// The gate (release) makes the abandoned-consumer race deterministic on a
+// multi-core machine. Without it, whether the terminal error lands while the
+// channel is still full is a scheduling race: the first readLine could drain
+// the buffered line before the goroutine's terminal send runs, letting the
+// error flow through the channel (normal path) and masking the drop the bug
+// depends on. By blocking the reader until the test has awaited nothing, then
+// sleeping one turn so the goroutine definitely performs its terminal send
+// while the channel is full, we exercise the drop path reliably.
+func TestCodexLineReader_PreservesTerminalErrorWhenChannelFull(t *testing.T) {
+	errBoom := errors.New("simulated transport failure")
+
+	release := make(chan struct{})
+	lr := newCodexLineReader(bufio.NewReader(&linesThenErrReader{
+		data:    []byte("line-one\n"),
+		err:     errBoom,
+		release: release,
+	}))
+
+	// The goroutine reads "line-one\n" and parks on the release gate with the
+	// channel left full. Release it and give the goroutine a scheduler turn so
+	// its terminal send definitively sees the full channel and retains errBoom
+	// instead of delivering it through the channel.
+	close(release)
+	time.Sleep(10 * time.Millisecond)
+
+	line, err := lr.readLine(200 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected first line with nil error, got %q, %v", line, err)
+	}
+	if line != "line-one\n" {
+		t.Fatalf("unexpected first line: %q", line)
+	}
+
+	// The channel is closed by now; the retained terminal error must surface
+	// instead of being misread as io.EOF.
+	_, err = lr.readLine(200 * time.Millisecond)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("expected terminal error %v to be preserved, got %v", errBoom, err)
+	}
+}

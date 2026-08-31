@@ -5604,6 +5604,55 @@ func TestSSEReaderWithTimeout_TimeoutThenDataAndEOF(t *testing.T) {
 	}
 }
 
+// TestSSEReaderWithTimeout_PreservesTerminalErrorWhenChannelFull verifies that a
+// non-EOF terminal transport error is retained when the buffered result channel
+// is full (consumer abandoned the stream after a read timeout) instead of being
+// silently dropped and misread as a normal io.EOF once the channel closes.
+
+// The custom reader linesThenErrReader (defined in codex_cc_support_test.go) is
+// shared by both reader tests: its release gate deterministically holds the
+// reader goroutine so the buffered event channel is still full when the terminal
+// error branch runs, avoiding a scheduling race on multi-core machines (see the
+// codex test for the full rationale). Unlike codexLineReader, the readLoop here
+// starts lazily on the first ReadEvent; the test starts it explicitly through
+// startOnce (identical to what ReadEvent does, and guaranteed to run only once)
+// so the gate covers the exact same two-step sequence as the codex test.
+func TestSSEReaderWithTimeout_PreservesTerminalErrorWhenChannelFull(t *testing.T) {
+	errBoom := errors.New("simulated transport failure")
+
+	release := make(chan struct{})
+	reader := NewSSEReaderWithTimeout(&linesThenErrReader{
+		data:    []byte("data: {\"a\":1}\n\n"),
+		err:     errBoom,
+		release: release,
+	}, 200*time.Millisecond, 200*time.Millisecond)
+
+	// Start the reader goroutine explicitly so the release gate can hold it
+	// while nobody is waiting on the channel (the abandoned-consumer state)..
+	reader.startOnce.Do(func() { go reader.readLoop() })
+
+	// The goroutine buffers the event and parks on the release gate with the
+	// channel left full. Release it and give the goroutine a scheduler turn so
+	// its terminal send definitively sees the full channel and retains errBoom
+	// instead of delivering it through the channel.
+	close(release)
+	time.Sleep(10 * time.Millisecond)
+
+	event, err := reader.ReadEvent()
+	if err != nil {
+		t.Fatalf("expected first event with nil error, got %v", err)
+	}
+	if event == nil || event.Data != `{"a":1}` {
+		t.Fatalf("unexpected first event: %+v", event)
+	}
+
+	// The channel is closed by now; the retained terminal error must surface
+	// instead of being misread as io.EOF.
+	if _, err := reader.ReadEvent(); !errors.Is(err, errBoom) {
+		t.Fatalf("expected terminal error %v to be preserved, got %v", errBoom, err)
+	}
+}
+
 // TestSSEReader_BasicOperation tests that the basic SSEReader works correctly.
 func TestSSEReader_BasicOperation(t *testing.T) {
 	data := "event: message\ndata: {\"content\": \"hello\"}\n\n"

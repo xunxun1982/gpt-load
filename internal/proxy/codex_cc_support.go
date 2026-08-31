@@ -1862,6 +1862,15 @@ type codexLineReader struct {
 	reader *bufio.Reader
 	lines  chan codexLineReadResult
 
+	// terminalErr retains a non-EOF terminal error when the result channel is
+	// already full (consumer abandoned the stream after a read timeout), so a
+	// later read reports the real transport failure instead of misreading the
+	// channel close as a normal io.EOF. Only written by readLoop before it
+	// closes lines, and only read by readLine after the channel is closed, so
+	// a plain field is safe without atomics (close happens-before any receiver
+	// observing the closed channel).
+	terminalErr error
+
 	// done + closeOnce implement Close: cancelling the reader goroutine when
 	// the consumer abandons the stream (see Close for the contract).
 	done      chan struct{}
@@ -1891,6 +1900,15 @@ func newCodexLineReader(reader *bufio.Reader) *codexLineReader {
 // regardless of how many timeouts occur. Once the consumer abandons the stream
 // (e.g. after a read timeout) and the upstream keeps sending, a successful send
 // would otherwise block forever on the full channel; Close (done) releases it.
+//
+// Terminal error retention: when the result channel is already full because an
+// abandoned consumer left a result unconsumed, the terminating error cannot be
+// delivered through the channel. A non-EOF error is then retained in
+// terminalErr so a later readLine reports the real transport failure (connection
+// reset, decompression error, ...) instead of misreading the closed channel as
+// a normal io.EOF; a genuine io.EOF is still reported as EOF. The retained
+// value is visible to any receiver only after close(lines), which happens after
+// the write, so no synchronization is required.
 func (lr *codexLineReader) readLoop() {
 	defer close(lr.lines)
 	for {
@@ -1899,12 +1917,15 @@ func (lr *codexLineReader) readLoop() {
 			// Terminal result (EOF / connection close): deliver it if the
 			// consumer is still waiting, but never block. If a timed-out caller
 			// abandoned the stream and left a buffered line unconsumed, the
-			// channel is full — dropping this error is fine (nobody will read
-			// it) and guarantees this goroutine exits as soon as the underlying
-			// reader errors.
+			// channel is full — retain a non-EOF error in terminalErr so the
+			// transport failure is not misread as a normal EOF, then guarantee
+			// this goroutine exits as soon as the underlying reader errors.
 			select {
 			case lr.lines <- codexLineReadResult{line: line, err: err}:
 			default:
+				if err != io.EOF {
+					lr.terminalErr = err
+				}
 			}
 			return
 		}
@@ -1932,6 +1953,9 @@ func (lr *codexLineReader) readLine(timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		result, ok := <-lr.lines
 		if !ok {
+			if lr.terminalErr != nil {
+				return "", lr.terminalErr
+			}
 			return "", io.EOF
 		}
 		return result.line, result.err
@@ -1941,6 +1965,9 @@ func (lr *codexLineReader) readLine(timeout time.Duration) (string, error) {
 	select {
 	case result, ok := <-lr.lines:
 		if !ok {
+			if lr.terminalErr != nil {
+				return "", lr.terminalErr
+			}
 			return "", io.EOF
 		}
 		return result.line, result.err

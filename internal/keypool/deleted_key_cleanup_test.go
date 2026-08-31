@@ -401,8 +401,8 @@ func TestResetGroupActiveKeysFailureCountSkipsMissingStoreHash(t *testing.T) {
 
 func TestResetStoreFailureCountLockedCanRunUnderLifecycleReadLock(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
-	defer provider.Stop()
 	defer func() { require.NoError(t, memStore.Close()) }()
+	defer provider.Stop()
 
 	group := createTestGroup(t, db, "reset-locked-helper")
 	key := createStatusTestKey(t, db, memStore, group.ID, 3)
@@ -420,8 +420,8 @@ func TestResetStoreFailureCountLockedCanRunUnderLifecycleReadLock(t *testing.T) 
 
 func TestResetGroupFailureCountReleasesLifecycleLockBeforeCallback(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
-	defer provider.Stop()
 	defer func() { require.NoError(t, memStore.Close()) }()
+	defer provider.Stop()
 
 	group := createTestGroup(t, db, "reset-callback-lock")
 	createStatusTestKey(t, db, memStore, group.ID, 2)
@@ -454,8 +454,8 @@ func TestResetGroupFailureCountReleasesLifecycleLockBeforeCallback(t *testing.T)
 
 func TestResetAllFailureCountReleasesLifecycleLockBeforeCallback(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
-	defer provider.Stop()
 	defer func() { require.NoError(t, memStore.Close()) }()
+	defer provider.Stop()
 
 	group := createTestGroup(t, db, "reset-all-callback-lock")
 	createStatusTestKey(t, db, memStore, group.ID, 2)

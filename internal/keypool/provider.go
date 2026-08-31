@@ -367,9 +367,11 @@ func (p *KeyProvider) executeWithRetry(operation func(db *gorm.DB) error) error 
 }
 
 func (p *KeyProvider) handleSuccess(keyID uint, keyHashKey, activeKeysListKey string, groupID uint) error {
-	p.lifecycleMu.RLock()
-	keyDetails, err := p.store.HGetAll(keyHashKey)
-	p.lifecycleMu.RUnlock()
+	keyDetails, err := func() (map[string]string, error) {
+		p.lifecycleMu.RLock()
+		defer p.lifecycleMu.RUnlock()
+		return p.store.HGetAll(keyHashKey)
+	}()
 	if err != nil {
 		return fmt.Errorf("failed to get key details from store: %w", err)
 	}
@@ -536,9 +538,11 @@ func (p *KeyProvider) handleFailures(keyID uint, group *models.Group, keyHashKey
 		return nil
 	}
 
-	p.lifecycleMu.RLock()
-	keyDetails, err := p.store.HGetAll(keyHashKey)
-	p.lifecycleMu.RUnlock()
+	keyDetails, err := func() (map[string]string, error) {
+		p.lifecycleMu.RLock()
+		defer p.lifecycleMu.RUnlock()
+		return p.store.HGetAll(keyHashKey)
+	}()
 	if err != nil {
 		return fmt.Errorf("failed to get key details from store: %w", err)
 	}
@@ -946,21 +950,26 @@ func (p *KeyProvider) AddKeys(groupID uint, keys []models.APIKey) error {
 		// Serialize the database insert and cache update with deletion. Taking the
 		// lifecycle read lock before opening the transaction prevents a deleter
 		// from removing the row while this batch is waiting to populate the store.
-		p.lifecycleMu.RLock()
+		err := func() error {
+			p.lifecycleMu.RLock()
+			defer p.lifecycleMu.RUnlock()
 
-		// Step 1: Insert this batch in a short transaction
-		if err := p.db.Transaction(func(tx *gorm.DB) error {
-			return tx.Create(&batch).Error
-		}); err != nil {
-			p.lifecycleMu.RUnlock()
+			// Step 1: Insert this batch in a short transaction
+			if err := p.db.Transaction(func(tx *gorm.DB) error {
+				return tx.Create(&batch).Error
+			}); err != nil {
+				return err
+			}
+
+			// Step 2: Update in-memory store outside the transaction using batch method
+			if err := p.addKeysToCacheBatchLocked(groupID, batch); err != nil {
+				logrus.WithFields(logrus.Fields{"batchSize": len(batch), "error": err}).Warn("Failed to add batch to store; will be refreshed on next reload")
+			}
+			return nil
+		}()
+		if err != nil {
 			return err
 		}
-
-		// Step 2: Update in-memory store outside the transaction using batch method
-		if err := p.addKeysToCacheBatchLocked(groupID, batch); err != nil {
-			logrus.WithFields(logrus.Fields{"batchSize": len(batch), "error": err}).Warn("Failed to add batch to store; will be refreshed on next reload")
-		}
-		p.lifecycleMu.RUnlock()
 
 		// Short delay between batches to avoid monopolizing the DB
 		// Increased delay for better concurrency with other operations
@@ -1156,9 +1165,11 @@ func (p *KeyProvider) RestoreMultipleKeys(groupID uint, keyValues []string) (int
 // This is useful when importing a group, treating it as a fresh import.
 // Note: For newly imported keys, failure_count is already 0, so this is a no-op in that case.
 func (p *KeyProvider) ResetGroupActiveKeysFailureCount(groupID uint) (int64, error) {
-	p.lifecycleMu.RLock()
-	resetCount, err := p.resetGroupActiveKeysFailureCountLocked(groupID)
-	p.lifecycleMu.RUnlock()
+	resetCount, err := func() (int64, error) {
+		p.lifecycleMu.RLock()
+		defer p.lifecycleMu.RUnlock()
+		return p.resetGroupActiveKeysFailureCountLocked(groupID)
+	}()
 	if err != nil {
 		return resetCount, err
 	}
@@ -1232,9 +1243,11 @@ func (p *KeyProvider) resetGroupActiveKeysFailureCountLocked(groupID uint) (int6
 // This is useful when system configuration changes (e.g., blacklist_threshold) and we want to
 // reset the failure history to avoid immediate blacklisting with new thresholds.
 func (p *KeyProvider) ResetAllActiveKeysFailureCount() (int64, error) {
-	p.lifecycleMu.RLock()
-	totalReset, affectedGroups, err := p.resetAllActiveKeysFailureCountLocked()
-	p.lifecycleMu.RUnlock()
+	totalReset, affectedGroups, err := func() (int64, map[uint]struct{}, error) {
+		p.lifecycleMu.RLock()
+		defer p.lifecycleMu.RUnlock()
+		return p.resetAllActiveKeysFailureCountLocked()
+	}()
 	// Invalidate groups committed before a later batch failure: their store
 	// failure counts are stale otherwise. Error paths carry collected groups.
 	if p.CacheInvalidationCallback != nil {
@@ -1451,87 +1464,95 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 		batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
 		// Keep each database batch and its corresponding cache cleanup in one
 		// lifecycle critical section. This gives deletion a consistent order with
-		// loaders/recovery while releasing the lock between batches.
-		p.lifecycleMu.Lock()
+		// loaders/recovery while releasing the lock between batches. The lock is
+		// released via defer so a panic in a gorm or Store call cannot leak the
+		// lifecycle write lock and block every subsequent keypool operation.
+		retry, retryDelay, batchErr := func() (bool, time.Duration, error) {
+			p.lifecycleMu.Lock()
+			defer p.lifecycleMu.Unlock()
 
-		// Fetch IDs first for all dialects to enable consistent cache cleanup
-		// This ensures we can delete both DB records and cache entries
-		if err := p.db.WithContext(batchCtx).Model(&models.APIKey{}).
-			Select("id").
-			Where("group_id = ?", groupID).
-			Order("id ASC").
-			Limit(chunkSize).
-			Pluck("id", &ids).Error; err != nil {
-			p.lifecycleMu.Unlock()
-			cancel()
-			if utils.IsTransientDBError(err) {
-				if retries >= maxRetries {
-					logrus.WithError(err).Errorf("Max retries reached after deleting %d keys (total retries: %d)", totalDeleted, totalRetries)
-					return totalDeleted, err
+			// Fetch IDs first for all dialects to enable consistent cache cleanup
+			// This ensures we can delete both DB records and cache entries
+			if err := p.db.WithContext(batchCtx).Model(&models.APIKey{}).
+				Select("id").
+				Where("group_id = ?", groupID).
+				Order("id ASC").
+				Limit(chunkSize).
+				Pluck("id", &ids).Error; err != nil {
+				if utils.IsTransientDBError(err) {
+					if retries >= maxRetries {
+						logrus.WithError(err).Errorf("Max retries reached after deleting %d keys (total retries: %d)", totalDeleted, totalRetries)
+						return false, 0, err
+					}
+					delay := time.Duration(50<<retries) * time.Millisecond
+					if delay > 1000*time.Millisecond {
+						delay = 1000 * time.Millisecond
+					}
+					// Use Warn level for transient errors so users know what's happening
+					logrus.WithError(err).Warnf("Transient query error during deletion (progress: %d/%d keys); retrying in %v (attempt %d/%d)", totalDeleted, totalCount, delay, retries+1, maxRetries)
+					return true, delay, nil
 				}
-				delay := time.Duration(50<<retries) * time.Millisecond
-				if delay > 1000*time.Millisecond {
-					delay = 1000 * time.Millisecond
-				}
-				// Use Warn level for transient errors so users know what's happening
-				logrus.WithError(err).Warnf("Transient query error during deletion (progress: %d/%d keys); retrying in %v (attempt %d/%d)", totalDeleted, totalCount, delay, retries+1, maxRetries)
-				time.Sleep(delay)
-				retries++
-				totalRetries++
-				continue
+				logrus.WithError(err).Errorf("Failed to query IDs after deleting %d keys", totalDeleted)
+				return false, 0, err
 			}
-			logrus.WithError(err).Errorf("Failed to query IDs after deleting %d keys", totalDeleted)
-			return totalDeleted, err
+			if len(ids) == 0 {
+				return false, 0, nil
+			}
+
+			// Delete by ID list using primary key index (fast for all databases)
+			res = p.db.WithContext(batchCtx).Where("id IN ?", ids).Delete(&models.APIKey{})
+			if res.Error != nil {
+				// Retry with exponential backoff on transient/timeout errors
+				if utils.IsTransientDBError(res.Error) {
+					if retries >= maxRetries {
+						logrus.WithError(res.Error).Errorf("Max retries reached after deleting %d keys (total retries: %d)", totalDeleted, totalRetries)
+						return false, 0, res.Error
+					}
+					delay := time.Duration(50<<retries) * time.Millisecond
+					if delay > 1000*time.Millisecond {
+						delay = 1000 * time.Millisecond
+					}
+					// Use Warn level for transient errors so users know what's happening
+					logrus.WithError(res.Error).Warnf("Transient delete error (progress: %d/%d keys); retrying in %v (attempt %d/%d)", totalDeleted, totalCount, delay, retries+1, maxRetries)
+					return true, delay, nil
+				}
+				logrus.WithError(res.Error).Errorf("Deletion failed after deleting %d keys", totalDeleted)
+				return false, 0, res.Error
+			}
+
+			// Best-effort cache cleanup: delete key hashes from store while the
+			// lifecycle lock is still held, so a concurrent restore/add cannot be
+			// removed by this batch's cleanup. Redis can delete the whole batch in
+			// one round trip; MemoryStore uses the same interface without extra cost.
+			keyHashKeys := make([]string, len(ids))
+			for i, id := range ids {
+				keyHashKeys[i] = "key:" + strconv.FormatUint(uint64(id), 10)
+			}
+			if err := p.store.Del(keyHashKeys...); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"groupID": groupID,
+					"count":   len(keyHashKeys),
+					"error":   err,
+				}).Warn("Failed to delete key hashes from store")
+			}
+			return false, 0, nil
+		}()
+		cancel()
+
+		if batchErr != nil {
+			return totalDeleted, batchErr
+		}
+		if retry {
+			// Backoff runs outside the critical section so the write lock is not
+			// held during the sleep.
+			time.Sleep(retryDelay)
+			retries++
+			totalRetries++
+			continue
 		}
 		if len(ids) == 0 {
-			p.lifecycleMu.Unlock()
-			cancel()
 			break
 		}
-
-		// Delete by ID list using primary key index (fast for all databases)
-		res = p.db.WithContext(batchCtx).Where("id IN ?", ids).Delete(&models.APIKey{})
-		if res.Error != nil {
-			p.lifecycleMu.Unlock()
-			cancel()
-			// Retry with exponential backoff on transient/timeout errors
-			if utils.IsTransientDBError(res.Error) {
-				if retries >= maxRetries {
-					logrus.WithError(res.Error).Errorf("Max retries reached after deleting %d keys (total retries: %d)", totalDeleted, totalRetries)
-					return totalDeleted, res.Error
-				}
-				delay := time.Duration(50<<retries) * time.Millisecond
-				if delay > 1000*time.Millisecond {
-					delay = 1000 * time.Millisecond
-				}
-				// Use Warn level for transient errors so users know what's happening
-				logrus.WithError(res.Error).Warnf("Transient delete error (progress: %d/%d keys); retrying in %v (attempt %d/%d)", totalDeleted, totalCount, delay, retries+1, maxRetries)
-				time.Sleep(delay)
-				retries++
-				totalRetries++
-				continue
-			}
-			logrus.WithError(res.Error).Errorf("Deletion failed after deleting %d keys", totalDeleted)
-			return totalDeleted, res.Error
-		}
-
-		// Best-effort cache cleanup: delete key hashes from store while the
-		// lifecycle lock is still held, so a concurrent restore/add cannot be
-		// removed by this batch's cleanup. Redis can delete the whole batch in
-		// one round trip; MemoryStore uses the same interface without extra cost.
-		keyHashKeys := make([]string, len(ids))
-		for i, id := range ids {
-			keyHashKeys[i] = "key:" + strconv.FormatUint(uint64(id), 10)
-		}
-		if err := p.store.Del(keyHashKeys...); err != nil {
-			logrus.WithFields(logrus.Fields{
-				"groupID": groupID,
-				"count":   len(keyHashKeys),
-				"error":   err,
-			}).Warn("Failed to delete key hashes from store")
-		}
-		p.lifecycleMu.Unlock()
-		cancel()
 
 		// Log successful recovery after retries
 		if retries > 0 {
@@ -1569,30 +1590,33 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 
 	// Rebuild the active list from the database while holding the lifecycle lock.
 	// A progress callback may have added a new key after the last delete batch;
-	// blindly deleting the list here would remove that valid key.
+	// blindly deleting the list here would remove that valid key. The lock is
+	// released via defer so a panic in a gorm or Store call cannot leak it.
 	activeKeysListKey := "group:" + strconv.FormatUint(uint64(groupID), 10) + ":active_keys"
-	p.lifecycleMu.Lock()
-	var activeKeyIDs []uint
-	if err := p.db.Model(&models.APIKey{}).
-		Select("id").
-		Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).
-		Order("id ASC").
-		Pluck("id", &activeKeyIDs).Error; err != nil {
-		logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to rebuild active key list after deletion")
-	} else {
-		if err := p.store.Delete(activeKeysListKey); err != nil {
-			logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to clear active key list after deletion")
-		} else if len(activeKeyIDs) > 0 {
-			activeKeyValues := make([]any, len(activeKeyIDs))
-			for i, id := range activeKeyIDs {
-				activeKeyValues[i] = id
-			}
-			if err := p.store.LPush(activeKeysListKey, activeKeyValues...); err != nil {
-				logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to rebuild active key list after deletion")
+	func() {
+		p.lifecycleMu.Lock()
+		defer p.lifecycleMu.Unlock()
+		var activeKeyIDs []uint
+		if err := p.db.Model(&models.APIKey{}).
+			Select("id").
+			Where("group_id = ? AND status = ?", groupID, models.KeyStatusActive).
+			Order("id ASC").
+			Pluck("id", &activeKeyIDs).Error; err != nil {
+			logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to rebuild active key list after deletion")
+		} else {
+			if err := p.store.Delete(activeKeysListKey); err != nil {
+				logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to clear active key list after deletion")
+			} else if len(activeKeyIDs) > 0 {
+				activeKeyValues := make([]any, len(activeKeyIDs))
+				for i, id := range activeKeyIDs {
+					activeKeyValues[i] = id
+				}
+				if err := p.store.LPush(activeKeysListKey, activeKeyValues...); err != nil {
+					logrus.WithFields(logrus.Fields{"groupID": groupID, "error": err}).Warn("Failed to rebuild active key list after deletion")
+				}
 			}
 		}
-	}
-	p.lifecycleMu.Unlock()
+	}()
 
 	// Log completion with retry statistics if any retries occurred
 	if totalRetries > 0 {

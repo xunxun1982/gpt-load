@@ -4723,6 +4723,15 @@ type SSEReaderWithTimeout struct {
 	startOnce sync.Once
 	eventCh   chan sseReadResult
 
+	// terminalErr retains a non-EOF terminal error when the result channel is
+	// already full (consumer abandoned the stream after a read timeout), so a
+	// later read reports the real transport failure instead of misreading the
+	// channel close as a normal io.EOF. Only written by readLoop before it
+	// closes eventCh, and only read by ReadEvent after the channel is closed, so
+	// a plain field is safe without atomics (close happens-before any receiver
+	// observing the closed channel).
+	terminalErr error
+
 	// done + closeOnce implement Close: cancelling the reader goroutine when
 	// the consumer abandons the stream (see Close for the contract).
 	done      chan struct{}
@@ -4767,6 +4776,15 @@ func NewSSEReaderWithTimeout(r io.Reader, firstByteTimeout, subsequentTimeout ti
 // connection close. This replaces the previous per-read goroutine pattern,
 // which leaked one goroutine (~2KB stack) per timeout until the connection
 // closed.
+//
+// Terminal error retention: when the result channel is already full because an
+// abandoned consumer left a result unconsumed, the terminating error cannot be
+// delivered through the channel. A non-EOF error is then retained in
+// terminalErr so a later ReadEvent reports the real transport failure
+// (connection reset, decompression error, ...) instead of misreading the closed
+// channel as a normal io.EOF; a genuine io.EOF is still reported as EOF. The
+// retained value is visible to any receiver only after close(eventCh), which
+// happens after the write, so no synchronization is required.
 func (r *SSEReaderWithTimeout) readLoop() {
 	defer close(r.eventCh)
 	for {
@@ -4775,12 +4793,15 @@ func (r *SSEReaderWithTimeout) readLoop() {
 			// Terminal result (EOF / connection close): deliver it if the
 			// consumer is still waiting, but never block. If a timed-out caller
 			// abandoned the stream and left a buffered result unconsumed, the
-			// channel is full — dropping this error is fine (nobody will read
-			// it) and guarantees this goroutine exits as soon as the underlying
-			// reader errors.
+			// channel is full — retain a non-EOF error in terminalErr so the
+			// transport failure is not misread as a normal EOF, then guarantee
+			// this goroutine exits as soon as the underlying reader errors.
 			select {
 			case r.eventCh <- sseReadResult{event: event, err: err}:
 			default:
+				if err != io.EOF {
+					r.terminalErr = err
+				}
 			}
 			return
 		}
@@ -4818,6 +4839,9 @@ func (r *SSEReaderWithTimeout) ReadEvent() (*SSEEvent, error) {
 	if timeout <= 0 {
 		result, ok := <-r.eventCh
 		if !ok {
+			if r.terminalErr != nil {
+				return nil, r.terminalErr
+			}
 			return nil, io.EOF
 		}
 		if result.err == nil && result.event != nil {
@@ -4832,6 +4856,9 @@ func (r *SSEReaderWithTimeout) ReadEvent() (*SSEEvent, error) {
 	select {
 	case result, ok := <-r.eventCh:
 		if !ok {
+			if r.terminalErr != nil {
+				return nil, r.terminalErr
+			}
 			return nil, io.EOF
 		}
 		if result.err == nil && result.event != nil {

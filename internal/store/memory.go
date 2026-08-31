@@ -186,7 +186,16 @@ func (s *MemoryStore) Exists(key string) (bool, error) {
 	return true, nil
 }
 
+// testHookBeforeExpiryDelete is invoked by deleteExpired before it takes the
+// write lock. Tests use it to deterministically interleave a concurrent Set
+// exactly between Get/Exists's snapshot read and deleteExpired's recheck; it
+// is nil in production.
+var testHookBeforeExpiryDelete func(key string)
+
 func (s *MemoryStore) deleteExpired(key string) {
+	if testHookBeforeExpiryDelete != nil {
+		testHookBeforeExpiryDelete(key)
+	}
 	now := time.Now().UnixNano()
 	s.mu.Lock()
 	defer s.mu.Unlock()

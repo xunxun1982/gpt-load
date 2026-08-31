@@ -906,8 +906,8 @@ func TestRestoreKeys(t *testing.T) {
 
 func TestRestoreKeysReleasesLifecycleLockBeforeCallback(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
-	defer provider.Stop()
 	defer func() { require.NoError(t, memStore.Close()) }()
+	defer provider.Stop()
 
 	group := createTestGroup(t, db, "restore-callback-lock")
 	key := &models.APIKey{
@@ -944,8 +944,8 @@ func TestRestoreKeysReleasesLifecycleLockBeforeCallback(t *testing.T) {
 
 func TestRestoreKeysPanicReleasesLifecycleWriteLock(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
-	defer provider.Stop()
 	defer func() { require.NoError(t, memStore.Close()) }()
+	defer provider.Stop()
 
 	// Create test group and invalid key with a real key value (the hash must
 	// match that value).
@@ -985,6 +985,49 @@ func TestRestoreKeysPanicReleasesLifecycleWriteLock(t *testing.T) {
 		// Write lock was released after the panic.
 	case <-time.After(2 * time.Second):
 		t.Fatal("lifecycle write lock leaked after panic during RestoreKeys")
+	}
+}
+
+func TestAddKeysPanicReleasesLifecycleReadLock(t *testing.T) {
+	provider, db, memStore := setupTestProvider(t)
+	defer func() { require.NoError(t, memStore.Close()) }()
+	defer provider.Stop()
+
+	group := createTestGroup(t, db, "addkeys-panic-lock")
+	keys := []models.APIKey{{
+		GroupID:  group.ID,
+		KeyValue: "sk-panic-add",
+		KeyHash:  provider.encryptionSvc.Hash("sk-panic-add"),
+		Status:   models.KeyStatusActive,
+	}}
+
+	// Swap in a store whose HSet panics. AddKeys calls addKeysToCacheBatchLocked
+	// outside the DB transaction, and on the non-pipeline path (MemoryStore does
+	// not implement RedisPipeliner) that helper calls p.store.HSet per key. A
+	// custom Store implementation may panic for any reason, so any manual RUnlock
+	// placed after that call would be skipped unless the lock is released via
+	// defer.
+	provider.store = &panicStore{Store: memStore}
+
+	require.Panics(t, func() {
+		_ = provider.AddKeys(group.ID, keys)
+	})
+
+	// The lifecycle read lock must be released by the deferred unlock even
+	// though the panic skipped the manual unlock: otherwise every subsequent
+	// lifecycle writer (RemoveKeys, LoadKeysFromDB, ClearAllKeys, ...) blocks.
+	done := make(chan struct{})
+	go func() {
+		provider.lifecycleMu.Lock()
+		close(done)
+		provider.lifecycleMu.Unlock()
+	}()
+
+	select {
+	case <-done:
+		// Read lock was released after the panic.
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifecycle read lock leaked after panic during AddKeys")
 	}
 }
 
@@ -1061,8 +1104,8 @@ func TestResetAllActiveKeysFailureCountInvalidatesOnError(t *testing.T) {
 
 func TestRestoreKeysWaitsForLifecycleWriteLock(t *testing.T) {
 	provider, db, memStore := setupTestProvider(t)
-	defer provider.Stop()
 	defer func() { require.NoError(t, memStore.Close()) }()
+	defer provider.Stop()
 
 	group := createTestGroup(t, db, "restore-write-lock")
 	key := &models.APIKey{
