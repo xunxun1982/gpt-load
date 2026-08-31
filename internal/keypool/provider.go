@@ -1461,15 +1461,17 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 
 		var res *gorm.DB
 		var ids []uint
-		batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
-		// Keep each database batch and its corresponding cache cleanup in one
-		// lifecycle critical section. This gives deletion a consistent order with
-		// loaders/recovery while releasing the lock between batches. The lock is
-		// released via defer so a panic in a gorm or Store call cannot leak the
-		// lifecycle write lock and block every subsequent keypool operation.
 		retry, retryDelay, batchErr := func() (bool, time.Duration, error) {
 			p.lifecycleMu.Lock()
 			defer p.lifecycleMu.Unlock()
+
+			// Start the batch timeout after the lifecycle write lock is
+			// acquired. Waiting on the lock must not consume the batch budget:
+			// a long-held lock (e.g. a concurrent restore) would otherwise
+			// hand an already-expired context to the query/delete, triggering
+			// transient retries until maxRetries.
+			batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
+			defer cancel()
 
 			// Fetch IDs first for all dialects to enable consistent cache cleanup
 			// This ensures we can delete both DB records and cache entries
@@ -1537,7 +1539,6 @@ func (p *KeyProvider) RemoveAllKeys(ctx context.Context, groupID uint, progressC
 			}
 			return false, 0, nil
 		}()
-		cancel()
 
 		if batchErr != nil {
 			return totalDeleted, batchErr

@@ -193,8 +193,9 @@ func TestBuildRedisOptions_InvalidDSN(t *testing.T) {
 
 func TestBuildRedisOptions_ConnectionCountsAboveMaxInt32(t *testing.T) {
 	// go-redis v9 newConnPool calls SafeIntToInt32 on PoolSize, MinIdleConns,
-	// and MaxActiveConns; values above math.MaxInt32 cause a panic instead of
-	// returning a descriptive error. Must reject them at the validation layer.
+	// MaxIdleConns, and MaxActiveConns; values above math.MaxInt32 cause a panic
+	// instead of returning a descriptive error. Must reject them at the
+	// validation layer.
 	maxInt32 := int64(^uint32(0) >> 1) // math.MaxInt32
 
 	t.Run("PoolSize env above MaxInt32", func(t *testing.T) {
@@ -213,6 +214,16 @@ func TestBuildRedisOptions_ConnectionCountsAboveMaxInt32(t *testing.T) {
 		_, err := buildRedisOptions("redis://localhost:6379/0?max_active_conns=2147483648")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "MaxActiveConns")
+	})
+	t.Run("MaxIdleConns DSN above MaxInt32", func(t *testing.T) {
+		_, err := buildRedisOptions("redis://localhost:6379/0?max_idle_conns=2147483648")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "MaxIdleConns")
+	})
+	t.Run("MaxIdleConns DSN at MaxInt32 boundary", func(t *testing.T) {
+		opts, err := buildRedisOptions("redis://localhost:6379/0?max_idle_conns=2147483647")
+		require.NoError(t, err)
+		assert.Equal(t, int(maxInt32), opts.MaxIdleConns)
 	})
 	t.Run("PoolSize env at MaxInt32 boundary", func(t *testing.T) {
 		t.Setenv(envRedisPoolSize, "2147483647") // MaxInt32

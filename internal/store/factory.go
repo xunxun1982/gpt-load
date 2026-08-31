@@ -41,9 +41,10 @@ const (
 const maxDurationSeconds = int64(^uint64(0)>>1) / int64(time.Second)
 
 // maxInt32 is math.MaxInt32. go-redis v9 narrows connection-count options
-// (PoolSize, MinIdleConns, MaxActiveConns) to int32 when creating the pool
-// (util.SafeIntToInt32) and panics on overflow, so we reject out-of-range
-// values here with a descriptive error instead of crashing the process.
+// (PoolSize, MinIdleConns, MaxIdleConns, MaxActiveConns) to int32 when
+// creating the pool (util.SafeIntToInt32) and panics on overflow, so we
+// reject out-of-range values here with a descriptive error instead of
+// crashing the process.
 const maxInt32 = int64(^uint32(0) >> 1)
 
 // buildRedisOptions parses the DSN and applies explicit pool limits.
@@ -140,6 +141,12 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 	}
 	if int64(opts.MinIdleConns) > maxInt32 {
 		return nil, fmt.Errorf("redis: MinIdleConns %d exceeds max supported value %d", opts.MinIdleConns, maxInt32)
+	}
+	// MaxIdleConns is also converted to int32 by SafeIntToInt32 in newConnPool
+	// (go-redis v9 options.go), so an oversized DSN value would panic in
+	// redis.NewClient just like the other count options above.
+	if int64(opts.MaxIdleConns) > maxInt32 {
+		return nil, fmt.Errorf("redis: MaxIdleConns %d exceeds max supported value %d", opts.MaxIdleConns, maxInt32)
 	}
 
 	return opts, nil
