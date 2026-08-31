@@ -159,12 +159,14 @@ const metricsLockShardCount = 64
 // Locking model: every metrics-key operation goes through the per-key sharded locks
 // (see metricsLockShardCount/lockShard): read-only paths take the shard as RLock,
 // read-modify-write paths take it as Lock so the same key's read-modify-write stays
-// atomic. The non-key fields (dirtyCallback, config) are guarded by configMu so they stay
-// decoupled from the data shards. The store itself is additionally thread-safe.
+// atomic. The non-key fields (dirtyCallback, config) are guarded by configMu (an RWMutex):
+// read paths (GetConfig/getDirtyCallback) take RLock so concurrent record paths on
+// different shards are not serialized on configMu, while the single write path
+// (SetDirtyCallback) takes Lock. The store itself is additionally thread-safe.
 type DynamicWeightManager struct {
 	store         store.Store
 	config        *DynamicWeightConfig
-	configMu      sync.Mutex
+	configMu      sync.RWMutex
 	dirtyCallback DirtyKeyCallback
 	locks         [metricsLockShardCount]sync.RWMutex
 }
@@ -196,10 +198,12 @@ func (m *DynamicWeightManager) SetDirtyCallback(callback DirtyKeyCallback) {
 
 // GetConfig returns the current configuration.
 // Guarded by configMu (decoupled from the per-key data shards); the returned pointer is
-// immutable after construction.
+// immutable after construction. RLock is taken because config reads far outnumber writes,
+// so an exclusive Lock would serialize every reader on this hot path; RLock allows
+// concurrent readers to proceed in parallel.
 func (m *DynamicWeightManager) GetConfig() *DynamicWeightConfig {
-	m.configMu.Lock()
-	defer m.configMu.Unlock()
+	m.configMu.RLock()
+	defer m.configMu.RUnlock()
 	return m.config
 }
 
@@ -223,9 +227,17 @@ func (m *DynamicWeightManager) lockShard(key string) *sync.RWMutex {
 // dirtyCallback go through configMu so concurrent SetDirtyCallback calls cannot race with
 // record paths. The callback only takes the persistence layer's own mutex, so invoking it
 // while a shard lock is held cannot re-enter the manager locks (no deadlock).
+//
+// RLock is taken instead of Lock: getDirtyCallback runs on the hot path — called from
+// recordSuccess/recordFailure for every request success/failure — while dirtyCallback is
+// written only once via SetDirtyCallback at startup (reads far outnumber writes). An
+// exclusive Lock here would serialize every metric-shard update on configMu, defeating
+// the per-key sharding. RLock lets concurrent readers proceed in parallel. Lock ordering
+// is fixed (shard -> configMu) and SetDirtyCallback never takes a shard lock, so RLock
+// cannot deadlock.
 func (m *DynamicWeightManager) getDirtyCallback() DirtyKeyCallback {
-	m.configMu.Lock()
-	defer m.configMu.Unlock()
+	m.configMu.RLock()
+	defer m.configMu.RUnlock()
 	return m.dirtyCallback
 }
 

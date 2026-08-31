@@ -169,6 +169,18 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 		return nil, fmt.Errorf("redis: MaxIdleConns %d exceeds max supported value %d", opts.MaxIdleConns, maxInt32)
 	}
 
+	// Clamp MinIdleConns to a positive MaxActiveConns. go-redis v9's
+	// checkMinIdleConns pre-warm loop (pool.go) only compares MinIdleConns
+	// against PoolSize, never MaxActiveConns, while newConn still enforces the
+	// hard cap and returns ErrPoolExhausted on exceeding it. An idle target
+	// above the cap would start one failing pre-warm goroutine per extra idle
+	// slot, wasting resources and churning goroutines, so clamp it to the cap.
+	// This runs after the int32 overflow guard above: out-of-range MinIdleConns
+	// is still rejected with an error instead of being silently clamped.
+	if opts.MaxActiveConns > 0 && opts.MinIdleConns > opts.MaxActiveConns {
+		opts.MinIdleConns = opts.MaxActiveConns
+	}
+
 	return opts, nil
 }
 

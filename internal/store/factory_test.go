@@ -178,6 +178,20 @@ func TestBuildRedisOptions_DSNDisableDuration(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, time.Duration(-1), opts.ConnMaxLifetime)
 	})
+	t.Run("min_idle_conns clamped to max_active_conns", func(t *testing.T) {
+		// go-redis v9 checkMinIdleConns pre-warm loop only compares MinIdleConns
+		// against PoolSize (internal/pool/pool.go), never MaxActiveConns, while
+		// newConn still enforces the hard cap. With an idle target above the cap,
+		// every pre-warm attempt fails with ErrPoolExhausted, churning goroutines;
+		// the factory must clamp the idle target down to the cap instead.
+		opts, err := buildRedisOptions("redis://localhost:6379/0?pool_size=9999&min_idle_conns=9999&max_active_conns=1")
+		require.NoError(t, err)
+		// MinIdleConns is clamped to MaxActiveConns; PoolSize and MaxActiveConns
+		// stay as configured.
+		assert.Equal(t, 1, opts.MinIdleConns)
+		assert.Equal(t, 1, opts.MaxActiveConns)
+		assert.Equal(t, 9999, opts.PoolSize)
+	})
 }
 
 func TestBuildRedisOptions_EnvOverridePoolSize(t *testing.T) {

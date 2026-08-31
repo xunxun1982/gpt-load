@@ -5554,7 +5554,13 @@ func TestSSEReaderWithTimeout_TimeoutThenDataAndEOF(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
 
-	reader := NewSSEReaderWithTimeout(pr, 30*time.Millisecond, 30*time.Millisecond)
+	// Use a 200ms first-byte timeout (not a short one) because after the idle
+	// timeout below, receivedFirst stays false, so the post-timeout data read
+	// below still runs under firstByteTimeout (see ReadEvent). A short 30ms
+	// budget would make that read flaky on a loaded CI runner or under -race
+	// (goroutine start + pipe hand-off + SSE parsing must fit in the budget).
+	// This mirrors the sibling codex test which uses 200ms for the same step.
+	reader := NewSSEReaderWithTimeout(pr, 200*time.Millisecond, 200*time.Millisecond)
 
 	// Idle stream: first read times out.
 	if _, err := reader.ReadEvent(); !errors.Is(err, ErrSSETimeout) {
