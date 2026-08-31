@@ -191,6 +191,74 @@ func TestBuildRedisOptions_InvalidDSN(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestBuildRedisOptions_ConnectionCountsAboveMaxInt32(t *testing.T) {
+	// go-redis v9 newConnPool calls SafeIntToInt32 on PoolSize, MinIdleConns,
+	// and MaxActiveConns; values above math.MaxInt32 cause a panic instead of
+	// returning a descriptive error. Must reject them at the validation layer.
+	maxInt32 := int64(^uint32(0) >> 1) // math.MaxInt32
+
+	t.Run("PoolSize env above MaxInt32", func(t *testing.T) {
+		t.Setenv(envRedisPoolSize, "2147483648") // MaxInt32 + 1
+		_, err := buildRedisOptions("redis://localhost:6379/0")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "PoolSize")
+	})
+	t.Run("MinIdleConns env above MaxInt32", func(t *testing.T) {
+		t.Setenv(envRedisMinIdleConns, "2147483648")
+		_, err := buildRedisOptions("redis://localhost:6379/0")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "MinIdleConns")
+	})
+	t.Run("MaxActiveConns DSN above MaxInt32", func(t *testing.T) {
+		_, err := buildRedisOptions("redis://localhost:6379/0?max_active_conns=2147483648")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "MaxActiveConns")
+	})
+	t.Run("PoolSize env at MaxInt32 boundary", func(t *testing.T) {
+		t.Setenv(envRedisPoolSize, "2147483647") // MaxInt32
+		opts, err := buildRedisOptions("redis://localhost:6379/0")
+		require.NoError(t, err)
+		assert.Equal(t, int(maxInt32), opts.PoolSize)
+	})
+}
+
+func TestRedisDSNHasQueryParam_EmptyAndRepeated(t *testing.T) {
+	// Empty values must be treated as unset (go-redis parses them to 0, and
+	// they must not suppress the factory default).
+	t.Run("empty value returns false", func(t *testing.T) {
+		assert.False(t, redisDSNHasQueryParam("redis://localhost:6379/0?conn_max_lifetime=", "conn_max_lifetime"))
+		assert.False(t, redisDSNHasQueryParam("redis://localhost:6379/0?min_idle_conns=", "min_idle_conns"))
+	})
+	t.Run("repeated param last value empty", func(t *testing.T) {
+		assert.False(t, redisDSNHasQueryParam("redis://localhost:6379/0?conn_max_lifetime=1h&conn_max_lifetime=", "conn_max_lifetime"))
+	})
+	t.Run("repeated param last value non-empty", func(t *testing.T) {
+		assert.True(t, redisDSNHasQueryParam("redis://localhost:6379/0?conn_max_lifetime=&conn_max_lifetime=2h", "conn_max_lifetime"))
+	})
+	t.Run("non-empty value returns true", func(t *testing.T) {
+		assert.True(t, redisDSNHasQueryParam("redis://localhost:6379/0?min_idle_conns=3", "min_idle_conns"))
+	})
+	t.Run("zero is non-empty string", func(t *testing.T) {
+		assert.True(t, redisDSNHasQueryParam("redis://localhost:6379/0?pool_size=0", "pool_size"))
+	})
+}
+
+func TestBuildRedisOptions_EmptyDSNParamSuppressesDefault(t *testing.T) {
+	// An empty DSN query parameter value must NOT suppress the factory default.
+	// go-redis parses an empty value to 0 (duration/int), and the factory
+	// default should apply.
+	t.Run("empty conn_max_lifetime falls back to default", func(t *testing.T) {
+		opts, err := buildRedisOptions("redis://localhost:6379/0?conn_max_lifetime=")
+		require.NoError(t, err)
+		assert.Equal(t, defaultRedisConnMaxLifetime, opts.ConnMaxLifetime)
+	})
+	t.Run("empty min_idle_conns falls back to default", func(t *testing.T) {
+		opts, err := buildRedisOptions("redis://localhost:6379/0?min_idle_conns=")
+		require.NoError(t, err)
+		assert.Equal(t, defaultRedisMinIdleConns, opts.MinIdleConns)
+	})
+}
+
 func TestBuildRedisOptions_EnvDurationOverflow(t *testing.T) {
 	// Values at or below maxDurationSeconds (math.MaxInt64/1e9) must apply;
 	// larger values would overflow time.Duration into a negative duration and

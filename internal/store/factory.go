@@ -40,6 +40,12 @@ const (
 // would interpret as "timeout disabled" instead of the configured value.
 const maxDurationSeconds = int64(^uint64(0)>>1) / int64(time.Second)
 
+// maxInt32 is math.MaxInt32. go-redis v9 narrows connection-count options
+// (PoolSize, MinIdleConns, MaxActiveConns) to int32 when creating the pool
+// (util.SafeIntToInt32) and panics on overflow, so we reject out-of-range
+// values here with a descriptive error instead of crashing the process.
+const maxInt32 = int64(^uint32(0) >> 1)
+
 // buildRedisOptions parses the DSN and applies explicit pool limits.
 // Extracted for testability: pool fields are asserted without a live server.
 func buildRedisOptions(redisDSN string) (*redis.Options, error) {
@@ -122,12 +128,29 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 		opts.ConnMaxLifetime = defaultRedisConnMaxLifetime
 	}
 
+	// Connection-count options are narrowed to int32 by go-redis's
+	// util.SafeIntToInt32 when the pool is created; a value above math.MaxInt32
+	// makes redis.NewClient panic, so reject it here with a descriptive error
+	// instead of crashing the process.
+	if int64(opts.PoolSize) > maxInt32 {
+		return nil, fmt.Errorf("redis: PoolSize %d exceeds max supported value %d", opts.PoolSize, maxInt32)
+	}
+	if int64(opts.MaxActiveConns) > maxInt32 {
+		return nil, fmt.Errorf("redis: MaxActiveConns %d exceeds max supported value %d", opts.MaxActiveConns, maxInt32)
+	}
+	if int64(opts.MinIdleConns) > maxInt32 {
+		return nil, fmt.Errorf("redis: MinIdleConns %d exceeds max supported value %d", opts.MinIdleConns, maxInt32)
+	}
+
 	return opts, nil
 }
 
 // redisDSNHasQueryParam reports whether the DSN query string contains any of the
-// given parameter keys. ParseURL already validated the query, so re-parsing only
-// inspects key presence and cannot introduce a new error path.
+// given parameter keys with a non-empty final value. A parameter whose final
+// value is empty is treated as unset (go-redis parses it to 0, and it must not
+// suppress the factory default). The last occurrence wins, matching go-redis's
+// last-value semantics (url.Values.Get would return the first value, not the
+// last, so it cannot be used here).
 func redisDSNHasQueryParam(redisDSN string, params ...string) bool {
 	u, err := url.Parse(redisDSN)
 	if err != nil {
@@ -135,7 +158,7 @@ func redisDSNHasQueryParam(redisDSN string, params ...string) bool {
 	}
 	query := u.Query()
 	for _, p := range params {
-		if _, ok := query[p]; ok {
+		if vs := query[p]; len(vs) > 0 && vs[len(vs)-1] != "" {
 			return true
 		}
 	}

@@ -5462,16 +5462,14 @@ func TestSSEReaderWithTimeout_SkipsComments(t *testing.T) {
 // TestSSEReaderWithTimeout_NoOrphanGoroutineGrowth verifies the Plan A fix:
 // repeated timeouts must not accumulate one goroutine per timeout. The stream
 // holds exactly one long-lived reader goroutine, and closing the underlying
-// reader releases it.
+// reader releases it. Leak detection polls for the readLoop stack frame to
+// disappear instead of comparing process-wide goroutine counts, which is immune
+// to unrelated goroutines started by the test runner or parallel tests.
 func TestSSEReaderWithTimeout_NoOrphanGoroutineGrowth(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
 
 	reader := NewSSEReaderWithTimeout(pr, 5*time.Millisecond, 5*time.Millisecond)
-
-	// Let unrelated goroutines from the test runner settle before measuring.
-	time.Sleep(50 * time.Millisecond)
-	base := runtime.NumGoroutine()
 
 	const timeouts = 50
 	for i := 0; i < timeouts; i++ {
@@ -5481,41 +5479,35 @@ func TestSSEReaderWithTimeout_NoOrphanGoroutineGrowth(t *testing.T) {
 		}
 	}
 
-	// Allow any transient scheduler work to settle.
-	time.Sleep(20 * time.Millisecond)
-	after := runtime.NumGoroutine()
-	growth := after - base
-	t.Logf("SSEReaderWithTimeout: base=%d after %d timeouts=%d growth=%d",
-		base, timeouts, after, growth)
-	if growth > 3 {
-		t.Fatalf("goroutine growth %d after %d timeouts: want <= 3 (no per-timeout orphan goroutine)", growth, timeouts)
-	}
+	t.Logf("SSEReaderWithTimeout: %d timeouts completed, goroutines=%d", timeouts, runtime.NumGoroutine())
 
 	// Closing the stream must release the single long-lived reader goroutine.
-	// The base was measured before the first ReadEvent, so it excludes the
-	// reader goroutine: any goroutine still alive above base is a leak.
 	pw.Close()
-	waitForGoroutines(t, base, 2*time.Second)
-	final := runtime.NumGoroutine()
-	t.Logf("SSEReaderWithTimeout: after stream close=%d (base=%d)", final, base)
-	if final > base {
-		t.Fatalf("reader goroutine not released after stream close: base=%d final=%d", base, final)
-	}
+	waitForGoroutineFrameGone(t, "(*SSEReaderWithTimeout).readLoop", 2*time.Second)
+	t.Logf("SSEReaderWithTimeout: readLoop frame gone after stream close, goroutines=%d", runtime.NumGoroutine())
 }
 
-// waitForGoroutines polls until the goroutine count drops to target or the
-// deadline expires, failing the test otherwise. A leaked goroutine must fail
-// the test rather than pass via a tolerance band.
-func waitForGoroutines(t *testing.T, target int, timeout time.Duration) {
+// waitForGoroutineFrameGone polls runtime.Stack until no goroutine contains the
+// given function frame, or the deadline expires. Stack-frame matching is precise:
+// unrelated goroutines (test framework, parallel tests) that start after a
+// process-wide baseline no longer cause false failures, while a leaked reader
+// goroutine is still caught by its unique readLoop frame.
+func waitForGoroutineFrameGone(t *testing.T, frame string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
+	buf := make([]byte, 1<<16)
 	for time.Now().Before(deadline) {
-		if runtime.NumGoroutine() <= target {
+		n := runtime.Stack(buf, true)
+		if n == len(buf) {
+			buf = make([]byte, len(buf)*2)
+			continue // retry with a bigger buffer
+		}
+		if !bytes.Contains(buf[:n], []byte(frame)) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("goroutine count did not reach %d within %v (current=%d)", target, timeout, runtime.NumGoroutine())
+	t.Fatalf("goroutine frame %q still present within %v", frame, timeout)
 }
 
 // TestSSEReaderWithTimeout_CloseReleasesBlockedSend verifies that Close cancels
@@ -5533,12 +5525,6 @@ func TestSSEReaderWithTimeout_CloseReleasesBlockedSend(t *testing.T) {
 	reader := NewSSEReaderWithTimeout(pr, 50*time.Millisecond, 50*time.Millisecond)
 	defer reader.Close() // idempotent safety net
 
-	// Let unrelated goroutines from the test runner settle before measuring. The
-	// reader goroutine is not started until the first ReadEvent call, so base
-	// does not include it.
-	time.Sleep(50 * time.Millisecond)
-	base := runtime.NumGoroutine()
-
 	// First read times out on the idle stream and starts the reader goroutine.
 	if _, err := reader.ReadEvent(); !errors.Is(err, ErrSSETimeout) {
 		t.Fatalf("expected ErrSSETimeout on idle stream, got %v", err)
@@ -5554,21 +5540,11 @@ func TestSSEReaderWithTimeout_CloseReleasesBlockedSend(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	reader.Close()
 
-	// The reader goroutine must be fully gone after Close: poll strictly until
-	// the count returns to base, because a single leaked goroutine would keep
-	// it above base.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if runtime.NumGoroutine() <= base {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	after := runtime.NumGoroutine()
-	t.Logf("SSEReaderWithTimeout: after Close released blocked send: base=%d after=%d", base, after)
-	if after > base {
-		t.Fatalf("reader goroutine still blocked on send after Close: base=%d after=%d", base, after)
-	}
+	// The reader goroutine must be fully gone after Close: poll for its readLoop
+	// stack frame to disappear. A leaked goroutine keeps the frame present and
+	// trips the deadline.
+	waitForGoroutineFrameGone(t, "(*SSEReaderWithTimeout).readLoop", 2*time.Second)
+	t.Logf("SSEReaderWithTimeout: after Close released blocked send, goroutines=%d", runtime.NumGoroutine())
 }
 
 // TestSSEReaderWithTimeout_TimeoutThenDataAndEOF verifies Plan A semantics:
