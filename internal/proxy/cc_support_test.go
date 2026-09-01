@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -5455,6 +5456,182 @@ func TestSSEReaderWithTimeout_SkipsComments(t *testing.T) {
 
 	if event.Data != `{"test": true}` {
 		t.Errorf("expected data to skip comments, got: %s", event.Data)
+	}
+}
+
+// TestSSEReaderWithTimeout_NoOrphanGoroutineGrowth verifies the Plan A fix:
+// repeated timeouts must not accumulate one goroutine per timeout. The stream
+// holds exactly one long-lived reader goroutine, and closing the underlying
+// reader releases it. Leak detection polls for the readLoop stack frame to
+// disappear instead of comparing process-wide goroutine counts, which is immune
+// to unrelated goroutines started by the test runner or parallel tests.
+func TestSSEReaderWithTimeout_NoOrphanGoroutineGrowth(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	reader := NewSSEReaderWithTimeout(pr, 5*time.Millisecond, 5*time.Millisecond)
+
+	const timeouts = 50
+	for i := 0; i < timeouts; i++ {
+		_, err := reader.ReadEvent()
+		if !errors.Is(err, ErrSSETimeout) {
+			t.Fatalf("iteration %d: expected ErrSSETimeout, got %v", i, err)
+		}
+	}
+
+	t.Logf("SSEReaderWithTimeout: %d timeouts completed, goroutines=%d", timeouts, runtime.NumGoroutine())
+
+	// Closing the stream must release the single long-lived reader goroutine.
+	pw.Close()
+	waitForGoroutineFrameGone(t, "(*SSEReaderWithTimeout).readLoop", 2*time.Second)
+	t.Logf("SSEReaderWithTimeout: readLoop frame gone after stream close, goroutines=%d", runtime.NumGoroutine())
+}
+
+// waitForGoroutineFrameGone polls runtime.Stack until no goroutine contains the
+// given function frame, or the deadline expires. Stack-frame matching is precise:
+// unrelated goroutines (test framework, parallel tests) that start after a
+// process-wide baseline no longer cause false failures, while a leaked reader
+// goroutine is still caught by its unique readLoop frame.
+func waitForGoroutineFrameGone(t *testing.T, frame string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	buf := make([]byte, 1<<16)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(buf, true)
+		if n == len(buf) {
+			buf = make([]byte, len(buf)*2)
+			continue // retry with a bigger buffer
+		}
+		if !bytes.Contains(buf[:n], []byte(frame)) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("goroutine frame %q still present within %v", frame, timeout)
+}
+
+// TestSSEReaderWithTimeout_CloseReleasesBlockedSend verifies that Close cancels
+// the single long-lived reader goroutine even when it is blocked on a successful
+// channel send (which happens when the consumer abandoned the stream after a read
+// timeout while the upstream keeps sending data). Without cancellation this leaks
+// the reader goroutine and its upstream resources forever.
+
+// The goroutine cannot be released by closing the underlying reader: it is not
+// parked on a read, it is parked on sending into the full size-1 eventCh.
+func TestSSEReaderWithTimeout_CloseReleasesBlockedSend(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	reader := NewSSEReaderWithTimeout(pr, 50*time.Millisecond, 50*time.Millisecond)
+	defer reader.Close() // idempotent safety net
+
+	// First read times out on the idle stream and starts the reader goroutine.
+	if _, err := reader.ReadEvent(); !errors.Is(err, ErrSSETimeout) {
+		t.Fatalf("expected ErrSSETimeout on idle stream, got %v", err)
+	}
+
+	// Write two events serially to the unbuffered pipe: readLoop consumes the
+	// first (filling the size-1 channel) and then blocks on the send of the
+	// second, because the abandoned consumer no longer reads from eventCh.
+	_, _ = pw.Write([]byte("data: {\"a\":1}\n\n"))
+	_, _ = pw.Write([]byte("data: {\"b\":2}\n\n"))
+
+	// Allow the above interaction to settle, then cancel the reader.
+	time.Sleep(50 * time.Millisecond)
+	reader.Close()
+
+	// The reader goroutine must be fully gone after Close: poll for its readLoop
+	// stack frame to disappear. A leaked goroutine keeps the frame present and
+	// trips the deadline.
+	waitForGoroutineFrameGone(t, "(*SSEReaderWithTimeout).readLoop", 2*time.Second)
+	t.Logf("SSEReaderWithTimeout: after Close released blocked send, goroutines=%d", runtime.NumGoroutine())
+}
+
+// TestSSEReaderWithTimeout_TimeoutThenDataAndEOF verifies Plan A semantics:
+// an idle stream times out with ErrSSETimeout, data written after a timeout is
+// still delivered by the long-lived goroutine, and EOF is reported normally.
+func TestSSEReaderWithTimeout_TimeoutThenDataAndEOF(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	// Use a 200ms first-byte timeout (not a short one) because after the idle
+	// timeout below, receivedFirst stays false, so the post-timeout data read
+	// below still runs under firstByteTimeout (see ReadEvent). A short 30ms
+	// budget would make that read flaky on a loaded CI runner or under -race
+	// (goroutine start + pipe hand-off + SSE parsing must fit in the budget).
+	// This mirrors the sibling codex test which uses 200ms for the same step.
+	reader := NewSSEReaderWithTimeout(pr, 200*time.Millisecond, 200*time.Millisecond)
+
+	// Idle stream: first read times out.
+	if _, err := reader.ReadEvent(); !errors.Is(err, ErrSSETimeout) {
+		t.Fatalf("expected ErrSSETimeout on idle stream, got %v", err)
+	}
+
+	// Data written after a timeout is picked up by the long-lived goroutine.
+	go func() {
+		_, _ = pw.Write([]byte("data: {\"x\":1}\n\n"))
+	}()
+	event, err := reader.ReadEvent()
+	if err != nil {
+		t.Fatalf("expected event after write, got %v", err)
+	}
+	if event == nil || event.Data != `{"x":1}` {
+		t.Fatalf("unexpected event: %+v", event)
+	}
+
+	// Close the stream: next read reports io.EOF.
+	pw.Close()
+	if _, err := reader.ReadEvent(); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected io.EOF after stream close, got %v", err)
+	}
+}
+
+// TestSSEReaderWithTimeout_PreservesTerminalErrorWhenChannelFull verifies that a
+// non-EOF terminal transport error is retained when the buffered result channel
+// is full (consumer abandoned the stream after a read timeout) instead of being
+// silently dropped and misread as a normal io.EOF once the channel closes.
+
+// The custom reader linesThenErrReader (defined in codex_cc_support_test.go) is
+// shared by both reader tests: its release gate deterministically holds the
+// reader goroutine so the buffered event channel is still full when the terminal
+// error branch runs, avoiding a scheduling race on multi-core machines (see the
+// codex test for the full rationale). Unlike codexLineReader, the readLoop here
+// starts lazily on the first ReadEvent; the test starts it explicitly through
+// startOnce (identical to what ReadEvent does, and guaranteed to run only once)
+// so the gate covers the exact same two-step sequence as the codex test.
+func TestSSEReaderWithTimeout_PreservesTerminalErrorWhenChannelFull(t *testing.T) {
+	errBoom := errors.New("simulated transport failure")
+
+	release := make(chan struct{})
+	reader := NewSSEReaderWithTimeout(&linesThenErrReader{
+		data:    []byte("data: {\"a\":1}\n\n"),
+		err:     errBoom,
+		release: release,
+	}, 200*time.Millisecond, 200*time.Millisecond)
+
+	// Start the reader goroutine explicitly so the release gate can hold it
+	// while nobody is waiting on the channel (the abandoned-consumer state)..
+	reader.startOnce.Do(func() { go reader.readLoop() })
+
+	// The goroutine buffers the event and parks on the release gate with the
+	// channel left full. Release it and give the goroutine a scheduler turn so
+	// its terminal send definitively sees the full channel and retains errBoom
+	// instead of delivering it through the channel.
+	close(release)
+	time.Sleep(10 * time.Millisecond)
+
+	event, err := reader.ReadEvent()
+	if err != nil {
+		t.Fatalf("expected first event with nil error, got %v", err)
+	}
+	if event == nil || event.Data != `{"a":1}` {
+		t.Fatalf("unexpected first event: %+v", event)
+	}
+
+	// The channel is closed by now; the retained terminal error must surface
+	// instead of being misread as io.EOF.
+	if _, err := reader.ReadEvent(); !errors.Is(err, errBoom) {
+		t.Fatalf("expected terminal error %v to be preserved, got %v", errBoom, err)
 	}
 }
 

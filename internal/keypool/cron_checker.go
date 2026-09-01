@@ -188,7 +188,9 @@ func (s *CronChecker) validateGroupKeys(group *models.Group, groupsToUpdateMu *s
 		groupsToUpdateMu.Lock()
 		groupsToUpdate[group.ID] = struct{}{}
 		groupsToUpdateMu.Unlock()
-		logrus.Infof("CronChecker: Group '%s' has no invalid keys to check.", group.Name)
+		// Debug level: this fires for every enabled group every validation cycle,
+		// so Info would flood logs when many groups have no invalid keys.
+		logrus.Debugf("CronChecker: Group '%s' has no invalid keys to check.", group.Name)
 		return
 	}
 

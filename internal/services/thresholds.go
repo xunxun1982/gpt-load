@@ -107,6 +107,14 @@ const (
 	// Optimized to minimize lock contention and timeout risk
 	LogCleanupBatchSize = 1500 // records per batch
 
+	// StatsRetentionDays is the retention window for the hourly stats tables
+	// (group_hourly_stats and model_token_hourly_stats). Rows older than this are
+	// purged by LogCleanupService.cleanupExpiredStats. The value matches the dynamic
+	// weight MetricsTTL (180 days) so metrics and stats share the same retention contract.
+	// The cleanup deletes via the single-column time indexes added by migration v1.30.0,
+	// so this contract can only be served efficiently when those indexes exist.
+	StatsRetentionDays = 180
+
 	// SQLiteLogCleanupBatchSize keeps each SQLite write transaction below the slow-query window.
 	// SQLite has a single writer, so smaller bounded batches protect interactive requests.
 	SQLiteLogCleanupBatchSize = 250 // records per batch
@@ -130,10 +138,12 @@ const (
 
 	// HourlyStatsBatchSize is the batch size for upserting hourly statistics
 	// Used for PostgreSQL and MySQL batch upsert operations
+	// Also used for cleanup batch deletion to keep write lock windows short
 	HourlyStatsBatchSize = 500 // stats per batch
 
 	// HourlyStatsBatchSizeSQLite is the batch size for SQLite hourly statistics
 	// Smaller batch size for SQLite due to single-writer model
+	// Also used for cleanup batch deletion to keep write lock windows short
 	HourlyStatsBatchSizeSQLite = 50 // stats per batch
 
 	// DynamicWeightBatchSizeSQLite is the batch size for SQLite dynamic weight persistence

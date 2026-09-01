@@ -3,11 +3,13 @@ package httpclient
 import (
 	"crypto/tls"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gpt-load/internal/utils"
@@ -34,18 +36,39 @@ type Config struct {
 	SkipTLSVerify         bool
 }
 
+// maxClients is the default capacity cap for the client cache.
+// Each cached client owns an entire http.Transport connection pool, so the
+// cap bounds both memory and open connections (Go best practice: reuse
+// transports and cap connection counts to avoid unbounded growth).
+const maxClients = 256
+
+// clientCacheEntry wraps an *http.Client with last-use tracking backing the
+// cache eviction policy: the least-recently-used entry is evicted under capacity
+// pressure.
+type clientCacheEntry struct {
+	client   *http.Client
+	lastUsed atomic.Int64 // UnixNano of the last GetClient hit
+}
+
 // HTTPClientManager manages the lifecycle of HTTP clients.
 // It creates and caches clients based on their configuration fingerprint,
 // ensuring that clients with the same configuration are reused.
+// Cache eviction contract: the cache never exceeds maxClients entries.
+// When the cap is reached, the least-recently-used client is evicted and
+// its idle connections are closed; a later GetClient call with the same
+// config transparently rebuilds it.
+
 type HTTPClientManager struct {
-	clients map[string]*http.Client
-	lock    sync.RWMutex
+	clients    map[string]*clientCacheEntry
+	lock       sync.RWMutex
+	maxClients int
 }
 
 // NewHTTPClientManager creates a new client manager.
 func NewHTTPClientManager() *HTTPClientManager {
 	return &HTTPClientManager{
-		clients: make(map[string]*http.Client),
+		clients:    make(map[string]*clientCacheEntry),
+		maxClients: maxClients,
 	}
 }
 
@@ -86,21 +109,30 @@ func testProxyConnectivity(proxyURL *url.URL) {
 func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 	fingerprint := config.getFingerprint()
 
-	// Fast path with read lock
+	// Fast path with read lock. lastUsed is refreshed while the read lock is
+	// still held: eviction (evictExcessClientsLocked) selects the LRU entry
+	// under the same lock, so a hit racing with capacity eviction must publish
+	// its usage timestamp before the lock is released, otherwise eviction can
+	// remove this very entry based on a stale timestamp and lose connection
+	// reuse.
 	m.lock.RLock()
-	client, exists := m.clients[fingerprint]
-	m.lock.RUnlock()
-	if exists {
+	entry, exists := m.clients[fingerprint]
+	if exists && entry != nil {
+		entry.lastUsed.Store(time.Now().UnixNano())
+		client := entry.client
+		m.lock.RUnlock()
 		return client
 	}
+	m.lock.RUnlock()
 
 	// Slow path with write lock
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
 	// Double-check in case another goroutine created the client while we were waiting for the lock.
-	if client, exists = m.clients[fingerprint]; exists {
-		return client
+	if entry, exists = m.clients[fingerprint]; exists && entry != nil {
+		entry.lastUsed.Store(time.Now().UnixNano())
+		return entry.client
 	}
 
 	// Calculate MaxConnsPerHost for burst capacity.
@@ -175,7 +207,12 @@ func (m *HTTPClientManager) GetClient(config *Config) *http.Client {
 		CheckRedirect: stripSensitiveOnCrossHostRedirect,
 	}
 
-	m.clients[fingerprint] = newClient
+	// Store the client in the cache with a fresh last-use timestamp, and enforce
+	// the capacity cap by evicting the least-recently-used client if needed.
+	entry = &clientCacheEntry{client: newClient}
+	entry.lastUsed.Store(time.Now().UnixNano())
+	m.clients[fingerprint] = entry
+	m.evictExcessClientsLocked()
 
 	// Log client creation with full configuration details for debugging.
 	// Note: has_proxy field removed as it's redundant (can be inferred from proxy_url being non-empty).
@@ -228,16 +265,55 @@ func stripSensitiveOnCrossHostRedirect(req *http.Request, via []*http.Request) e
 // CloseIdleConnections closes idle connections for all managed clients.
 // This can be useful for releasing resources during graceful shutdown.
 // Note: Clients with non-standard transports are skipped silently.
+// Cache entries are never removed here; eviction happens only when the
+// capacity cap is exceeded.
 func (m *HTTPClientManager) CloseIdleConnections() {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 
-	for _, client := range m.clients {
-		if transport, ok := client.Transport.(*http.Transport); ok {
-			transport.CloseIdleConnections()
+	for _, entry := range m.clients {
+		if entry != nil {
+			closeClientIdleConnections(entry.client)
 		}
 	}
 	logrus.Debug("Closed idle connections for managed HTTP clients")
+}
+
+// evictExcessClientsLocked enforces the cache capacity cap.
+// Contract: the cache never holds more than m.maxClients entries.
+// The least-recently-used client entry is evicted and its idle connections
+// are closed; a later GetClient call with the same config rebuilds it.
+// Caller must hold m.lock.
+func (m *HTTPClientManager) evictExcessClientsLocked() {
+	for len(m.clients) > m.maxClients {
+		var oldestFP string
+		var oldestTime int64 = math.MaxInt64
+		for fp, entry := range m.clients {
+			if entry != nil && entry.lastUsed.Load() < oldestTime {
+				oldestTime = entry.lastUsed.Load()
+				oldestFP = fp
+			}
+		}
+		if oldestFP == "" {
+			return
+		}
+		evicted := m.clients[oldestFP]
+		delete(m.clients, oldestFP)
+		if evicted != nil {
+			closeClientIdleConnections(evicted.client)
+		}
+	}
+}
+
+// closeClientIdleConnections closes idle connections of a client when its
+// transport exposes CloseIdleConnections. Non-standard transports are skipped.
+func closeClientIdleConnections(client *http.Client) {
+	if client == nil || client.Transport == nil {
+		return
+	}
+	if closer, ok := client.Transport.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 }
 
 // getFingerprint generates a unique string representation of the client configuration.

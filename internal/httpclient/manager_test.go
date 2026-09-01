@@ -2,9 +2,12 @@ package httpclient
 
 import (
 	"crypto/tls"
+	"fmt"
 	"gpt-load/internal/utils"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -737,5 +740,164 @@ func BenchmarkFingerprintGeneration(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		benchSink = config.getFingerprint()
+	}
+}
+
+func TestGetClient_EvictsExcessClients(t *testing.T) {
+	manager := NewHTTPClientManager()
+	manager.maxClients = 3
+
+	cfg1 := &Config{RequestTimeout: 1 * time.Second}
+	cfg2 := &Config{RequestTimeout: 2 * time.Second}
+	cfg3 := &Config{RequestTimeout: 3 * time.Second}
+
+	c1 := manager.GetClient(cfg1)
+	c2 := manager.GetClient(cfg2)
+	c3 := manager.GetClient(cfg3)
+	require.NotNil(t, c1)
+	require.NotNil(t, c2)
+	require.NotNil(t, c3)
+
+	// Make c1 the least-recently-used so adding a 4th client evicts it.
+
+	fp1 := cfg1.getFingerprint()
+	manager.lock.Lock()
+	manager.clients[fp1].lastUsed.Store(1)
+	manager.lock.Unlock()
+
+	c4 := manager.GetClient(&Config{RequestTimeout: 4 * time.Second})
+	require.NotNil(t, c4)
+
+	assert.Len(t, manager.clients, 3, "cache should be capped at maxClients")
+
+	manager.lock.RLock()
+	_, c1exists := manager.clients[fp1]
+	manager.lock.RUnlock()
+	assert.False(t, c1exists, "least-recently-used client should be evicted")
+
+	// Reusing a surviving config returns the same client instance.
+
+	assert.Same(t, c2, manager.GetClient(cfg2))
+	assert.Same(t, c3, manager.GetClient(cfg3))
+}
+
+func TestGetClient_EvictedClientConnectionsClosed(t *testing.T) {
+	manager := NewHTTPClientManager()
+	manager.maxClients = 1
+
+	tr := &closeTrackingTransport{}
+	fp := "tracked-fp"
+	manager.lock.Lock()
+	manager.clients[fp] = &clientCacheEntry{client: &http.Client{Transport: tr}}
+	manager.clients[fp].lastUsed.Store(1)
+	manager.lock.Unlock()
+
+	// Adding a new client evicts the only existing one; its connections close.
+
+	manager.GetClient(&Config{RequestTimeout: 5 * time.Second})
+	assert.True(t, tr.closed.Load(), "connections of the evicted client must be closed")
+}
+
+type closeTrackingTransport struct {
+	closed atomic.Bool
+}
+
+func (t *closeTrackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("not used")
+}
+
+func (t *closeTrackingTransport) CloseIdleConnections() {
+	t.closed.Store(true)
+}
+
+// TestGetClientHitRacesCapacityEviction verifies that a cache hit racing with
+// capacity eviction does not lose the recently-used entry.
+// GetClient's fast path must refresh lastUsed while still holding the read lock;
+// otherwise evictExcessClientsLocked (which runs under the write lock) may
+// select the freshly-hit entry based on a stale timestamp, remove it from the
+// cache, and lose connection reuse for subsequent requests.
+// Each round builds a fresh manager, marks A as the LRU candidate (lastUsed=1)
+// and B as the runner-up (lastUsed=2), then races several hits on A against an
+// insert that triggers eviction. The pinned B keeps the LRU choice unambiguous:
+// a refreshed A (now) is never the minimum, so B is evicted; a stale A (1) is
+// the minimum and gets evicted. Observable bug symptom: a fast-path hit returns
+// the original clientA while the entry is concurrently evicted. If A is
+// legitimately evicted before any hit arrives, the hits go through the slow
+// path and return a fresh client, which is fine.
+func TestGetClientHitRacesCapacityEviction(t *testing.T) {
+	const (
+		rounds  = 60
+		hitters = 3
+	)
+
+	for i := 0; i < rounds; i++ {
+		manager := NewHTTPClientManager()
+		manager.maxClients = 2
+
+		// Distinct timeouts per round keep fingerprints unique across rounds.
+		// Build the per-round offset in seconds, then add it to the base
+		// timeout: (1+base) would multiply two durations (a durationcheck
+		// error), even though the accidental value happened to be correct.
+		base := time.Duration(i*10) * time.Second
+		configA := &Config{RequestTimeout: time.Second + base}
+		configB := &Config{RequestTimeout: 2*time.Second + base}
+		configC := &Config{RequestTimeout: 3*time.Second + base}
+
+		clientA := manager.GetClient(configA)
+		require.NotNil(t, clientA)
+		manager.GetClient(configB) // populate entry B
+
+		fpA := configA.getFingerprint()
+		fpB := configB.getFingerprint()
+
+		// Pin A as the LRU target (1) and B as the runner-up (2). If a hit
+		// refreshes A before eviction scans, A's timestamp becomes current and
+		// B is strictly the oldest; a stale (unrefreshed) A stays the oldest.
+		manager.lock.Lock()
+		manager.clients[fpA].lastUsed.Store(1)
+		manager.clients[fpB].lastUsed.Store(2)
+		manager.lock.Unlock()
+
+		// Race the hits and the insert simultaneously.
+		var start, done sync.WaitGroup
+		start.Add(hitters + 1)
+		done.Add(hitters + 1)
+
+		hits := make([]*http.Client, hitters)
+		for h := 0; h < hitters; h++ {
+			go func(idx int) {
+				start.Done()
+				start.Wait()
+				hits[idx] = manager.GetClient(configA) // hit: refresh lastUsed
+				done.Done()
+			}(h)
+		}
+		go func() {
+			start.Done()
+			start.Wait()
+			manager.GetClient(configC) // insert C: triggers eviction
+			done.Done()
+		}()
+
+		done.Wait()
+
+		// Only when a hit returned the original clientA does the exact entry
+		// matter: that very entry must still be the cached one. A fast-path hit
+		// followed by eviction of the same entry (stale lastUsed selecting it)
+		// is the bug this test guards against.
+		manager.lock.RLock()
+		currentA, aExists := manager.clients[fpA]
+		manager.lock.RUnlock()
+		for h := 0; h < hitters; h++ {
+			if hits[h] != clientA {
+				continue
+			}
+			// A hit returned the original clientA, so that exact entry must
+			// still be the cached one.
+			require.True(t, aExists,
+				"hit returned an evicted client (round %d, hitter %d)", i, h)
+			assert.Same(t, clientA, currentA.client,
+				"hit returned a client whose entry was replaced (round %d, hitter %d)", i, h)
+		}
 	}
 }

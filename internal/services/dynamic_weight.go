@@ -145,12 +145,30 @@ func DefaultDynamicWeightConfig() *DynamicWeightConfig {
 // DirtyKeyCallback is called when a metrics key is modified and needs persistence.
 type DirtyKeyCallback func(key string)
 
+// metricsLockShardCount is the number of per-key lock shards used for metrics operations.
+//
+// Sharding contract: keys hashing to the same shard are serialized — the same key's
+// read-modify-write stays atomic; keys hashing to different shards proceed in parallel,
+// removing the single global lock bottleneck across unrelated keys. Shard selection uses
+// FNV-1a (inlined) of the key string, mod metricsLockShardCount, so a given key always
+// lands on the same shard and never needs a lock held on another shard.
+const metricsLockShardCount = 64
+
 // DynamicWeightManager manages dynamic weight calculation for sub-groups and model redirects.
+//
+// Locking model: every metrics-key operation goes through the per-key sharded locks
+// (see metricsLockShardCount/lockShard): read-only paths take the shard as RLock,
+// read-modify-write paths take it as Lock so the same key's read-modify-write stays
+// atomic. The non-key fields (dirtyCallback, config) are guarded by configMu (an RWMutex):
+// read paths (GetConfig/getDirtyCallback) take RLock so concurrent record paths on
+// different shards are not serialized on configMu, while the single write path
+// (SetDirtyCallback) takes Lock. The store itself is additionally thread-safe.
 type DynamicWeightManager struct {
 	store         store.Store
 	config        *DynamicWeightConfig
-	mu            sync.RWMutex
+	configMu      sync.RWMutex
 	dirtyCallback DirtyKeyCallback
+	locks         [metricsLockShardCount]sync.RWMutex
 }
 
 // NewDynamicWeightManager creates a new dynamic weight manager with default configuration.
@@ -171,15 +189,66 @@ func NewDynamicWeightManagerWithConfig(s store.Store, config *DynamicWeightConfi
 
 // SetDirtyCallback sets the callback function for dirty key notifications.
 // This should be called after persistence service is initialized.
+// Guarded by configMu, decoupled from the per-key data shards.
 func (m *DynamicWeightManager) SetDirtyCallback(callback DirtyKeyCallback) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.configMu.Lock()
+	defer m.configMu.Unlock()
 	m.dirtyCallback = callback
 }
 
 // GetConfig returns the current configuration.
+// Guarded by configMu (decoupled from the per-key data shards); the returned pointer is
+// immutable after construction. RLock is taken because config reads far outnumber writes,
+// so an exclusive Lock would serialize every reader on this hot path; RLock allows
+// concurrent readers to proceed in parallel.
 func (m *DynamicWeightManager) GetConfig() *DynamicWeightConfig {
+	m.configMu.RLock()
+	defer m.configMu.RUnlock()
 	return m.config
+}
+
+// lockShard returns the per-key shard lock for a key.
+//
+// Shard selection: FNV-1a 32-bit hash (inlined) of the key string, mod
+// metricsLockShardCount. The same key always maps to the same shard, so its
+// read-modify-write is serialized; different keys may land on the same shard, which only
+// reduces parallelism between those keys, never their correctness.
+func (m *DynamicWeightManager) lockShard(key string) *sync.RWMutex {
+	// FNV-1a 32-bit hash inlined to avoid hasher and []byte allocations on the hot path.
+	var h uint32 = 2166136261 // FNV-1a offset basis
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619 // FNV-1a prime
+	}
+	return &m.locks[h%metricsLockShardCount]
+}
+
+// getDirtyCallback returns the dirty callback field under configMu. All reads/writes of
+// dirtyCallback go through configMu so concurrent SetDirtyCallback calls cannot race with
+// record paths. The callback only takes the persistence layer's own mutex, so invoking it
+// while a shard lock is held cannot re-enter the manager locks (no deadlock).
+//
+// RLock is taken instead of Lock: getDirtyCallback runs on the hot path — called from
+// recordSuccess/recordFailure for every request success/failure — while dirtyCallback is
+// written only once via SetDirtyCallback at startup (reads far outnumber writes). An
+// exclusive Lock here would serialize every metric-shard update on configMu, defeating
+// the per-key sharding. RLock lets concurrent readers proceed in parallel. Lock ordering
+// is fixed (shard -> configMu) and SetDirtyCallback never takes a shard lock, so RLock
+// cannot deadlock.
+func (m *DynamicWeightManager) getDirtyCallback() DirtyKeyCallback {
+	m.configMu.RLock()
+	defer m.configMu.RUnlock()
+	return m.dirtyCallback
+}
+
+// getMetricsWithReadLock reads metrics for a key under the per-key shard read lock, so a
+// read is consistent with concurrent per-key writers on the same shard while other shards
+// remain unaffected.
+func (m *DynamicWeightManager) getMetricsWithReadLock(key string) (*DynamicWeightMetrics, error) {
+	lock := m.lockShard(key)
+	lock.RLock()
+	defer lock.RUnlock()
+	return m.getMetrics(key)
 }
 
 // SubGroupMetricsKey returns the store key for sub-group metrics.
@@ -205,23 +274,27 @@ func ModelRedirectMetricsKey(groupID uint, sourceModel string, targetModel strin
 // GetSubGroupMetrics retrieves metrics for a sub-group.
 func (m *DynamicWeightManager) GetSubGroupMetrics(aggregateGroupID, subGroupID uint) (*DynamicWeightMetrics, error) {
 	key := SubGroupMetricsKey(aggregateGroupID, subGroupID)
-	return m.getMetrics(key)
+	return m.getMetricsWithReadLock(key)
 }
 
 // GetGroupMetrics retrieves metrics for a standard group.
 // Used for Hub health score calculation based on request success rate.
 func (m *DynamicWeightManager) GetGroupMetrics(groupID uint) (*DynamicWeightMetrics, error) {
 	key := GroupMetricsKey(groupID)
-	return m.getMetrics(key)
+	return m.getMetricsWithReadLock(key)
 }
 
 // GetModelRedirectMetrics retrieves metrics for a model redirect target.
 func (m *DynamicWeightManager) GetModelRedirectMetrics(groupID uint, sourceModel string, targetModel string) (*DynamicWeightMetrics, error) {
 	key := ModelRedirectMetricsKey(groupID, sourceModel, targetModel)
-	return m.getMetrics(key)
+	return m.getMetricsWithReadLock(key)
 }
 
 // getMetrics retrieves metrics from the store.
+//
+// NOTE: This unexported helper assumes the caller already holds the per-key shard lock for
+// key (RLock for read-only paths, Lock for read-modify-write paths). The store itself is
+// additionally thread-safe.
 func (m *DynamicWeightManager) getMetrics(key string) (*DynamicWeightMetrics, error) {
 	data, err := m.store.Get(key)
 	if err != nil {
@@ -240,7 +313,19 @@ func (m *DynamicWeightManager) getMetrics(key string) (*DynamicWeightMetrics, er
 }
 
 // SetMetrics stores metrics in the store (exported for persistence layer).
+// Serializes per key via the sharded locks, so concurrent writers on the same key do not
+// interleave. The store itself is additionally thread-safe.
 func (m *DynamicWeightManager) SetMetrics(key string, metrics *DynamicWeightMetrics) error {
+	lock := m.lockShard(key)
+	lock.Lock()
+	defer lock.Unlock()
+	return m.setMetricsLocked(key, metrics)
+}
+
+// setMetricsLocked stores metrics assuming the per-key shard lock is already held by the
+// caller (e.g., recordSuccess/recordFailure), keeping the same-key read-modify-write
+// atomic without re-acquiring the lock.
+func (m *DynamicWeightManager) setMetricsLocked(key string, metrics *DynamicWeightMetrics) error {
 	metrics.UpdatedAt = time.Now()
 	data, err := json.Marshal(metrics)
 	if err != nil {
@@ -288,13 +373,15 @@ func (m *DynamicWeightManager) RecordModelRedirectFailure(groupID uint, sourceMo
 }
 
 // recordSuccess records a successful request.
-// NOTE: Uses mutex for single-instance protection. In distributed deployments
-// sharing the same store, concurrent updates may cause lost writes due to
-// non-atomic read-modify-write pattern. This is acceptable for approximate
+// NOTE: Locking uses the per-key shard (see metricsLockShardCount): the same key stays
+// serialized for atomic read-modify-write while different keys proceed in parallel.
+// In distributed deployments sharing the same store, concurrent updates may cause lost
+// writes due to non-atomic read-modify-write pattern. This is acceptable for approximate
 // health tracking where perfect accuracy isn't critical.
 func (m *DynamicWeightManager) recordSuccess(key string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	lock := m.lockShard(key)
+	lock.Lock()
+	defer lock.Unlock()
 
 	metrics, err := m.getMetrics(key)
 	if err != nil {
@@ -319,21 +406,27 @@ func (m *DynamicWeightManager) recordSuccess(key string) {
 	metrics.Requests180d++
 	metrics.Successes180d++
 
-	if err := m.SetMetrics(key, metrics); err != nil {
+	if err := m.setMetricsLocked(key, metrics); err != nil {
 		logrus.WithError(err).WithField("key", key).Debug("Failed to set metrics after success")
 	}
 
-	// Notify persistence layer about dirty key
-	if m.dirtyCallback != nil {
-		m.dirtyCallback(key)
+	// Notify persistence layer about dirty key. The callback is invoked while the per-key
+	// shard lock is still held (same calling context as the legacy global lock); the
+	// callback only takes the persistence layer's own mutex, so it cannot re-enter the
+	// manager locks (no deadlock).
+	if cb := m.getDirtyCallback(); cb != nil {
+		cb(key)
 	}
 }
 
 // recordFailure records a failed request.
 // isRateLimit indicates if this is a 429 rate limit error, which receives lighter penalties.
+// NOTE: Locking uses the per-key shard (see metricsLockShardCount): the same key stays
+// serialized for atomic read-modify-write while different keys proceed in parallel.
 func (m *DynamicWeightManager) recordFailure(key string, isRateLimit bool, rateLimitPressure ...int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	lock := m.lockShard(key)
+	lock.Lock()
+	defer lock.Unlock()
 
 	metrics, err := m.getMetrics(key)
 	if err != nil {
@@ -375,13 +468,16 @@ func (m *DynamicWeightManager) recordFailure(key string, isRateLimit bool, rateL
 		metrics.RateLimits180d++
 	}
 
-	if err := m.SetMetrics(key, metrics); err != nil {
+	if err := m.setMetricsLocked(key, metrics); err != nil {
 		logrus.WithError(err).WithField("key", key).Debug("Failed to set metrics after failure")
 	}
 
-	// Notify persistence layer about dirty key
-	if m.dirtyCallback != nil {
-		m.dirtyCallback(key)
+	// Notify persistence layer about dirty key. The callback is invoked while the per-key
+	// shard lock is still held (same calling context as the legacy global lock); the
+	// callback only takes the persistence layer's own mutex, so it cannot re-enter the
+	// manager locks (no deadlock).
+	if cb := m.getDirtyCallback(); cb != nil {
+		cb(key)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	http_tls "github.com/bogdanfinn/fhttp"
@@ -17,11 +18,117 @@ const (
 	BypassMethodNone = "none"
 	// BypassMethodStealth uses TLS fingerprint spoofing to bypass Cloudflare
 	BypassMethodStealth = "stealth"
+
+	// clientIdleEvictionTimeout is the idle threshold for evicting cached HTTP
+	// clients during periodic cleanup. Entries unused for longer than this are
+	// removed and their connections closed. Per-proxy clients each carry a full
+	// connection pool (and stealth entries a heavy tls-client instance), so the
+	// eviction bounds memory and open connections; evicted entries are rebuilt
+	// on the next GetClient call (idle-timeout cache eviction best practice).
+	clientIdleEvictionTimeout = 1 * time.Hour
 )
+
+// timedHTTPClientEntry wraps an *http.Client with last-use tracking backing the
+// idle-eviction policy of the sitemanagement client caches.
+type timedHTTPClientEntry struct {
+	client   *http.Client
+	lastUsed atomic.Int64 // UnixNano of the last GetClient hit; 0 = never hit
+	// mu serializes lastUsed refreshes against eviction checks so a client
+	// that was just used cannot be evicted as idle (the eviction check-reload race).
+	mu sync.Mutex
+}
+
+// closeHTTPClientIdleConnections closes idle connections of a cached HTTP client.
+// Supports both the tls-client wrapper transport and the standard http.Transport.
+func closeHTTPClientIdleConnections(client *http.Client) {
+	if client == nil || client.Transport == nil {
+		return
+	}
+	switch transport := client.Transport.(type) {
+	case *tlsClientTransport:
+		transport.client.CloseIdleConnections()
+	case *http.Transport:
+		transport.CloseIdleConnections()
+	}
+}
+
+// closeCachedHTTPClient closes idle connections of a cache value, accepting
+// either a *timedHTTPClientEntry or a raw *http.Client.
+func closeCachedHTTPClient(value any) {
+	switch v := value.(type) {
+	case *timedHTTPClientEntry:
+		closeHTTPClientIdleConnections(v.client)
+	case *http.Client:
+		closeHTTPClientIdleConnections(v)
+	}
+}
+
+// evictIdleCachedClient applies the idle-eviction policy to one cache entry:
+// its idle connections are closed; if the entry has been unused since before
+// cutoff it is deleted so the cache cannot accumulate idle clients. Raw
+// *http.Client values are closed but never deleted (legacy direct stores).
+func evictIdleCachedClient(clients *sync.Map, key, value any, cutoff int64) {
+	if entry, ok := value.(*timedHTTPClientEntry); ok {
+		// Check idle status and delete under the entry lock so an in-flight
+		// GetClient refresh of lastUsed cannot be lost to this eviction check.
+		entry.mu.Lock()
+		idle := entry.lastUsed.Load() < cutoff
+		if idle {
+			// Delete only if the map still holds this exact entry, so a newer
+			// entry installed after this sync.Map.Range snapshot was taken is
+			// never removed by an eviction decision made against the stale one.
+			clients.CompareAndDelete(key, entry)
+		}
+		entry.mu.Unlock()
+		// Close idle connections outside the lock so concurrent GetClient hits
+		// are not blocked while the drained connections are being closed.
+		if idle {
+			closeHTTPClientIdleConnections(entry.client)
+		}
+		return
+	}
+	if client, ok := value.(*http.Client); ok {
+		closeHTTPClientIdleConnections(client)
+	}
+}
+
+// getCachedClientRefreshed returns the cached HTTP client for cacheKey,
+// refreshing its lastUsed under the entry lock. Membership is re-validated
+// under that lock: evictIdleCachedClient may remove an entry after a caller's
+// Load (or LoadOrStore) returns it but before the caller acquires entry.mu,
+// and returning a just-evicted entry would hand out a client that is no longer
+// cached (its idle connections were already closed). When the entry is no
+// longer in the map, ok=false is returned so the caller rebuilds a fresh one.
+// Raw *http.Client values (legacy shape) are returned directly.
+func getCachedClientRefreshed(clients *sync.Map, cacheKey string) (*http.Client, bool) {
+	cached, ok := clients.Load(cacheKey)
+	if !ok {
+		return nil, false
+	}
+	if entry, ok := cached.(*timedHTTPClientEntry); ok {
+		entry.mu.Lock()
+		// Re-validate that the map still holds this exact entry while holding
+		// the lock, so a concurrent eviction cannot race this refresh.
+		if current, ok := clients.Load(cacheKey); ok && current == entry {
+			entry.lastUsed.Store(time.Now().UnixNano())
+			entry.mu.Unlock()
+			return entry.client, true
+		}
+		entry.mu.Unlock()
+		return nil, false
+	}
+	if client, ok := cached.(*http.Client); ok {
+		return client, true
+	}
+	return nil, false
+}
 
 // StealthClientManager manages stealth HTTP clients with TLS fingerprint spoofing.
 // It caches clients by proxy URL to enable connection pooling.
 // Uses bogdanfinn/tls-client which properly supports HTTP/2 and modern TLS fingerprinting.
+// Cache eviction contract: entries idle for longer than clientIdleEvictionTimeout
+// are removed by evictIdleClients (called from the periodic cleanup of the
+// owning services); evicted clients are transparently rebuilt on next GetClient.
 type StealthClientManager struct {
 	// clients stores cached stealth HTTP clients keyed by proxy URL (empty string for direct)
 	clients sync.Map
@@ -45,16 +152,32 @@ func (m *StealthClientManager) GetClient(proxyURL string) *http.Client {
 		cacheKey = "__direct__"
 	}
 
-	// Check cache first
-	if cached, ok := m.clients.Load(cacheKey); ok {
-		return cached.(*http.Client)
+	// Check cache first; refresh last-use on every hit. Membership is
+	// re-validated under the entry lock via getCachedClientRefreshed, so a
+	// concurrently evicted entry is never returned as a stale cache hit.
+	if client, ok := getCachedClientRefreshed(&m.clients, cacheKey); ok {
+		return client
 	}
 
 	// Create new client
 	client := m.createStealthClient(proxyURL)
 
 	// Store in cache (LoadOrStore handles race condition)
-	actual, _ := m.clients.LoadOrStore(cacheKey, client)
+	entry := &timedHTTPClientEntry{client: client}
+	entry.lastUsed.Store(time.Now().UnixNano())
+	actual, _ := m.clients.LoadOrStore(cacheKey, entry)
+	if _, ok := actual.(*timedHTTPClientEntry); ok {
+		// LoadOrStore returned an entry already stored by another goroutine
+		// (or our own first store); refresh it under the entry lock with
+		// membership re-validation, same contract as the cache-hit path above.
+		// The entry cannot have been idle since we just touched lastUsed, so a
+		// re-validation miss only happens in an extreme race where the
+		// fallback below is still a safe, usable client.
+		if refreshed, ok := getCachedClientRefreshed(&m.clients, cacheKey); ok {
+			return refreshed
+		}
+		return client
+	}
 	return actual.(*http.Client)
 }
 
@@ -225,16 +348,21 @@ func isStealthBypassMethod(method string) bool {
 
 // CloseIdleConnections closes idle connections for all cached stealth clients.
 // This should be called after batch operations complete to free resources.
+// Cache entries are never removed here; eviction happens via evictIdleClients.
 func (m *StealthClientManager) CloseIdleConnections() {
 	m.clients.Range(func(key, value any) bool {
-		if client, ok := value.(*http.Client); ok {
-			switch transport := client.Transport.(type) {
-			case *tlsClientTransport:
-				transport.client.CloseIdleConnections()
-			case *http.Transport:
-				transport.CloseIdleConnections()
-			}
-		}
+		closeCachedHTTPClient(value)
+		return true
+	})
+}
+
+// evictIdleClients removes cached clients unused for longer than idleTimeout and
+// closes their connections. Evicted clients are transparently recreated by the
+// next GetClient call. Callers run this from their periodic cleanup.
+func (m *StealthClientManager) evictIdleClients(idleTimeout time.Duration) {
+	cutoff := time.Now().Add(-idleTimeout).UnixNano()
+	m.clients.Range(func(key, value any) bool {
+		evictIdleCachedClient(&m.clients, key, value, cutoff)
 		return true
 	})
 }
@@ -243,14 +371,7 @@ func (m *StealthClientManager) CloseIdleConnections() {
 // This should be called during service shutdown.
 func (m *StealthClientManager) Cleanup() {
 	m.clients.Range(func(key, value any) bool {
-		if client, ok := value.(*http.Client); ok {
-			switch transport := client.Transport.(type) {
-			case *tlsClientTransport:
-				transport.client.CloseIdleConnections()
-			case *http.Transport:
-				transport.CloseIdleConnections()
-			}
-		}
+		closeCachedHTTPClient(value)
 		m.clients.Delete(key)
 		return true
 	})

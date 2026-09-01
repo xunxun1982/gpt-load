@@ -3782,6 +3782,10 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 	// Timeout values are derived from group/system config with preset upper bounds.
 	firstByteTimeout, subsequentTimeout := getEffectiveSSETimeouts(c)
 	reader := NewSSEReaderWithTimeout(bodyReader, firstByteTimeout, subsequentTimeout)
+	// Release the reader goroutine on every return path: with Close, a send
+	// blocked because the consumer abandoned the stream (e.g. after a read
+	// timeout) is cancelled instead of leaking until the upstream stops.
+	defer reader.Close()
 	contentBlockIndex := 0
 	var currentToolCall *OpenAIToolCall
 	var currentToolCallName string
@@ -4713,6 +4717,31 @@ type SSEReaderWithTimeout struct {
 	firstByteTimeout  time.Duration
 	subsequentTimeout time.Duration
 	receivedFirst     bool
+
+	// startOnce + eventCh + readLoop implement a single long-lived reader
+	// goroutine per stream (see readLoop for the lifecycle contract).
+	startOnce sync.Once
+	eventCh   chan sseReadResult
+
+	// terminalErr retains a non-EOF terminal error when the result channel is
+	// already full (consumer abandoned the stream after a read timeout), so a
+	// later read reports the real transport failure instead of misreading the
+	// channel close as a normal io.EOF. Only written by readLoop before it
+	// closes eventCh, and only read by ReadEvent after the channel is closed, so
+	// a plain field is safe without atomics (close happens-before any receiver
+	// observing the closed channel).
+	terminalErr error
+
+	// done + closeOnce implement Close: cancelling the reader goroutine when
+	// the consumer abandons the stream (see Close for the contract).
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// sseReadResult is one event (or read error) produced by the reader goroutine.
+type sseReadResult struct {
+	event *SSEEvent
+	err   error
 }
 
 // NewSSEReaderWithTimeout creates a new SSE reader with timeout support.
@@ -4724,52 +4753,119 @@ func NewSSEReaderWithTimeout(r io.Reader, firstByteTimeout, subsequentTimeout ti
 		firstByteTimeout:  firstByteTimeout,
 		subsequentTimeout: subsequentTimeout,
 		receivedFirst:     false,
+		eventCh:           make(chan sseReadResult, 1),
+		done:              make(chan struct{}),
 	}
 }
 
-// ReadEvent reads the next SSE event with timeout support.
-// Uses goroutine + channel pattern since bufio.Reader doesn't support timeouts directly.
+// readLoop is the single long-lived reader goroutine per stream.
 //
-// KNOWN LIMITATION: When timeout fires, the goroutine spawned for readEventInternal()
-// will remain blocked on bufio.Reader.ReadString('\n') until the underlying HTTP
-// response body is closed. This is a known limitation of this pattern - the goroutine
-// (~2KB stack) will be released when the connection terminates. The buffered channel
-// (size 1) prevents send-side blocking. This trade-off is acceptable because:
-// 1. HTTP connections eventually close (upstream timeout, client disconnect, server close)
-// 2. User-facing behavior is correct (timeout error returned promptly)
-// 3. This pattern is commonly used for timeout support on non-cancellable readers
+// Lifecycle contract: it reads SSE events from the underlying reader in a loop
+// and pushes each one (or the terminating error) into eventCh (buffered, size
+// 1). It exits when readEventInternal returns an error — i.e. on EOF or when
+// the underlying connection/body is closed — and closes eventCh so consumers
+// observe io.EOF. It also exits when Close cancels it via done: this releases
+// a successful send that would otherwise block forever once the consumer
+// abandoned the stream (e.g. after a read timeout) while upstream keeps sending
+// data. Close does not close the underlying reader; a read parked on the
+// underlying reader is only released by the caller closing the stream
+// (body/connection), as before. A ReadEvent timeout neither kills nor spawns
+// goroutines: the timed-out caller simply leaves this goroutine parked on the
+// reader/channel, so the stream holds exactly 1 goroutine regardless of how
+// many timeouts occur, and that 1 goroutine is released by Close, EOF, or
+// connection close. This replaces the previous per-read goroutine pattern,
+// which leaked one goroutine (~2KB stack) per timeout until the connection
+// closed.
+//
+// Terminal error retention: when the result channel is already full because an
+// abandoned consumer left a result unconsumed, the terminating error cannot be
+// delivered through the channel. A non-EOF error is then retained in
+// terminalErr so a later ReadEvent reports the real transport failure
+// (connection reset, decompression error, ...) instead of misreading the closed
+// channel as a normal io.EOF; a genuine io.EOF is still reported as EOF. The
+// retained value is visible to any receiver only after close(eventCh), which
+// happens after the write, so no synchronization is required.
+func (r *SSEReaderWithTimeout) readLoop() {
+	defer close(r.eventCh)
+	for {
+		event, err := r.readEventInternal()
+		if err != nil {
+			// Terminal result (EOF / connection close): deliver it if the
+			// consumer is still waiting, but never block. If a timed-out caller
+			// abandoned the stream and left a buffered result unconsumed, the
+			// channel is full — retain a non-EOF error in terminalErr so the
+			// transport failure is not misread as a normal EOF, then guarantee
+			// this goroutine exits as soon as the underlying reader errors.
+			select {
+			case r.eventCh <- sseReadResult{event: event, err: err}:
+			default:
+				if err != io.EOF {
+					r.terminalErr = err
+				}
+			}
+			return
+		}
+		select {
+		case r.eventCh <- sseReadResult{event: event, err: err}:
+		case <-r.done:
+			return
+		}
+	}
+}
+
+// Close cancels the single reader goroutine so a blocked successful send cannot
+// leak forever when the consumer abandons the stream (e.g. after a read timeout)
+// while the upstream keeps sending data. It is idempotent: closing done makes
+// readLoop exit and close eventCh, so any later ReadEvent call observes io.EOF.
+// It does not close the underlying reader: an in-progress blocking read is
+// released only when the caller closes the stream (body/connection), as before.
+func (r *SSEReaderWithTimeout) Close() {
+	r.closeOnce.Do(func() { close(r.done) })
+}
+
+// ReadEvent reads the next SSE event with timeout support.
+// The read itself happens in the single long-lived reader goroutine (readLoop);
+// this method only receives from eventCh with an optional timeout, so timeouts
+// never leave orphan goroutines behind.
 func (r *SSEReaderWithTimeout) ReadEvent() (*SSEEvent, error) {
+	r.startOnce.Do(func() {
+		go r.readLoop()
+	})
+
 	timeout := r.subsequentTimeout
 	if !r.receivedFirst {
 		timeout = r.firstByteTimeout
 	}
 	if timeout <= 0 {
-		event, err := r.readEventInternal()
-		if err == nil && event != nil {
-			r.receivedFirst = true
+		result, ok := <-r.eventCh
+		if !ok {
+			if r.terminalErr != nil {
+				return nil, r.terminalErr
+			}
+			return nil, io.EOF
 		}
-		return event, err
-	}
-
-	type readResult struct {
-		event *SSEEvent
-		err   error
-	}
-
-	resultCh := make(chan readResult, 1)
-
-	go func() {
-		event, err := r.readEventInternal()
-		resultCh <- readResult{event: event, err: err}
-	}()
-
-	select {
-	case result := <-resultCh:
 		if result.err == nil && result.event != nil {
 			r.receivedFirst = true
 		}
 		return result.event, result.err
-	case <-time.After(timeout):
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case result, ok := <-r.eventCh:
+		if !ok {
+			if r.terminalErr != nil {
+				return nil, r.terminalErr
+			}
+			return nil, io.EOF
+		}
+		if result.err == nil && result.event != nil {
+			r.receivedFirst = true
+		}
+		return result.event, result.err
+	case <-timer.C:
 		timeoutType := "subsequent"
 		if !r.receivedFirst {
 			timeoutType = "first-byte"

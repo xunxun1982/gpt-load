@@ -73,6 +73,40 @@ func TestIsUnCounted(t *testing.T) {
 			errorMsg: "please try again",
 			expected: false,
 		},
+		{
+			name:     "resource exhausted unicode fold long s",
+			errorMsg: "reſource has been exhausted",
+			expected: true,
+		},
+		{
+			name:     "reduce message length unicode fold mixed case",
+			errorMsg: "Please Reduce The Length Of The Meſſages",
+			expected: true,
+		},
+		{
+			name:     "non-matching non-ascii message",
+			errorMsg: "数据库连接失败",
+			expected: false,
+		},
+		{
+			name:     "fold window slides to end of string",
+			errorMsg: "prefix reſource has been exhausted",
+			expected: true,
+		},
+		{
+			// Invalid UTF-8 decodes as RuneError, which never sits in the
+			// same simple-fold orbit as an ASCII pattern byte, so the result is
+			// false (no match), and DecodeRuneInString advances by one byte so
+			// no panic or non-termination is possible.
+			name:     "invalid utf-8 does not match or panic",
+			errorMsg: "re\xffsource has been exhausted",
+			expected: false,
+		},
+		{
+			name:     "shorter non-ascii than pattern",
+			errorMsg: "reſ",
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {

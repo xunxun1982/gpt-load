@@ -178,15 +178,10 @@ func (s *AutoCheckinService) Stop(ctx context.Context) {
 
 	// Clean up proxy client cache
 	s.proxyClients.Range(func(key, value interface{}) bool {
-		if client, ok := value.(*http.Client); ok {
-			if transport, ok := client.Transport.(*http.Transport); ok {
-				transport.CloseIdleConnections()
-			}
-		}
+		closeCachedHTTPClient(value)
 		s.proxyClients.Delete(key)
 		return true
 	})
-
 	// Clean up stealth client cache
 	s.stealthClientMgr.Cleanup()
 
@@ -972,9 +967,11 @@ func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http
 		return s.client
 	}
 
-	// Check cache first (fast path)
-	if cached, ok := s.proxyClients.Load(proxyURL); ok {
-		return cached.(*http.Client)
+	// Check cache first (fast path). Membership is re-validated under the
+	// entry lock via getCachedClientRefreshed, so a concurrently evicted entry
+	// is never returned as a stale cache hit (see evictIdleCachedClient).
+	if client, ok := getCachedClientRefreshed(&s.proxyClients, proxyURL); ok {
+		return client
 	}
 
 	// Parse and validate proxy URL
@@ -999,7 +996,21 @@ func (s *AutoCheckinService) getHTTPClient(useProxy bool, proxyURL string) *http
 
 	// Store in cache (LoadOrStore handles race condition - if another goroutine
 	// stored a client for the same URL, we use that one instead)
-	actual, _ := s.proxyClients.LoadOrStore(proxyURL, client)
+	entry := &timedHTTPClientEntry{client: client}
+	entry.lastUsed.Store(time.Now().UnixNano())
+	actual, _ := s.proxyClients.LoadOrStore(proxyURL, entry)
+	if _, ok := actual.(*timedHTTPClientEntry); ok {
+		// LoadOrStore returned an entry already stored by another goroutine
+		// (or our own first store); refresh it under the entry lock with
+		// membership re-validation, same contract as the cache-hit path above.
+		// The entry cannot have been idle since we just touched lastUsed, so a
+		// re-validation miss only happens in an extreme race where the
+		// fallback below is still a safe, usable client.
+		if refreshed, ok := getCachedClientRefreshed(&s.proxyClients, proxyURL); ok {
+			return refreshed
+		}
+		return client
+	}
 	return actual.(*http.Client)
 }
 
@@ -1100,26 +1111,26 @@ func (s *AutoCheckinService) isBusy() bool {
 	return st.TaskType == taskTypeKeyImport || st.TaskType == taskTypeKeyDelete || st.TaskType == taskTypeKeyRestore
 }
 
-// closeIdleConnections closes idle connections for all HTTP clients to free resources.
-// This should be called after batch operations (check-in, balance refresh) complete.
+// closeIdleConnections closes idle connections for all HTTP clients to free resources
+// and evicts cached clients idle past clientIdleEvictionTimeout so the proxy and
+// stealth caches cannot accumulate unused connection pools forever (evicted
+// entries are rebuilt on demand by the next GetClient call).
 func (s *AutoCheckinService) closeIdleConnections() {
 	// Close idle connections for default client
 	if transport, ok := s.client.Transport.(*http.Transport); ok {
 		transport.CloseIdleConnections()
 	}
 
-	// Close idle connections for all cached proxy clients
+	// Close idle connections for all cached proxy clients and evict idle ones
+	cutoff := time.Now().Add(-clientIdleEvictionTimeout).UnixNano()
 	s.proxyClients.Range(func(key, value interface{}) bool {
-		if client, ok := value.(*http.Client); ok {
-			if transport, ok := client.Transport.(*http.Transport); ok {
-				transport.CloseIdleConnections()
-			}
-		}
+		evictIdleCachedClient(&s.proxyClients, key, value, cutoff)
 		return true
 	})
 
-	// Close idle connections for stealth client manager
+	// Close idle connections for stealth client manager and evict idle ones
 	s.stealthClientMgr.CloseIdleConnections()
+	s.stealthClientMgr.evictIdleClients(clientIdleEvictionTimeout)
 }
 
 // periodicCleanup runs periodic cleanup of idle connections for aggressive memory release.

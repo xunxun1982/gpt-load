@@ -1,13 +1,17 @@
 package proxy
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"gpt-load/internal/models"
 
@@ -1834,4 +1838,193 @@ func TestCodexHelperFunctions(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestCodexLineReader_NoOrphanGoroutineGrowth verifies the Plan A fix for the
+// Codex CC streaming loop: repeated timeouts must not accumulate one goroutine
+// per timeout. The stream holds exactly one long-lived reader goroutine, and
+// closing the underlying reader releases it. Leak detection polls for the readLoop
+// stack frame to disappear instead of comparing process-wide goroutine counts,
+// which is immune to unrelated goroutines started by the test runner or parallel
+// tests.
+func TestCodexLineReader_NoOrphanGoroutineGrowth(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	lr := newCodexLineReader(bufio.NewReader(pr))
+
+	const timeouts = 50
+	for i := 0; i < timeouts; i++ {
+		_, err := lr.readLine(5 * time.Millisecond)
+		if !errors.Is(err, ErrSSETimeout) {
+			t.Fatalf("iteration %d: expected ErrSSETimeout, got %v", i, err)
+		}
+	}
+
+	t.Logf("codexLineReader: %d timeouts completed, goroutines=%d", timeouts, runtime.NumGoroutine())
+
+	// Closing the stream must release the single long-lived reader goroutine.
+	pw.Close()
+	waitForGoroutineFrameGone(t, "(*codexLineReader).readLoop", 2*time.Second)
+	t.Logf("codexLineReader: readLoop frame gone after stream close, goroutines=%d", runtime.NumGoroutine())
+}
+
+// TestCodexLineReader_TimeoutThenDataAndEOF verifies Plan A semantics: an idle
+// stream times out with ErrSSETimeout, a line written after a timeout is still
+// delivered by the long-lived goroutine, and EOF is reported normally.
+func TestCodexLineReader_TimeoutThenDataAndEOF(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	lr := newCodexLineReader(bufio.NewReader(pr))
+
+	// Idle stream: read times out.
+	if _, err := lr.readLine(30 * time.Millisecond); !errors.Is(err, ErrSSETimeout) {
+		t.Fatalf("expected ErrSSETimeout on idle stream, got %v", err)
+	}
+
+	// A line written after a timeout is picked up by the long-lived goroutine.
+	go func() {
+		_, _ = pw.Write([]byte("event: test\ndata: {\"x\":1}\n\n"))
+	}()
+	line, err := lr.readLine(200 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected line after write, got %v", err)
+	}
+	if line != "event: test\n" {
+		t.Fatalf("unexpected line: %q", line)
+	}
+
+	// Close the stream, then drain every buffered line: EOF must arrive once
+	// the underlying reader reports the closed pipe.
+	pw.Close()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	seenEOF := false
+	for time.Now().Before(deadline) {
+		_, err := lr.readLine(100 * time.Millisecond)
+		if errors.Is(err, io.EOF) {
+			seenEOF = true
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error while draining: %v", err)
+		}
+	}
+	if !seenEOF {
+		t.Fatalf("expected io.EOF after stream close, never observed")
+	}
+}
+
+// TestCodexLineReader_CloseReleasesBlockedSend verifies that Close cancels the
+// single reader goroutine even when it is blocked on a successful channel send:
+// after a read timeout abandons the stream, the goroutine fills the buffered
+// channel with the first line and parks forever on sending the second. Close
+// must release it so the goroutine exits and no upstream resources leak; without
+// it the readLoop frame never disappears.
+func TestCodexLineReader_CloseReleasesBlockedSend(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	lr := newCodexLineReader(bufio.NewReader(pr))
+	defer lr.Close() // idempotent safety net
+
+	// First read times out on the idle stream and abandons it (Plan A: no new
+	// goroutine is spawned, the reader goroutine parks on the reader).
+	if _, err := lr.readLine(50 * time.Millisecond); !errors.Is(err, ErrSSETimeout) {
+		t.Fatalf("expected ErrSSETimeout on idle stream, got %v", err)
+	}
+
+	// Two lines written serially: the reader goroutine reads the first one and
+	// fills the buffered channel, then reads the second and blocks on the
+	// successful send forever (the consumer is no longer reading), unless Close
+	// cancels it.
+	if _, err := pw.Write([]byte("line-one\n")); err != nil {
+		t.Fatalf("write line-one: %v", err)
+	}
+	if _, err := pw.Write([]byte("line-two\n")); err != nil {
+		t.Fatalf("write line-two: %v", err)
+	}
+
+	// Give the goroutine time to reach the blocked send, then Close must unblock
+	// it and make the readLoop frame disappear.
+	time.Sleep(50 * time.Millisecond)
+	lr.Close()
+
+	// Poll for the readLoop frame to disappear: a leaked (still blocked) reader
+	// goroutine keeps the frame present and trips the deadline.
+	waitForGoroutineFrameGone(t, "(*codexLineReader).readLoop", 2*time.Second)
+	t.Logf("codexLineReader: after Close released blocked send, goroutines=%d", runtime.NumGoroutine())
+}
+
+// linesThenErrReader yields r.data once, then blocks on release (if non-nil)
+// before returning r.err. It is shared by the codexLineReader and
+// SSEReaderWithTimeout terminal-error retention tests (in this file and
+// cc_support_test.go): it models an upstream connection that sends one chunk
+// and then fails with a non-EOF transport error. The release gate lets the
+// test deterministically hold the reader goroutine so the buffered result
+// channel is still full when the terminal error branch runs (see the
+// channel-full tests below for the full rationale).
+type linesThenErrReader struct {
+	data    []byte
+	err     error
+	pos     int
+	release chan struct{}
+}
+
+func (r *linesThenErrReader) Read(p []byte) (int, error) {
+	if r.pos < len(r.data) {
+		n := copy(p, r.data[r.pos:])
+		r.pos += n
+		return n, nil
+	}
+	if r.release != nil {
+		<-r.release
+	}
+	return 0, r.err
+}
+
+// TestCodexLineReader_PreservesTerminalErrorWhenChannelFull verifies that a
+// non-EOF terminal transport error is retained when the buffered result channel
+// is full (consumer abandoned the stream after a read timeout) instead of being
+// silently dropped and misread as a normal io.EOF once the channel closes.
+
+// The gate (release) makes the abandoned-consumer race deterministic on a
+// multi-core machine. Without it, whether the terminal error lands while the
+// channel is still full is a scheduling race: the first readLine could drain
+// the buffered line before the goroutine's terminal send runs, letting the
+// error flow through the channel (normal path) and masking the drop the bug
+// depends on. By blocking the reader until the test has awaited nothing, then
+// sleeping one turn so the goroutine definitely performs its terminal send
+// while the channel is full, we exercise the drop path reliably.
+func TestCodexLineReader_PreservesTerminalErrorWhenChannelFull(t *testing.T) {
+	errBoom := errors.New("simulated transport failure")
+
+	release := make(chan struct{})
+	lr := newCodexLineReader(bufio.NewReader(&linesThenErrReader{
+		data:    []byte("line-one\n"),
+		err:     errBoom,
+		release: release,
+	}))
+
+	// The goroutine reads "line-one\n" and parks on the release gate with the
+	// channel left full. Release it and give the goroutine a scheduler turn so
+	// its terminal send definitively sees the full channel and retains errBoom
+	// instead of delivering it through the channel.
+	close(release)
+	time.Sleep(10 * time.Millisecond)
+
+	line, err := lr.readLine(200 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected first line with nil error, got %q, %v", line, err)
+	}
+	if line != "line-one\n" {
+		t.Fatalf("unexpected first line: %q", line)
+	}
+
+	// The channel is closed by now; the retained terminal error must surface
+	// instead of being misread as io.EOF.
+	_, err = lr.readLine(200 * time.Millisecond)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("expected terminal error %v to be preserved, got %v", errBoom, err)
+	}
 }

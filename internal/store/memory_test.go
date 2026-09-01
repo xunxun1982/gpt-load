@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -58,6 +59,75 @@ func TestMemoryStore_SetWithTTL(t *testing.T) {
 		_, err = store.Get(key)
 		return err == ErrNotFound
 	}, time.Second, 10*time.Millisecond, "Key should expire after TTL")
+}
+
+func TestMemoryStore_DeleteExpiredDoesNotDeleteRefreshedValue(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	const key = "refreshed_key"
+	require.NoError(t, store.Set(key, []byte("expired"), -time.Second))
+	require.NoError(t, store.Set(key, []byte("fresh"), 0))
+
+	store.deleteExpired(key)
+
+	value, err := store.Get(key)
+	require.NoError(t, err)
+	require.Equal(t, []byte("fresh"), value)
+}
+
+// TestMemoryStore_GetRefreshBetweenExpiryCheckAndDelete deterministically
+// interleaves a Set between Get's expired-snapshot read and deleteExpired's
+// recheck via the test hook: the hook refreshes the key exactly where a
+// concurrent Set would land, so Get must return the refreshed value instead of
+// a stale-snapshot miss.
+func TestMemoryStore_GetRefreshBetweenExpiryCheckAndDelete(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	const key = "refresh_key"
+	// Set ignores non-positive TTL (it would yield expiresAt=0, i.e. no
+	// expiry), so write the expired item directly to exercise the stale-snapshot
+	// path deterministically.
+	store.mu.Lock()
+	store.data[key] = memoryStoreItem{value: []byte("old"), expiresAt: time.Now().UnixNano() - 1}
+	store.mu.Unlock()
+
+	testHookBeforeExpiryDelete = func(k string) {
+		_ = store.Set(k, []byte("new"), 0)
+	}
+	t.Cleanup(func() { testHookBeforeExpiryDelete = nil })
+
+	value, err := store.Get(key)
+	require.NoError(t, err)
+	require.Equal(t, []byte("new"), value)
+}
+
+// TestMemoryStore_ExistsRefreshBetweenExpiryCheckAndDelete is the Exists
+// counterpart of TestMemoryStore_GetRefreshBetweenExpiryCheckAndDelete:the
+// hook refreshes the key between Exists's expired-snapshot read and
+// deleteExpired's recheck, so Exists must report the key as present instead of
+// a stale-snapshot miss.
+func TestMemoryStore_ExistsRefreshBetweenExpiryCheckAndDelete(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	const key = "refresh_exists_key"
+	// Set ignores non-positive TTL (it would yield expiresAt=0, i.e. no
+	// expiry), so write the expired item directly to exercise the stale-snapshot
+	// path deterministically.
+	store.mu.Lock()
+	store.data[key] = memoryStoreItem{value: []byte("old"), expiresAt: time.Now().UnixNano() - 1}
+	store.mu.Unlock()
+
+	testHookBeforeExpiryDelete = func(k string) {
+		_ = store.Set(k, []byte("new"), 0)
+	}
+	t.Cleanup(func() { testHookBeforeExpiryDelete = nil })
+
+	exists, err := store.Exists(key)
+	require.NoError(t, err)
+	require.True(t, exists)
 }
 
 // TestMemoryStore_Delete tests delete operation
@@ -279,15 +349,56 @@ func TestMemoryStore_Rotate(t *testing.T) {
 	err := store.LPush(key, "value1", "value2", "value3")
 	require.NoError(t, err)
 
-	// Rotate
-	item, err := store.Rotate(key)
-	require.NoError(t, err)
-	assert.NotEmpty(t, item)
+	for _, expected := range []string{"value3", "value2", "value1", "value3"} {
+		item, err := store.Rotate(key)
+		require.NoError(t, err)
+		assert.Equal(t, expected, item)
+	}
 
 	// Length should remain the same
 	length, err := store.LLen(key)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), length)
+}
+
+func TestMemoryStore_ListMutationsAfterRotate(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	const key = "list_mutation_key"
+	require.NoError(t, store.LPush(key, "value1", "value2", "value3"))
+
+	item, err := store.Rotate(key)
+	require.NoError(t, err)
+	assert.Equal(t, "value3", item)
+
+	require.NoError(t, store.LRem(key, 0, "value1"))
+	require.NoError(t, store.LPush(key, "value4", "value5"))
+
+	for _, expected := range []string{"value2", "value3", "value5", "value4"} {
+		item, err = store.Rotate(key)
+		require.NoError(t, err)
+		assert.Equal(t, expected, item)
+	}
+}
+
+func TestMemoryStore_RotateDoesNotAllocate(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	const listSize = 10_000
+	values := make([]any, listSize)
+	for i := range values {
+		values[i] = strconv.Itoa(i)
+	}
+	require.NoError(t, store.LPush("large_list", values...))
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, err := store.Rotate("large_list"); err != nil {
+			panic(err)
+		}
+	})
+	assert.Zero(t, allocs)
 }
 
 // TestMemoryStore_SAdd tests set add operation
@@ -545,6 +656,31 @@ func BenchmarkMemoryStore_HIncrBy(b *testing.B) {
 		if _, err := store.HIncrBy(key, field, 1); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkMemoryStore_Rotate(b *testing.B) {
+	for _, listSize := range []int{1, 1_000, 100_000} {
+		b.Run(strconv.Itoa(listSize), func(b *testing.B) {
+			store := NewMemoryStore()
+			defer store.Close()
+
+			values := make([]any, listSize)
+			for i := range values {
+				values[i] = strconv.Itoa(i)
+			}
+			if err := store.LPush("rotate_benchmark", values...); err != nil {
+				b.Fatal(err)
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := store.Rotate("rotate_benchmark"); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
