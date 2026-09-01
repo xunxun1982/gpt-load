@@ -25,7 +25,7 @@ type Subscription interface {
 // Concurrency contract: implementations MUST be safe for concurrent use by
 // multiple goroutines. Callers (e.g. DynamicWeightManager) invoke Get/Set on
 // different keys from parallel goroutines, so an implementation must not
-// assume serialized access. The built-in MemoryStore (per-key RWMutex) and
+// assume serialized access. The built-in MemoryStore (store-wide RWMutex) and
 // RedisStore (go-redis client) both satisfy this contract.
 type Store interface {
 	// Set stores a key-value pair with an optional TTL.

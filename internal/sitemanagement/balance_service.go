@@ -976,7 +976,6 @@ func (s *BalanceService) FetchAllBalances(ctx context.Context, sites []ManagedSi
 // and evicts cached clients idle past clientIdleEvictionTimeout so the proxy and
 // stealth caches cannot accumulate unused connection pools forever (evicted
 // entries are rebuilt on demand by the next GetClient call).
-
 func (s *BalanceService) closeIdleConnections() {
 	// Close idle connections for default client
 	if transport, ok := s.client.Transport.(*http.Transport); ok {

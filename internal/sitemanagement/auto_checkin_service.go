@@ -1115,7 +1115,6 @@ func (s *AutoCheckinService) isBusy() bool {
 // and evicts cached clients idle past clientIdleEvictionTimeout so the proxy and
 // stealth caches cannot accumulate unused connection pools forever (evicted
 // entries are rebuilt on demand by the next GetClient call).
-
 func (s *AutoCheckinService) closeIdleConnections() {
 	// Close idle connections for default client
 	if transport, ok := s.client.Transport.(*http.Transport); ok {

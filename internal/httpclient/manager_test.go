@@ -881,16 +881,23 @@ func TestGetClientHitRacesCapacityEviction(t *testing.T) {
 
 		done.Wait()
 
-		// If entry A is gone, no hit may have returned the original clientA:
-		// a fast-path hit followed by eviction of that same entry is the bug.
+		// Only when a hit returned the original clientA does the exact entry
+		// matter: that very entry must still be the cached one. A fast-path hit
+		// followed by eviction of the same entry (stale lastUsed selecting it)
+		// is the bug this test guards against.
 		manager.lock.RLock()
-		_, aExists := manager.clients[fpA]
+		currentA, aExists := manager.clients[fpA]
 		manager.lock.RUnlock()
 		for h := 0; h < hitters; h++ {
-			if !aExists {
-				assert.NotSame(t, clientA, hits[h],
-					"hit returned an evicted client: stale lastUsed selected it (round %d, hitter %d)", i, h)
+			if hits[h] != clientA {
+				continue
 			}
+			// A hit returned the original clientA, so that exact entry must
+			// still be the cached one.
+			require.True(t, aExists,
+				"hit returned an evicted client (round %d, hitter %d)", i, h)
+			assert.Same(t, clientA, currentA.client,
+				"hit returned a client whose entry was replaced (round %d, hitter %d)", i, h)
 		}
 	}
 }

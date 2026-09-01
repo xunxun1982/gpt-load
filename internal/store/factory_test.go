@@ -178,6 +178,34 @@ func TestBuildRedisOptions_DSNDisableDuration(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, time.Duration(-1), opts.ConnMaxLifetime)
 	})
+	t.Run("canonical empty value falls back to default", func(t *testing.T) {
+		// go-redis options.go checks q.has("conn_max_idle_time") (key presence
+		// only): an empty canonical value parses to 0 via duration(""), and
+		// NewClient rewrites that 0 back to the 30m default. The factory must
+		// mirror that: an empty canonical value is not "configured", so the
+		// default 30m applies, not the -1 disable sentinel.
+		opts, err := buildRedisOptions("redis://localhost:6379/0?conn_max_idle_time=")
+		require.NoError(t, err)
+		assert.Equal(t, 30*time.Minute, opts.ConnMaxIdleTime)
+	})
+	t.Run("canonical empty lifetime value falls back to default", func(t *testing.T) {
+		// Same canonical-first semantics for ConnMaxLifetime: an empty
+		// conn_max_lifetime parses to 0 (no lifetime cap in go-redis), which the
+		// factory treats as unconfigured and replaces with the 30m default.
+		opts, err := buildRedisOptions("redis://localhost:6379/0?conn_max_lifetime=")
+		require.NoError(t, err)
+		assert.Equal(t, 30*time.Minute, opts.ConnMaxLifetime)
+	})
+	t.Run("canonical key with legacy alias rejected by ParseURL", func(t *testing.T) {
+		// A canonical key present alongside a legacy alias is rejected by
+		// go-redis ParseURL ("unexpected option") because duration() consumes
+		// only the canonical key and the alias stays unconsumed. There is no
+		// canonical-empty → legacy fallback in go-redis, so the factory's
+		// redisDSNHasQueryParam never sees this combination.
+		_, err := buildRedisOptions("redis://localhost:6379/0?conn_max_idle_time=&idle_timeout=0s")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected option: idle_timeout")
+	})
 	t.Run("min_idle_conns clamped to max_active_conns", func(t *testing.T) {
 		// go-redis v9 checkMinIdleConns pre-warm loop only compares MinIdleConns
 		// against PoolSize (internal/pool/pool.go), never MaxActiveConns, while

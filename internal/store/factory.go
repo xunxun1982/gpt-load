@@ -184,10 +184,16 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 	return opts, nil
 }
 
-// redisDSNHasQueryParam reports whether the DSN query string contains any of the
-// given parameter keys with a non-empty final value. A parameter whose final
-// value is empty is treated as unset (go-redis parses it to 0, and it must not
-// suppress the factory default). The last occurrence wins, matching go-redis's
+// redisDSNHasQueryParam reports whether the DSN query string explicitly
+// configures one of the given parameters, following go-redis ParseURL's
+// canonical-first precedence (options.go). The parameters are consulted in
+// order: the first parameter whose key is present in the query decides, even
+// when its final value is empty (go-redis q.has() checks key presence only, and
+// duration("") parses to 0). A present-but-empty canonical key therefore
+// suppresses a non-empty legacy alias and yields false — the factory default
+// applies, matching go-redis's behavior of ignoring the alias once the
+// canonical key exists. Only a parameter whose key is entirely absent falls
+// through to the next name. The last occurrence wins, matching go-redis's
 // last-value semantics (url.Values.Get would return the first value, not the
 // last, so it cannot be used here).
 func redisDSNHasQueryParam(redisDSN string, params ...string) bool {
@@ -197,9 +203,11 @@ func redisDSNHasQueryParam(redisDSN string, params ...string) bool {
 	}
 	query := u.Query()
 	for _, p := range params {
-		if vs := query[p]; len(vs) > 0 && vs[len(vs)-1] != "" {
-			return true
+		vs, ok := query[p]
+		if !ok || len(vs) == 0 {
+			continue // key absent: try the next (alias) name
 		}
+		return vs[len(vs)-1] != ""
 	}
 	return false
 }
