@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -220,6 +221,29 @@ func TestBuildRedisOptions_DSNDisableDuration(t *testing.T) {
 		assert.Equal(t, 1, opts.MaxActiveConns)
 		assert.Equal(t, 9999, opts.PoolSize)
 	})
+}
+
+func TestBuildRedisOptions_RejectsOverflowingDSNDurations(t *testing.T) {
+	clearRedisPoolEnv(t)
+	// Unitless DSN durations are interpreted as seconds by go-redis. Values
+	// beyond this bound overflow time.Duration during ParseURL.
+	overflow := strconv.FormatInt(maxDurationSeconds+1, 10)
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "canonical idle", key: "conn_max_idle_time"},
+		{name: "idle alias", key: "idle_timeout"},
+		{name: "canonical lifetime", key: "conn_max_lifetime"},
+		{name: "lifetime alias", key: "max_conn_age"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := buildRedisOptions("redis://localhost:6379/0?" + tt.key + "=" + overflow)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "duration")
+		})
+	}
 }
 
 func TestBuildRedisOptions_EnvOverridePoolSize(t *testing.T) {

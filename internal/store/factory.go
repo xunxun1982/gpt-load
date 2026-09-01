@@ -58,6 +58,15 @@ const maxInt32 = int64(^uint32(0) >> 1)
 // buildRedisOptions parses the DSN and applies explicit pool limits.
 // Extracted for testability: pool fields are asserted without a live server.
 func buildRedisOptions(redisDSN string) (*redis.Options, error) {
+	u, err := url.Parse(redisDSN)
+	if err != nil {
+		return nil, err
+	}
+	query := u.Query()
+	if err := validateRedisDSNDurations(query); err != nil {
+		return nil, err
+	}
+
 	opts, err := redis.ParseURL(redisDSN)
 	if err != nil {
 		return nil, err
@@ -83,7 +92,7 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 	// the cap follows the final PoolSize.
 	if poolOK {
 		opts.MaxActiveConns = opts.PoolSize
-	} else if !redisDSNHasQueryParam(redisDSN, "max_active_conns") {
+	} else if !redisDSNHasQueryParamValues(query, "max_active_conns") {
 		opts.MaxActiveConns = opts.PoolSize
 	}
 
@@ -91,7 +100,7 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 	// connections" is preserved; only absence falls back to the default.
 	if v, ok := envRedisInt(envRedisMinIdleConns); ok {
 		opts.MinIdleConns = v
-	} else if !redisDSNHasQueryParam(redisDSN, "min_idle_conns") {
+	} else if !redisDSNHasQueryParamValues(query, "min_idle_conns") {
 		opts.MinIdleConns = defaultRedisMinIdleConns
 	}
 	if opts.MinIdleConns < 0 {
@@ -116,7 +125,7 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 		} else {
 			opts.ConnMaxIdleTime = time.Duration(v) * time.Second
 		}
-	} else if !redisDSNHasQueryParam(redisDSN, "conn_max_idle_time", "idle_timeout") {
+	} else if !redisDSNHasQueryParamValues(query, "conn_max_idle_time", "idle_timeout") {
 		opts.ConnMaxIdleTime = defaultRedisConnMaxIdleTime
 	} else {
 		// go-redis ParseURL parses a DSN duration in unit form ("0s") to 0,
@@ -145,7 +154,7 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 		} else {
 			opts.ConnMaxLifetime = time.Duration(v) * time.Second
 		}
-	} else if !redisDSNHasQueryParam(redisDSN, "conn_max_lifetime", "max_conn_age") {
+	} else if !redisDSNHasQueryParamValues(query, "conn_max_lifetime", "max_conn_age") {
 		opts.ConnMaxLifetime = defaultRedisConnMaxLifetime
 	}
 
@@ -184,7 +193,26 @@ func buildRedisOptions(redisDSN string) (*redis.Options, error) {
 	return opts, nil
 }
 
-// redisDSNHasQueryParam reports whether the DSN query string explicitly
+// validateRedisDSNDurations rejects unitless seconds that would overflow when
+// go-redis converts them to time.Duration before returning from ParseURL.
+func validateRedisDSNDurations(query url.Values) error {
+	for _, params := range [][]string{
+		{"conn_max_idle_time", "idle_timeout"},
+		{"conn_max_lifetime", "max_conn_age"},
+	} {
+		key, raw, ok := redisDSNQueryValue(query, params...)
+		if !ok || raw == "" {
+			continue
+		}
+		seconds, err := strconv.ParseInt(raw, 10, 64)
+		if err == nil && seconds > maxDurationSeconds {
+			return fmt.Errorf("redis: %s duration %q exceeds maximum unitless value %d seconds", key, raw, maxDurationSeconds)
+		}
+	}
+	return nil
+}
+
+// redisDSNHasQueryParam reports whether the parsed DSN query explicitly
 // configures one of the given parameters, following go-redis ParseURL's
 // canonical-first precedence (options.go). The parameters are consulted in
 // order: the first parameter whose key is present in the query decides, even
@@ -201,15 +229,23 @@ func redisDSNHasQueryParam(redisDSN string, params ...string) bool {
 	if err != nil {
 		return false
 	}
-	query := u.Query()
+	return redisDSNHasQueryParamValues(u.Query(), params...)
+}
+
+func redisDSNHasQueryParamValues(query url.Values, params ...string) bool {
+	_, value, ok := redisDSNQueryValue(query, params...)
+	return ok && value != ""
+}
+
+func redisDSNQueryValue(query url.Values, params ...string) (string, string, bool) {
 	for _, p := range params {
 		vs, ok := query[p]
 		if !ok || len(vs) == 0 {
 			continue // key absent: try the next (alias) name
 		}
-		return vs[len(vs)-1] != ""
+		return p, vs[len(vs)-1], true
 	}
-	return false
+	return "", "", false
 }
 
 // envRedisInt reads an integer environment variable. ok reports whether the
