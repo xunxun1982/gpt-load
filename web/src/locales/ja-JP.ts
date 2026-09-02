@@ -842,6 +842,7 @@ export default {
     nonStream: "非ストリーム",
     statusCode: "ステータスコード",
     duration: "所要時間(ms)",
+    firstByteDuration: "初回バイト(ms)",
     model: "モデル",
     requestedModel: "リクエストモデル",
     sourceIP: "ソースIP",

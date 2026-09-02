@@ -70,7 +70,7 @@ func maskProxyPoolURL(raw string) string {
 type GroupConfig struct {
 	RequestTimeout               *int    `json:"request_timeout,omitempty"`
 	NonStreamRequestTimeout      *int    `json:"non_stream_request_timeout,omitempty"`
-	StreamRequestTimeout         *int    `json:"stream_request_timeout,omitempty"`
+	StreamFirstByteTimeout       *int    `json:"stream_first_byte_timeout,omitempty"`
 	IdleConnTimeout              *int    `json:"idle_conn_timeout,omitempty"`
 	ConnectTimeout               *int    `json:"connect_timeout,omitempty"`
 	MaxIdleConns                 *int    `json:"max_idle_conns,omitempty"`
@@ -326,6 +326,9 @@ type RequestLog struct {
 	StatusCode             int       `gorm:"not null" json:"status_code"`
 	RequestPath            string    `gorm:"type:varchar(500)" json:"request_path"`
 	Duration               int64     `gorm:"not null" json:"duration_ms"`
+	// FirstByteDuration is nullable so AutoMigrate leaves historical rows as NULL;
+	// NULL means the metric was unavailable, while 0 means a measured sub-millisecond response.
+	FirstByteDuration *int64 `gorm:"default:null" json:"first_byte_duration_ms,omitempty"`
 	ErrorMessage           string    `gorm:"type:text" json:"error_message"`
 	UserAgent              string    `gorm:"type:varchar(512)" json:"user_agent"`
 	UpstreamUserAgent      string    `gorm:"type:varchar(512)" json:"upstream_user_agent"`

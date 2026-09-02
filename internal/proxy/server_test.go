@@ -2949,7 +2949,7 @@ func TestExecuteRequestWithAggregateRetryStopsWhenNonStreamLifecycleTimeoutExpir
 	slowGroup.Config = map[string]any{
 		"max_retries":                0,
 		"non_stream_request_timeout": 1,
-		"stream_request_timeout":     0,
+		"stream_first_byte_timeout":  0,
 		"blacklist_threshold":        100,
 	}
 	require.NoError(t, db.Save(slowGroup).Error)
@@ -2959,7 +2959,7 @@ func TestExecuteRequestWithAggregateRetryStopsWhenNonStreamLifecycleTimeoutExpir
 	fastGroup.Config = map[string]any{
 		"max_retries":                0,
 		"non_stream_request_timeout": 1,
-		"stream_request_timeout":     0,
+		"stream_first_byte_timeout":  0,
 		"blacklist_threshold":        100,
 	}
 	require.NoError(t, db.Save(fastGroup).Error)
@@ -3040,7 +3040,7 @@ func TestExecuteRequestWithAggregateRetryUsesEffectiveStreamModeForLifecycle(t *
 	subGroup.Config = map[string]any{
 		"max_retries":                0,
 		"force_non_stream":           true,
-		"stream_request_timeout":     1,
+		"stream_first_byte_timeout":  1,
 		"non_stream_request_timeout": 2,
 		"blacklist_threshold":        100,
 	}
@@ -3054,7 +3054,7 @@ func TestExecuteRequestWithAggregateRetryUsesEffectiveStreamModeForLifecycle(t *
 		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
 		Config: map[string]any{
 			"max_retries":                0,
-			"stream_request_timeout":     1,
+			"stream_first_byte_timeout":  1,
 			"non_stream_request_timeout": 2,
 		},
 	}
@@ -6149,7 +6149,7 @@ func systemSettingsWithRetryTimeout(maxRetries, nonStreamTimeout int) types.Syst
 		MaxRetries:                  maxRetries,
 		RetryBackoffMaxPercent:      500,
 		NonStreamRequestTimeout:     nonStreamTimeout,
-		StreamRequestTimeout:        0,
+		StreamFirstByteTimeout:      0,
 		ConnectTimeout:              1,
 		IdleConnTimeout:             30,
 		MaxIdleConns:                10,

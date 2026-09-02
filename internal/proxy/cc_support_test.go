@@ -1769,9 +1769,6 @@ func TestCCStreamingResponse_SkipsEstimatedFallbackOnTimeout(t *testing.T) {
 
 	pr, pw := io.Pipe()
 	defer pw.Close()
-	go func() {
-		_, _ = pw.Write([]byte(`data: {"id":"chatcmpl-timeout","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"partial output"},"finish_reason":null}]}` + "\n\n"))
-	}()
 
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -1783,7 +1780,7 @@ func TestCCStreamingResponse_SkipsEstimatedFallbackOnTimeout(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set("original_model", "gpt-4")
-	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{StreamRequestTimeout: 1}})
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{StreamFirstByteTimeout: 1}})
 
 	ps := &ProxyServer{}
 	ps.handleCCStreamingResponse(c, resp)
@@ -5662,7 +5659,7 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 	tests := []struct {
 		name                      string
 		responseHeaderTimeout     int
-		streamRequestTimeout      int
+		streamFirstByteTimeout    int
 		withGroup                 bool
 		expectedFirstByteTimeout  time.Duration
 		expectedSubsequentTimeout time.Duration
@@ -5670,40 +5667,40 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 		{
 			name:                      "no group in context uses preset values",
 			responseHeaderTimeout:     0,
-			streamRequestTimeout:      0,
+			streamFirstByteTimeout:    0,
 			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
 			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
 		},
 		{
-			name:                      "config values larger than preset uses preset",
+			name:                      "config value controls first byte timeout",
 			responseHeaderTimeout:     600, // 600s > 30s preset
-			streamRequestTimeout:      800, // 800s > 60s preset
+			streamFirstByteTimeout:    800,
 			withGroup:                 true,
-			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
-			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
+			expectedFirstByteTimeout:  800 * time.Second,
+			expectedSubsequentTimeout: 0,
 		},
 		{
-			name:                      "config values smaller than preset uses config",
+			name:                      "zero response header does not impose stream timeout",
 			responseHeaderTimeout:     10, // 10s < 30s preset
-			streamRequestTimeout:      30, // 30s < 60s preset
+			streamFirstByteTimeout:    0,
 			withGroup:                 true,
-			expectedFirstByteTimeout:  10 * time.Second,
-			expectedSubsequentTimeout: 30 * time.Second,
+			expectedFirstByteTimeout:  0,
+			expectedSubsequentTimeout: 0,
 		},
 		{
 			name:                      "mixed config values",
-			responseHeaderTimeout:     20,  // 20s < 30s preset, use config
-			streamRequestTimeout:      120, // 120s > 60s preset, use preset
+			responseHeaderTimeout:     20, // 20s < 30s preset, use config
+			streamFirstByteTimeout:    20,
 			withGroup:                 true,
 			expectedFirstByteTimeout:  20 * time.Second,
-			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
+			expectedSubsequentTimeout: 0,
 		},
 		{
 			name:                      "zero stream timeout disables idle timeout",
 			responseHeaderTimeout:     0,
-			streamRequestTimeout:      0,
+			streamFirstByteTimeout:    0,
 			withGroup:                 true,
-			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
+			expectedFirstByteTimeout:  0,
 			expectedSubsequentTimeout: 0,
 		},
 	}
@@ -5717,8 +5714,8 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 			if tt.withGroup {
 				group := &models.Group{
 					EffectiveConfig: types.SystemSettings{
-						ResponseHeaderTimeout: tt.responseHeaderTimeout,
-						StreamRequestTimeout:  tt.streamRequestTimeout,
+						ResponseHeaderTimeout:  tt.responseHeaderTimeout,
+						StreamFirstByteTimeout: tt.streamFirstByteTimeout,
 					},
 				}
 				c.Set("group", group)

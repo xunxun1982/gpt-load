@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"gpt-load/internal/models"
@@ -27,6 +28,17 @@ var benchmarkTokenCountSink int64
 type errorAfterReadCloser struct {
 	data []byte
 	done bool
+}
+
+func TestFirstByteWriterRecordsFirstWrite(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	start := time.Now().Add(-time.Millisecond)
+	w := firstByteWriter{writer: io.Discard, onFirstByte: func() { c.Set(ctxKeyFirstByteTime, time.Now()) }}
+	_, err := w.Write([]byte("x"))
+	require.NoError(t, err)
+	v, ok := c.Get(ctxKeyFirstByteTime)
+	require.True(t, ok)
+	assert.False(t, v.(time.Time).Before(start))
 }
 
 type dataAndErrorReadCloser struct {

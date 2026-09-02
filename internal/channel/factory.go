@@ -275,7 +275,8 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 
 		// Create a dedicated configuration for streaming requests.
 		streamConfig := *clientConfig
-		streamConfig.RequestTimeout = time.Duration(group.EffectiveConfig.StreamRequestTimeout) * time.Second
+		streamConfig.RequestTimeout = 0
+		streamConfig.ResponseHeaderTimeout = time.Duration(group.EffectiveConfig.StreamFirstByteTimeout) * time.Second
 		streamConfig.DisableCompression = true
 		streamConfig.WriteBufferSize = 0
 		streamConfig.ReadBufferSize = 0

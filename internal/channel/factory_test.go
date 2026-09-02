@@ -63,7 +63,7 @@ func TestNewBaseChannelUsesSplitRequestTimeouts(t *testing.T) {
 			ConnectTimeout:          15,
 			RequestTimeout:          90,
 			NonStreamRequestTimeout: 45,
-			StreamRequestTimeout:    120,
+			StreamFirstByteTimeout:  120,
 			IdleConnTimeout:         90,
 			MaxIdleConns:            100,
 			MaxIdleConnsPerHost:     10,
@@ -75,7 +75,8 @@ func TestNewBaseChannelUsesSplitRequestTimeouts(t *testing.T) {
 	require.NotNil(t, base.StreamClient)
 
 	assert.Equal(t, 45*time.Second, base.HTTPClient.Timeout)
-	assert.Equal(t, 120*time.Second, base.StreamClient.Timeout)
+	assert.Equal(t, time.Duration(0), base.StreamClient.Timeout)
+	assert.Equal(t, 120*time.Second, base.StreamClient.Transport.(*http.Transport).ResponseHeaderTimeout)
 }
 
 func TestNewBaseChannelAllowsUnlimitedStreamTimeout(t *testing.T) {
@@ -97,7 +98,7 @@ func TestNewBaseChannelAllowsUnlimitedStreamTimeout(t *testing.T) {
 			ConnectTimeout:          15,
 			RequestTimeout:          90,
 			NonStreamRequestTimeout: 45,
-			StreamRequestTimeout:    0,
+			StreamFirstByteTimeout:  0,
 			IdleConnTimeout:         90,
 			MaxIdleConns:            100,
 			MaxIdleConnsPerHost:     10,
@@ -123,7 +124,7 @@ func TestNewBaseChannelUsesEachGroupSkipTLSVerify(t *testing.T) {
 	baseConfig := types.SystemSettings{
 		ConnectTimeout:          15,
 		NonStreamRequestTimeout: 45,
-		StreamRequestTimeout:    120,
+		StreamFirstByteTimeout:  120,
 		IdleConnTimeout:         90,
 		MaxIdleConns:            100,
 		MaxIdleConnsPerHost:     10,
@@ -194,7 +195,7 @@ func TestNewBaseChannelUsesSelectedProxyForHTTPRequests(t *testing.T) {
 		EffectiveConfig: types.SystemSettings{
 			ConnectTimeout:          1,
 			NonStreamRequestTimeout: 2,
-			StreamRequestTimeout:    0,
+			StreamFirstByteTimeout:  0,
 			IdleConnTimeout:         30,
 			MaxIdleConns:            10,
 			MaxIdleConnsPerHost:     10,
@@ -249,7 +250,7 @@ func TestNewBaseChannelUsesDirectClientWhenProxySelectionIsEmpty(t *testing.T) {
 		EffectiveConfig: types.SystemSettings{
 			ConnectTimeout:          1,
 			NonStreamRequestTimeout: 2,
-			StreamRequestTimeout:    0,
+			StreamFirstByteTimeout:  0,
 			IdleConnTimeout:         30,
 			MaxIdleConns:            10,
 			MaxIdleConnsPerHost:     10,
@@ -293,7 +294,7 @@ func TestNewBaseChannelReadsGatewayProxyFromUpstreamConfig(t *testing.T) {
 		EffectiveConfig: types.SystemSettings{
 			ConnectTimeout:          1,
 			NonStreamRequestTimeout: 2,
-			StreamRequestTimeout:    0,
+			StreamFirstByteTimeout:  0,
 			IdleConnTimeout:         30,
 			MaxIdleConns:            10,
 			MaxIdleConnsPerHost:     10,
@@ -321,7 +322,7 @@ func TestNewBaseChannelGatewayProxyDoesNotInheritGroupProxy(t *testing.T) {
 		EffectiveConfig: types.SystemSettings{
 			ConnectTimeout:          1,
 			NonStreamRequestTimeout: 2,
-			StreamRequestTimeout:    0,
+			StreamFirstByteTimeout:  0,
 			IdleConnTimeout:         30,
 			MaxIdleConns:            10,
 			MaxIdleConnsPerHost:     10,

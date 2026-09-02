@@ -19,6 +19,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -60,7 +61,7 @@ func (sm *SystemSettingsManager) SetProxyURLResolver(resolver ProxyURLResolver) 
 // which is the source of truth for split timeout configuration.
 // It handles legacy-only backfill, explicit non-stream values including zero,
 // and the already-synced defaults when neither setting was supplied.
-func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, hasNonStream, hasStream bool) {
+func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, hasNonStream, hasStreamFirstByte bool) {
 	if settings == nil {
 		return
 	}
@@ -71,9 +72,8 @@ func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, ha
 	}
 	if hasLegacy {
 		settings.NonStreamRequestTimeout = settings.RequestTimeout
-		if !hasStream {
-			// Legacy request_timeout used to cover all requests before split timeout fields existed.
-			settings.StreamRequestTimeout = settings.RequestTimeout
+		if !hasStreamFirstByte {
+			settings.StreamFirstByteTimeout = settings.RequestTimeout
 		}
 		return
 	}
@@ -119,6 +119,24 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 		for _, setting := range dbSettings {
 			settingsMap[setting.SettingKey] = setting.SettingValue
 		}
+		// One-time, intentionally incompatible rename: preserve the stored value, then remove
+		// stream_request_timeout. Runtime validation accepts only stream_first_byte_timeout.
+		if oldValue, ok := settingsMap["stream_request_timeout"]; ok {
+			if _, exists := settingsMap["stream_first_byte_timeout"]; !exists {
+				settingsMap["stream_first_byte_timeout"] = oldValue
+				if err := db.DB.Transaction(func(tx *gorm.DB) error {
+					if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "setting_key"}}, DoUpdates: clause.AssignmentColumns([]string{"setting_value", "updated_at"})}).Create(&models.SystemSetting{SettingKey: "stream_first_byte_timeout", SettingValue: oldValue}).Error; err != nil {
+						return err
+					}
+					return tx.Where("setting_key = ?", "stream_request_timeout").Delete(&models.SystemSetting{}).Error
+				}); err != nil {
+					logrus.WithError(err).Warn("Failed to migrate stream request timeout setting")
+				}
+			} else if err := db.DB.Where("setting_key = ?", "stream_request_timeout").Delete(&models.SystemSetting{}).Error; err != nil {
+				logrus.WithError(err).Warn("Failed to remove obsolete stream request timeout setting")
+			}
+			delete(settingsMap, "stream_request_timeout")
+		}
 
 		// Start with default settings, then override with values from the database.
 		settings := utils.DefaultSystemSettings()
@@ -145,8 +163,8 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 		}
 		_, hasLegacyTimeout := settingsMap["request_timeout"]
 		_, hasNonStreamTimeout := settingsMap["non_stream_request_timeout"]
-		_, hasStreamTimeout := settingsMap["stream_request_timeout"]
-		normalizeSplitRequestTimeouts(&settings, hasLegacyTimeout, hasNonStreamTimeout, hasStreamTimeout)
+		_, hasStreamFirstByteTimeout := settingsMap["stream_first_byte_timeout"]
+		normalizeSplitRequestTimeouts(&settings, hasLegacyTimeout, hasNonStreamTimeout, hasStreamFirstByteTimeout)
 
 		settings.ProxyKeysMap = utils.StringToSet(settings.ProxyKeys, ",")
 
@@ -274,13 +292,13 @@ func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) erro
 
 	// Update database
 	var settingsToUpdate []models.SystemSetting
-	_, hasStreamTimeout := settingsMap["stream_request_timeout"]
+	_, hasStreamFirstByteTimeout := settingsMap["stream_first_byte_timeout"]
 	if nonStreamTimeout, hasNonStream := settingsMap["non_stream_request_timeout"]; hasNonStream {
 		settingsMap["request_timeout"] = nonStreamTimeout
 	} else if legacyTimeout, hasLegacy := settingsMap["request_timeout"]; hasLegacy {
 		settingsMap["non_stream_request_timeout"] = legacyTimeout
-		if !hasStreamTimeout {
-			settingsMap["stream_request_timeout"] = legacyTimeout
+		if !hasStreamFirstByteTimeout {
+			settingsMap["stream_first_byte_timeout"] = legacyTimeout
 		}
 	}
 	for key, value := range settingsMap {
@@ -367,7 +385,7 @@ func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JS
 		&effectiveConfig,
 		groupConfig.RequestTimeout != nil,
 		groupConfig.NonStreamRequestTimeout != nil,
-		groupConfig.StreamRequestTimeout != nil,
+		groupConfig.StreamFirstByteTimeout != nil,
 	)
 	effectiveConfig.ProxyURL = sm.ResolveRuntimeProxyURL(context.Background(), effectiveConfig.ProxyURL)
 
@@ -840,7 +858,7 @@ func (sm *SystemSettingsManager) DisplaySystemConfig(settings types.SystemSettin
 
 	logrus.Info("  --- Request Behavior ---")
 	logrus.Infof("    Non-Stream Request Timeout: %d seconds", settings.NonStreamRequestTimeout)
-	logrus.Infof("    Stream Request Timeout: %d seconds", settings.StreamRequestTimeout)
+	logrus.Infof("    Stream First Byte Timeout: %d seconds", settings.StreamFirstByteTimeout)
 	logrus.Infof("    Connect Timeout: %d seconds", settings.ConnectTimeout)
 	logrus.Infof("    Response Header Timeout: %d seconds", settings.ResponseHeaderTimeout)
 	logrus.Infof("    Idle Connection Timeout: %d seconds", settings.IdleConnTimeout)

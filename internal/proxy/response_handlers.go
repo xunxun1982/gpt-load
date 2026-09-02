@@ -50,15 +50,45 @@ type limitedResponseCaptureWriter struct {
 }
 
 type streamFlushWriter struct {
-	writer   io.Writer
-	flusher  http.Flusher
-	writeErr *error
+	writer      io.Writer
+	flusher     http.Flusher
+	writeErr    *error
+	onFirstByte func()
+}
+
+type firstByteWriter struct {
+	writer      io.Writer
+	onFirstByte func()
+}
+
+type firstByteReadCloser struct {
+	io.ReadCloser
+	onFirstByte func()
+}
+
+func (r firstByteReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if n > 0 && r.onFirstByte != nil {
+		r.onFirstByte()
+	}
+	return n, err
+}
+
+func (w firstByteWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	if n > 0 && w.onFirstByte != nil {
+		w.onFirstByte()
+	}
+	return n, err
 }
 
 func (w streamFlushWriter) Write(p []byte) (int, error) {
 	n, err := w.writer.Write(p)
 	if err != nil && w.writeErr != nil {
 		*w.writeErr = err
+	}
+	if n > 0 && w.onFirstByte != nil {
+		w.onFirstByte()
 	}
 	if n > 0 && w.flusher != nil {
 		w.flusher.Flush()
@@ -749,7 +779,7 @@ func captureDecodedResponseChunk(responseCapture *bytes.Buffer, chunk []byte) {
 }
 
 func copyRemainingStreamToClient(c *gin.Context, r io.Reader, flusher http.Flusher) error {
-	_, err := io.Copy(streamFlushWriter{writer: c.Writer, flusher: flusher}, r)
+	_, err := io.Copy(streamFlushWriter{writer: c.Writer, flusher: flusher, onFirstByte: func() { markFirstByte(c) }}, r)
 	if err != nil {
 		logUpstreamError("copying remaining compressed stream to client", err)
 	}
@@ -830,6 +860,7 @@ func setResponsesLogicalFailure(c *gin.Context, status, errorCode, errorMessage 
 }
 
 func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Response) {
+	resp.Body = firstByteReadCloser{ReadCloser: resp.Body, onFirstByte: func() { markFirstByte(c) }}
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -865,9 +896,10 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	if decodedEncodedResponse {
 		var downstreamWriteErr error
 		teeReader := io.TeeReader(resp.Body, streamFlushWriter{
-			writer:   c.Writer,
-			flusher:  flusher,
-			writeErr: &downstreamWriteErr,
+			writer:      c.Writer,
+			flusher:     flusher,
+			writeErr:    &downstreamWriteErr,
+			onFirstByte: func() { markFirstByte(c) },
 		})
 		decodedReader, err := utils.NewDecompressReader(contentEncoding, io.NopCloser(teeReader))
 		if err != nil {
@@ -935,6 +967,7 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 					estimateCapture.Write(chunk)
 					failureCapture.Write(chunk)
 				}
+				markFirstByte(c)
 				if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
 					logUpstreamError("writing stream to client", writeErr)
 					markResponseProcessingFailed(c)
@@ -990,6 +1023,7 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 }
 
 func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response) {
+	resp.Body = firstByteReadCloser{ReadCloser: resp.Body, onFirstByte: func() { markFirstByte(c) }}
 	// Check if response body capturing is enabled
 	shouldCapture := shouldCaptureResponse(c)
 	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
@@ -1019,17 +1053,18 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 		}
 
 		// Write to client
+		markFirstByte(c)
 		if _, err := c.Writer.Write(body); err != nil {
 			logUpstreamError("writing response body", err)
 		}
 	} else if contentEncoding != "" {
 		if isSupportedResponseContentEncoding(contentEncoding) {
-			teeReader := io.TeeReader(resp.Body, c.Writer)
+			teeReader := io.TeeReader(resp.Body, firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }})
 			err := setTokenUsageOrEstimateFromCompressedReader(c, contentEncoding, io.NopCloser(teeReader), resp.StatusCode < http.StatusBadRequest)
 			if err != nil {
 				logUpstreamError("decoding compressed response body for token accounting", err)
 				markResponseProcessingFailed(c)
-				if _, copyErr := io.Copy(c.Writer, resp.Body); copyErr != nil {
+				if _, copyErr := io.Copy(firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }}, resp.Body); copyErr != nil {
 					logUpstreamError("copying remaining compressed response body", copyErr)
 				}
 			}
@@ -1037,7 +1072,7 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 			if c.Request != nil && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 				c.Set(ctxKeyResponsesStatusUnverified, true)
 			}
-			if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+			if _, err := io.Copy(firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }}, resp.Body); err != nil {
 				logUpstreamError("copying compressed response body", err)
 			}
 		}
@@ -1046,11 +1081,11 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 			limit: maxUsageTailCaptureBytes,
 		}
 		estimateCapture := &estimatedTokenCapture{}
-		copyWriter := io.MultiWriter(c.Writer, usageCapture, estimateCapture)
+		copyWriter := io.MultiWriter(firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }}, usageCapture, estimateCapture)
 		var statusCapture *headResponseCapture
 		if c.Request != nil && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 			statusCapture = &headResponseCapture{limit: maxResponseCaptureBytes}
-			copyWriter = io.MultiWriter(c.Writer, usageCapture, statusCapture, estimateCapture)
+			copyWriter = io.MultiWriter(firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }}, usageCapture, statusCapture, estimateCapture)
 		}
 		if _, err := io.Copy(copyWriter, resp.Body); err != nil {
 			logUpstreamError("copying response body", err)

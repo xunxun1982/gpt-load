@@ -4575,20 +4575,16 @@ func appendToContent(content json.RawMessage, suffix string) json.RawMessage {
 	return content
 }
 
-// SSE timeout preset constants for CC support streaming mode.
-// These are the maximum allowed timeout values. Actual timeouts may be shorter
-// if group/system config specifies smaller values.
-// Priority: group config > system config > preset values
-// If config value < preset value, use config value; otherwise use preset value.
+// SSE timeout defaults for CC support streaming mode. Both are disabled by default;
+// stream_first_byte_timeout may enable only the wait for the first SSE event.
 const (
-	// sseFirstByteTimeoutPreset is the maximum time to wait for the first SSE event
-	// in streaming mode. Set to 30 seconds to allow for model initialization.
-	sseFirstByteTimeoutPreset = 30 * time.Second
+	// sseFirstByteTimeoutPreset disables the first-byte timeout by default.
+	sseFirstByteTimeoutPreset = 0
 
 	// sseSubsequentTimeoutPreset is the maximum time to wait between SSE events
 	// after the first event has been received. Set to 60 seconds to allow
 	// for reasonable pauses during model generation.
-	sseSubsequentTimeoutPreset = 60 * time.Second
+	sseSubsequentTimeoutPreset = 0
 
 	// nonStreamFirstByteTimeoutPreset is the maximum time to wait for the first byte
 	// in non-streaming mode. Set to 60 minutes to allow for complex reasoning tasks.
@@ -4609,13 +4605,13 @@ const (
 // Logic: min(preset_value, effective_config_value)
 // - If config value < preset value: use config value (allows stricter timeouts)
 // - If config value >= preset value: use preset value (prevents excessively long timeouts)
-// - If StreamRequestTimeout is 0: disable idle timeout between SSE events
+// - StreamFirstByteTimeout controls only the first SSE event wait; subsequent reads are unbounded.
 //
 // Timeout mapping:
 // - firstByteTimeout: derived from ResponseHeaderTimeout (time to wait for first response)
-// - subsequentTimeout: derived from StreamRequestTimeout (idle time between SSE events)
+// - subsequentTimeout: always disabled because stream timeout is no longer a lifecycle/idle timeout
 func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeout time.Duration) {
-	// Default to preset values (upper bounds)
+	// Default to no timeout; an explicit positive group/system value enables it.
 	firstByteTimeout = sseFirstByteTimeoutPreset
 	subsequentTimeout = sseSubsequentTimeoutPreset
 
@@ -4633,22 +4629,10 @@ func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeou
 	cfg := group.EffectiveConfig
 
 	// Apply ResponseHeaderTimeout if smaller than preset (stricter timeout)
-	if cfg.ResponseHeaderTimeout > 0 {
-		configTimeout := time.Duration(cfg.ResponseHeaderTimeout) * time.Second
-		if configTimeout < firstByteTimeout {
-			firstByteTimeout = configTimeout
-		}
+	if cfg.StreamFirstByteTimeout > 0 {
+		firstByteTimeout = time.Duration(cfg.StreamFirstByteTimeout) * time.Second
 	}
-
-	// StreamRequestTimeout=0 explicitly disables the SSE idle timeout.
-	if cfg.StreamRequestTimeout == 0 {
-		subsequentTimeout = 0
-	} else if cfg.StreamRequestTimeout > 0 {
-		configTimeout := time.Duration(cfg.StreamRequestTimeout) * time.Second
-		if configTimeout < subsequentTimeout {
-			subsequentTimeout = configTimeout
-		}
-	}
+	subsequentTimeout = 0
 
 	return
 }

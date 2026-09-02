@@ -408,9 +408,17 @@ const allColumnConfigs: ColumnConfig[] = [
     defaultVisible: true,
   },
   {
+    key: "first_byte_duration_ms",
+    title: t("logs.firstByteDuration"),
+    width: 120,
+    defaultVisible: true,
+    render: (row: LogRow) =>
+      row.first_byte_duration_ms == null ? "-" : `${row.first_byte_duration_ms}ms`,
+  },
+  {
     key: "duration_ms",
     title: t("logs.duration"),
-    width: 110,
+    width: 120,
     defaultVisible: true,
   },
   {
@@ -522,7 +530,7 @@ const allColumnConfigs: ColumnConfig[] = [
   {
     key: "actions",
     title: t("common.actions"),
-    width: 100,
+    width: 110,
     defaultVisible: true,
     alwaysVisible: true, // Actions column cannot be hidden
     fixed: "right" as const,
@@ -904,6 +912,12 @@ const deselectAllColumns = () => {
                   {{ selectedLog.is_success ? t("common.success") : t("common.error") }} -
                   {{ selectedLog.status_code }}
                 </n-tag>
+              </div>
+              <div class="detail-item-compact">
+                <span class="detail-label-compact">{{ t("logs.firstByteDuration") }}:</span>
+                <span class="detail-value-compact">
+                  {{ selectedLog.first_byte_duration_ms == null ? "-" : selectedLog.first_byte_duration_ms + "ms" }}
+                </span>
               </div>
               <div class="detail-item-compact">
                 <span class="detail-label-compact">{{ t("logs.duration") }}:</span>

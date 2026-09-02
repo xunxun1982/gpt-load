@@ -227,6 +227,12 @@ func TestDefaultConstants(t *testing.T) {
 	assert.Equal(t, 10, DefaultConstants.DefaultMaxFreeSockets)
 }
 
+func TestStreamFirstByteTimeoutDefaultsToDisabled(t *testing.T) {
+	settings := utils.DefaultSystemSettings()
+
+	assert.Equal(t, 0, settings.StreamFirstByteTimeout)
+}
+
 // TestGetSettings tests getting system settings without initialization
 func TestGetSettings(t *testing.T) {
 	manager := NewSystemSettingsManager()
@@ -236,7 +242,7 @@ func TestGetSettings(t *testing.T) {
 	assert.NotNil(t, settings)
 	assert.Equal(t, 1200, settings.RequestTimeout)
 	assert.Equal(t, 1200, settings.NonStreamRequestTimeout)
-	assert.Equal(t, 600, settings.StreamRequestTimeout)
+	assert.Equal(t, 0, settings.StreamFirstByteTimeout)
 	assert.Equal(t, 30, settings.ConnectTimeout)
 }
 
@@ -334,7 +340,7 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "valid stream timeout disabled",
 			settings: map[string]any{
-				"stream_request_timeout": float64(0),
+				"stream_first_byte_timeout": float64(0),
 			},
 			expectError: false,
 		},
@@ -433,7 +439,7 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "stream timeout below minimum",
 			settings: map[string]any{
-				"stream_request_timeout": float64(-1),
+				"stream_first_byte_timeout": float64(-1),
 			},
 			expectError: true,
 			errorMsg:    "below minimum value",
@@ -1032,7 +1038,7 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			name: "valid split timeout overrides",
 			config: map[string]any{
 				"non_stream_request_timeout": float64(120),
-				"stream_request_timeout":     float64(0),
+				"stream_first_byte_timeout":  float64(0),
 			},
 			expectError: false,
 		},
@@ -1066,11 +1072,11 @@ func TestGetEffectiveConfigSplitTimeouts(t *testing.T) {
 
 	cfg := manager.GetEffectiveConfig(map[string]any{
 		"non_stream_request_timeout": float64(45),
-		"stream_request_timeout":     float64(0),
+		"stream_first_byte_timeout":  float64(0),
 	})
 
 	assert.Equal(t, 45, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 0, cfg.StreamRequestTimeout)
+	assert.Equal(t, 0, cfg.StreamFirstByteTimeout)
 	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
 }
 
@@ -1079,11 +1085,11 @@ func TestGetEffectiveConfigSplitTimeoutsWithNonZeroStreamTimeout(t *testing.T) {
 
 	cfg := manager.GetEffectiveConfig(map[string]any{
 		"non_stream_request_timeout": float64(45),
-		"stream_request_timeout":     float64(30),
+		"stream_first_byte_timeout":  float64(30),
 	})
 
 	assert.Equal(t, 45, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 30, cfg.StreamRequestTimeout)
+	assert.Equal(t, 30, cfg.StreamFirstByteTimeout)
 	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
 }
 
@@ -1095,7 +1101,7 @@ func TestGetEffectiveConfigLegacyRequestTimeout(t *testing.T) {
 	})
 
 	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 75, cfg.StreamRequestTimeout)
+	assert.Equal(t, 75, cfg.StreamFirstByteTimeout)
 	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
 }
 
@@ -1103,12 +1109,12 @@ func TestGetEffectiveConfigLegacyRequestTimeoutKeepsExplicitStreamOverride(t *te
 	manager := NewSystemSettingsManager()
 
 	cfg := manager.GetEffectiveConfig(map[string]any{
-		"request_timeout":        float64(75),
-		"stream_request_timeout": float64(30),
+		"request_timeout":           float64(75),
+		"stream_first_byte_timeout": float64(30),
 	})
 
 	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 30, cfg.StreamRequestTimeout)
+	assert.Equal(t, 30, cfg.StreamFirstByteTimeout)
 	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
 }
 
@@ -1133,7 +1139,7 @@ func TestLegacyRequestTimeoutPersistsSplitTimeoutBackfill(t *testing.T) {
 	settings := manager.GetSettings()
 	assert.Equal(t, 75, settings.RequestTimeout)
 	assert.Equal(t, 75, settings.NonStreamRequestTimeout)
-	assert.Equal(t, 75, settings.StreamRequestTimeout)
+	assert.Equal(t, 75, settings.StreamFirstByteTimeout)
 
 	require.NoError(t, manager.UpdateSettings(map[string]any{
 		"request_timeout": float64(90),
@@ -1143,10 +1149,10 @@ func TestLegacyRequestTimeoutPersistsSplitTimeoutBackfill(t *testing.T) {
 	settings = manager.GetSettings()
 	assert.Equal(t, 90, settings.RequestTimeout)
 	assert.Equal(t, 90, settings.NonStreamRequestTimeout)
-	assert.Equal(t, 90, settings.StreamRequestTimeout)
+	assert.Equal(t, 90, settings.StreamFirstByteTimeout)
 	assertSystemSettingValue(t, testDB, "request_timeout", "90")
 	assertSystemSettingValue(t, testDB, "non_stream_request_timeout", "90")
-	assertSystemSettingValue(t, testDB, "stream_request_timeout", "90")
+	assertSystemSettingValue(t, testDB, "stream_first_byte_timeout", "90")
 }
 
 func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t *testing.T) {
@@ -1158,7 +1164,7 @@ func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t 
 	})
 
 	assert.Equal(t, 0, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 600, cfg.StreamRequestTimeout)
+	assert.Equal(t, 0, cfg.StreamFirstByteTimeout)
 	assert.Equal(t, 0, cfg.RequestTimeout)
 }
 

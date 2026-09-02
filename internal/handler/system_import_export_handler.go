@@ -382,6 +382,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 	// Convert map[string]string to map[string]any and perform type conversion based on field types
 	var convertedSettingsMap map[string]any
 	if len(importData.SystemSettings) > 0 {
+		migrateImportedStreamFirstByteTimeout(importData.SystemSettings)
 		var err error
 		convertedSettingsMap, err = convertSettingsMap(importData.SystemSettings)
 		if err != nil {
@@ -665,6 +666,7 @@ func (s *Server) ImportSystemSettings(c *gin.Context) {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "No system settings provided"))
 		return
 	}
+	migrateImportedStreamFirstByteTimeout(importData.SystemSettings)
 
 	logrus.Infof("Importing system settings: %d settings", len(importData.SystemSettings))
 
@@ -746,6 +748,20 @@ func (s *Server) ImportSystemSettings(c *gin.Context) {
 
 	logrus.Info("System settings import completed successfully")
 	response.SuccessI18n(c, "success.system_settings_imported", nil)
+}
+
+// migrateImportedStreamFirstByteTimeout performs the intentional, one-way rename
+// for old exports before validation/persistence. The old key is never written back.
+func migrateImportedStreamFirstByteTimeout(settings map[string]string) {
+	if settings == nil {
+		return
+	}
+	if oldValue, ok := settings["stream_request_timeout"]; ok {
+		if _, exists := settings["stream_first_byte_timeout"]; !exists {
+			settings["stream_first_byte_timeout"] = oldValue
+		}
+		delete(settings, "stream_request_timeout")
+	}
 }
 
 // GroupsBatchImportData represents the data structure for batch group import.

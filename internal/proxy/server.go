@@ -123,6 +123,7 @@ func clearAttemptResponseContext(c *gin.Context) {
 	delete(c.Keys, ctxKeyUpstreamLogicalErrorMessage)
 	delete(c.Keys, ctxKeyResponsesStatusUnverified)
 	delete(c.Keys, ctxKeyResponseProcessingFailed)
+	delete(c.Keys, ctxKeyFirstByteTime)
 }
 
 func retryDelayForAttempt(cfg types.SystemSettings, retryCount int) time.Duration {
@@ -433,7 +434,17 @@ const (
 	ctxKeyUpstreamUserAgent           = "upstream_user_agent"
 	ctxKeyResponsesStatusUnverified   = "responses_status_unverified"
 	ctxKeyResponseProcessingFailed    = "response_processing_failed"
+	ctxKeyFirstByteTime               = "first_byte_time"
 )
+
+func markFirstByte(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	if _, exists := c.Get(ctxKeyFirstByteTime); !exists {
+		c.Set(ctxKeyFirstByteTime, time.Now())
+	}
+}
 
 // ProxyServer represents the proxy server
 type ProxyServer struct {
@@ -1684,7 +1695,7 @@ func (rc *retryContext) ensureLifecycleContext(parent context.Context, isStream 
 
 func lifecycleTimeoutSeconds(cfg types.SystemSettings, isStream bool) int {
 	if isStream {
-		return cfg.StreamRequestTimeout
+		return 0
 	}
 	if cfg.NonStreamRequestTimeout > 0 {
 		return cfg.NonStreamRequestTimeout
@@ -1695,7 +1706,6 @@ func lifecycleTimeoutSeconds(cfg types.SystemSettings, isStream bool) int {
 func (ps *ProxyServer) aggregateRetryLifecycleConfig(originalGroup *models.Group) types.SystemSettings {
 	cfg := originalGroup.EffectiveConfig
 	nonStreamTimeout := lifecycleTimeoutSeconds(cfg, false)
-	streamTimeout := lifecycleTimeoutSeconds(cfg, true)
 	for _, relation := range originalGroup.SubGroups {
 		if !relation.SubGroupEnabled {
 			continue
@@ -1708,17 +1718,10 @@ func (ps *ProxyServer) aggregateRetryLifecycleConfig(originalGroup *models.Group
 		if subNonStreamTimeout > 0 && (nonStreamTimeout <= 0 || subNonStreamTimeout < nonStreamTimeout) {
 			nonStreamTimeout = subNonStreamTimeout
 		}
-		subStreamTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, true)
-		if subStreamTimeout > 0 && (streamTimeout <= 0 || subStreamTimeout < streamTimeout) {
-			streamTimeout = subStreamTimeout
-		}
 	}
 	if nonStreamTimeout > 0 {
 		cfg.NonStreamRequestTimeout = nonStreamTimeout
 		cfg.RequestTimeout = nonStreamTimeout
-	}
-	if streamTimeout > 0 {
-		cfg.StreamRequestTimeout = streamTimeout
 	}
 	return cfg
 }
@@ -3426,6 +3429,13 @@ func (ps *ProxyServer) logRequest(
 	}
 
 	duration := time.Since(startTime).Milliseconds()
+	var firstByteDuration *int64
+	if firstByteAt, ok := c.Get(ctxKeyFirstByteTime); ok {
+		if ts, ok := firstByteAt.(time.Time); ok && !ts.Before(startTime) {
+			value := ts.Sub(startTime).Milliseconds()
+			firstByteDuration = &value
+		}
+	}
 
 	upstreamAddrForLog := formatUpstreamAddrForLog(upstreamAddr, proxyURL, gatewayProxy)
 
@@ -3437,6 +3447,7 @@ func (ps *ProxyServer) logRequest(
 		StatusCode:             statusCode,
 		RequestPath:            utils.TruncateString(utils.SanitizeURLForLog(c.Request.URL), 500), // Sanitize to prevent auth token leakage
 		Duration:               duration,
+		FirstByteDuration:      firstByteDuration,
 		UserAgent:              userAgent,
 		UpstreamUserAgent:      upstreamUserAgent,
 		SimulatedClientEnabled: channel.IsSimulatedClientEnabled(group),
@@ -3542,21 +3553,23 @@ func (ps *ProxyServer) logRequest(
 	// Debug log for request recording
 	if !logEntry.IsSuccess {
 		logrus.WithFields(logrus.Fields{
-			"group_name":   logEntry.GroupName,
-			"status_code":  logEntry.StatusCode,
-			"is_success":   logEntry.IsSuccess,
-			"request_path": logEntry.RequestPath,
-			"duration_ms":  logEntry.Duration,
-			"request_type": logEntry.RequestType,
-			"error_msg":    logEntry.ErrorMessage,
+			"group_name":             logEntry.GroupName,
+			"status_code":            logEntry.StatusCode,
+			"is_success":             logEntry.IsSuccess,
+			"request_path":           logEntry.RequestPath,
+			"duration_ms":            logEntry.Duration,
+			"first_byte_duration_ms": logEntry.FirstByteDuration,
+			"request_type":           logEntry.RequestType,
+			"error_msg":              logEntry.ErrorMessage,
 		}).Debug("Recording failed request log")
 	} else {
 		logrus.WithFields(logrus.Fields{
-			"group_name":   logEntry.GroupName,
-			"status_code":  logEntry.StatusCode,
-			"request_path": logEntry.RequestPath,
-			"duration_ms":  logEntry.Duration,
-			"request_type": logEntry.RequestType,
+			"group_name":             logEntry.GroupName,
+			"status_code":            logEntry.StatusCode,
+			"request_path":           logEntry.RequestPath,
+			"duration_ms":            logEntry.Duration,
+			"first_byte_duration_ms": logEntry.FirstByteDuration,
+			"request_type":           logEntry.RequestType,
 		}).Debug("Recording request log")
 	}
 

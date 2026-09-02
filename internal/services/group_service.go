@@ -2846,6 +2846,14 @@ func (s *GroupService) validateAndCleanConfig(configMap map[string]any, channelT
 		}
 		delete(configMap, "force_function_calling")
 	}
+	// Intentionally incompatible rename: group configs must use the new first-byte
+	// timeout key. Preserve the old value once, then remove the obsolete key.
+	if oldValue, ok := configMap["stream_request_timeout"]; ok {
+		if _, exists := configMap["stream_first_byte_timeout"]; !exists {
+			configMap["stream_first_byte_timeout"] = oldValue
+		}
+		delete(configMap, "stream_request_timeout")
+	}
 	if channelType == "gemini" {
 		delete(configMap, "force_function_call")
 		delete(configMap, "cc_support")

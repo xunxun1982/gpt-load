@@ -14,9 +14,10 @@ function columnWidth(key) {
   return Number(match[1]);
 }
 
-test("log table fits long group names with only a ten-pixel default width increase", () => {
+test("log table keeps primary columns readable after adding first-byte timing", () => {
   assert.equal(columnWidth("group_name"), 160, "aihub_x666_search needs the wider group column");
   assert.equal(columnWidth("status_code"), 110);
+  assert.equal(columnWidth("first_byte_duration_ms"), 120);
   assert.equal(columnWidth("is_stream"), 130);
   assert.equal(
     columnWidth("group_name") + columnWidth("status_code") + columnWidth("is_stream"),
