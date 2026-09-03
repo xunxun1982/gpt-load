@@ -1536,8 +1536,13 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		if shouldCapture {
 			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 		}
-		if _, werr := c.Writer.Write(body); werr != nil {
+		// gin's Writer.Write exposes the write error, so the first-byte mark is
+		// conditional on err == nil && n > 0; this applies to every direct delivery write.
+
+		if n, werr := c.Writer.Write(body); werr != nil {
 			logUpstreamError("writing response body", werr)
+		} else if n > 0 {
+			markFirstByte(c)
 		}
 		return
 	}
@@ -1550,8 +1555,10 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 		if shouldCapture {
 			c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 		}
-		if _, werr := c.Writer.Write(body); werr != nil {
+		if n, werr := c.Writer.Write(body); werr != nil {
 			logUpstreamError("writing response body", werr)
+		} else if n > 0 {
+			markFirstByte(c)
 		}
 		return
 	}
@@ -1578,8 +1585,10 @@ func (ps *ProxyServer) handleFunctionCallNormalResponse(c *gin.Context, resp *ht
 	}
 
 	clearUpstreamEncodingHeaders(c)
-	if _, werr := c.Writer.Write(out); werr != nil {
+	if n, werr := c.Writer.Write(out); werr != nil {
 		logUpstreamError("writing response body", werr)
+	} else if n > 0 {
+		markFirstByte(c)
 	}
 }
 
@@ -1810,8 +1819,10 @@ func writeFunctionCallPassthrough(c *gin.Context, body []byte, shouldCapture boo
 	if shouldCapture {
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 	}
-	if _, werr := c.Writer.Write(body); werr != nil {
+	if n, werr := c.Writer.Write(body); werr != nil {
 		logUpstreamError("writing response body", werr)
+	} else if n > 0 {
+		markFirstByte(c)
 	}
 }
 
@@ -1827,8 +1838,10 @@ func writeFunctionCallModifiedBody(c *gin.Context, body []byte, triggerSignal st
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 	}
 	clearUpstreamEncodingHeaders(c)
-	if _, werr := c.Writer.Write(body); werr != nil {
+	if n, werr := c.Writer.Write(body); werr != nil {
 		logUpstreamError("writing response body", werr)
+	} else if n > 0 {
+		markFirstByte(c)
 	}
 }
 
@@ -1953,8 +1966,10 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 			}
 			clearUpstreamEncodingHeaders(c)
 			c.Status(resp.StatusCode)
-			if _, err := c.Writer.Write(decoded); err != nil {
+			if n, err := c.Writer.Write(decoded); err != nil {
 				logUpstreamError("copying upstream error body", err)
+			} else if n > 0 {
+				markFirstByte(c)
 			}
 			return
 		}
@@ -1965,9 +1980,11 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 			return
 		}
 		c.Status(resp.StatusCode)
-		if _, err := c.Writer.Write(body); err != nil {
+		if n, err := c.Writer.Write(body); err != nil {
 			logUpstreamError("copying upstream error body", err)
 			return
+		} else if n > 0 {
+			markFirstByte(c)
 		}
 		return
 	}
@@ -2053,13 +2070,17 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 			return nil
 		}
 		for _, line := range lines {
-			if _, err := c.Writer.Write([]byte(line)); err != nil {
+			if n, err := c.Writer.Write([]byte(line)); err != nil {
 				return err
+			} else if n > 0 {
+				markFirstByte(c)
 			}
 		}
 		// Each SSE event is terminated by a blank line.
-		if _, err := c.Writer.Write([]byte("\n")); err != nil {
+		if n, err := c.Writer.Write([]byte("\n")); err != nil {
 			return err
+		} else if n > 0 {
+			markFirstByte(c)
 		}
 		flusher.Flush()
 		return nil
@@ -2434,7 +2455,9 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 
 	// If we have never seen any event, simply send [DONE] and return.
 	if !seenAnyEvent {
-		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+		if n, err := c.Writer.Write([]byte("data: [DONE]\n\n")); err == nil && n > 0 {
+			markFirstByte(c)
+		}
 		flusher.Flush()
 		return
 	}
@@ -2510,7 +2533,9 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 				return
 			}
 		}
-		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+		if n, err := c.Writer.Write([]byte("data: [DONE]\n\n")); err == nil && n > 0 {
+			markFirstByte(c)
+		}
 		flusher.Flush()
 		return
 	}
@@ -2523,7 +2548,9 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		if len(prevEventLines) > 0 {
 			_ = writeFinalAndTrailing(prevEventLines)
 		}
-		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+		if n, err := c.Writer.Write([]byte("data: [DONE]\n\n")); err == nil && n > 0 {
+			markFirstByte(c)
+		}
 		flusher.Flush()
 		return
 	}
@@ -2534,7 +2561,9 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		if len(prevEventLines) > 0 {
 			_ = writeFinalAndTrailing(prevEventLines)
 		}
-		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+		if n, err := c.Writer.Write([]byte("data: [DONE]\n\n")); err == nil && n > 0 {
+			markFirstByte(c)
+		}
 		flusher.Flush()
 		return
 	}
@@ -2544,7 +2573,9 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		if len(prevEventLines) > 0 {
 			_ = writeFinalAndTrailing(prevEventLines)
 		}
-		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+		if n, err := c.Writer.Write([]byte("data: [DONE]\n\n")); err == nil && n > 0 {
+			markFirstByte(c)
+		}
 		flusher.Flush()
 		return
 	}
@@ -2581,7 +2612,9 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		if len(prevEventLines) > 0 {
 			_ = writeFinalAndTrailing(prevEventLines)
 		}
-		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+		if n, err := c.Writer.Write([]byte("data: [DONE]\n\n")); err == nil && n > 0 {
+			markFirstByte(c)
+		}
 		flusher.Flush()
 		return
 	}
@@ -2611,7 +2644,9 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		if len(prevEventLines) > 0 {
 			_ = writeFinalAndTrailing(prevEventLines)
 		}
-		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+		if n, err := c.Writer.Write([]byte("data: [DONE]\n\n")); err == nil && n > 0 {
+			markFirstByte(c)
+		}
 		flusher.Flush()
 		return
 	}
@@ -2652,7 +2687,9 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		logUpstreamError("writing modified streaming event", err)
 		return
 	}
-	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	if n, err := c.Writer.Write([]byte("data: [DONE]\n\n")); err == nil && n > 0 {
+		markFirstByte(c)
+	}
 	flusher.Flush()
 }
 
@@ -2856,7 +2893,9 @@ func (ps *ProxyServer) handleFunctionCallResponsesStreamingBody(c *gin.Context, 
 		logUpstreamError("writing Responses completed event", err)
 		return
 	}
-	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	if n, err := c.Writer.Write([]byte("data: [DONE]\n\n")); err == nil && n > 0 {
+		markFirstByte(c)
+	}
 	flusher.Flush()
 }
 
@@ -3046,12 +3085,16 @@ func replayFunctionCallSSEEvents(c *gin.Context, events []functionCallSSEEvent, 
 			continue
 		}
 		for _, line := range event.Lines {
-			if _, err := c.Writer.Write([]byte(line)); err != nil {
+			if n, err := c.Writer.Write([]byte(line)); err != nil {
 				return err
+			} else if n > 0 {
+				markFirstByte(c)
 			}
 		}
-		if _, err := c.Writer.Write([]byte("\n")); err != nil {
+		if n, err := c.Writer.Write([]byte("\n")); err != nil {
 			return err
+		} else if n > 0 {
+			markFirstByte(c)
 		}
 		flusher.Flush()
 	}
@@ -3207,11 +3250,15 @@ func writeSSENamedJSON(c *gin.Context, flusher http.Flusher, event string, paylo
 	if err != nil {
 		return err
 	}
-	if _, err := c.Writer.Write([]byte("event: " + event + "\n")); err != nil {
+	if n, err := c.Writer.Write([]byte("event: " + event + "\n")); err != nil {
 		return err
+	} else if n > 0 {
+		markFirstByte(c)
 	}
-	if _, err := c.Writer.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+	if n, err := c.Writer.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
 		return err
+	} else if n > 0 {
+		markFirstByte(c)
 	}
 	flusher.Flush()
 	return nil
@@ -3297,8 +3344,11 @@ func emitResponsesTextOnlyStream(c *gin.Context, flusher http.Flusher, responseI
 	}); err != nil {
 		return err
 	}
-	_, err := c.Writer.Write([]byte("data: [DONE]\n\n"))
+	n, err := c.Writer.Write([]byte("data: [DONE]\n\n"))
 	flusher.Flush()
+	if err == nil && n > 0 {
+		markFirstByte(c)
+	}
 	return err
 }
 

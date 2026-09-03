@@ -2061,6 +2061,35 @@ data: [DONE]
 	assert.Contains(t, logBody, `"encrypted_content": "[REDACTED]"`)
 }
 
+func TestHandleCodexForcedStreamResponseRecordsFirstByte(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Parallel()
+
+	streamData := `event: response.created
+data: {"type":"response.created","response":{"id":"resp_first_byte","model":"gpt-5","status":"in_progress"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_first_byte","model":"gpt-5","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+data: [DONE]
+`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamData)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+
+	ps := &ProxyServer{}
+	ps.handleCodexForcedStreamResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	_, exists := c.Get(ctxKeyFirstByteTime)
+	assert.True(t, exists, "first byte time must be set once the converted response is delivered")
+}
+
 func TestHandleNormalResponseEmptyBodyLeavesFirstByteUnset(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -2211,5 +2240,52 @@ func TestFirstByteDeadlineBodyUnit(t *testing.T) {
 		// report a timeout even after the original budget would have elapsed.
 		_, err = b.Read(buf)
 		require.ErrorIs(t, err, io.EOF)
+	})
+
+	t.Run("callback loses race when first read already claimed", func(t *testing.T) {
+		// Regression for the CodeRabbit race finding: when the timeout
+		// callback starts while the first Read has just delivered a chunk,
+		// only one side may claim gotFirst. The callback that loses the CAS
+		// must not close the body; otherwise the healthy stream is truncated
+		// because timer.Stop() cannot cancel a callback already running.
+		b := newFirstByteDeadlineBody(io.NopCloser(strings.NewReader("data")), time.Hour)
+		buf := make([]byte, 4)
+		n, err := b.Read(buf)
+		require.NoError(t, err)
+		assert.Equal(t, 4, n)
+		// Simulate the timer callback firing after the first read claimed
+		// gotFirst: it must lose the CAS and leave the body open.
+		b.onDeadline()
+		assert.False(t, b.timedOut.Load(), "callback that loses the CAS must not mark timed out")
+		// The stream must still deliver the remaining EOF without a
+		// closed-body error.
+		_, err = b.Read(buf)
+		require.ErrorIs(t, err, io.EOF, "body must stay open after the losing callback")
+	})
+
+	t.Run("callback wins race before first read", func(t *testing.T) {
+		// Real-timer ordering: the deadline fires while the first Read is
+		// parked on the body; the callback claims gotFirst, closes the body,
+		// and the parked read surfaces as errStreamFirstByteTimeout. The read
+		// cannot return on its own (blockingBody never yields data), so its
+		// return proves the callback fired and released it.
+		body := newBlockingBody()
+		b := newFirstByteDeadlineBody(body, 30*time.Millisecond)
+		buf := make([]byte, 16)
+		done := make(chan struct{})
+		var n int
+		var err error
+		go func() {
+			defer close(done)
+			n, err = b.Read(buf)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("read never returned; deadline callback did not release the parked read")
+		}
+		assert.Zero(t, n)
+		require.ErrorIs(t, err, errStreamFirstByteTimeout)
+		require.NoError(t, body.Close())
 	})
 }

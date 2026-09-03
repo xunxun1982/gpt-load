@@ -74,7 +74,10 @@ func writePassthroughModelsResponse(c *gin.Context, resp *http.Response, body []
 	hdr.Del("Transfer-Encoding")
 	hdr.Set("Content-Length", strconv.Itoa(len(body)))
 	c.Writer.WriteHeader(resp.StatusCode)
-	_, err := c.Writer.Write(body)
+	n, err := c.Writer.Write(body)
+	if err == nil && n > 0 {
+		markFirstByte(c)
+	}
 	return err
 }
 
@@ -90,7 +93,10 @@ func writeEnhancedModelsResponse(c *gin.Context, resp *http.Response, body []byt
 	}
 	hdr.Set("Content-Length", strconv.Itoa(len(body)))
 	c.Writer.WriteHeader(resp.StatusCode)
-	_, err := c.Writer.Write(body)
+	n, err := c.Writer.Write(body)
+	if err == nil && n > 0 {
+		markFirstByte(c)
+	}
 	return err
 }
 

@@ -75,30 +75,42 @@ var errStreamFirstByteTimeout = errors.New("stream first byte timeout: upstream 
 // request_timeout (or forever when request_timeout is disabled). The deadline
 // is cleared once the first chunk arrives, so only the initial read is bounded.
 //
-// On expiry the wrapped body is closed to release a Read parked on the
-// connection; the returned error is then reported as errStreamFirstByteTimeout
-// (instead of a misleading generic read error) so the caller logs the real cause.
+// CLAIM SEMANTICS: gotFirst is a claim flag decided exactly once by either the
+// first non-empty read or the timeout callback, whichever wins the CAS. The
+// loser exits without side effects: timer.Stop() cannot cancel a callback that
+// is already running, so without the CAS a callback racing a first-chunk read
+// could close a healthy body and truncate the stream.
 type firstByteDeadlineBody struct {
 	body     io.ReadCloser
 	timer    *time.Timer
-	gotFirst atomic.Bool // first non-empty read done; deadline no longer applies
-	timedOut atomic.Bool // deadline fired before any data arrived
+	gotFirst atomic.Bool // claim flag: first read or timeout, whichever CAS-wins
+	timedOut atomic.Bool // deadline claimed before any data arrived
 }
 
 func newFirstByteDeadlineBody(body io.ReadCloser, timeout time.Duration) *firstByteDeadlineBody {
 	b := &firstByteDeadlineBody{body: body}
-	b.timer = time.AfterFunc(timeout, func() {
-		b.timedOut.Store(true)
-		// Closing the underlying body unblocks a Read parked on the connection;
-		// Close is idempotent so a concurrent normal close is safe.
-		_ = body.Close()
-	})
+	b.timer = time.AfterFunc(timeout, b.onDeadline)
 	return b
+}
+
+// onDeadline is the timer callback. CAS-claim first: when the first non-empty
+// read already claimed gotFirst, the deadline lost the race and the body must
+// stay open. When the callback wins, close the body to release a Read parked
+// on the connection (Close is idempotent so a concurrent normal close is safe).
+func (b *firstByteDeadlineBody) onDeadline() {
+	if !b.gotFirst.CompareAndSwap(false, true) {
+		return
+	}
+	b.timedOut.Store(true)
+	_ = b.body.Close()
 }
 
 func (b *firstByteDeadlineBody) Read(p []byte) (int, error) {
 	n, err := b.body.Read(p)
-	if n > 0 && !b.gotFirst.Swap(true) {
+	// Claim first-byte delivery via CAS: losing to the timeout callback means
+	// the deadline expired and tore the stream down; never Stop() the timer
+	// then (it already fired and the callback is past cancellation anyway).
+	if n > 0 && b.gotFirst.CompareAndSwap(false, true) {
 		b.timer.Stop()
 	}
 	if n == 0 && b.timedOut.Load() && err != nil {
@@ -1174,12 +1186,15 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 		logrus.WithError(err).Error("Codex forced stream: failed to collect stream response")
 		markResponseProcessingFailed(c)
 		// Do not expose internal error details to client for security
+		// gin's JSON/Data helpers do not expose the underlying write error, so the
+		// mark is unconditional (markFirstByte is idempotent).
 		c.JSON(http.StatusBadGateway, gin.H{
 			"error": gin.H{
 				"message": "Failed to collect stream response",
 				"type":    "server_error",
 			},
 		})
+		markFirstByte(c)
 		return
 	}
 	if !codexResp.terminalEventSeen {
@@ -1200,6 +1215,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 			"error_message": utils.TruncateString(utils.SanitizeErrorBody(codexResp.Error.Message), 200),
 		}).Warn("Codex forced stream: upstream returned error")
 		c.JSON(statusCode, codexResp)
+		markFirstByte(c)
 		return
 	}
 
@@ -1221,6 +1237,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 				"type":    "server_error",
 			},
 		})
+		markFirstByte(c)
 		return
 	}
 	logicalStatusCode, _, hasLogicalFailure := logicalStatusFromContext(c)
@@ -1245,6 +1262,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 
 	// c.Data already sets Content-Type, no need for redundant c.Header call
 	c.Data(resp.StatusCode, "application/json", responseBody)
+	markFirstByte(c)
 }
 
 // codexStreamResponse represents a Codex streaming response structure for collection.

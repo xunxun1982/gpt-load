@@ -1979,6 +1979,7 @@ func (ps *ProxyServer) handleForceCodexNormalResponse(c *gin.Context, resp *http
 	}
 	clearUpstreamEncodingHeaders(c)
 	c.Data(resp.StatusCode, "application/json", out)
+	markFirstByte(c)
 }
 
 func (ps *ProxyServer) handleForceCodexStreamingResponse(c *gin.Context, resp *http.Response) {
@@ -2060,8 +2061,11 @@ func writeForceCodexCollectedStreamEvents(c *gin.Context, streamResp *CodexRespo
 				captured.WriteString(chunk)
 			}
 		}
-		_, err = c.Writer.Write([]byte(chunk))
-		return err
+		n, werr := c.Writer.Write([]byte(chunk))
+		if werr == nil && n > 0 {
+			markFirstByte(c)
+		}
+		return werr
 	}
 
 	if err := writeEvent("response.created", map[string]any{
@@ -2103,8 +2107,10 @@ func writeForceCodexCollectedStreamEvents(c *gin.Context, streamResp *CodexRespo
 			captured.WriteString(doneChunk)
 		}
 	}
-	if _, err := c.Writer.Write([]byte(doneChunk)); err != nil {
+	if n, err := c.Writer.Write([]byte(doneChunk)); err != nil {
 		return err
+	} else if n > 0 {
+		markFirstByte(c)
 	}
 	if shouldCaptureResponse(c) && captured.Len() > 0 {
 		c.Set("response_body", sanitizeAndTruncateStringForLog(captured.String(), maxResponseCaptureBytes))
@@ -2558,6 +2564,7 @@ func writeForceCodexGatewayError(c *gin.Context, message string) {
 			"type":    "server_error",
 		},
 	})
+	markFirstByte(c)
 }
 
 func writeForceCodexPassthrough(c *gin.Context, resp *http.Response, body []byte) {
@@ -2568,4 +2575,5 @@ func writeForceCodexPassthrough(c *gin.Context, resp *http.Response, body []byte
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 	}
 	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	markFirstByte(c)
 }
