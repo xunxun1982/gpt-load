@@ -1097,7 +1097,11 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 		}
 	}()
 
-	// Perform the actual database write within transaction
+	// Perform the actual database write within transaction.
+	// Deliberately no updated_at CAS: this is the user-facing explicit save entry
+	// point (last-write-wins API semantics), not a background stale write-back.
+	// Background migration write-backs (e.g. GroupManager legacy timeout config)
+	// use their own updated_at guard so they cannot clobber this save.
 	if err := tx.Save(&group).Error; err != nil {
 		// Check if it's a duplicate name error and return i18n error
 		parsedErr := app_errors.ParseDBError(err)

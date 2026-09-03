@@ -214,10 +214,19 @@ func (gm *GroupManager) Initialize() error {
 			// while a legacy key exists, so steady-state loads have zero write overhead.
 			if config.NormalizeLegacyGroupTimeoutConfig(group.Config) {
 				updateCtx, updateCancel := context.WithTimeout(context.Background(), timeout)
-				if err := gm.db.WithContext(updateCtx).Model(&models.Group{}).
-					Where("id = ?", group.ID).UpdateColumn("config", group.Config).Error; err != nil {
-					logrus.WithError(err).WithField("group_name", group.Name).
+				// Optimistic concurrency guard: only write when the row is unchanged since
+				// load. A concurrent GroupService.UpdateGroup save bumps updated_at, which
+				// makes this stale normalized write miss (0 rows) instead of overwriting
+				// the newer config with legacy-normalized data.
+				result := gm.db.WithContext(updateCtx).Model(&models.Group{}).
+					Where("id = ? AND updated_at = ?", group.ID, group.UpdatedAt).
+					UpdateColumn("config", group.Config)
+				if result.Error != nil {
+					logrus.WithError(result.Error).WithField("group_name", group.Name).
 						Warn("Failed to persist migrated group timeout config")
+				} else if result.RowsAffected == 0 {
+					logrus.WithField("group_name", group.Name).
+						Debug("Skipped persisting migrated group timeout config: row updated concurrently")
 				}
 				updateCancel()
 			}

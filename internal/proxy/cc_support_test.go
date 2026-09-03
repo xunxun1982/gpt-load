@@ -5746,18 +5746,24 @@ func TestGetEffectiveSSETimeoutsSubtractsHeaderWait(t *testing.T) {
 		streamFirstByteTimeout int
 		anchorOffset           time.Duration // negative: anchor in the past
 		expectedFirstByte      time.Duration
+		tolerance              time.Duration // allowed slack below expected (elapsed-time jitter)
 	}{
 		{
 			name:                   "headers arrived early keep nearly full budget",
 			streamFirstByteTimeout: 10,
 			anchorOffset:           -2 * time.Second,
 			expectedFirstByte:      8 * time.Second,
+			tolerance:              100 * time.Millisecond,
 		},
 		{
 			name:                   "headers near deadline leave small budget",
 			streamFirstByteTimeout: 10,
 			anchorOffset:           -(10*time.Second - 50*time.Millisecond),
 			expectedFirstByte:      50 * time.Millisecond,
+			// The budget is derived via time.Since(start), so the exact value
+			// includes tiny elapsed-time jitter; assert a bounded range below
+			// the nominal remainder and never above it.
+			tolerance: 10 * time.Millisecond,
 		},
 		{
 			name:                   "deadline exhausted while waiting headers fails fast",
@@ -5787,8 +5793,12 @@ func TestGetEffectiveSSETimeoutsSubtractsHeaderWait(t *testing.T) {
 
 			firstByte, subsequent := getEffectiveSSETimeouts(c)
 
-			if firstByte != tt.expectedFirstByte {
-				t.Errorf("firstByteTimeout: expected %v, got %v", tt.expectedFirstByte, firstByte)
+			// The first-byte budget is the configured timeout minus the time already
+			// spent since the request start anchor (time.Since(start)), so the exact
+			// remainder carries sub-millisecond elapsed jitter. Assert a bounded range:
+			// never above the nominal remainder, at most `tolerance` below it.
+			if firstByte > tt.expectedFirstByte || firstByte < tt.expectedFirstByte-tt.tolerance {
+				t.Errorf("firstByteTimeout: expected ~%v (tolerance %v), got %v", tt.expectedFirstByte, tt.tolerance, firstByte)
 			}
 			if subsequent != 0 {
 				t.Errorf("subsequentTimeout: expected 0, got %v", subsequent)

@@ -347,6 +347,17 @@ const loadColumnPreferences = () => {
         }
         // Set the one-time flag so a later manual hide is not undone on the next load
         localStorage.setItem(COLUMN_PREFS_MIGRATION_KEY, "1");
+      } else if (
+        parsed.length === 0 &&
+        !localStorage.getItem(COLUMN_PREFS_MIGRATION_KEY)
+      ) {
+        // An empty saved list means the user explicitly hid every optional column
+        // (including first_byte_duration_ms), so do not add it back on a later load.
+        // The merged always-default list below is persisted by the watcher, so mark
+        // the migration done here too; otherwise the next load treats that merged
+        // non-empty list as pre-migration and re-adds the column.
+
+        localStorage.setItem(COLUMN_PREFS_MIGRATION_KEY, "1");
       }
       // Ensure always-default columns are included
       const merged = [...new Set([...parsed, ...ALWAYS_DEFAULT_COLUMNS])];
@@ -357,7 +368,12 @@ const loadColumnPreferences = () => {
       setDefaultColumns();
     }
   } else {
+    // No saved preferences yet: apply and persist the defaults (which include
+    // first_byte_duration_ms) via the watcher below, then mark the migration as
+    // done. Without the marker the next load would treat the saved default list
+    // as pre-migration and re-add first_byte_duration_ms after the user hides it.
     setDefaultColumns();
+    localStorage.setItem(COLUMN_PREFS_MIGRATION_KEY, "1");
   }
 };
 

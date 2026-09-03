@@ -61,22 +61,11 @@ type firstByteWriter struct {
 	onFirstByte func()
 }
 
-type firstByteReadCloser struct {
-	io.ReadCloser
-	onFirstByte func()
-}
-
-func (r firstByteReadCloser) Read(p []byte) (int, error) {
-	n, err := r.ReadCloser.Read(p)
-	if n > 0 && r.onFirstByte != nil {
-		r.onFirstByte()
-	}
-	return n, err
-}
-
 func (w firstByteWriter) Write(p []byte) (int, error) {
 	n, err := w.writer.Write(p)
-	if n > 0 && w.onFirstByte != nil {
+	// Only record the first byte after a successful client write; a failed
+	// write (err != nil) must not be reported as delivered first byte.
+	if err == nil && n > 0 && w.onFirstByte != nil {
 		w.onFirstByte()
 	}
 	return n, err
@@ -87,7 +76,9 @@ func (w streamFlushWriter) Write(p []byte) (int, error) {
 	if err != nil && w.writeErr != nil {
 		*w.writeErr = err
 	}
-	if n > 0 && w.onFirstByte != nil {
+	// Only record the first byte after a successful client write; a failed
+	// write (err != nil) must not be reported as delivered first byte.
+	if err == nil && n > 0 && w.onFirstByte != nil {
 		w.onFirstByte()
 	}
 	if n > 0 && w.flusher != nil {
@@ -860,7 +851,6 @@ func setResponsesLogicalFailure(c *gin.Context, status, errorCode, errorMessage 
 }
 
 func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Response) {
-	resp.Body = firstByteReadCloser{ReadCloser: resp.Body, onFirstByte: func() { markFirstByte(c) }}
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -967,12 +957,14 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 					estimateCapture.Write(chunk)
 					failureCapture.Write(chunk)
 				}
-				markFirstByte(c)
+				// Record first byte time only after the chunk was successfully
+				// written to the client (write returned without error).
 				if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
 					logUpstreamError("writing stream to client", writeErr)
 					markResponseProcessingFailed(c)
 					return
 				}
+				markFirstByte(c)
 
 				// Capture response data if enabled (up to max capture limit)
 				if !encodedResponse {
@@ -1023,7 +1015,6 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 }
 
 func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response) {
-	resp.Body = firstByteReadCloser{ReadCloser: resp.Body, onFirstByte: func() { markFirstByte(c) }}
 	// Check if response body capturing is enabled
 	shouldCapture := shouldCaptureResponse(c)
 	contentEncoding := strings.TrimSpace(resp.Header.Get("Content-Encoding"))
@@ -1052,14 +1043,13 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 			c.Set(ctxKeyResponsesStatusUnverified, true)
 		}
 
-		// Write to client
-		// Only mark first byte when the body is non-empty: an empty upstream body
-		// has no first byte; keep the nullable log column NULL so the UI shows '-' as before
-		if len(body) > 0 {
-			markFirstByte(c)
-		}
+		// Write to client, then record first byte only after a successful write
+		// and when the body is non-empty: an empty upstream body has no first byte;
+		// keep the nullable log column NULL so the UI shows '-' as before.
 		if _, err := c.Writer.Write(body); err != nil {
 			logUpstreamError("writing response body", err)
+		} else if len(body) > 0 {
+			markFirstByte(c)
 		}
 	} else if contentEncoding != "" {
 		if isSupportedResponseContentEncoding(contentEncoding) {

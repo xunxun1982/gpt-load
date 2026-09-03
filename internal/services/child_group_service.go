@@ -701,7 +701,10 @@ func (s *ChildGroupService) SyncChildGroupUpstreams(ctx context.Context) error {
 				}
 			}
 
-			// Update the child group's upstream
+			// Update the child group's upstream.
+			// Deliberately no updated_at CAS: runs once at startup as self-healing,
+			// and child group upstreams are system-managed (UpdateGroup rejects user
+			// edits for child groups), so there is no concurrent user save to race.
 			if err := s.db.WithContext(ctx).
 				Model(&models.Group{}).
 				Where("id = ?", cg.ID).
