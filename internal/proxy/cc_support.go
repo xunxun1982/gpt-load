@@ -1514,7 +1514,11 @@ func returnClaudeError(c *gin.Context, statusCode int, message string) {
 			Message: message,
 		},
 	}
+	// Record first byte at the client delivery point; gin helpers do not
+	// expose the underlying write error, mirroring the plain handler's
+	// success-only marking via firstByteWriter.
 	c.JSON(statusCode, claudeErr)
+	markFirstByte(c)
 }
 
 // OpenAIChoice represents a choice in OpenAI response.
@@ -2886,7 +2890,11 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 				},
 			}
 			clearUpstreamEncodingHeaders(c)
+			// Record first byte at the client delivery point; gin's JSON/Data
+			// helpers do not expose the underlying write error, so the mark is
+			// unconditional (markFirstByte is idempotent).
 			c.JSON(http.StatusBadGateway, claudeErr)
+			markFirstByte(c)
 			return
 		}
 
@@ -2922,6 +2930,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			}
 			clearUpstreamEncodingHeaders(c)
 			c.JSON(http.StatusBadGateway, claudeErr)
+			markFirstByte(c)
 			return
 		}
 		// Other decompression errors: continue with original data but preserve encoding header
@@ -2977,6 +2986,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
 		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
+		markFirstByte(c)
 		return
 	}
 
@@ -3002,6 +3012,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		}
 		clearUpstreamEncodingHeaders(c)
 		c.JSON(resp.StatusCode, claudeErr)
+		markFirstByte(c)
 		return
 	}
 	if len(openaiResp.Choices) == 0 && openaiResp.Usage == nil {
@@ -3009,6 +3020,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
 		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
+		markFirstByte(c)
 		return
 	}
 	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
@@ -3078,6 +3090,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			}
 			clearUpstreamEncodingHeaders(c)
 			c.JSON(http.StatusBadGateway, claudeErr)
+			markFirstByte(c)
 			return
 		}
 	}
@@ -3142,6 +3155,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			c.Header("Content-Encoding", origEncoding)
 		}
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
+		markFirstByte(c)
 		return
 	}
 
@@ -3155,6 +3169,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 
 	c.Header("Content-Type", "application/json")
 	c.Data(resp.StatusCode, "application/json", claudeBody)
+	markFirstByte(c)
 }
 
 // ClaudeStreamEvent represents a Claude streaming event.
@@ -3699,7 +3714,14 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}()
 	}
 
-	writer := NewSSEWriter(streamWriter, flusher)
+	// Wrap the stream writer (including the response-capture variant) so the
+	// first byte is recorded only after the client write succeeded, mirroring
+	// the plain streaming handler. The wrapper sits outside the capture writer,
+	// so capture behavior is unchanged.
+	writer := NewSSEWriter(firstByteWriter{
+		writer:      streamWriter,
+		onFirstByte: func() { markFirstByte(c) },
+	}, flusher)
 	defer writer.Close()
 
 	reqID := ""

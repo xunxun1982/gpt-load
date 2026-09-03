@@ -276,8 +276,13 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		}
 
 		// Create a dedicated configuration for streaming requests: request_timeout still
-		// bounds the full lifecycle (shared with non-stream), but only stream_first_byte_timeout
-		// applies to ResponseHeaderTimeout; subsequent stream reads are not otherwise limited.
+		// bounds the full lifecycle (shared with non-stream), and stream_first_byte_timeout
+		// applies to ResponseHeaderTimeout (header wait). The remaining first-byte budget
+		// is additionally enforced on the initial response-body read in
+		// handleStreamingResponse/handleCCStreamingResponse (fast-fail only, no idle
+		// timeout on subsequent reads), so a stalled upstream that sent headers but no
+		// body cannot block the read loop until request_timeout (or forever when it is
+		// disabled). Subsequent stream reads are not otherwise limited.
 		streamConfig := *clientConfig
 		streamConfig.ResponseHeaderTimeout = time.Duration(group.EffectiveConfig.StreamFirstByteTimeout) * time.Second
 		streamConfig.DisableCompression = true

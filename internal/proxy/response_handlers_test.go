@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"sync"
 )
 
 var benchmarkTokenCountSink int64
@@ -2092,4 +2093,123 @@ func TestHandleNormalResponseNonEmptyBodySetsFirstByte(t *testing.T) {
 
 	_, exists := c.Get(ctxKeyFirstByteTime)
 	assert.True(t, exists, "first byte time must be set when a non-empty body is written")
+}
+
+// blockingBody blocks on Read until closed, simulating an upstream that sent
+// response headers but never delivers body data.
+type blockingBody struct {
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func newBlockingBody() *blockingBody {
+	return &blockingBody{closed: make(chan struct{})}
+}
+
+func (b *blockingBody) Read(p []byte) (int, error) {
+	<-b.closed
+	return 0, io.EOF
+}
+
+func (b *blockingBody) Close() error {
+	b.closeOnce.Do(func() { close(b.closed) })
+	return nil
+}
+
+// TestHandleStreamingResponseFirstByteTimeoutCoversBodyRead verifies that
+// stream_first_byte_timeout also bounds the first body read when headers
+// arrive immediately but the upstream stalls before sending body data
+// (ResponseHeaderTimeout stops at header arrival and does not cover body reads).
+func TestHandleStreamingResponseFirstByteTimeoutCoversBodyRead(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	// Anchor the request 2s in the past with a 1s first-byte budget: the
+	// remaining budget is exhausted, so the wrapper arms a 1ms fast-fail
+	// deadline (see getEffectiveSSETimeouts) and the stalled body must fail
+	// quickly instead of blocking the test for the full budget.
+	c.Set("group", &models.Group{
+		EffectiveConfig: types.SystemSettings{StreamFirstByteTimeout: 1},
+	})
+	c.Set(ctxKeyUpstreamRequestStart, time.Now().Add(-2*time.Second))
+
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		defer close(done)
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       newBlockingBody(),
+		}
+		(&ProxyServer{}).handleStreamingResponse(c, resp)
+	}()
+
+	select {
+	case <-done:
+		elapsed := time.Since(start)
+		if elapsed > 800*time.Millisecond {
+			t.Fatalf("handleStreamingResponse blocked %dms on a stalled body instead of honoring stream_first_byte_timeout", elapsed.Milliseconds())
+		}
+		_, exists := c.Get(ctxKeyResponseProcessingFailed)
+		assert.True(t, exists, "stalled first body read must mark response processing failed")
+	case <-time.After(3 * time.Second):
+		t.Fatal("handleStreamingResponse did not return within 3s; first body read was not bounded by the remaining first-byte budget")
+	}
+}
+
+// TestHandleStreamingResponseDisabledFirstByteTimeoutKeepsNormalStream verifies
+// that when stream_first_byte_timeout is disabled (0), the deadline wrapper is
+// not installed and a normal stream flows through unchanged (request_timeout
+// and client-side cancellation remain the lifecycle bounds).
+func TestHandleStreamingResponseDisabledFirstByteTimeoutKeepsNormalStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{StreamFirstByteTimeout: 0}})
+
+	// The deadline wrapper must not be installed: read from the body directly
+	// through the same entry path is impossible without a stalled source, so
+	// assert on the wiring instead by checking a normal short stream works and
+	// that errStreamFirstByteTimeout is never involved.
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n")),
+	}
+	(&ProxyServer{}).handleStreamingResponse(c, resp)
+
+	assert.Contains(t, w.Body.String(), "hi")
+	_, exists := c.Get(ctxKeyResponseProcessingFailed)
+	assert.False(t, exists)
+}
+
+// TestFirstByteDeadlineBodyUnit covers the wrapper directly: the first
+// non-empty read stops the timer, and a deadline that fires before any data
+// surfaces as errStreamFirstByteTimeout instead of the raw close error.
+func TestFirstByteDeadlineBodyUnit(t *testing.T) {
+	t.Run("deadline fires before data", func(t *testing.T) {
+		body := newBlockingBody()
+		b := newFirstByteDeadlineBody(body, 20*time.Millisecond)
+		buf := make([]byte, 16)
+		start := time.Now()
+		_, err := b.Read(buf)
+		require.ErrorIs(t, err, errStreamFirstByteTimeout)
+		assert.Less(t, time.Since(start), time.Second)
+		require.NoError(t, body.Close())
+	})
+
+	t.Run("first non-empty read clears deadline", func(t *testing.T) {
+		b := newFirstByteDeadlineBody(io.NopCloser(strings.NewReader("data")), time.Hour)
+		buf := make([]byte, 4)
+		n, err := b.Read(buf)
+		require.NoError(t, err)
+		assert.Equal(t, 4, n)
+		// The timer must have been stopped; a zero-duration read must not
+		// report a timeout even after the original budget would have elapsed.
+		_, err = b.Read(buf)
+		require.ErrorIs(t, err, io.EOF)
+	})
 }

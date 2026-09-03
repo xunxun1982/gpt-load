@@ -1693,6 +1693,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			}
 			clearUpstreamEncodingHeaders(c)
 			c.JSON(http.StatusBadGateway, claudeErr)
+			markFirstByte(c)
 			return
 		}
 
@@ -1728,6 +1729,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			}
 			clearUpstreamEncodingHeaders(c)
 			c.JSON(http.StatusBadGateway, claudeErr)
+			markFirstByte(c)
 			return
 		}
 		// Other decompression errors: continue with original data but preserve encoding header
@@ -1778,6 +1780,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			c.Header("Content-Encoding", origEncoding)
 		}
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
+		markFirstByte(c)
 		return
 	}
 
@@ -1802,6 +1805,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		}
 		clearUpstreamEncodingHeaders(c)
 		c.JSON(resp.StatusCode, claudeErr)
+		markFirstByte(c)
 		return
 	}
 	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
@@ -1840,6 +1844,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			c.Header("Content-Encoding", origEncoding)
 		}
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
+		markFirstByte(c)
 		return
 	}
 
@@ -1847,6 +1852,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 	clearUpstreamEncodingHeaders(c)
 	c.Header("Content-Type", "application/json")
 	c.Data(resp.StatusCode, "application/json", claudeBody)
+	markFirstByte(c)
 }
 
 // codexLineReadResult is one line (or read error) produced by the codexLineReader goroutine.
@@ -2040,7 +2046,12 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.Type, string(eventBytes))
+		// Streaming CC records the first byte only after a successful client write,
+		// mirroring the plain streaming handler in response_handlers.go.
+		n, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.Type, string(eventBytes))
+		if err == nil && n > 0 {
+			markFirstByte(c)
+		}
 		if err != nil {
 			return err
 		}

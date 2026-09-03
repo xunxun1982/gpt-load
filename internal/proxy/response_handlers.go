@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/tokenusage"
@@ -59,6 +61,55 @@ type streamFlushWriter struct {
 type firstByteWriter struct {
 	writer      io.Writer
 	onFirstByte func()
+}
+
+// errStreamFirstByteTimeout is returned when the first non-empty body read
+// consumes the remaining stream_first_byte_timeout budget (the transport's
+// ResponseHeaderTimeout stops at header arrival and does not cover body reads).
+var errStreamFirstByteTimeout = errors.New("stream first byte timeout: upstream did not send response body data in time")
+
+// firstByteDeadlineBody extends the stream_first_byte_timeout budget from the
+// response-header wait to the first non-empty body read. The transport-level
+// ResponseHeaderTimeout only covers header arrival; a stalled upstream that
+// sent headers but no body would otherwise block resp.Body.Read until
+// request_timeout (or forever when request_timeout is disabled). The deadline
+// is cleared once the first chunk arrives, so only the initial read is bounded.
+//
+// On expiry the wrapped body is closed to release a Read parked on the
+// connection; the returned error is then reported as errStreamFirstByteTimeout
+// (instead of a misleading generic read error) so the caller logs the real cause.
+type firstByteDeadlineBody struct {
+	body     io.ReadCloser
+	timer    *time.Timer
+	gotFirst atomic.Bool // first non-empty read done; deadline no longer applies
+	timedOut atomic.Bool // deadline fired before any data arrived
+}
+
+func newFirstByteDeadlineBody(body io.ReadCloser, timeout time.Duration) *firstByteDeadlineBody {
+	b := &firstByteDeadlineBody{body: body}
+	b.timer = time.AfterFunc(timeout, func() {
+		b.timedOut.Store(true)
+		// Closing the underlying body unblocks a Read parked on the connection;
+		// Close is idempotent so a concurrent normal close is safe.
+		_ = body.Close()
+	})
+	return b
+}
+
+func (b *firstByteDeadlineBody) Read(p []byte) (int, error) {
+	n, err := b.body.Read(p)
+	if n > 0 && !b.gotFirst.Swap(true) {
+		b.timer.Stop()
+	}
+	if n == 0 && b.timedOut.Load() && err != nil {
+		return 0, errStreamFirstByteTimeout
+	}
+	return n, err
+}
+
+func (b *firstByteDeadlineBody) Close() error {
+	b.timer.Stop()
+	return b.body.Close()
 }
 
 func (w firstByteWriter) Write(p []byte) (int, error) {
@@ -851,6 +902,18 @@ func setResponsesLogicalFailure(c *gin.Context, status, errorCode, errorMessage 
 }
 
 func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Response) {
+	// stream_first_byte_timeout must also bound the first body read: the
+	// transport-level ResponseHeaderTimeout stops at header arrival, so an
+	// upstream that stalls right after sending headers would otherwise block
+	// this loop until request_timeout (or forever when it is disabled). Reuse
+	// the CC reader's remaining-budget computation; the deadline is cleared
+	// once the first non-empty chunk arrives (see firstByteDeadlineBody).
+	if firstByteTimeout, _ := getEffectiveSSETimeouts(c); firstByteTimeout > 0 {
+		deadlineBody := newFirstByteDeadlineBody(resp.Body, firstByteTimeout)
+		resp.Body = deadlineBody
+		defer func() { _ = deadlineBody.Close() }()
+	}
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")

@@ -347,10 +347,7 @@ const loadColumnPreferences = () => {
         }
         // Set the one-time flag so a later manual hide is not undone on the next load
         localStorage.setItem(COLUMN_PREFS_MIGRATION_KEY, "1");
-      } else if (
-        parsed.length === 0 &&
-        !localStorage.getItem(COLUMN_PREFS_MIGRATION_KEY)
-      ) {
+      } else if (parsed.length === 0 && !localStorage.getItem(COLUMN_PREFS_MIGRATION_KEY)) {
         // An empty saved list means the user explicitly hid every optional column
         // (including first_byte_duration_ms), so do not add it back on a later load.
         // The merged always-default list below is persisted by the watcher, so mark
@@ -364,8 +361,12 @@ const loadColumnPreferences = () => {
       // The watch below persists the merged list, so no explicit write-back is needed here
       visibleColumns.value = merged;
     } catch {
-      // If parse fails, use defaults
+      // If parse fails, use defaults.
+      // Same rationale as the "no saved preferences" branch: the watcher will
+      // persist the recovered defaults, so without the migration marker a later
+      // manual hide of first_byte_duration_ms would be undone on the next load.
       setDefaultColumns();
+      localStorage.setItem(COLUMN_PREFS_MIGRATION_KEY, "1");
     }
   } else {
     // No saved preferences yet: apply and persist the defaults (which include

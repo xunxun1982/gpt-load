@@ -8128,3 +8128,79 @@ func TestConvertWindowsPathsInToolResult_CorruptedPaths(t *testing.T) {
 }
 
 // TestConvertClaudeToOpenAI tests the Claude to OpenAI conversion
+
+// TestHandleCCStreamingResponseRecordsFirstByte verifies that the CC streaming
+// handler records ctxKeyFirstByteTime once the first event (message_start) has
+// been written to the client, mirroring the plain streaming handler in
+// response_handlers.go.
+func TestHandleCCStreamingResponseRecordsFirstByte(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	content := "Hi"
+	chunk := &OpenAIResponse{
+		ID:     "chatcmpl-1",
+		Object: "chat.completion.chunk",
+		Model:  "test-model",
+		Choices: []OpenAIChoice{
+			{
+				Index: 0,
+				Delta: &OpenAIRespMessage{
+					Role:    "assistant",
+					Content: &content,
+				},
+			},
+		},
+	}
+
+	sseData := buildTestSSEBody(chunk) + "data: [DONE]\n\n"
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sseData)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set("original_model", "test-model")
+
+	ps := &ProxyServer{}
+	ps.handleCCStreamingResponse(c, resp)
+
+	output := w.Body.String()
+	if !strings.Contains(output, "message_start") {
+		t.Fatalf("expected message_start in output, got: %s", output)
+	}
+
+	if _, exists := c.Get(ctxKeyFirstByteTime); !exists {
+		t.Errorf("expected ctxKeyFirstByteTime to be set after message_start was written to the client")
+	}
+}
+
+// TestHandleCCNormalResponseRecordsFirstByte verifies that the CC normal
+// response handler records ctxKeyFirstByteTime after the converted Claude
+// response body has been written to the client, mirroring the plain handler.
+func TestHandleCCNormalResponseRecordsFirstByte(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := `{"id":"x","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set("original_model", "m")
+
+	ps := &ProxyServer{}
+	ps.handleCCNormalResponse(c, resp)
+
+	if _, exists := c.Get(ctxKeyFirstByteTime); !exists {
+		t.Errorf("expected ctxKeyFirstByteTime to be set after the response body was written to the client")
+	}
+}
