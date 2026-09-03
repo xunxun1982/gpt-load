@@ -191,8 +191,6 @@ func TestConfigMessageKeys(t *testing.T) {
 		"config.log_retention_days",
 		"config.request_timeout",
 		"config.request_timeout_desc",
-		"config.non_stream_request_timeout",
-		"config.non_stream_request_timeout_desc",
 		"config.stream_first_byte_timeout",
 		"config.stream_first_byte_timeout_desc",
 		"config.proxy_pool_test_target_url",

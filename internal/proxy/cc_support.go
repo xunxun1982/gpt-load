@@ -4628,9 +4628,28 @@ func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeou
 	// EffectiveConfig already contains merged group + system settings
 	cfg := group.EffectiveConfig
 
-	// Apply ResponseHeaderTimeout if smaller than preset (stricter timeout)
+	// Apply the configured first-byte timeout (stricter than the preset).
 	if cfg.StreamFirstByteTimeout > 0 {
 		firstByteTimeout = time.Duration(cfg.StreamFirstByteTimeout) * time.Second
+		// Single request-scoped deadline: the transport (ResponseHeaderTimeout) already
+		// waited up to the same budget for response headers, so the SSE reader must only
+		// receive the remaining time. This prevents the stream from awaiting nearly two
+		// full first-byte timeouts (headers + first event) for the first SSE event.
+		// When StreamFirstByteTimeout is 0 both the header wait and the read-side wait
+		// are unbounded (preset 0 = no timeout), so the anchor is only consulted here.
+		if startVal, ok := c.Get(ctxKeyUpstreamRequestStart); ok {
+			if start, ok := startVal.(time.Time); ok && !start.IsZero() {
+				elapsed := time.Since(start)
+				if elapsed >= firstByteTimeout {
+					// Deadline already exhausted while waiting for headers: fail fast on
+					// the next read. 0 would mean "no timeout", so keep a tiny positive
+					// value so the reader reports ErrSSETimeout almost immediately.
+					firstByteTimeout = time.Millisecond
+				} else {
+					firstByteTimeout -= elapsed
+				}
+			}
+		}
 	}
 	subsequentTimeout = 0
 

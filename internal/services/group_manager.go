@@ -209,6 +209,18 @@ func (gm *GroupManager) Initialize() error {
 		gm.preloadUpstreamProxyReferences(preloadCtx, groups, proxyResolveCache)
 		preloadCancel()
 		for _, group := range groups {
+			// One-time migration of persisted legacy group config keys (non_stream_request_timeout
+			// -> request_timeout, stream_request_timeout -> stream_first_byte_timeout). Only fires
+			// while a legacy key exists, so steady-state loads have zero write overhead.
+			if config.NormalizeLegacyGroupTimeoutConfig(group.Config) {
+				updateCtx, updateCancel := context.WithTimeout(context.Background(), timeout)
+				if err := gm.db.WithContext(updateCtx).Model(&models.Group{}).
+					Where("id = ?", group.ID).UpdateColumn("config", group.Config).Error; err != nil {
+					logrus.WithError(err).WithField("group_name", group.Name).
+						Warn("Failed to persist migrated group timeout config")
+				}
+				updateCancel()
+			}
 			g := *group
 			g.EffectiveConfig = gm.settingsManager.GetEffectiveConfig(g.Config)
 			if bytes.Contains(g.Upstreams, []byte("proxy-pool:")) {

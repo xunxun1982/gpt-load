@@ -319,6 +319,9 @@ const copyContent = async (content: string, type: string) => {
 const visibleColumns = ref<string[]>([]);
 const STORAGE_KEY = "log-table-visible-columns";
 
+// One-time migration flag: prevents re-adding first_byte_duration_ms after the user hides it manually
+const COLUMN_PREFS_MIGRATION_KEY = "log-table-columns-migrated-v1";
+
 // Columns that should always be included by default (even if not in saved preferences)
 const ALWAYS_DEFAULT_COLUMNS = ["parent_group_name", "token_usage"];
 
@@ -328,8 +331,26 @@ const loadColumnPreferences = () => {
   if (saved) {
     try {
       const parsed = JSON.parse(saved) as string[];
+      // One-time migration for users with saved preferences from before first_byte_duration_ms existed:
+      // insert the new column right before duration_ms so it appears without resetting their layout.
+      // An empty saved list is skipped to preserve the explicit "hide all optional columns" choice.
+      if (
+        parsed.length > 0 &&
+        !parsed.includes("first_byte_duration_ms") &&
+        !localStorage.getItem(COLUMN_PREFS_MIGRATION_KEY)
+      ) {
+        const durationIndex = parsed.indexOf("duration_ms");
+        if (durationIndex === -1) {
+          parsed.push("first_byte_duration_ms");
+        } else {
+          parsed.splice(durationIndex, 0, "first_byte_duration_ms");
+        }
+        // Set the one-time flag so a later manual hide is not undone on the next load
+        localStorage.setItem(COLUMN_PREFS_MIGRATION_KEY, "1");
+      }
       // Ensure always-default columns are included
       const merged = [...new Set([...parsed, ...ALWAYS_DEFAULT_COLUMNS])];
+      // The watch below persists the merged list, so no explicit write-back is needed here
       visibleColumns.value = merged;
     } catch {
       // If parse fails, use defaults
@@ -340,9 +361,11 @@ const loadColumnPreferences = () => {
   }
 };
 
-// Set default visible columns (all columns selected by default)
+// Set default visible columns: optional columns whose defaultVisible is not false
 const setDefaultColumns = () => {
-  visibleColumns.value = allColumnConfigs.filter(col => !col.alwaysVisible).map(col => col.key);
+  visibleColumns.value = allColumnConfigs
+    .filter(col => !col.alwaysVisible && col.defaultVisible !== false)
+    .map(col => col.key);
 };
 
 // Save column preferences to localStorage
@@ -413,7 +436,9 @@ const allColumnConfigs: ColumnConfig[] = [
     width: 120,
     defaultVisible: true,
     render: (row: LogRow) =>
-      row.first_byte_duration_ms == null ? "-" : `${row.first_byte_duration_ms}ms`,
+      row.first_byte_duration_ms === null || row.first_byte_duration_ms === undefined
+        ? "-"
+        : `${row.first_byte_duration_ms}ms`,
   },
   {
     key: "duration_ms",
@@ -496,7 +521,7 @@ const allColumnConfigs: ColumnConfig[] = [
     key: "request_path",
     title: t("logs.requestPath"),
     width: 550,
-    defaultVisible: true,
+    defaultVisible: false, // Hidden by default to keep key columns visible at a glance; still available in the detail modal and column picker
     render: (row: LogRow) =>
       h(NEllipsis, { style: "max-width: 530px" }, { default: () => row.request_path || "-" }),
   },
@@ -504,7 +529,7 @@ const allColumnConfigs: ColumnConfig[] = [
     key: "upstream_addr",
     title: t("logs.upstreamAddress"),
     width: 600,
-    defaultVisible: true,
+    defaultVisible: false, // Hidden by default to keep key columns visible at a glance; still available in the detail modal and column picker
     render: (row: LogRow) =>
       h(NEllipsis, { style: "max-width: 580px" }, { default: () => row.upstream_addr || "-" }),
   },
@@ -512,7 +537,7 @@ const allColumnConfigs: ColumnConfig[] = [
     key: "error_message",
     title: t("logs.errorMessage"),
     width: 600,
-    defaultVisible: true,
+    defaultVisible: false, // Hidden by default to keep key columns visible at a glance; still available in the detail modal and column picker
     render: (row: LogRow) => {
       if (!row.error_message) {
         return "-";
@@ -916,7 +941,12 @@ const deselectAllColumns = () => {
               <div class="detail-item-compact">
                 <span class="detail-label-compact">{{ t("logs.firstByteDuration") }}:</span>
                 <span class="detail-value-compact">
-                  {{ selectedLog.first_byte_duration_ms == null ? "-" : selectedLog.first_byte_duration_ms + "ms" }}
+                  {{
+                    selectedLog.first_byte_duration_ms === null ||
+                    selectedLog.first_byte_duration_ms === undefined
+                      ? "-"
+                      : selectedLog.first_byte_duration_ms + "ms"
+                  }}
                 </span>
               </div>
               <div class="detail-item-compact">

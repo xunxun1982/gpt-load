@@ -57,29 +57,6 @@ func (sm *SystemSettingsManager) SetProxyURLResolver(resolver ProxyURLResolver) 
 	sm.proxyURLResolver = resolver
 }
 
-// normalizeSplitRequestTimeouts keeps RequestTimeout synced to NonStreamRequestTimeout,
-// which is the source of truth for split timeout configuration.
-// It handles legacy-only backfill, explicit non-stream values including zero,
-// and the already-synced defaults when neither setting was supplied.
-func normalizeSplitRequestTimeouts(settings *types.SystemSettings, hasLegacy, hasNonStream, hasStreamFirstByte bool) {
-	if settings == nil {
-		return
-	}
-	if hasNonStream {
-		// Explicit zero disables non-stream timeout; keep legacy fallback synced to the same value.
-		settings.RequestTimeout = settings.NonStreamRequestTimeout
-		return
-	}
-	if hasLegacy {
-		settings.NonStreamRequestTimeout = settings.RequestTimeout
-		if !hasStreamFirstByte {
-			settings.StreamFirstByteTimeout = settings.RequestTimeout
-		}
-		return
-	}
-	// Defaults already keep both fields in sync when neither key was supplied.
-}
-
 func validateStringSettingValue(key, val string) error {
 	if key == "failover_status_codes" {
 		if _, err := failover.ParseStatusCodeMatcher(val); err != nil {
@@ -119,16 +96,60 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 		for _, setting := range dbSettings {
 			settingsMap[setting.SettingKey] = setting.SettingValue
 		}
-		// One-time, intentionally incompatible rename: preserve the stored value, then remove
-		// stream_request_timeout. Runtime validation accepts only stream_first_byte_timeout.
-		if oldValue, ok := settingsMap["stream_request_timeout"]; ok {
+		// migrateSettingKey atomically renames one setting key to another, preserving
+		// the stored value. On conflict only updated_at is touched (never setting_value),
+		// so a value written concurrently between the snapshot read above and this
+		// transaction is retained; the authoritative value is then re-read inside the
+		// transaction for the in-memory map. Works on SQLite/MySQL/PostgreSQL.
+		migrateSettingKey := func(tx *gorm.DB, from, to string) (string, error) {
+			oldValue, ok := settingsMap[from]
+			if !ok {
+				return "", nil
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "setting_key"}},
+				DoUpdates: clause.AssignmentColumns([]string{"updated_at"}),
+			}).Create(&models.SystemSetting{SettingKey: to, SettingValue: oldValue}).Error; err != nil {
+				return "", err
+			}
+			var stored models.SystemSetting
+			if err := tx.Where("setting_key = ?", to).First(&stored).Error; err != nil {
+				return "", err
+			}
+			return stored.SettingValue, tx.Where("setting_key = ?", from).Delete(&models.SystemSetting{}).Error
+		}
+		// One-time, intentionally incompatible renames (no backward compatibility is kept):
+		//   1) non_stream_request_timeout -> request_timeout  (request_timeout now bounds
+		//      both stream and non-stream request lifecycles; see types.SystemSettings)
+		//   2) stream_request_timeout -> stream_first_byte_timeout
+		if _, has := settingsMap["non_stream_request_timeout"]; has {
+			if _, conflict := settingsMap["request_timeout"]; conflict {
+				delete(settingsMap, "non_stream_request_timeout")
+				if err := db.DB.Where("setting_key = ?", "non_stream_request_timeout").Delete(&models.SystemSetting{}).Error; err != nil {
+					logrus.WithError(err).Warn("Failed to remove obsolete non-stream request timeout setting")
+				}
+			} else if err := db.DB.Transaction(func(tx *gorm.DB) error {
+				value, err := migrateSettingKey(tx, "non_stream_request_timeout", "request_timeout")
+				if err != nil {
+					return err
+				}
+				settingsMap["request_timeout"] = value
+				return nil
+			}); err != nil {
+				logrus.WithError(err).Warn("Failed to migrate non-stream request timeout setting")
+			} else {
+				delete(settingsMap, "non_stream_request_timeout")
+			}
+		}
+		if _, ok := settingsMap["stream_request_timeout"]; ok {
 			if _, exists := settingsMap["stream_first_byte_timeout"]; !exists {
-				settingsMap["stream_first_byte_timeout"] = oldValue
 				if err := db.DB.Transaction(func(tx *gorm.DB) error {
-					if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "setting_key"}}, DoUpdates: clause.AssignmentColumns([]string{"setting_value", "updated_at"})}).Create(&models.SystemSetting{SettingKey: "stream_first_byte_timeout", SettingValue: oldValue}).Error; err != nil {
+					value, err := migrateSettingKey(tx, "stream_request_timeout", "stream_first_byte_timeout")
+					if err != nil {
 						return err
 					}
-					return tx.Where("setting_key = ?", "stream_request_timeout").Delete(&models.SystemSetting{}).Error
+					settingsMap["stream_first_byte_timeout"] = value
+					return nil
 				}); err != nil {
 					logrus.WithError(err).Warn("Failed to migrate stream request timeout setting")
 				}
@@ -161,10 +182,6 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 				}
 			}
 		}
-		_, hasLegacyTimeout := settingsMap["request_timeout"]
-		_, hasNonStreamTimeout := settingsMap["non_stream_request_timeout"]
-		_, hasStreamFirstByteTimeout := settingsMap["stream_first_byte_timeout"]
-		normalizeSplitRequestTimeouts(&settings, hasLegacyTimeout, hasNonStreamTimeout, hasStreamFirstByteTimeout)
 
 		settings.ProxyKeysMap = utils.StringToSet(settings.ProxyKeys, ",")
 
@@ -285,6 +302,11 @@ func (sm *SystemSettingsManager) GetAppUrl() string {
 
 // UpdateSettings updates system configuration.
 func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) error {
+	// Normalize one-off, intentionally incompatible legacy key renames BEFORE
+	// validation, so an old-style payload still lands in the new fields instead of
+	// being rejected as an unknown key.
+	NormalizeLegacyGroupTimeoutConfig(datatypes.JSONMap(settingsMap))
+
 	// Validate configuration items
 	if err := sm.ValidateSettings(settingsMap); err != nil {
 		return err
@@ -292,15 +314,6 @@ func (sm *SystemSettingsManager) UpdateSettings(settingsMap map[string]any) erro
 
 	// Update database
 	var settingsToUpdate []models.SystemSetting
-	_, hasStreamFirstByteTimeout := settingsMap["stream_first_byte_timeout"]
-	if nonStreamTimeout, hasNonStream := settingsMap["non_stream_request_timeout"]; hasNonStream {
-		settingsMap["request_timeout"] = nonStreamTimeout
-	} else if legacyTimeout, hasLegacy := settingsMap["request_timeout"]; hasLegacy {
-		settingsMap["non_stream_request_timeout"] = legacyTimeout
-		if !hasStreamFirstByteTimeout {
-			settingsMap["stream_first_byte_timeout"] = legacyTimeout
-		}
-	}
 	for key, value := range settingsMap {
 		settingsToUpdate = append(settingsToUpdate, models.SystemSetting{
 			SettingKey:   key,
@@ -348,6 +361,9 @@ func (sm *SystemSettingsManager) ReloadSettings() error {
 func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JSONMap) types.SystemSettings {
 	effectiveConfig := sm.GetSettings()
 
+	// Normalize legacy group config keys in-place so callers see migrated values immediately.
+	NormalizeLegacyGroupTimeoutConfig(groupConfigJSON)
+
 	if groupConfigJSON == nil {
 		effectiveConfig.ProxyURL = sm.ResolveRuntimeProxyURL(context.Background(), effectiveConfig.ProxyURL)
 		return effectiveConfig
@@ -381,15 +397,39 @@ func (sm *SystemSettingsManager) GetEffectiveConfig(groupConfigJSON datatypes.JS
 			}
 		}
 	}
-	normalizeSplitRequestTimeouts(
-		&effectiveConfig,
-		groupConfig.RequestTimeout != nil,
-		groupConfig.NonStreamRequestTimeout != nil,
-		groupConfig.StreamFirstByteTimeout != nil,
-	)
 	effectiveConfig.ProxyURL = sm.ResolveRuntimeProxyURL(context.Background(), effectiveConfig.ProxyURL)
 
 	return effectiveConfig
+}
+
+// NormalizeLegacyGroupTimeoutConfig migrates the two intentional, incompatible group
+// config key renames in place: non_stream_request_timeout -> request_timeout and
+// stream_request_timeout -> stream_first_byte_timeout. A legacy value is copied only
+// when the replacement key is absent, so a concurrently-written value is never
+// clobbered. It reports whether the map changed, letting the GroupManager loader persist
+// the migrated JSON once.. SQLite/MySQL/PostgreSQL JSON maps ingest ordinary Go maps,
+// so no dialect-specific handling is needed here.
+
+func NormalizeLegacyGroupTimeoutConfig(config datatypes.JSONMap) bool {
+	if config == nil {
+		return false
+	}
+	changed := false
+	if oldValue, ok := config["non_stream_request_timeout"]; ok {
+		if _, exists := config["request_timeout"]; !exists {
+			config["request_timeout"] = oldValue
+		}
+		delete(config, "non_stream_request_timeout")
+		changed = true
+	}
+	if oldValue, ok := config["stream_request_timeout"]; ok {
+		if _, exists := config["stream_first_byte_timeout"]; !exists {
+			config["stream_first_byte_timeout"] = oldValue
+		}
+		delete(config, "stream_request_timeout")
+		changed = true
+	}
+	return changed
 }
 
 // ResolveRuntimeProxyURL returns the actual proxy URL for runtime use.
@@ -857,7 +897,7 @@ func (sm *SystemSettingsManager) DisplaySystemConfig(settings types.SystemSettin
 	logrus.Infof("    Request Log Write Interval: %d minutes", settings.RequestLogWriteIntervalMinutes)
 
 	logrus.Info("  --- Request Behavior ---")
-	logrus.Infof("    Non-Stream Request Timeout: %d seconds", settings.NonStreamRequestTimeout)
+	logrus.Infof("    Request Timeout: %d seconds", settings.RequestTimeout)
 	logrus.Infof("    Stream First Byte Timeout: %d seconds", settings.StreamFirstByteTimeout)
 	logrus.Infof("    Connect Timeout: %d seconds", settings.ConnectTimeout)
 	logrus.Infof("    Response Header Timeout: %d seconds", settings.ResponseHeaderTimeout)

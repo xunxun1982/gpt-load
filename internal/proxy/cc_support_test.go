@@ -5733,6 +5733,70 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 	}
 }
 
+// TestGetEffectiveSSETimeoutsSubtractsHeaderWait pins the single request-scoped
+// first-byte deadline: when the upstream request start anchor is present, the SSE
+// reader must only receive the budget remaining after the response headers arrived,
+// instead of starting a second full timeout.
+
+func TestGetEffectiveSSETimeoutsSubtractsHeaderWait(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name                   string
+		streamFirstByteTimeout int
+		anchorOffset           time.Duration // negative: anchor in the past
+		expectedFirstByte      time.Duration
+	}{
+		{
+			name:                   "headers arrived early keep nearly full budget",
+			streamFirstByteTimeout: 10,
+			anchorOffset:           -2 * time.Second,
+			expectedFirstByte:      8 * time.Second,
+		},
+		{
+			name:                   "headers near deadline leave small budget",
+			streamFirstByteTimeout: 10,
+			anchorOffset:           -(10*time.Second - 50*time.Millisecond),
+			expectedFirstByte:      50 * time.Millisecond,
+		},
+		{
+			name:                   "deadline exhausted while waiting headers fails fast",
+			streamFirstByteTimeout: 10,
+			anchorOffset:           -11 * time.Second,
+			expectedFirstByte:      time.Millisecond,
+		},
+		{
+			name:                   "zero timeout keeps preset safety net untouched by anchor",
+			streamFirstByteTimeout: 0,
+			anchorOffset:           -11 * time.Second,
+			expectedFirstByte:      sseFirstByteTimeoutPreset,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			group := &models.Group{
+				EffectiveConfig: types.SystemSettings{
+					StreamFirstByteTimeout: tt.streamFirstByteTimeout,
+				},
+			}
+			c.Set("group", group)
+			c.Set(ctxKeyUpstreamRequestStart, time.Now().Add(tt.anchorOffset))
+
+			firstByte, subsequent := getEffectiveSSETimeouts(c)
+
+			if firstByte != tt.expectedFirstByte {
+				t.Errorf("firstByteTimeout: expected %v, got %v", tt.expectedFirstByte, firstByte)
+			}
+			if subsequent != 0 {
+				t.Errorf("subsequentTimeout: expected 0, got %v", subsequent)
+			}
+		})
+	}
+}
+
 // TestGetEffectiveSSETimeouts_NoGroup tests that getEffectiveSSETimeouts
 // returns preset values when no group is in context.
 func TestGetEffectiveSSETimeouts_NoGroup(t *testing.T) {

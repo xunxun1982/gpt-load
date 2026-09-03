@@ -2059,3 +2059,37 @@ data: [DONE]
 	assert.NotContains(t, logBody, "gAAAA-response-reasoning")
 	assert.Contains(t, logBody, `"encrypted_content": "[REDACTED]"`)
 }
+
+func TestHandleNormalResponseEmptyBodyLeavesFirstByteUnset(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("")),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	_, exists := c.Get(ctxKeyFirstByteTime)
+	assert.False(t, exists, "first byte time must remain unset for an empty upstream body")
+}
+
+func TestHandleNormalResponseNonEmptyBodySetsFirstByte(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"choices":[]}`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	_, exists := c.Get(ctxKeyFirstByteTime)
+	assert.True(t, exists, "first byte time must be set when a non-empty body is written")
+}

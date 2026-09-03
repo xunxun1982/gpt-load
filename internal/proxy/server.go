@@ -413,16 +413,6 @@ func isCodexEncryptedContentFailure(message string) bool {
 			strings.Contains(message, "could not be parsed"))
 }
 
-func effectiveNonStreamRequestContext(parent context.Context, cfg types.SystemSettings) (context.Context, context.CancelFunc) {
-	if cfg.NonStreamRequestTimeout > 0 {
-		return context.WithTimeout(parent, time.Duration(cfg.NonStreamRequestTimeout)*time.Second)
-	}
-	if cfg.RequestTimeout > 0 {
-		return context.WithTimeout(parent, time.Duration(cfg.RequestTimeout)*time.Second)
-	}
-	return context.WithCancel(parent)
-}
-
 // Context keys used for function call middleware.
 const (
 	ctxKeyTriggerSignal               = "fc_trigger_signal"
@@ -435,6 +425,10 @@ const (
 	ctxKeyResponsesStatusUnverified   = "responses_status_unverified"
 	ctxKeyResponseProcessingFailed    = "response_processing_failed"
 	ctxKeyFirstByteTime               = "first_byte_time"
+	// ctxKeyUpstreamRequestStart records the moment the upstream request was dispatched
+	// (just before client.Do), so getEffectiveSSETimeouts can subtract the elapsed time
+	// from the stream-first-byte budget and give the SSE reader only the remaining wait.
+	ctxKeyUpstreamRequestStart = "upstream_request_start"
 )
 
 func markFirstByte(c *gin.Context) {
@@ -1694,18 +1688,15 @@ func (rc *retryContext) ensureLifecycleContext(parent context.Context, isStream 
 }
 
 func lifecycleTimeoutSeconds(cfg types.SystemSettings, isStream bool) int {
-	if isStream {
-		return 0
-	}
-	if cfg.NonStreamRequestTimeout > 0 {
-		return cfg.NonStreamRequestTimeout
-	}
+	// request_timeout bounds the full lifecycle of both stream and non-stream requests
+	// (zero disables it). The isStream parameter is kept for call-site clarity but no
+	// longer changes the timeout, so streams get the same lifecycle bound as non-streams.
 	return cfg.RequestTimeout
 }
 
 func (ps *ProxyServer) aggregateRetryLifecycleConfig(originalGroup *models.Group) types.SystemSettings {
 	cfg := originalGroup.EffectiveConfig
-	nonStreamTimeout := lifecycleTimeoutSeconds(cfg, false)
+	lifecycleTimeout := lifecycleTimeoutSeconds(cfg, false)
 	for _, relation := range originalGroup.SubGroups {
 		if !relation.SubGroupEnabled {
 			continue
@@ -1714,14 +1705,13 @@ func (ps *ProxyServer) aggregateRetryLifecycleConfig(originalGroup *models.Group
 		if err != nil {
 			continue
 		}
-		subNonStreamTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, false)
-		if subNonStreamTimeout > 0 && (nonStreamTimeout <= 0 || subNonStreamTimeout < nonStreamTimeout) {
-			nonStreamTimeout = subNonStreamTimeout
+		subLifecycleTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, false)
+		if subLifecycleTimeout > 0 && (lifecycleTimeout <= 0 || subLifecycleTimeout < lifecycleTimeout) {
+			lifecycleTimeout = subLifecycleTimeout
 		}
 	}
-	if nonStreamTimeout > 0 {
-		cfg.NonStreamRequestTimeout = nonStreamTimeout
-		cfg.RequestTimeout = nonStreamTimeout
+	if lifecycleTimeout > 0 {
+		cfg.RequestTimeout = lifecycleTimeout
 	}
 	return cfg
 }
@@ -1946,6 +1936,11 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	isCodexAffinityAttempt := affinityAttempt
 	if isCodexAffinityAttempt {
 		retryCtx.codexAffinityAttemptCount++
+	}
+	if isStream {
+		// Anchor the request-scoped first-byte deadline so the SSE reader receives only
+		// the remaining time after the response headers arrive (see getEffectiveSSETimeouts).
+		c.Set(ctxKeyUpstreamRequestStart, time.Now())
 	}
 	resp, err := client.Do(req)
 	if resp != nil {
@@ -2913,6 +2908,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 	if isCodexAffinityPrimaryAttempt {
 		// Count only attempts that reach the actual upstream client call.
 		retryCtx.codexAffinityAttemptCount++
+	}
+	if isStream {
+		// Anchor the first-byte deadline for the SSE reader in CC paths
+		// (see getEffectiveSSETimeouts).
+		c.Set(ctxKeyUpstreamRequestStart, time.Now())
 	}
 	resp, err := client.Do(req)
 	if resp != nil {

@@ -382,7 +382,7 @@ func (s *Server) ImportAll(c *gin.Context) {
 	// Convert map[string]string to map[string]any and perform type conversion based on field types
 	var convertedSettingsMap map[string]any
 	if len(importData.SystemSettings) > 0 {
-		migrateImportedStreamFirstByteTimeout(importData.SystemSettings)
+		migrateImportedLegacyTimeoutKeys(importData.SystemSettings)
 		var err error
 		convertedSettingsMap, err = convertSettingsMap(importData.SystemSettings)
 		if err != nil {
@@ -666,7 +666,7 @@ func (s *Server) ImportSystemSettings(c *gin.Context) {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrValidation, "No system settings provided"))
 		return
 	}
-	migrateImportedStreamFirstByteTimeout(importData.SystemSettings)
+	migrateImportedLegacyTimeoutKeys(importData.SystemSettings)
 
 	logrus.Infof("Importing system settings: %d settings", len(importData.SystemSettings))
 
@@ -750,11 +750,22 @@ func (s *Server) ImportSystemSettings(c *gin.Context) {
 	response.SuccessI18n(c, "success.system_settings_imported", nil)
 }
 
-// migrateImportedStreamFirstByteTimeout performs the intentional, one-way rename
-// for old exports before validation/persistence. The old key is never written back.
-func migrateImportedStreamFirstByteTimeout(settings map[string]string) {
+// migrateImportedLegacyTimeoutKeys performs the intentional, one-way renames for old
+// exports before validation/persistence:
+//   - non_stream_request_timeout -> request_timeout (request_timeout now bounds both
+//     stream and non-stream request lifecycles)
+//   - stream_request_timeout -> stream_first_byte_timeout
+//
+// The old keys are never written back; an existing new-style value always wins.
+func migrateImportedLegacyTimeoutKeys(settings map[string]string) {
 	if settings == nil {
 		return
+	}
+	if oldValue, ok := settings["non_stream_request_timeout"]; ok {
+		if _, exists := settings["request_timeout"]; !exists {
+			settings["request_timeout"] = oldValue
+		}
+		delete(settings, "non_stream_request_timeout")
 	}
 	if oldValue, ok := settings["stream_request_timeout"]; ok {
 		if _, exists := settings["stream_first_byte_timeout"]; !exists {

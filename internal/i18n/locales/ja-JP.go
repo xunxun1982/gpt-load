@@ -179,9 +179,7 @@ var MessagesJaJP = map[string]string{
 
 	// Request settings related
 	"config.request_timeout":                               "リクエストタイムアウト（秒）",
-	"config.request_timeout_desc":                          "旧リクエストタイムアウト互換フィールド。",
-	"config.non_stream_request_timeout":                    "非ストリームリクエストタイムアウト（秒）",
-	"config.non_stream_request_timeout_desc":               "非ストリーム転送リクエストの完全なライフサイクルタイムアウト（秒）。",
+	"config.request_timeout_desc":                          "ストリーム・非ストリーム両方の転送リクエストの完全なライフサイクルタイムアウト（秒）。0でタイムアウトを無効化します。",
 	"config.stream_first_byte_timeout":                     "ストリーム初回バイトタイムアウト（秒）",
 	"config.stream_first_byte_timeout_desc":                "ストリーム応答の最初のバイトを待機する最大時間（秒）。0でタイムアウトを無効化します。",
 	"config.connect_timeout":                               "接続タイムアウト（秒）",

@@ -240,8 +240,7 @@ func TestGetSettings(t *testing.T) {
 	// Should return default settings when not initialized
 	settings := manager.GetSettings()
 	assert.NotNil(t, settings)
-	assert.Equal(t, 1200, settings.RequestTimeout)
-	assert.Equal(t, 1200, settings.NonStreamRequestTimeout)
+	assert.Equal(t, 0, settings.RequestTimeout)
 	assert.Equal(t, 0, settings.StreamFirstByteTimeout)
 	assert.Equal(t, 30, settings.ConnectTimeout)
 }
@@ -298,7 +297,7 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "valid integer setting",
 			settings: map[string]any{
-				"non_stream_request_timeout": float64(60),
+				"request_timeout": float64(60),
 			},
 			expectError: false,
 		},
@@ -331,9 +330,9 @@ func TestValidateSettings(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "valid non-stream timeout disabled",
+			name: "valid request timeout disabled",
 			settings: map[string]any{
-				"non_stream_request_timeout": float64(0),
+				"request_timeout": float64(0),
 			},
 			expectError: false,
 		},
@@ -345,7 +344,7 @@ func TestValidateSettings(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "valid legacy request timeout",
+			name: "valid request timeout",
 			settings: map[string]any{
 				"request_timeout": float64(60),
 			},
@@ -415,15 +414,15 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "invalid type for integer",
 			settings: map[string]any{
-				"non_stream_request_timeout": "not_a_number",
+				"request_timeout": "not_a_number",
 			},
 			expectError: true,
 			errorMsg:    "expected a number",
 		},
 		{
-			name: "non-stream timeout below minimum",
+			name: "request timeout below minimum",
 			settings: map[string]any{
-				"non_stream_request_timeout": float64(-1),
+				"request_timeout": float64(-1),
 			},
 			expectError: true,
 			errorMsg:    "below minimum value",
@@ -447,7 +446,7 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "non-integer float value",
 			settings: map[string]any{
-				"non_stream_request_timeout": float64(30.5),
+				"request_timeout": float64(30.5),
 			},
 			expectError: true,
 			errorMsg:    "must be an integer",
@@ -1035,15 +1034,15 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "valid split timeout overrides",
+			name: "valid request timeout override",
 			config: map[string]any{
-				"non_stream_request_timeout": float64(120),
-				"stream_first_byte_timeout":  float64(0),
+				"request_timeout":           float64(120),
+				"stream_first_byte_timeout": float64(0),
 			},
 			expectError: false,
 		},
 		{
-			name: "valid legacy timeout override",
+			name: "valid request timeout only",
 			config: map[string]any{
 				"request_timeout": float64(120),
 			},
@@ -1067,45 +1066,43 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 	}
 }
 
-func TestGetEffectiveConfigSplitTimeouts(t *testing.T) {
+func TestGetEffectiveConfigRequestTimeout(t *testing.T) {
 	manager := NewSystemSettingsManager()
 
 	cfg := manager.GetEffectiveConfig(map[string]any{
-		"non_stream_request_timeout": float64(45),
-		"stream_first_byte_timeout":  float64(0),
+		"request_timeout":           float64(45),
+		"stream_first_byte_timeout": float64(0),
 	})
 
-	assert.Equal(t, 45, cfg.NonStreamRequestTimeout)
+	assert.Equal(t, 45, cfg.RequestTimeout)
 	assert.Equal(t, 0, cfg.StreamFirstByteTimeout)
-	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
 }
 
-func TestGetEffectiveConfigSplitTimeoutsWithNonZeroStreamTimeout(t *testing.T) {
+func TestGetEffectiveConfigRequestTimeoutWithNonZeroStreamTimeout(t *testing.T) {
 	manager := NewSystemSettingsManager()
 
 	cfg := manager.GetEffectiveConfig(map[string]any{
-		"non_stream_request_timeout": float64(45),
-		"stream_first_byte_timeout":  float64(30),
+		"request_timeout":           float64(45),
+		"stream_first_byte_timeout": float64(30),
 	})
 
-	assert.Equal(t, 45, cfg.NonStreamRequestTimeout)
+	assert.Equal(t, 45, cfg.RequestTimeout)
 	assert.Equal(t, 30, cfg.StreamFirstByteTimeout)
-	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
 }
 
-func TestGetEffectiveConfigLegacyRequestTimeout(t *testing.T) {
+func TestGetEffectiveConfigRequestTimeoutDoesNotBackfillStreamFirstByte(t *testing.T) {
 	manager := NewSystemSettingsManager()
 
+	// request_timeout no longer backfills stream_first_byte_timeout (normalizeSplitRequestTimeouts is removed).
 	cfg := manager.GetEffectiveConfig(map[string]any{
 		"request_timeout": float64(75),
 	})
 
-	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 75, cfg.StreamFirstByteTimeout)
-	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+	assert.Equal(t, 75, cfg.RequestTimeout)
+	assert.Equal(t, 0, cfg.StreamFirstByteTimeout)
 }
 
-func TestGetEffectiveConfigLegacyRequestTimeoutKeepsExplicitStreamOverride(t *testing.T) {
+func TestGetEffectiveConfigKeepsExplicitStreamOverride(t *testing.T) {
 	manager := NewSystemSettingsManager()
 
 	cfg := manager.GetEffectiveConfig(map[string]any{
@@ -1113,12 +1110,11 @@ func TestGetEffectiveConfigLegacyRequestTimeoutKeepsExplicitStreamOverride(t *te
 		"stream_first_byte_timeout": float64(30),
 	})
 
-	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
+	assert.Equal(t, 75, cfg.RequestTimeout)
 	assert.Equal(t, 30, cfg.StreamFirstByteTimeout)
-	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
 }
 
-func TestLegacyRequestTimeoutPersistsSplitTimeoutBackfill(t *testing.T) {
+func TestRequestTimeoutPersistsAcrossReload(t *testing.T) {
 	testDB := setupSystemSettingsTestDB(t)
 	require.NoError(t, testDB.Create(&models.SystemSetting{
 		SettingKey:   "request_timeout",
@@ -1138,8 +1134,7 @@ func TestLegacyRequestTimeoutPersistsSplitTimeoutBackfill(t *testing.T) {
 
 	settings := manager.GetSettings()
 	assert.Equal(t, 75, settings.RequestTimeout)
-	assert.Equal(t, 75, settings.NonStreamRequestTimeout)
-	assert.Equal(t, 75, settings.StreamFirstByteTimeout)
+	assert.Equal(t, 0, settings.StreamFirstByteTimeout)
 
 	require.NoError(t, manager.UpdateSettings(map[string]any{
 		"request_timeout": float64(90),
@@ -1148,24 +1143,149 @@ func TestLegacyRequestTimeoutPersistsSplitTimeoutBackfill(t *testing.T) {
 
 	settings = manager.GetSettings()
 	assert.Equal(t, 90, settings.RequestTimeout)
-	assert.Equal(t, 90, settings.NonStreamRequestTimeout)
-	assert.Equal(t, 90, settings.StreamFirstByteTimeout)
+	assert.Equal(t, 0, settings.StreamFirstByteTimeout)
 	assertSystemSettingValue(t, testDB, "request_timeout", "90")
-	assertSystemSettingValue(t, testDB, "non_stream_request_timeout", "90")
-	assertSystemSettingValue(t, testDB, "stream_first_byte_timeout", "90")
 }
 
-func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t *testing.T) {
+// TestLegacyStreamRequestTimeoutMigrationKeepsExistingValue pins the "both keys
+// present" case: stream_request_timeout must be dropped while the already-stored
+// stream_first_byte_timeout value survives untouched. It deterministically mirrors
+// the concurrent-write scenario — the real race protection (conflict updates only
+// updated_at plus an in-transaction re-read) is enforced at the database layer, so
+// no flaky multi-goroutine timing test is used.
+
+func TestLegacyStreamRequestTimeoutMigrationKeepsExistingValue(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "stream_request_timeout",
+		SettingValue: "5",
+	}).Error)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "stream_first_byte_timeout",
+		SettingValue: "60",
+	}).Error)
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.Initialize(memStore, noopSystemSettingsGroupManager{}, false))
+	t.Cleanup(func() {
+		manager.Stop(context.Background())
+	})
+
+	assert.Equal(t, 60, manager.GetSettings().StreamFirstByteTimeout)
+	assertSystemSettingValue(t, testDB, "stream_first_byte_timeout", "60")
+
+	var legacy models.SystemSetting
+	require.ErrorIs(t, testDB.Where("setting_key = ?", "stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+
+}
+
+// TestLegacyStreamRequestTimeoutMigrationBackfillsNewKey pins the normal one-time
+// migration: only the legacy key exists, so its value must be copied to
+// stream_first_byte_timeout and the legacy key removed.
+
+func TestLegacyStreamRequestTimeoutMigrationBackfillsNewKey(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "stream_request_timeout",
+		SettingValue: "5",
+	}).Error)
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.Initialize(memStore, noopSystemSettingsGroupManager{}, false))
+	t.Cleanup(func() {
+		manager.Stop(context.Background())
+	})
+
+	assert.Equal(t, 5, manager.GetSettings().StreamFirstByteTimeout)
+	assertSystemSettingValue(t, testDB, "stream_first_byte_timeout", "5")
+
+	var legacy models.SystemSetting
+	require.ErrorIs(t, testDB.Where("setting_key = ?", "stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+
+}
+
+func TestGetEffectiveConfigExplicitZeroRequestTimeout(t *testing.T) {
 	manager := NewSystemSettingsManager()
 
 	cfg := manager.GetEffectiveConfig(map[string]any{
-		"request_timeout":            float64(75),
-		"non_stream_request_timeout": float64(0),
+		"request_timeout": float64(0),
 	})
 
-	assert.Equal(t, 0, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 0, cfg.StreamFirstByteTimeout)
 	assert.Equal(t, 0, cfg.RequestTimeout)
+	assert.Equal(t, 0, cfg.StreamFirstByteTimeout)
+}
+
+// TestLegacyNonStreamRequestTimeoutMigrationBackfillsRequestTimeout pins the
+// one-time non-stream key rename: request_timeout now bounds both stream and
+// non-stream request lifecycles, so the stored non_stream value must be copied
+// over and the legacy key removed.
+
+func TestLegacyNonStreamRequestTimeoutMigrationBackfillsRequestTimeout(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "non_stream_request_timeout",
+		SettingValue: "45",
+	}).Error)
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.Initialize(memStore, noopSystemSettingsGroupManager{}, false))
+	t.Cleanup(func() {
+		manager.Stop(context.Background())
+	})
+
+	assert.Equal(t, 45, manager.GetSettings().RequestTimeout)
+	assertSystemSettingValue(t, testDB, "request_timeout", "45")
+
+	var legacy models.SystemSetting
+	require.ErrorIs(t, testDB.Where("setting_key = ?", "non_stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+}
+
+// TestLegacyNonStreamRequestTimeoutMigrationKeepsExistingValue pins the "both keys
+// present" case: request_timeout (already written by the legacy split-timeout sync)
+// is authoritative, the legacy non_stream key is dropped and the stored value survives.
+
+func TestLegacyNonStreamRequestTimeoutMigrationKeepsExistingValue(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "request_timeout",
+		SettingValue: "60",
+	}).Error)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "non_stream_request_timeout",
+		SettingValue: "45",
+	}).Error)
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.Initialize(memStore, noopSystemSettingsGroupManager{}, false))
+	t.Cleanup(func() {
+		manager.Stop(context.Background())
+	})
+
+	assert.Equal(t, 60, manager.GetSettings().RequestTimeout)
+	assertSystemSettingValue(t, testDB, "request_timeout", "60")
+
+	var legacy models.SystemSetting
+	require.ErrorIs(t, testDB.Where("setting_key = ?", "non_stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
 }
 
 func TestGetEffectiveConfigRetryDelayOverride(t *testing.T) {

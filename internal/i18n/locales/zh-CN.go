@@ -201,9 +201,7 @@ var MessagesZhCN = map[string]string{
 
 	// Request settings related
 	"config.request_timeout":                               "请求超时（秒）",
-	"config.request_timeout_desc":                          "旧版请求超时兼容字段。",
-	"config.non_stream_request_timeout":                    "非流式请求超时（秒）",
-	"config.non_stream_request_timeout_desc":               "非流式转发请求的完整生命周期超时（秒）。",
+	"config.request_timeout_desc":                          "请求整体生命周期超时（秒），同时作用于流式与非流式请求，0 表示不设置超时。",
 	"config.stream_first_byte_timeout":                     "流式首字超时（秒）",
 	"config.stream_first_byte_timeout_desc":                "等待流式响应首个字节的最长时间（秒），0 表示不设置超时。",
 	"config.connect_timeout":                               "连接超时（秒）",

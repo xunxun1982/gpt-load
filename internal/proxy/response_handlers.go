@@ -1053,7 +1053,11 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 		}
 
 		// Write to client
-		markFirstByte(c)
+		// Only mark first byte when the body is non-empty: an empty upstream body
+		// has no first byte; keep the nullable log column NULL so the UI shows '-' as before
+		if len(body) > 0 {
+			markFirstByte(c)
+		}
 		if _, err := c.Writer.Write(body); err != nil {
 			logUpstreamError("writing response body", err)
 		}

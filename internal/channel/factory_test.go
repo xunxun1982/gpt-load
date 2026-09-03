@@ -44,7 +44,7 @@ func setupTestFactoryForBenchmark() *Factory {
 	return NewFactory(settingsManager, clientManager)
 }
 
-func TestNewBaseChannelUsesSplitRequestTimeouts(t *testing.T) {
+func TestNewBaseChannelAppliesRequestTimeoutToBothClients(t *testing.T) {
 	t.Parallel()
 
 	factory := setupTestFactory(t)
@@ -60,26 +60,27 @@ func TestNewBaseChannelUsesSplitRequestTimeouts(t *testing.T) {
 		ChannelType: "openai",
 		Upstreams:   datatypes.JSON(upstreamsJSON),
 		EffectiveConfig: types.SystemSettings{
-			ConnectTimeout:          15,
-			RequestTimeout:          90,
-			NonStreamRequestTimeout: 45,
-			StreamFirstByteTimeout:  120,
-			IdleConnTimeout:         90,
-			MaxIdleConns:            100,
-			MaxIdleConnsPerHost:     10,
-			ResponseHeaderTimeout:   30,
+			ConnectTimeout:         15,
+			RequestTimeout:         45,
+			StreamFirstByteTimeout: 120,
+			IdleConnTimeout:        90,
+			MaxIdleConns:           100,
+			MaxIdleConnsPerHost:    10,
+			ResponseHeaderTimeout:  30,
 		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, base.HTTPClient)
 	require.NotNil(t, base.StreamClient)
 
+	// request_timeout bounds the full lifecycle of both non-stream and stream clients.
 	assert.Equal(t, 45*time.Second, base.HTTPClient.Timeout)
-	assert.Equal(t, time.Duration(0), base.StreamClient.Timeout)
+	assert.Equal(t, 45*time.Second, base.StreamClient.Timeout)
+	// stream_first_byte_timeout only narrows the first-byte wait via ResponseHeaderTimeout.
 	assert.Equal(t, 120*time.Second, base.StreamClient.Transport.(*http.Transport).ResponseHeaderTimeout)
 }
 
-func TestNewBaseChannelAllowsUnlimitedStreamTimeout(t *testing.T) {
+func TestNewBaseChannelZeroRequestTimeoutDisablesBothClients(t *testing.T) {
 	t.Parallel()
 
 	factory := setupTestFactory(t)
@@ -91,23 +92,25 @@ func TestNewBaseChannelAllowsUnlimitedStreamTimeout(t *testing.T) {
 
 	base, err := factory.newBaseChannel("openai", &models.Group{
 		ID:          1,
-		Name:        "unlimited-stream-timeout-group",
+		Name:        "unlimited-timeout-group",
 		ChannelType: "openai",
 		Upstreams:   datatypes.JSON(upstreamsJSON),
 		EffectiveConfig: types.SystemSettings{
-			ConnectTimeout:          15,
-			RequestTimeout:          90,
-			NonStreamRequestTimeout: 45,
-			StreamFirstByteTimeout:  0,
-			IdleConnTimeout:         90,
-			MaxIdleConns:            100,
-			MaxIdleConnsPerHost:     10,
-			ResponseHeaderTimeout:   30,
+			ConnectTimeout:         15,
+			RequestTimeout:         0,
+			StreamFirstByteTimeout: 0,
+			IdleConnTimeout:        90,
+			MaxIdleConns:           100,
+			MaxIdleConnsPerHost:    10,
+			ResponseHeaderTimeout:  30,
 		},
 	})
 	require.NoError(t, err)
+	require.NotNil(t, base.HTTPClient)
 	require.NotNil(t, base.StreamClient)
 
+	// A zero request_timeout disables the client-level lifecycle timeout for both paths.
+	assert.Zero(t, base.HTTPClient.Timeout)
 	assert.Zero(t, base.StreamClient.Timeout)
 }
 
@@ -122,13 +125,13 @@ func TestNewBaseChannelUsesEachGroupSkipTLSVerify(t *testing.T) {
 	require.NoError(t, err)
 
 	baseConfig := types.SystemSettings{
-		ConnectTimeout:          15,
-		NonStreamRequestTimeout: 45,
-		StreamFirstByteTimeout:  120,
-		IdleConnTimeout:         90,
-		MaxIdleConns:            100,
-		MaxIdleConnsPerHost:     10,
-		ResponseHeaderTimeout:   30,
+		ConnectTimeout:         15,
+		RequestTimeout:         45,
+		StreamFirstByteTimeout: 120,
+		IdleConnTimeout:        90,
+		MaxIdleConns:           100,
+		MaxIdleConnsPerHost:    10,
+		ResponseHeaderTimeout:  30,
 	}
 	insecureConfig := baseConfig
 	insecureConfig.SkipTLSVerify = true
@@ -193,13 +196,13 @@ func TestNewBaseChannelUsesSelectedProxyForHTTPRequests(t *testing.T) {
 		ChannelType: "openai",
 		Upstreams:   datatypes.JSON(upstreamsJSON),
 		EffectiveConfig: types.SystemSettings{
-			ConnectTimeout:          1,
-			NonStreamRequestTimeout: 2,
-			StreamFirstByteTimeout:  0,
-			IdleConnTimeout:         30,
-			MaxIdleConns:            10,
-			MaxIdleConnsPerHost:     10,
-			ResponseHeaderTimeout:   2,
+			ConnectTimeout:         1,
+			RequestTimeout:         2,
+			StreamFirstByteTimeout: 0,
+			IdleConnTimeout:        30,
+			MaxIdleConns:           10,
+			MaxIdleConnsPerHost:    10,
+			ResponseHeaderTimeout:  2,
 		},
 	})
 	require.NoError(t, err)
@@ -248,14 +251,14 @@ func TestNewBaseChannelUsesDirectClientWhenProxySelectionIsEmpty(t *testing.T) {
 		ChannelType: "openai",
 		Upstreams:   datatypes.JSON(upstreamsJSON),
 		EffectiveConfig: types.SystemSettings{
-			ConnectTimeout:          1,
-			NonStreamRequestTimeout: 2,
-			StreamFirstByteTimeout:  0,
-			IdleConnTimeout:         30,
-			MaxIdleConns:            10,
-			MaxIdleConnsPerHost:     10,
-			ResponseHeaderTimeout:   2,
-			ProxyURL:                "",
+			ConnectTimeout:         1,
+			RequestTimeout:         2,
+			StreamFirstByteTimeout: 0,
+			IdleConnTimeout:        30,
+			MaxIdleConns:           10,
+			MaxIdleConnsPerHost:    10,
+			ResponseHeaderTimeout:  2,
+			ProxyURL:               "",
 		},
 	})
 	require.NoError(t, err)
@@ -292,13 +295,13 @@ func TestNewBaseChannelReadsGatewayProxyFromUpstreamConfig(t *testing.T) {
 		ChannelType: "anthropic",
 		Upstreams:   datatypes.JSON(upstreamsJSON),
 		EffectiveConfig: types.SystemSettings{
-			ConnectTimeout:          1,
-			NonStreamRequestTimeout: 2,
-			StreamFirstByteTimeout:  0,
-			IdleConnTimeout:         30,
-			MaxIdleConns:            10,
-			MaxIdleConnsPerHost:     10,
-			ResponseHeaderTimeout:   2,
+			ConnectTimeout:         1,
+			RequestTimeout:         2,
+			StreamFirstByteTimeout: 0,
+			IdleConnTimeout:        30,
+			MaxIdleConns:           10,
+			MaxIdleConnsPerHost:    10,
+			ResponseHeaderTimeout:  2,
 		},
 	})
 	require.NoError(t, err)
@@ -320,14 +323,14 @@ func TestNewBaseChannelGatewayProxyDoesNotInheritGroupProxy(t *testing.T) {
 		ChannelType: "anthropic",
 		Upstreams:   datatypes.JSON(upstreamsJSON),
 		EffectiveConfig: types.SystemSettings{
-			ConnectTimeout:          1,
-			NonStreamRequestTimeout: 2,
-			StreamFirstByteTimeout:  0,
-			IdleConnTimeout:         30,
-			MaxIdleConns:            10,
-			MaxIdleConnsPerHost:     10,
-			ResponseHeaderTimeout:   2,
-			ProxyURL:                "http://proxy.example.com:8080",
+			ConnectTimeout:         1,
+			RequestTimeout:         2,
+			StreamFirstByteTimeout: 0,
+			IdleConnTimeout:        30,
+			MaxIdleConns:           10,
+			MaxIdleConnsPerHost:    10,
+			ResponseHeaderTimeout:  2,
+			ProxyURL:               "http://proxy.example.com:8080",
 		},
 	})
 
