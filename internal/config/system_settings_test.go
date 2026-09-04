@@ -1317,6 +1317,80 @@ func TestEnsureSettingsInitializedLegacyConflictKeepsReplacement(t *testing.T) {
 	require.ErrorIs(t, testDB.Where("setting_key = ?", "non_stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
 }
 
+// TestMigrateSettingKeyInTx pins the transactional rename helper semantics
+// (CodeRabbit race fix): the legacy value is read with a locking SELECT inside
+// the transaction (never from a pre-transaction snapshot), so the migrated value
+// is whatever the row holds when the transaction starts; a source row that has
+// already vanished is a no-op instead of a spurious error.
+func TestMigrateSettingKeyInTx(t *testing.T) {
+	t.Run("migrates the value committed before the locking read", func(t *testing.T) {
+		testDB := setupSystemSettingsTestDB(t)
+		require.NoError(t, testDB.Create(&models.SystemSetting{
+			SettingKey:   "non_stream_request_timeout",
+			SettingValue: "300",
+		}).Error)
+
+		// A concurrent writer lands BEFORE the migration transaction starts:
+		// its value must be the one migrated (proving the snapshot from the
+		// pre-transaction read is no longer used).
+		require.NoError(t, testDB.Model(&models.SystemSetting{}).
+			Where("setting_key = ?", "non_stream_request_timeout").
+			Update("setting_value", "999").Error)
+
+		var value string
+		err := testDB.Transaction(func(tx *gorm.DB) error {
+			var innerErr error
+			value, _, innerErr = migrateSettingKeyInTx(tx, "non_stream_request_timeout", "request_timeout")
+			return innerErr
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "999", value)
+		assertSystemSettingValue(t, testDB, "request_timeout", "999")
+		var legacy models.SystemSetting
+		require.ErrorIs(t, testDB.Where("setting_key = ?", "non_stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+	})
+
+	t.Run("missing source key is a no-op", func(t *testing.T) {
+		testDB := setupSystemSettingsTestDB(t)
+
+		var migrated bool
+		err := testDB.Transaction(func(tx *gorm.DB) error {
+			var innerErr error
+			_, migrated, innerErr = migrateSettingKeyInTx(tx, "non_stream_request_timeout", "request_timeout")
+			return innerErr
+		})
+		require.NoError(t, err)
+		assert.False(t, migrated, "a missing source key must not be reported as migrated")
+		var count int64
+		require.NoError(t, testDB.Model(&models.SystemSetting{}).Count(&count).Error)
+		assert.Zero(t, count, "a missing source key must not create any row")
+	})
+
+	t.Run("conflicting replacement keeps its value and drops the legacy row", func(t *testing.T) {
+		testDB := setupSystemSettingsTestDB(t)
+		require.NoError(t, testDB.Create(&models.SystemSetting{
+			SettingKey:   "request_timeout",
+			SettingValue: "60",
+		}).Error)
+		require.NoError(t, testDB.Create(&models.SystemSetting{
+			SettingKey:   "non_stream_request_timeout",
+			SettingValue: "300",
+		}).Error)
+
+		var value string
+		err := testDB.Transaction(func(tx *gorm.DB) error {
+			var innerErr error
+			value, _, innerErr = migrateSettingKeyInTx(tx, "non_stream_request_timeout", "request_timeout")
+			return innerErr
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "60", value, "the existing replacement value stays authoritative on conflict")
+		assertSystemSettingValue(t, testDB, "request_timeout", "60")
+		var legacy models.SystemSetting
+		require.ErrorIs(t, testDB.Where("setting_key = ?", "non_stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+	})
+}
+
 func TestLegacyNonStreamRequestTimeoutMigrationKeepsExistingValue(t *testing.T) {
 	testDB := setupSystemSettingsTestDB(t)
 	require.NoError(t, testDB.Create(&models.SystemSetting{

@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"gpt-load/internal/db"
 	"gpt-load/internal/failover"
@@ -96,27 +97,17 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 		for _, setting := range dbSettings {
 			settingsMap[setting.SettingKey] = setting.SettingValue
 		}
-		// migrateSettingKey atomically renames one setting key to another, preserving
-		// the stored value. On conflict only updated_at is touched (never setting_value),
-		// so a value written concurrently between the snapshot read above and this
-		// transaction is retained; the authoritative value is then re-read inside the
-		// transaction for the in-memory map. Works on SQLite/MySQL/PostgreSQL.
-		migrateSettingKey := func(tx *gorm.DB, from, to string) (string, error) {
-			oldValue, ok := settingsMap[from]
-			if !ok {
-				return "", nil
+		// migrateSettingKey delegates to the shared transactional rename helper:
+		// the legacy value is read INSIDE the transaction, so a concurrent
+		// legacy-key update either becomes the migrated value or makes the whole
+		// migration fail (row lock) instead of silently overwriting it with a
+		// stale snapshot value. The authoritative replacement value is returned
+		// for the in-memory map. Works on SQLite/MySQL/PostgreSQL.
+		migrateSettingKey := func(tx *gorm.DB, from, to string) (string, bool, error) {
+			if _, ok := settingsMap[from]; !ok {
+				return "", false, nil
 			}
-			if err := tx.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "setting_key"}},
-				DoUpdates: clause.AssignmentColumns([]string{"updated_at"}),
-			}).Create(&models.SystemSetting{SettingKey: to, SettingValue: oldValue}).Error; err != nil {
-				return "", err
-			}
-			var stored models.SystemSetting
-			if err := tx.Where("setting_key = ?", to).First(&stored).Error; err != nil {
-				return "", err
-			}
-			return stored.SettingValue, tx.Where("setting_key = ?", from).Delete(&models.SystemSetting{}).Error
+			return migrateSettingKeyInTx(tx, from, to)
 		}
 		// One-time, intentionally incompatible renames (no backward compatibility is kept):
 		//   1) non_stream_request_timeout -> request_timeout  (request_timeout now bounds
@@ -129,11 +120,13 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 					logrus.WithError(err).Warn("Failed to remove obsolete non-stream request timeout setting")
 				}
 			} else if err := db.DB.Transaction(func(tx *gorm.DB) error {
-				value, err := migrateSettingKey(tx, "non_stream_request_timeout", "request_timeout")
+				value, migrated, err := migrateSettingKey(tx, "non_stream_request_timeout", "request_timeout")
 				if err != nil {
 					return err
 				}
-				settingsMap["request_timeout"] = value
+				if migrated {
+					settingsMap["request_timeout"] = value
+				}
 				return nil
 			}); err != nil {
 				logrus.WithError(err).Warn("Failed to migrate non-stream request timeout setting")
@@ -144,11 +137,13 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 		if _, ok := settingsMap["stream_request_timeout"]; ok {
 			if _, exists := settingsMap["stream_first_byte_timeout"]; !exists {
 				if err := db.DB.Transaction(func(tx *gorm.DB) error {
-					value, err := migrateSettingKey(tx, "stream_request_timeout", "stream_first_byte_timeout")
+					value, migrated, err := migrateSettingKey(tx, "stream_request_timeout", "stream_first_byte_timeout")
 					if err != nil {
 						return err
 					}
-					settingsMap["stream_first_byte_timeout"] = value
+					if migrated {
+						settingsMap["stream_first_byte_timeout"] = value
+					}
 					return nil
 				}); err != nil {
 					logrus.WithError(err).Warn("Failed to migrate stream request timeout setting")
@@ -276,13 +271,13 @@ func (sm *SystemSettingsManager) EnsureSettingsInitialized(authConfig types.Auth
 // stream_request_timeout -> stream_first_byte_timeout) before defaults are
 // inserted. It preserves the stored value when the replacement key is absent and
 // removes the legacy key when the replacement already exists. Works on
-// SQLite/MySQL/PostgreSQL via the same OnConflict upsert used by the loader.
-// The loader keeps its own copy of this logic (plus in-memory settingsMap
-// synchronization): this function runs once before defaults are inserted, while
-// the loader path is the idempotent runtime fallback for keys that appear later
-// (e.g. manual DB edits), so the two paths are mutually exclusive in practice.
+// SQLite/MySQL/PostgreSQL via migrateSettingKeyInTx (the same helper the loader
+// uses). This function runs once before defaults are inserted and fails closed:
+// any migration error aborts startup so defaults are never inserted over an
+// unmigrated legacy value. The loader path is the idempotent runtime fallback
+// for keys that appear later (e.g. manual DB edits) and only warns on failure.
 func migrateLegacyTimeoutSettings() error {
-	// Load current keys once.
+	// Load current keys once to decide whether a migration can apply at all.
 	var dbSettings []models.SystemSetting
 	if err := db.DB.Find(&dbSettings).Error; err != nil {
 		return fmt.Errorf("failed to load system settings for migration: %w", err)
@@ -292,52 +287,72 @@ func migrateLegacyTimeoutSettings() error {
 		settingsMap[setting.SettingKey] = setting.SettingValue
 	}
 
-	// migrateSettingKey atomically renames one setting key to another, preserving
-	// the stored value; on conflict only updated_at is touched (never setting_value).
-	migrateSettingKey := func(tx *gorm.DB, from, to string) (string, error) {
-		oldValue, ok := settingsMap[from]
-		if !ok {
-			return "", nil
-		}
-		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "setting_key"}},
-			DoUpdates: clause.AssignmentColumns([]string{"updated_at"}),
-		}).Create(&models.SystemSetting{SettingKey: to, SettingValue: oldValue}).Error; err != nil {
-			return "", err
-		}
-		var stored models.SystemSetting
-		if err := tx.Where("setting_key = ?", to).First(&stored).Error; err != nil {
-			return "", err
-		}
-		return stored.SettingValue, tx.Where("setting_key = ?", from).Delete(&models.SystemSetting{}).Error
-	}
-
 	if _, has := settingsMap["non_stream_request_timeout"]; has {
 		if _, conflict := settingsMap["request_timeout"]; conflict {
 			// Replacement already exists: drop the legacy key, keep the replacement.
 			if err := db.DB.Where("setting_key = ?", "non_stream_request_timeout").Delete(&models.SystemSetting{}).Error; err != nil {
-				logrus.WithError(err).Warn("Failed to remove obsolete non-stream request timeout setting")
+				return fmt.Errorf("failed to remove obsolete non_stream_request_timeout setting: %w", err)
 			}
 		} else if err := db.DB.Transaction(func(tx *gorm.DB) error {
-			_, err := migrateSettingKey(tx, "non_stream_request_timeout", "request_timeout")
+			_, _, err := migrateSettingKeyInTx(tx, "non_stream_request_timeout", "request_timeout")
 			return err
 		}); err != nil {
-			logrus.WithError(err).Warn("Failed to migrate non-stream request timeout setting")
+			return fmt.Errorf("failed to migrate non_stream_request_timeout setting: %w", err)
 		}
 	}
 	if _, ok := settingsMap["stream_request_timeout"]; ok {
 		if _, exists := settingsMap["stream_first_byte_timeout"]; !exists {
 			if err := db.DB.Transaction(func(tx *gorm.DB) error {
-				_, err := migrateSettingKey(tx, "stream_request_timeout", "stream_first_byte_timeout")
+				_, _, err := migrateSettingKeyInTx(tx, "stream_request_timeout", "stream_first_byte_timeout")
 				return err
 			}); err != nil {
-				logrus.WithError(err).Warn("Failed to migrate stream request timeout setting")
+				return fmt.Errorf("failed to migrate stream_request_timeout setting: %w", err)
 			}
 		} else if err := db.DB.Where("setting_key = ?", "stream_request_timeout").Delete(&models.SystemSetting{}).Error; err != nil {
-			logrus.WithError(err).Warn("Failed to remove obsolete stream request timeout setting")
+			return fmt.Errorf("failed to remove obsolete stream_request_timeout setting: %w", err)
 		}
 	}
 	return nil
+}
+
+// migrateSettingKeyInTx atomically renames one setting key to another inside the
+// caller's transaction and reports whether a migration happened plus the
+// authoritative value now stored under the replacement key. The legacy row is
+// read with SELECT ... FOR UPDATE inside the transaction (never from a
+// pre-transaction snapshot): the row lock makes the read-delete-create sequence
+// atomic against concurrent source-key writers, so a concurrent update either
+// commits before the locking read (its value is migrated) or waits for the
+// transaction to commit and then hits the deleted row (a no-op) — the newer
+// value is never overwritten by a stale snapshot. A source row that has already
+// vanished (e.g. migrated by another instance) is reported as not migrated.
+// Works on SQLite/MySQL/PostgreSQL; on conflict only updated_at of the
+// replacement is touched (never setting_value).
+func migrateSettingKeyInTx(tx *gorm.DB, from, to string) (string, bool, error) {
+	var legacy models.SystemSetting
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("setting_key = ?", from).First(&legacy).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// The source key is already gone (e.g. migrated by another
+			// instance): nothing to migrate, and the replacement, if any, is
+			// authoritative.
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if err := tx.Where("setting_key = ?", from).Delete(&models.SystemSetting{}).Error; err != nil {
+		return "", false, err
+	}
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "setting_key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"updated_at"}),
+	}).Create(&models.SystemSetting{SettingKey: to, SettingValue: legacy.SettingValue}).Error; err != nil {
+		return "", false, err
+	}
+	var stored models.SystemSetting
+	if err := tx.Where("setting_key = ?", to).First(&stored).Error; err != nil {
+		return "", false, err
+	}
+	return stored.SettingValue, true, nil
 }
 
 func sanitizedSettingValueForLog(key, value string) string {

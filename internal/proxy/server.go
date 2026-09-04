@@ -3551,6 +3551,13 @@ func (ps *ProxyServer) logRequest(
 	clearTokenUsage(c)
 
 	// Debug log for request recording
+	// TextFormatter prints pointer values as addresses via fmt.Sprint, so
+	// dereference the duration for text logs and use an explicit marker when
+	// the first byte was never delivered.
+	var firstByteDurationLog any = "unset"
+	if logEntry.FirstByteDuration != nil {
+		firstByteDurationLog = *logEntry.FirstByteDuration
+	}
 	if !logEntry.IsSuccess {
 		logrus.WithFields(logrus.Fields{
 			"group_name":             logEntry.GroupName,
@@ -3558,7 +3565,7 @@ func (ps *ProxyServer) logRequest(
 			"is_success":             logEntry.IsSuccess,
 			"request_path":           logEntry.RequestPath,
 			"duration_ms":            logEntry.Duration,
-			"first_byte_duration_ms": logEntry.FirstByteDuration,
+			"first_byte_duration_ms": firstByteDurationLog,
 			"request_type":           logEntry.RequestType,
 			"error_msg":              logEntry.ErrorMessage,
 		}).Debug("Recording failed request log")
@@ -3568,7 +3575,7 @@ func (ps *ProxyServer) logRequest(
 			"status_code":            logEntry.StatusCode,
 			"request_path":           logEntry.RequestPath,
 			"duration_ms":            logEntry.Duration,
-			"first_byte_duration_ms": logEntry.FirstByteDuration,
+			"first_byte_duration_ms": firstByteDurationLog,
 			"request_type":           logEntry.RequestType,
 		}).Debug("Recording request log")
 	}
