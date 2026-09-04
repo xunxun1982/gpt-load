@@ -782,7 +782,10 @@ func writeStreamFirstByteTimeout(c *gin.Context) {
 	// must override that header to notify non-SSE clients about the timeout.
 	c.Header("Content-Type", "application/json")
 	setLogicalFailureContext(c, http.StatusGatewayTimeout, "first_byte_timeout", errStreamFirstByteTimeout.Error())
-	c.JSON(http.StatusGatewayTimeout, gin.H{
+	// The 504 error body is a delivered (non-empty) response, so it records the
+	// first-byte timing; writeJSONMarkingFirstByte only marks when the write
+	// actually reached the client.
+	writeJSONMarkingFirstByte(c, http.StatusGatewayTimeout, gin.H{
 		"error": gin.H{
 			"message": "Upstream did not send response body data in time",
 			"type":    "timeout_error",
@@ -1219,16 +1222,16 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 	if err != nil {
 		logrus.WithError(err).Error("Codex forced stream: failed to collect stream response")
 		markResponseProcessingFailed(c)
-		// Do not expose internal error details to client for security
-		// gin's JSON/Data helpers do not expose the underlying write error, so the
-		// mark is unconditional (markFirstByte is idempotent).
-		c.JSON(http.StatusBadGateway, gin.H{
+		// Do not expose internal error details to client for security.
+		// writeJSONMarkingFirstByte records the first byte only when the
+		// response actually reached the client (gin helpers swallow write
+		// errors, which would otherwise persist a false first_byte_duration_ms).
+		writeJSONMarkingFirstByte(c, http.StatusBadGateway, gin.H{
 			"error": gin.H{
 				"message": "Failed to collect stream response",
 				"type":    "server_error",
 			},
 		})
-		markFirstByte(c)
 		return
 	}
 	if !codexResp.terminalEventSeen {
@@ -1248,8 +1251,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 			"error_type":    codexResp.Error.Type,
 			"error_message": utils.TruncateString(utils.SanitizeErrorBody(codexResp.Error.Message), 200),
 		}).Warn("Codex forced stream: upstream returned error")
-		c.JSON(statusCode, codexResp)
-		markFirstByte(c)
+		writeJSONMarkingFirstByte(c, statusCode, codexResp)
 		return
 	}
 
@@ -1265,13 +1267,12 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 	if err != nil {
 		logrus.WithError(err).Error("Codex forced stream: failed to marshal response")
 		markResponseProcessingFailed(c)
-		c.JSON(http.StatusInternalServerError, gin.H{
+		writeJSONMarkingFirstByte(c, http.StatusInternalServerError, gin.H{
 			"error": gin.H{
 				"message": "Failed to marshal response",
 				"type":    "server_error",
 			},
 		})
-		markFirstByte(c)
 		return
 	}
 	logicalStatusCode, _, hasLogicalFailure := logicalStatusFromContext(c)
@@ -1294,9 +1295,9 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(responseBody, maxResponseCaptureBytes))
 	}
 
-	// c.Data already sets Content-Type, no need for redundant c.Header call
-	c.Data(resp.StatusCode, "application/json", responseBody)
-	markFirstByte(c)
+	// writeDataMarkingFirstByte sets Content-Type only when unset and records
+	// the first byte only when the write actually delivered bytes.
+	writeDataMarkingFirstByte(c, resp.StatusCode, "application/json", responseBody)
 }
 
 // codexStreamResponse represents a Codex streaming response structure for collection.

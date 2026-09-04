@@ -1978,8 +1978,7 @@ func (ps *ProxyServer) handleForceCodexNormalResponse(c *gin.Context, resp *http
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(out, maxResponseCaptureBytes))
 	}
 	clearUpstreamEncodingHeaders(c)
-	c.Data(resp.StatusCode, "application/json", out)
-	markFirstByte(c)
+	writeDataMarkingFirstByte(c, resp.StatusCode, "application/json", out)
 }
 
 func (ps *ProxyServer) handleForceCodexStreamingResponse(c *gin.Context, resp *http.Response) {
@@ -2558,13 +2557,12 @@ func rawCodexErrorResponse(statusCode int, body []byte) *CodexResponse {
 
 func writeForceCodexGatewayError(c *gin.Context, message string) {
 	clearUpstreamEncodingHeaders(c)
-	c.JSON(http.StatusBadGateway, gin.H{
+	writeJSONMarkingFirstByte(c, http.StatusBadGateway, gin.H{
 		"error": gin.H{
 			"message": message,
 			"type":    "server_error",
 		},
 	})
-	markFirstByte(c)
 }
 
 func writeForceCodexPassthrough(c *gin.Context, resp *http.Response, body []byte) {
@@ -2574,10 +2572,8 @@ func writeForceCodexPassthrough(c *gin.Context, resp *http.Response, body []byte
 	if shouldCaptureResponse(c) {
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 	}
-	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
-	// Only record first-byte delivery when a non-empty body was actually
-	// written; an empty passthrough body must keep first_byte_duration_ms NULL.
-	if len(body) > 0 {
-		markFirstByte(c)
-	}
+	// writeDataMarkingFirstByte records first-byte delivery only when the
+	// write actually succeeds with non-empty bytes; an empty passthrough body
+	// keeps first_byte_duration_ms NULL.
+	writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), body)
 }

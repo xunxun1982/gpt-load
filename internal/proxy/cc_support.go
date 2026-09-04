@@ -1514,11 +1514,10 @@ func returnClaudeError(c *gin.Context, statusCode int, message string) {
 			Message: message,
 		},
 	}
-	// Record first byte at the client delivery point; gin helpers do not
-	// expose the underlying write error, mirroring the plain handler's
-	// success-only marking via firstByteWriter.
-	c.JSON(statusCode, claudeErr)
-	markFirstByte(c)
+	// Record first byte at the client delivery point; the helper marks only
+	// after a successful non-empty write, so a failed response write leaves
+	// first_byte_duration_ms NULL.
+	writeJSONMarkingFirstByte(c, statusCode, claudeErr)
 }
 
 // OpenAIChoice represents a choice in OpenAI response.
@@ -2890,11 +2889,10 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 				},
 			}
 			clearUpstreamEncodingHeaders(c)
-			// Record first byte at the client delivery point; gin's JSON/Data
-			// helpers do not expose the underlying write error, so the mark is
-			// unconditional (markFirstByte is idempotent).
-			c.JSON(http.StatusBadGateway, claudeErr)
-			markFirstByte(c)
+			// Record first byte at the client delivery point; the helper marks
+			// only after a successful non-empty write, so a failed response
+			// write leaves first_byte_duration_ms NULL.
+			writeJSONMarkingFirstByte(c, http.StatusBadGateway, claudeErr)
 			return
 		}
 
@@ -2929,8 +2927,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 				},
 			}
 			clearUpstreamEncodingHeaders(c)
-			c.JSON(http.StatusBadGateway, claudeErr)
-			markFirstByte(c)
+			writeJSONMarkingFirstByte(c, http.StatusBadGateway, claudeErr)
 			return
 		}
 		// Other decompression errors: continue with original data but preserve encoding header
@@ -2985,12 +2982,10 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 
 		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
 		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
-		// Only record first-byte delivery when a non-empty body was actually
-		// written; an empty fallback body must keep first_byte_duration_ms NULL.
-		if len(bodyBytes) > 0 {
-			markFirstByte(c)
-		}
+		// writeDataMarkingFirstByte records first-byte delivery only when the
+		// write actually succeeds with non-empty bytes; an empty fallback body
+		// keeps first_byte_duration_ms NULL.
+		writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 
@@ -3015,20 +3010,17 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			claudeErr.Error.Message = "Upstream returned an error"
 		}
 		clearUpstreamEncodingHeaders(c)
-		c.JSON(resp.StatusCode, claudeErr)
-		markFirstByte(c)
+		writeJSONMarkingFirstByte(c, resp.StatusCode, claudeErr)
 		return
 	}
 	if len(openaiResp.Choices) == 0 && openaiResp.Usage == nil {
 		clearUpstreamEncodingHeaders(c)
 		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
 		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
-		// Only record first-byte delivery when a non-empty body was actually
-		// written; an empty fallback body must keep first_byte_duration_ms NULL.
-		if len(bodyBytes) > 0 {
-			markFirstByte(c)
-		}
+		// writeDataMarkingFirstByte records first-byte delivery only when the
+		// write actually succeeds with non-empty bytes; an empty fallback body
+		// keeps first_byte_duration_ms NULL.
+		writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
@@ -3097,8 +3089,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 				},
 			}
 			clearUpstreamEncodingHeaders(c)
-			c.JSON(http.StatusBadGateway, claudeErr)
-			markFirstByte(c)
+			writeJSONMarkingFirstByte(c, http.StatusBadGateway, claudeErr)
 			return
 		}
 	}
@@ -3162,12 +3153,10 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		if !decompressed && origEncoding != "" {
 			c.Header("Content-Encoding", origEncoding)
 		}
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
-		// Only record first-byte delivery when a non-empty body was actually
-		// written; an empty fallback body must keep first_byte_duration_ms NULL.
-		if len(bodyBytes) > 0 {
-			markFirstByte(c)
-		}
+		// writeDataMarkingFirstByte records first-byte delivery only when the
+		// write actually succeeds with non-empty bytes; an empty fallback body
+		// keeps first_byte_duration_ms NULL.
+		writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 
@@ -3180,8 +3169,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	clearUpstreamEncodingHeaders(c)
 
 	c.Header("Content-Type", "application/json")
-	c.Data(resp.StatusCode, "application/json", claudeBody)
-	markFirstByte(c)
+	writeDataMarkingFirstByte(c, resp.StatusCode, "application/json", claudeBody)
 }
 
 // ClaudeStreamEvent represents a Claude streaming event.

@@ -2191,6 +2191,11 @@ func TestHandleStreamingResponseFirstByteTimeoutCoversBodyRead(t *testing.T) {
 		logicalStatus, _, ok := logicalStatusFromContext(c)
 		assert.True(t, ok, "first-byte timeout must set the logical failure context")
 		assert.Equal(t, http.StatusGatewayTimeout, logicalStatus, "logical status must be 504 so logRequest records a failure")
+		// Regression (CodeRabbit): the delivered 504 error body is a non-empty
+		// response, so first-byte timing must be recorded even on the timeout
+		// path (writeJSONMarkingFirstByte marks only on a successful write).
+		_, exists = c.Get(ctxKeyFirstByteTime)
+		assert.True(t, exists, "the 504 error body delivery must record the first-byte time")
 	case <-time.After(3 * time.Second):
 		t.Fatal("handleStreamingResponse did not return within 3s; first body read was not bounded by the remaining first-byte budget")
 	}

@@ -1692,8 +1692,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 				},
 			}
 			clearUpstreamEncodingHeaders(c)
-			c.JSON(http.StatusBadGateway, claudeErr)
-			markFirstByte(c)
+			writeJSONMarkingFirstByte(c, http.StatusBadGateway, claudeErr)
 			return
 		}
 
@@ -1728,8 +1727,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 				},
 			}
 			clearUpstreamEncodingHeaders(c)
-			c.JSON(http.StatusBadGateway, claudeErr)
-			markFirstByte(c)
+			writeJSONMarkingFirstByte(c, http.StatusBadGateway, claudeErr)
 			return
 		}
 		// Other decompression errors: continue with original data but preserve encoding header
@@ -1779,12 +1777,10 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		if !decompressed && origEncoding != "" {
 			c.Header("Content-Encoding", origEncoding)
 		}
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
-		// Only record first-byte delivery when a non-empty body was actually
-		// written; an empty fallback body must keep first_byte_duration_ms NULL.
-		if len(bodyBytes) > 0 {
-			markFirstByte(c)
-		}
+		// writeDataMarkingFirstByte records first-byte delivery only when the
+		// write actually succeeds with non-empty bytes; an empty fallback body
+		// keeps first_byte_duration_ms NULL.
+		writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 
@@ -1808,8 +1804,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			claudeErr.Error.Message = "Upstream returned an error"
 		}
 		clearUpstreamEncodingHeaders(c)
-		c.JSON(resp.StatusCode, claudeErr)
-		markFirstByte(c)
+		writeJSONMarkingFirstByte(c, resp.StatusCode, claudeErr)
 		return
 	}
 	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
@@ -1847,21 +1842,18 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		if !decompressed && origEncoding != "" {
 			c.Header("Content-Encoding", origEncoding)
 		}
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
-		// Only record first-byte delivery when a non-empty body was actually
-		// written; an empty fallback body must keep first_byte_duration_ms NULL
-		// (defensive, mirrors the CC fallback in cc_support.go).
-		if len(bodyBytes) > 0 {
-			markFirstByte(c)
-		}
+		// writeDataMarkingFirstByte records first-byte delivery only when the
+		// write actually succeeds with non-empty bytes; an empty fallback body
+		// keeps first_byte_duration_ms NULL (defensive, mirrors the CC fallback
+		// in cc_support.go).
+		writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 
 	c.Set("response_body", sanitizeAndTruncateBytesForLog(claudeBody, maxResponseCaptureBytes))
 	clearUpstreamEncodingHeaders(c)
 	c.Header("Content-Type", "application/json")
-	c.Data(resp.StatusCode, "application/json", claudeBody)
-	markFirstByte(c)
+	writeDataMarkingFirstByte(c, resp.StatusCode, "application/json", claudeBody)
 }
 
 // codexLineReadResult is one line (or read error) produced by the codexLineReader goroutine.

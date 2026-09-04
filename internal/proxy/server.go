@@ -440,6 +440,56 @@ func markFirstByte(c *gin.Context) {
 	}
 }
 
+// markFirstByteAfterWrite writes data through the gin response writer so the
+// write result is observable, and records first-byte delivery only when the
+// write succeeded with non-empty bytes. Gin's c.JSON/c.Data consume renderer
+// write errors (c.Errors + Abort), so the call sites cannot observe a failed
+// write and would otherwise persist a false first_byte_duration_ms when the
+// client disconnected mid-render.
+func markFirstByteAfterWrite(c *gin.Context, data []byte) {
+	n, err := c.Writer.Write(data)
+	if err == nil && n > 0 {
+		markFirstByte(c)
+	}
+}
+
+// setContentTypeIfUnset mirrors gin's render writeContentType semantics: an
+// explicitly set Content-Type (e.g. a preserved upstream value) is never
+// overwritten by the renderer.
+func setContentTypeIfUnset(c *gin.Context, contentType string) {
+	if contentType != "" && c.Writer.Header().Get("Content-Type") == "" {
+		c.Writer.Header().Set("Content-Type", contentType)
+	}
+}
+
+// writeJSONMarkingFirstByte renders obj as JSON like c.JSON (status recorded
+// up-front, Content-Type "application/json; charset=utf-8" when not already
+// set) and records first-byte delivery only when the payload was actually
+// delivered to the client.
+func writeJSONMarkingFirstByte(c *gin.Context, code int, obj any) {
+	c.Status(code)
+	setContentTypeIfUnset(c, "application/json; charset=utf-8")
+	data, err := json.Marshal(obj)
+	if err != nil {
+		// Unreachable for the locally built error/response structs used at
+		// the call sites; log instead of gin's abort path so the write
+		// contract stays observable.
+		logrus.WithError(err).Error("Failed to marshal JSON response")
+		return
+	}
+	markFirstByteAfterWrite(c, data)
+}
+
+// writeDataMarkingFirstByte writes a pre-encoded body like c.Data (status
+// recorded up-front, Content-Type set only when non-empty and not already
+// present) and records first-byte delivery only when the write delivered
+// bytes to the client. An empty body keeps first_byte_duration_ms NULL.
+func writeDataMarkingFirstByte(c *gin.Context, code int, contentType string, data []byte) {
+	c.Status(code)
+	setContentTypeIfUnset(c, contentType)
+	markFirstByteAfterWrite(c, data)
+}
+
 // ProxyServer represents the proxy server
 type ProxyServer struct {
 	keyProvider          *keypool.KeyProvider
