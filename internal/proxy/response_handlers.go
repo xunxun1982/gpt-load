@@ -769,6 +769,27 @@ func markResponseProcessingFailed(c *gin.Context) {
 	}
 }
 
+// writeStreamFirstByteTimeout replies with a gateway timeout when the
+// stream_first_byte_timeout deadline fires before any byte was delivered to
+// the client. Nothing has been written yet (the deadline only fires on the
+// zero-byte first read), so the status is still mutable; the logical
+// failure context makes logRequest record this request as failed (via
+// logicalStatusFromContext) instead of a successful 200 with an empty body.
+
+func writeStreamFirstByteTimeout(c *gin.Context) {
+	clearUpstreamEncodingHeaders(c)
+	// The stream handlers already set text/event-stream; a JSON error body
+	// must override that header to notify non-SSE clients about the timeout.
+	c.Header("Content-Type", "application/json")
+	setLogicalFailureContext(c, http.StatusGatewayTimeout, "first_byte_timeout", errStreamFirstByteTimeout.Error())
+	c.JSON(http.StatusGatewayTimeout, gin.H{
+		"error": gin.H{
+			"message": "Upstream did not send response body data in time",
+			"type":    "timeout_error",
+		},
+	})
+}
+
 // shouldCaptureResponse checks if response body capturing is enabled for the request
 func shouldCaptureResponse(c *gin.Context) bool {
 	if groupVal, exists := c.Get("group"); exists {
@@ -1010,7 +1031,13 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 			if err != nil {
 				logUpstreamError("decoding compressed stream", err)
 				markResponseProcessingFailed(c)
-				_ = copyRemainingStreamToClient(c, resp.Body, flusher)
+				// A first-byte timeout fires before any byte was written, so
+				// reply with a gateway timeout instead of draining the body.
+				if errors.Is(err, errStreamFirstByteTimeout) {
+					writeStreamFirstByteTimeout(c)
+				} else {
+					_ = copyRemainingStreamToClient(c, resp.Body, flusher)
+				}
 				return
 			}
 		}
@@ -1057,6 +1084,13 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 			if err != nil {
 				logUpstreamError("reading from upstream", err)
 				markResponseProcessingFailed(c)
+				// A first-byte timeout fires before any byte was written, so
+				// the status is still mutable: reply with a gateway timeout
+				// instead of letting gin commit an empty 200 that logRequest
+				// would record as a successful upstream response.
+				if errors.Is(err, errStreamFirstByteTimeout) {
+					writeStreamFirstByteTimeout(c)
+				}
 				return
 			}
 		}

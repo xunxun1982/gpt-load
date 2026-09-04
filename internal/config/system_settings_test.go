@@ -1259,6 +1259,64 @@ func TestLegacyNonStreamRequestTimeoutMigrationBackfillsRequestTimeout(t *testin
 // present" case: request_timeout (already written by the legacy split-timeout sync)
 // is authoritative, the legacy non_stream key is dropped and the stored value survives.
 
+// TestEnsureSettingsInitializedMigratesLegacyTimeoutKeys pins the startup ordering
+// (CodeRabbit): EnsureSettingsInitialized runs before the SystemSettingsManager
+// loader and inserts default rows for request_timeout/stream_first_byte_timeout.
+// Without migrating legacy keys first, the loader would see both key forms and
+// delete the legacy key, losing the user's custom values to the defaults. Both
+// legacy keys must be migrated (value preserved), not deleted by a conflict.
+func TestEnsureSettingsInitializedMigratesLegacyTimeoutKeys(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+
+	// Simulate a pre-upgrade database holding only legacy custom values.
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "non_stream_request_timeout",
+		SettingValue: "300",
+	}).Error)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "stream_request_timeout",
+		SettingValue: "120",
+	}).Error)
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.EnsureSettingsInitialized(types.AuthConfig{}))
+
+	// Custom legacy values must survive as the replacement keys.
+	assertSystemSettingValue(t, testDB, "request_timeout", "300")
+	assertSystemSettingValue(t, testDB, "stream_first_byte_timeout", "120")
+
+	// Legacy keys must be gone.
+	for _, legacyKey := range []string{"non_stream_request_timeout", "stream_request_timeout"} {
+		var legacy models.SystemSetting
+		require.ErrorIs(t, testDB.Where("setting_key = ?", legacyKey).First(&legacy).Error, gorm.ErrRecordNotFound,
+			"legacy key %s must be removed after migration", legacyKey)
+	}
+}
+
+// TestEnsureSettingsInitializedLegacyConflictKeepsReplacement pins the "both key
+// forms exist" case during initialization: when the replacement key already holds
+// a value, EnsureSettingsInitialized must drop the legacy key and keep the
+// replacement value (no unconditional legacy migration overwriting it).
+func TestEnsureSettingsInitializedLegacyConflictKeepsReplacement(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "request_timeout",
+		SettingValue: "60",
+	}).Error)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "non_stream_request_timeout",
+		SettingValue: "300",
+	}).Error)
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.EnsureSettingsInitialized(types.AuthConfig{}))
+
+	assertSystemSettingValue(t, testDB, "request_timeout", "60")
+	var legacy models.SystemSetting
+	require.ErrorIs(t, testDB.Where("setting_key = ?", "non_stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+}
+
 func TestLegacyNonStreamRequestTimeoutMigrationKeepsExistingValue(t *testing.T) {
 	testDB := setupSystemSettingsTestDB(t)
 	require.NoError(t, testDB.Create(&models.SystemSetting{

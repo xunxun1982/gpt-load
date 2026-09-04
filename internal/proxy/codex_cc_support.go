@@ -2160,10 +2160,6 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 			}
 			return
 		}
-		if err == nil {
-			firstByteReceived = true
-		}
-
 		lineCount++
 		// Per AI review: only log line preview when EnableRequestBodyLogging is enabled
 		// to avoid leaking sensitive SSE payloads (tool args, file paths, etc.)
@@ -2261,6 +2257,17 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 					logrus.WithError(err).Error("Codex CC: Failed to write stream event")
 					return
 				}
+			}
+			// The first-byte deadline stays active until the first complete data:
+			// event has been parsed AND successfully written to the client. event:,
+			// blank, keepalive, or partial input lines must not switch to the
+			// (disabled) subsequent timeout, or an upstream that stalls right after
+			// such a line would block the stream indefinitely. A data event that
+			// produces no Claude events also keeps the first-byte timeout active:
+			// it delivered no bytes to the client, and the per-read timeout cannot
+			// harm slow-but-alive streams (any arriving line resets it).
+			if len(claudeEvents) > 0 {
+				firstByteReceived = true
 			}
 			if codexEvent.Type == "response.completed" || codexEvent.Type == "response.done" ||
 				codexEvent.Type == "response.failed" || codexEvent.Type == "response.incomplete" ||

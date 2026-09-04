@@ -221,6 +221,16 @@ func (sm *SystemSettingsManager) Stop(ctx context.Context) {
 
 // EnsureSettingsInitialized ensures all system setting records exist in the database.
 func (sm *SystemSettingsManager) EnsureSettingsInitialized(authConfig types.AuthConfig) error {
+	// Migrate legacy timeout keys BEFORE inserting defaults: EnsureSettingsInitialized
+	// runs before SystemSettingsManager.Initialize's loader, so without this step the
+	// default request_timeout/stream_first_byte_timeout rows would be inserted first
+	// and the loader would see both key forms, delete the legacy key, and lose the
+	// user's custom value. Migrating here preserves the custom value and removes the
+	// legacy key so the loader's conflict branch never fires for these keys.
+	if err := migrateLegacyTimeoutSettings(); err != nil {
+		return err
+	}
+
 	defaultSettings := utils.DefaultSystemSettings()
 	metadata := utils.GenerateSettingsMetadata(&defaultSettings)
 
@@ -258,6 +268,75 @@ func (sm *SystemSettingsManager) EnsureSettingsInitialized(authConfig types.Auth
 		}
 	}
 
+	return nil
+}
+
+// migrateLegacyTimeoutSettings migrates the two intentional, incompatible system
+// setting key renames (non_stream_request_timeout -> request_timeout,
+// stream_request_timeout -> stream_first_byte_timeout) before defaults are
+// inserted. It preserves the stored value when the replacement key is absent and
+// removes the legacy key when the replacement already exists. Works on
+// SQLite/MySQL/PostgreSQL via the same OnConflict upsert used by the loader.
+// The loader keeps its own copy of this logic (plus in-memory settingsMap
+// synchronization): this function runs once before defaults are inserted, while
+// the loader path is the idempotent runtime fallback for keys that appear later
+// (e.g. manual DB edits), so the two paths are mutually exclusive in practice.
+func migrateLegacyTimeoutSettings() error {
+	// Load current keys once.
+	var dbSettings []models.SystemSetting
+	if err := db.DB.Find(&dbSettings).Error; err != nil {
+		return fmt.Errorf("failed to load system settings for migration: %w", err)
+	}
+	settingsMap := make(map[string]string, len(dbSettings))
+	for _, setting := range dbSettings {
+		settingsMap[setting.SettingKey] = setting.SettingValue
+	}
+
+	// migrateSettingKey atomically renames one setting key to another, preserving
+	// the stored value; on conflict only updated_at is touched (never setting_value).
+	migrateSettingKey := func(tx *gorm.DB, from, to string) (string, error) {
+		oldValue, ok := settingsMap[from]
+		if !ok {
+			return "", nil
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "setting_key"}},
+			DoUpdates: clause.AssignmentColumns([]string{"updated_at"}),
+		}).Create(&models.SystemSetting{SettingKey: to, SettingValue: oldValue}).Error; err != nil {
+			return "", err
+		}
+		var stored models.SystemSetting
+		if err := tx.Where("setting_key = ?", to).First(&stored).Error; err != nil {
+			return "", err
+		}
+		return stored.SettingValue, tx.Where("setting_key = ?", from).Delete(&models.SystemSetting{}).Error
+	}
+
+	if _, has := settingsMap["non_stream_request_timeout"]; has {
+		if _, conflict := settingsMap["request_timeout"]; conflict {
+			// Replacement already exists: drop the legacy key, keep the replacement.
+			if err := db.DB.Where("setting_key = ?", "non_stream_request_timeout").Delete(&models.SystemSetting{}).Error; err != nil {
+				logrus.WithError(err).Warn("Failed to remove obsolete non-stream request timeout setting")
+			}
+		} else if err := db.DB.Transaction(func(tx *gorm.DB) error {
+			_, err := migrateSettingKey(tx, "non_stream_request_timeout", "request_timeout")
+			return err
+		}); err != nil {
+			logrus.WithError(err).Warn("Failed to migrate non-stream request timeout setting")
+		}
+	}
+	if _, ok := settingsMap["stream_request_timeout"]; ok {
+		if _, exists := settingsMap["stream_first_byte_timeout"]; !exists {
+			if err := db.DB.Transaction(func(tx *gorm.DB) error {
+				_, err := migrateSettingKey(tx, "stream_request_timeout", "stream_first_byte_timeout")
+				return err
+			}); err != nil {
+				logrus.WithError(err).Warn("Failed to migrate stream request timeout setting")
+			}
+		} else if err := db.DB.Where("setting_key = ?", "stream_request_timeout").Delete(&models.SystemSetting{}).Error; err != nil {
+			logrus.WithError(err).Warn("Failed to remove obsolete stream request timeout setting")
+		}
+	}
 	return nil
 }
 

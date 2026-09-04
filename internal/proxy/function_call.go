@@ -2703,7 +2703,9 @@ func (ps *ProxyServer) handleFunctionCallResponsesStreamingBody(c *gin.Context, 
 	}
 	if result.Passthrough != nil {
 		var failureCapture sseLogicalFailureCapture
-		if _, err := io.Copy(io.MultiWriter(c.Writer, &failureCapture), result.Passthrough); err != nil {
+		// Wrap the client writer so a successful non-empty passthrough records
+		// first-byte delivery; failureCapture stays as the second destination.
+		if _, err := io.Copy(io.MultiWriter(firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }}, &failureCapture), result.Passthrough); err != nil {
 			logUpstreamError("passing through Responses function call stream", err)
 			markResponseProcessingFailed(c)
 		}
@@ -3072,7 +3074,9 @@ func readFunctionCallSSEEvents(body io.Reader) (functionCallSSEReadResult, error
 }
 
 func copyFunctionCallSSEPassthrough(c *gin.Context, reader io.Reader, flusher http.Flusher) error {
-	if _, err := io.Copy(c.Writer, reader); err != nil {
+	// Wrap the client writer so a successful non-empty passthrough records
+	// first-byte delivery (mirrors the Responses passthrough branch).
+	if _, err := io.Copy(firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }}, reader); err != nil {
 		return err
 	}
 	flusher.Flush()

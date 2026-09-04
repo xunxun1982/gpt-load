@@ -2183,6 +2183,14 @@ func TestHandleStreamingResponseFirstByteTimeoutCoversBodyRead(t *testing.T) {
 		}
 		_, exists := c.Get(ctxKeyResponseProcessingFailed)
 		assert.True(t, exists, "stalled first body read must mark response processing failed")
+		// Regression (CodeRabbit): the first-byte timeout must not be committed
+		// as an empty 200. The client must receive a gateway-timeout response
+		// and logRequest must record the request as failed via the logical
+		// failure context.
+		assert.Equal(t, http.StatusGatewayTimeout, w.Code, "first-byte timeout must reply 504, not an empty 200")
+		logicalStatus, _, ok := logicalStatusFromContext(c)
+		assert.True(t, ok, "first-byte timeout must set the logical failure context")
+		assert.Equal(t, http.StatusGatewayTimeout, logicalStatus, "logical status must be 504 so logRequest records a failure")
 	case <-time.After(3 * time.Second):
 		t.Fatal("handleStreamingResponse did not return within 3s; first body read was not bounded by the remaining first-byte budget")
 	}
