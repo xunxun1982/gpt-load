@@ -331,25 +331,36 @@ func migrateLegacyTimeoutSettings() error {
 }
 
 // migrateSettingKeyInTx atomically renames one setting key to another inside the
-// caller's transaction and reports whether a migration happened plus the
-// authoritative value now stored under the replacement key. The legacy row is
-// read with SELECT ... FOR UPDATE inside the transaction (never from a
-// pre-transaction snapshot): the row lock makes the read-delete-create sequence
-// atomic against concurrent source-key writers, so a concurrent update either
-// commits before the locking read (its value is migrated) or waits for the
-// transaction to commit and then hits the deleted row (a no-op) — the newer
-// value is never overwritten by a stale snapshot. A source row that has already
-// vanished (e.g. migrated by another instance) is reported as not migrated.
-// Works on SQLite/MySQL/PostgreSQL; on conflict only updated_at of the
-// replacement is touched (never setting_value).
+// caller's transaction and reports whether the replacement key now holds an
+// authoritative value plus that value. The legacy row is read with
+// SELECT ... FOR UPDATE inside the transaction (never from a pre-transaction
+// snapshot): the row lock makes the read-delete-create sequence atomic against
+// concurrent source-key writers, so a concurrent update either commits before
+// the locking read (its value is migrated) or waits for the transaction to
+// commit and then hits the deleted row (a no-op) — the newer value is never
+// overwritten by a stale snapshot. A source row that has already vanished (e.g.
+// migrated by a peer instance) reports migrated=true with the replacement's
+// stored value when that row exists (so the caller hydrates it), and
+// migrated=false only when neither key exists. Works on
+// SQLite/MySQL/PostgreSQL; on conflict only updated_at of the replacement is
+// touched (never setting_value).
 func migrateSettingKeyInTx(tx *gorm.DB, from, to string) (string, bool, error) {
 	var legacy models.SystemSetting
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("setting_key = ?", from).First(&legacy).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// The source key is already gone (e.g. migrated by another
-			// instance): nothing to migrate, and the replacement, if any, is
-			// authoritative.
+			// The source key is already gone (e.g. a peer instance migrated it
+			// after this loader built settingsMap). Try the replacement key:
+			// when it exists, hydrate it so this load does not fall back to the
+			// default while the database holds the migrated value. The locking
+			// read also sees peer commits under MySQL REPEATABLE READ.
+			var replacement models.SystemSetting
+			if rerr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("setting_key = ?", to).First(&replacement).Error; rerr == nil {
+				return replacement.SettingValue, true, nil
+			} else if !errors.Is(rerr, gorm.ErrRecordNotFound) {
+				return "", false, rerr
+			}
 			return "", false, nil
 		}
 		return "", false, err

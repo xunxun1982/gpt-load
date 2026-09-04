@@ -2302,3 +2302,21 @@ func TestFirstByteDeadlineBodyUnit(t *testing.T) {
 		require.NoError(t, body.Close())
 	})
 }
+
+// TestFirstByteDeadlineBodyTimeoutClaimIsTerminal pins the race where onDeadline
+// wins gotFirst after body.Read already produced bytes — the read result must be
+// discarded and errStreamFirstByteTimeout returned so the handler can still
+// reply 504 instead of writing a partial successful stream.
+func TestFirstByteDeadlineBodyTimeoutClaimIsTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := io.NopCloser(bytes.NewReader([]byte("hello")))
+	b := newFirstByteDeadlineBody(body, time.Hour) // budget far in the future
+	// Simulate the deadline callback winning the claim first (as it would in the
+	// race window): it claims gotFirst, sets timedOut and closes the body.
+	b.onDeadline()
+	// The underlying read still produces bytes, but the timeout claim is terminal:
+	// the bytes must be discarded and errStreamFirstByteTimeout returned.
+	n, err := b.Read(make([]byte, 16))
+	assert.Zero(t, n)
+	assert.ErrorIs(t, err, errStreamFirstByteTimeout)
+}

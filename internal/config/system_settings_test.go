@@ -1366,6 +1366,40 @@ func TestMigrateSettingKeyInTx(t *testing.T) {
 		assert.Zero(t, count, "a missing source key must not create any row")
 	})
 
+	t.Run("peer migration hydrates the replacement value", func(t *testing.T) {
+		testDB := setupSystemSettingsTestDB(t)
+		require.NoError(t, testDB.Create(&models.SystemSetting{
+			SettingKey:   "non_stream_request_timeout",
+			SettingValue: "300",
+		}).Error)
+
+		// First call performs the migration (as this instance would).
+		var value string
+		var migrated bool
+		err := testDB.Transaction(func(tx *gorm.DB) error {
+			var innerErr error
+			value, migrated, innerErr = migrateSettingKeyInTx(tx, "non_stream_request_timeout", "request_timeout")
+			return innerErr
+		})
+		require.NoError(t, err)
+		assert.True(t, migrated)
+		assert.Equal(t, "300", value)
+
+		// A peer loader then runs with a stale settingsMap snapshot (it still
+		// saw the legacy key). Its transaction finds the source row already
+		// gone: it must hydrate the replacement value (migrated=true) so this
+		// load does not fall back to the default while the database holds the
+		// migrated value. (CodeRabbit)
+		err = testDB.Transaction(func(tx *gorm.DB) error {
+			var innerErr error
+			value, migrated, innerErr = migrateSettingKeyInTx(tx, "non_stream_request_timeout", "request_timeout")
+			return innerErr
+		})
+		require.NoError(t, err)
+		assert.True(t, migrated, "a peer-migrated replacement row must be hydrated")
+		assert.Equal(t, "300", value, "the peer's migrated value must be retained")
+	})
+
 	t.Run("conflicting replacement keeps its value and drops the legacy row", func(t *testing.T) {
 		testDB := setupSystemSettingsTestDB(t)
 		require.NoError(t, testDB.Create(&models.SystemSetting{

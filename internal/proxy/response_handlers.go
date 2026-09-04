@@ -113,7 +113,11 @@ func (b *firstByteDeadlineBody) Read(p []byte) (int, error) {
 	if n > 0 && b.gotFirst.CompareAndSwap(false, true) {
 		b.timer.Stop()
 	}
-	if n == 0 && b.timedOut.Load() && err != nil {
+	// A set timedOut means the deadline callback won the claim: the read result
+	// is discarded and the stream fails with errStreamFirstByteTimeout so the
+	// handler can still reply 504. Bytes read in the race window (after the
+	// deadline already closed the body) are dropped and never written.
+	if b.timedOut.Load() {
 		return 0, errStreamFirstByteTimeout
 	}
 	return n, err

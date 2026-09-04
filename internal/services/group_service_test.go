@@ -841,6 +841,8 @@ func TestValidateAndCleanConfigTimeoutKeys(t *testing.T) {
 		config      map[string]any
 		expected    map[string]any
 		expectError bool
+		// removedKeys: legacy keys must be removed after normalization.
+		removedKeys []string
 	}{
 		{
 			name: "request_timeout passes through",
@@ -868,6 +870,7 @@ func TestValidateAndCleanConfigTimeoutKeys(t *testing.T) {
 			expected: map[string]any{
 				"request_timeout": float64(60),
 			},
+			removedKeys: []string{"non_stream_request_timeout"},
 		},
 		{
 			name: "legacy non_stream_request_timeout yields to explicit request_timeout",
@@ -878,6 +881,7 @@ func TestValidateAndCleanConfigTimeoutKeys(t *testing.T) {
 			expected: map[string]any{
 				"request_timeout": float64(45),
 			},
+			removedKeys: []string{"non_stream_request_timeout"},
 		},
 		{
 			name: "legacy stream_request_timeout is normalized to stream_first_byte_timeout",
@@ -887,6 +891,7 @@ func TestValidateAndCleanConfigTimeoutKeys(t *testing.T) {
 			expected: map[string]any{
 				"stream_first_byte_timeout": float64(30),
 			},
+			removedKeys: []string{"stream_request_timeout"},
 		},
 	}
 
@@ -900,6 +905,9 @@ func TestValidateAndCleanConfigTimeoutKeys(t *testing.T) {
 			require.NoError(t, err)
 			for key, expected := range tt.expected {
 				assert.Equal(t, expected, cleaned[key])
+			}
+			for _, key := range tt.removedKeys {
+				assert.NotContains(t, cleaned, key)
 			}
 		})
 	}
