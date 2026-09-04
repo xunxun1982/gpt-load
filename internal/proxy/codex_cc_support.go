@@ -1780,7 +1780,11 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			c.Header("Content-Encoding", origEncoding)
 		}
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
-		markFirstByte(c)
+		// Only record first-byte delivery when a non-empty body was actually
+		// written; an empty fallback body must keep first_byte_duration_ms NULL.
+		if len(bodyBytes) > 0 {
+			markFirstByte(c)
+		}
 		return
 	}
 
@@ -1844,7 +1848,12 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			c.Header("Content-Encoding", origEncoding)
 		}
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
-		markFirstByte(c)
+		// Only record first-byte delivery when a non-empty body was actually
+		// written; an empty fallback body must keep first_byte_duration_ms NULL
+		// (defensive, mirrors the CC fallback in cc_support.go).
+		if len(bodyBytes) > 0 {
+			markFirstByte(c)
+		}
 		return
 	}
 

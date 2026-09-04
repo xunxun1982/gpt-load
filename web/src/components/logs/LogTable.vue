@@ -334,18 +334,19 @@ const loadColumnPreferences = () => {
       // One-time migration for users with saved preferences from before first_byte_duration_ms existed:
       // insert the new column right before duration_ms so it appears without resetting their layout.
       // An empty saved list is skipped to preserve the explicit "hide all optional columns" choice.
-      if (
-        parsed.length > 0 &&
-        !parsed.includes("first_byte_duration_ms") &&
-        !localStorage.getItem(COLUMN_PREFS_MIGRATION_KEY)
-      ) {
-        const durationIndex = parsed.indexOf("duration_ms");
-        if (durationIndex === -1) {
-          parsed.push("first_byte_duration_ms");
-        } else {
-          parsed.splice(durationIndex, 0, "first_byte_duration_ms");
+      if (parsed.length > 0 && !localStorage.getItem(COLUMN_PREFS_MIGRATION_KEY)) {
+        // One-time migration: insert first_byte_duration_ms before duration_ms
+        // unless the saved list already contains it. The marker is written for
+        // every non-empty saved list (even when the column already exists) so a
+        // later manual hide is not undone on the next load.
+        if (!parsed.includes("first_byte_duration_ms")) {
+          const durationIndex = parsed.indexOf("duration_ms");
+          if (durationIndex === -1) {
+            parsed.push("first_byte_duration_ms");
+          } else {
+            parsed.splice(durationIndex, 0, "first_byte_duration_ms");
+          }
         }
-        // Set the one-time flag so a later manual hide is not undone on the next load
         localStorage.setItem(COLUMN_PREFS_MIGRATION_KEY, "1");
       } else if (parsed.length === 0 && !localStorage.getItem(COLUMN_PREFS_MIGRATION_KEY)) {
         // An empty saved list means the user explicitly hid every optional column

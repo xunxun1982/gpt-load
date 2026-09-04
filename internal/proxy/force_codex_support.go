@@ -2575,5 +2575,9 @@ func writeForceCodexPassthrough(c *gin.Context, resp *http.Response, body []byte
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 	}
 	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
-	markFirstByte(c)
+	// Only record first-byte delivery when a non-empty body was actually
+	// written; an empty passthrough body must keep first_byte_duration_ms NULL.
+	if len(body) > 0 {
+		markFirstByte(c)
+	}
 }

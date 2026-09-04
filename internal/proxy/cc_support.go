@@ -2986,7 +2986,11 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
 		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
-		markFirstByte(c)
+		// Only record first-byte delivery when a non-empty body was actually
+		// written; an empty fallback body must keep first_byte_duration_ms NULL.
+		if len(bodyBytes) > 0 {
+			markFirstByte(c)
+		}
 		return
 	}
 
@@ -3020,7 +3024,11 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
 		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
-		markFirstByte(c)
+		// Only record first-byte delivery when a non-empty body was actually
+		// written; an empty fallback body must keep first_byte_duration_ms NULL.
+		if len(bodyBytes) > 0 {
+			markFirstByte(c)
+		}
 		return
 	}
 	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
@@ -3155,7 +3163,11 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			c.Header("Content-Encoding", origEncoding)
 		}
 		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
-		markFirstByte(c)
+		// Only record first-byte delivery when a non-empty body was actually
+		// written; an empty fallback body must keep first_byte_duration_ms NULL.
+		if len(bodyBytes) > 0 {
+			markFirstByte(c)
+		}
 		return
 	}
 

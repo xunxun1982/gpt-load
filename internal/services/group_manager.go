@@ -218,6 +218,17 @@ func (gm *GroupManager) Initialize() error {
 				// load. A concurrent GroupService.UpdateGroup save bumps updated_at, which
 				// makes this stale normalized write miss (0 rows) instead of overwriting
 				// the newer config with legacy-normalized data.
+				//
+				// Deliberately NOT advancing updated_at here: GroupService.UpdateGroup
+				// persists via tx.Save, an unconditional full-row write that always stamps
+				// updated_at itself and never compares it, so bumping updated_at in this
+				// migration cannot stop a stale save from overwriting the migrated config.
+				// The real protection is the CAS above (this write misses when the row
+				// changed) plus the fact that UpdateGroup re-normalizes config through
+				// validateAndCleanConfig before saving, and any legacy keys written back
+				// are re-normalized on the next load. Advancing updated_at here would only
+				// make this migration look like a user edit and break the last-write-wins
+				// semantics of the explicit save API.
 				result := gm.db.WithContext(updateCtx).Model(&models.Group{}).
 					Where("id = ? AND updated_at = ?", group.ID, group.UpdatedAt).
 					UpdateColumn("config", group.Config)
