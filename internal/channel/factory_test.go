@@ -112,6 +112,10 @@ func TestNewBaseChannelZeroRequestTimeoutDisablesBothClients(t *testing.T) {
 	// A zero request_timeout disables the client-level lifecycle timeout for both paths.
 	assert.Zero(t, base.HTTPClient.Timeout)
 	assert.Zero(t, base.StreamClient.Timeout)
+	// Regression guard: a zero stream_first_byte_timeout means "disabled" and must keep the
+	// general response_header_timeout (30s) on the stream client; clearing it to zero would
+	// drop the header-wait fallback because the http zero-value means no limit.
+	assert.Equal(t, 30*time.Second, base.StreamClient.Transport.(*http.Transport).ResponseHeaderTimeout)
 }
 
 func TestNewBaseChannelUsesEachGroupSkipTLSVerify(t *testing.T) {

@@ -130,6 +130,12 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 				return nil
 			}); err != nil {
 				logrus.WithError(err).Warn("Failed to migrate non-stream request timeout setting")
+				// Keep the legacy value for this load (mirrors the stream
+				// branch): without it the reflector would fall back to the
+				// default request_timeout while the DB row still holds the
+				// custom legacy value, until a later reload retries the
+				// migration.
+				settingsMap["request_timeout"] = settingsMap["non_stream_request_timeout"]
 			} else {
 				delete(settingsMap, "non_stream_request_timeout")
 			}
@@ -147,11 +153,20 @@ func (sm *SystemSettingsManager) Initialize(store store.Store, gm groupManager, 
 					return nil
 				}); err != nil {
 					logrus.WithError(err).Warn("Failed to migrate stream request timeout setting")
+					// Keep the legacy value under the replacement key for this
+					// load (mirrors the non_stream branch): dropping it here
+					// would leave neither key in the map, so the default 0
+					// would silently disable the first-byte timeout until a
+					// later reload succeeds.
+					settingsMap["stream_first_byte_timeout"] = settingsMap["stream_request_timeout"]
+				} else {
+					delete(settingsMap, "stream_request_timeout")
 				}
 			} else if err := db.DB.Where("setting_key = ?", "stream_request_timeout").Delete(&models.SystemSetting{}).Error; err != nil {
 				logrus.WithError(err).Warn("Failed to remove obsolete stream request timeout setting")
+			} else {
+				delete(settingsMap, "stream_request_timeout")
 			}
-			delete(settingsMap, "stream_request_timeout")
 		}
 
 		// Start with default settings, then override with values from the database.

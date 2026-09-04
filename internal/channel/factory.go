@@ -284,7 +284,12 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		// body cannot block the read loop until request_timeout (or forever when it is
 		// disabled). Subsequent stream reads are not otherwise limited.
 		streamConfig := *clientConfig
-		streamConfig.ResponseHeaderTimeout = time.Duration(group.EffectiveConfig.StreamFirstByteTimeout) * time.Second
+		// A zero stream_first_byte_timeout means "disabled": it must not clear the
+		// general response_header_timeout copied from clientConfig, because the http
+		// zero-value means no limit and would drop the header-wait fallback for streams.
+		if group.EffectiveConfig.StreamFirstByteTimeout > 0 {
+			streamConfig.ResponseHeaderTimeout = time.Duration(group.EffectiveConfig.StreamFirstByteTimeout) * time.Second
+		}
 		streamConfig.DisableCompression = true
 		streamConfig.WriteBufferSize = 0
 		streamConfig.ReadBufferSize = 0
