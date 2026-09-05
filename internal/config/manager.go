@@ -72,11 +72,20 @@ func (m *Manager) ReloadConfig() error {
 
 	config := &Config{
 		Server: types.ServerConfig{
-			IsMaster:                !utils.ParseBoolean(os.Getenv("IS_SLAVE"), false),
-			Port:                    utils.ParseInteger(os.Getenv("PORT"), 3001),
-			Host:                    utils.GetEnvOrDefault("HOST", "0.0.0.0"),
-			ReadTimeout:             utils.ParseInteger(os.Getenv("SERVER_READ_TIMEOUT"), 300),
-			WriteTimeout:            utils.ParseInteger(os.Getenv("SERVER_WRITE_TIMEOUT"), 600),
+			IsMaster:    !utils.ParseBoolean(os.Getenv("IS_SLAVE"), false),
+			Port:        utils.ParseInteger(os.Getenv("PORT"), 3001),
+			Host:        utils.GetEnvOrDefault("HOST", "0.0.0.0"),
+			ReadTimeout: utils.ParseInteger(os.Getenv("SERVER_READ_TIMEOUT"), 300),
+			// WriteTimeout covers the whole ServeHTTP lifetime as an absolute
+			// deadline (NOT an idle timeout): an active streaming/SSE response is
+			// hard-cut once it exceeds this budget, verified by reproduction. 1800s
+			// (30 min) leaves headroom above the upstream request_timeout while
+			// still bounding slow clients; raise it or set 0 to disable when
+			// streams may legitimately exceed it. Request lifecycle timeouts are
+			// enforced at the application layer (http client request_timeout /
+			// stream_first_byte_timeout); see Cloudflare's net/http timeouts guide
+			// and the Echo / go-zero SSE server practices.
+			WriteTimeout:            utils.ParseInteger(os.Getenv("SERVER_WRITE_TIMEOUT"), 1800),
 			IdleTimeout:             utils.ParseInteger(os.Getenv("SERVER_IDLE_TIMEOUT"), 120),
 			GracefulShutdownTimeout: utils.ParseInteger(os.Getenv("SERVER_GRACEFUL_SHUTDOWN_TIMEOUT"), 10),
 		},
