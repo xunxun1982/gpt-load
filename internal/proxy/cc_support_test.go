@@ -1769,9 +1769,6 @@ func TestCCStreamingResponse_SkipsEstimatedFallbackOnTimeout(t *testing.T) {
 
 	pr, pw := io.Pipe()
 	defer pw.Close()
-	go func() {
-		_, _ = pw.Write([]byte(`data: {"id":"chatcmpl-timeout","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"partial output"},"finish_reason":null}]}` + "\n\n"))
-	}()
 
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -1783,7 +1780,7 @@ func TestCCStreamingResponse_SkipsEstimatedFallbackOnTimeout(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/test", nil)
 	c.Set("original_model", "gpt-4")
-	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{StreamRequestTimeout: 1}})
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{StreamFirstByteTimeout: 1}})
 
 	ps := &ProxyServer{}
 	ps.handleCCStreamingResponse(c, resp)
@@ -5662,7 +5659,7 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 	tests := []struct {
 		name                      string
 		responseHeaderTimeout     int
-		streamRequestTimeout      int
+		streamFirstByteTimeout    int
 		withGroup                 bool
 		expectedFirstByteTimeout  time.Duration
 		expectedSubsequentTimeout time.Duration
@@ -5670,40 +5667,40 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 		{
 			name:                      "no group in context uses preset values",
 			responseHeaderTimeout:     0,
-			streamRequestTimeout:      0,
+			streamFirstByteTimeout:    0,
 			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
 			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
 		},
 		{
-			name:                      "config values larger than preset uses preset",
+			name:                      "config value controls first byte timeout",
 			responseHeaderTimeout:     600, // 600s > 30s preset
-			streamRequestTimeout:      800, // 800s > 60s preset
+			streamFirstByteTimeout:    800,
 			withGroup:                 true,
-			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
-			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
+			expectedFirstByteTimeout:  800 * time.Second,
+			expectedSubsequentTimeout: 0,
 		},
 		{
-			name:                      "config values smaller than preset uses config",
+			name:                      "zero response header does not impose stream timeout",
 			responseHeaderTimeout:     10, // 10s < 30s preset
-			streamRequestTimeout:      30, // 30s < 60s preset
+			streamFirstByteTimeout:    0,
 			withGroup:                 true,
-			expectedFirstByteTimeout:  10 * time.Second,
-			expectedSubsequentTimeout: 30 * time.Second,
+			expectedFirstByteTimeout:  0,
+			expectedSubsequentTimeout: 0,
 		},
 		{
 			name:                      "mixed config values",
-			responseHeaderTimeout:     20,  // 20s < 30s preset, use config
-			streamRequestTimeout:      120, // 120s > 60s preset, use preset
+			responseHeaderTimeout:     20, // 20s < 30s preset, use config
+			streamFirstByteTimeout:    20,
 			withGroup:                 true,
 			expectedFirstByteTimeout:  20 * time.Second,
-			expectedSubsequentTimeout: sseSubsequentTimeoutPreset,
+			expectedSubsequentTimeout: 0,
 		},
 		{
 			name:                      "zero stream timeout disables idle timeout",
 			responseHeaderTimeout:     0,
-			streamRequestTimeout:      0,
+			streamFirstByteTimeout:    0,
 			withGroup:                 true,
-			expectedFirstByteTimeout:  sseFirstByteTimeoutPreset,
+			expectedFirstByteTimeout:  0,
 			expectedSubsequentTimeout: 0,
 		},
 	}
@@ -5717,8 +5714,8 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 			if tt.withGroup {
 				group := &models.Group{
 					EffectiveConfig: types.SystemSettings{
-						ResponseHeaderTimeout: tt.responseHeaderTimeout,
-						StreamRequestTimeout:  tt.streamRequestTimeout,
+						ResponseHeaderTimeout:  tt.responseHeaderTimeout,
+						StreamFirstByteTimeout: tt.streamFirstByteTimeout,
 					},
 				}
 				c.Set("group", group)
@@ -5731,6 +5728,80 @@ func TestGetEffectiveSSETimeouts(t *testing.T) {
 			}
 			if subsequent != tt.expectedSubsequentTimeout {
 				t.Errorf("subsequentTimeout: expected %v, got %v", tt.expectedSubsequentTimeout, subsequent)
+			}
+		})
+	}
+}
+
+// TestGetEffectiveSSETimeoutsSubtractsHeaderWait pins the single request-scoped
+// first-byte deadline: when the upstream request start anchor is present, the SSE
+// reader must only receive the budget remaining after the response headers arrived,
+// instead of starting a second full timeout.
+
+func TestGetEffectiveSSETimeoutsSubtractsHeaderWait(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name                   string
+		streamFirstByteTimeout int
+		anchorOffset           time.Duration // negative: anchor in the past
+		expectedFirstByte      time.Duration
+		tolerance              time.Duration // allowed slack below expected (elapsed-time jitter)
+	}{
+		{
+			name:                   "headers arrived early keep nearly full budget",
+			streamFirstByteTimeout: 10,
+			anchorOffset:           -2 * time.Second,
+			expectedFirstByte:      8 * time.Second,
+			tolerance:              100 * time.Millisecond,
+		},
+		{
+			name:                   "headers near deadline leave small budget",
+			streamFirstByteTimeout: 10,
+			anchorOffset:           -(10*time.Second - 50*time.Millisecond),
+			expectedFirstByte:      50 * time.Millisecond,
+			// The budget is derived via time.Since(start), so the exact value
+			// includes tiny elapsed-time jitter; assert a bounded range below
+			// the nominal remainder and never above it.
+			tolerance: 10 * time.Millisecond,
+		},
+		{
+			name:                   "deadline exhausted while waiting headers fails fast",
+			streamFirstByteTimeout: 10,
+			anchorOffset:           -11 * time.Second,
+			expectedFirstByte:      time.Millisecond,
+		},
+		{
+			name:                   "zero timeout keeps preset safety net untouched by anchor",
+			streamFirstByteTimeout: 0,
+			anchorOffset:           -11 * time.Second,
+			expectedFirstByte:      sseFirstByteTimeoutPreset,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			group := &models.Group{
+				EffectiveConfig: types.SystemSettings{
+					StreamFirstByteTimeout: tt.streamFirstByteTimeout,
+				},
+			}
+			c.Set("group", group)
+			c.Set(ctxKeyUpstreamRequestStart, time.Now().Add(tt.anchorOffset))
+
+			firstByte, subsequent := getEffectiveSSETimeouts(c)
+
+			// The first-byte budget is the configured timeout minus the time already
+			// spent since the request start anchor (time.Since(start)), so the exact
+			// remainder carries sub-millisecond elapsed jitter. Assert a bounded range:
+			// never above the nominal remainder, at most `tolerance` below it.
+			if firstByte > tt.expectedFirstByte || firstByte < tt.expectedFirstByte-tt.tolerance {
+				t.Errorf("firstByteTimeout: expected ~%v (tolerance %v), got %v", tt.expectedFirstByte, tt.tolerance, firstByte)
+			}
+			if subsequent != 0 {
+				t.Errorf("subsequentTimeout: expected 0, got %v", subsequent)
 			}
 		})
 	}
@@ -8057,3 +8128,79 @@ func TestConvertWindowsPathsInToolResult_CorruptedPaths(t *testing.T) {
 }
 
 // TestConvertClaudeToOpenAI tests the Claude to OpenAI conversion
+
+// TestHandleCCStreamingResponseRecordsFirstByte verifies that the CC streaming
+// handler records ctxKeyFirstByteTime once the first event (message_start) has
+// been written to the client, mirroring the plain streaming handler in
+// response_handlers.go.
+func TestHandleCCStreamingResponseRecordsFirstByte(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	content := "Hi"
+	chunk := &OpenAIResponse{
+		ID:     "chatcmpl-1",
+		Object: "chat.completion.chunk",
+		Model:  "test-model",
+		Choices: []OpenAIChoice{
+			{
+				Index: 0,
+				Delta: &OpenAIRespMessage{
+					Role:    "assistant",
+					Content: &content,
+				},
+			},
+		},
+	}
+
+	sseData := buildTestSSEBody(chunk) + "data: [DONE]\n\n"
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sseData)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set("original_model", "test-model")
+
+	ps := &ProxyServer{}
+	ps.handleCCStreamingResponse(c, resp)
+
+	output := w.Body.String()
+	if !strings.Contains(output, "message_start") {
+		t.Fatalf("expected message_start in output, got: %s", output)
+	}
+
+	if _, exists := c.Get(ctxKeyFirstByteTime); !exists {
+		t.Errorf("expected ctxKeyFirstByteTime to be set after message_start was written to the client")
+	}
+}
+
+// TestHandleCCNormalResponseRecordsFirstByte verifies that the CC normal
+// response handler records ctxKeyFirstByteTime after the converted Claude
+// response body has been written to the client, mirroring the plain handler.
+func TestHandleCCNormalResponseRecordsFirstByte(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := `{"id":"x","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Set("original_model", "m")
+
+	ps := &ProxyServer{}
+	ps.handleCCNormalResponse(c, resp)
+
+	if _, exists := c.Get(ctxKeyFirstByteTime); !exists {
+		t.Errorf("expected ctxKeyFirstByteTime to be set after the response body was written to the client")
+	}
+}

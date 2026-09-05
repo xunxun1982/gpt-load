@@ -301,6 +301,7 @@ export interface RequestLog {
   status_code: number;
   request_path: string;
   duration_ms: number;
+  first_byte_duration_ms?: number | null;
   error_message: string;
   user_agent: string;
   upstream_user_agent?: string;

@@ -256,9 +256,11 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		}
 
 		// Base configuration for regular requests, derived from the group's effective settings.
+		// request_timeout bounds the full lifecycle of both stream and non-stream requests;
+		// stream_first_byte_timeout separately guards the first-byte wait for streams (see below).
 		clientConfig := &httpclient.Config{
 			ConnectTimeout:        time.Duration(group.EffectiveConfig.ConnectTimeout) * time.Second,
-			RequestTimeout:        time.Duration(group.EffectiveConfig.NonStreamRequestTimeout) * time.Second,
+			RequestTimeout:        time.Duration(group.EffectiveConfig.RequestTimeout) * time.Second,
 			IdleConnTimeout:       time.Duration(group.EffectiveConfig.IdleConnTimeout) * time.Second,
 			MaxIdleConns:          group.EffectiveConfig.MaxIdleConns,
 			MaxIdleConnsPerHost:   group.EffectiveConfig.MaxIdleConnsPerHost,
@@ -273,9 +275,21 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 			ExpectContinueTimeout: 1 * time.Second,
 		}
 
-		// Create a dedicated configuration for streaming requests.
+		// Create a dedicated configuration for streaming requests: request_timeout still
+		// bounds the full lifecycle (shared with non-stream), and stream_first_byte_timeout
+		// applies to ResponseHeaderTimeout (header wait). The remaining first-byte budget
+		// is additionally enforced on the initial response-body read in
+		// handleStreamingResponse/handleCCStreamingResponse (fast-fail only, no idle
+		// timeout on subsequent reads), so a stalled upstream that sent headers but no
+		// body cannot block the read loop until request_timeout (or forever when it is
+		// disabled). Subsequent stream reads are not otherwise limited.
 		streamConfig := *clientConfig
-		streamConfig.RequestTimeout = time.Duration(group.EffectiveConfig.StreamRequestTimeout) * time.Second
+		// A zero stream_first_byte_timeout means "disabled": it must not clear the
+		// general response_header_timeout copied from clientConfig, because the http
+		// zero-value means no limit and would drop the header-wait fallback for streams.
+		if group.EffectiveConfig.StreamFirstByteTimeout > 0 {
+			streamConfig.ResponseHeaderTimeout = time.Duration(group.EffectiveConfig.StreamFirstByteTimeout) * time.Second
+		}
 		streamConfig.DisableCompression = true
 		streamConfig.WriteBufferSize = 0
 		streamConfig.ReadBufferSize = 0

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"gpt-load/internal/models"
@@ -20,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"sync"
 )
 
 var benchmarkTokenCountSink int64
@@ -27,6 +29,17 @@ var benchmarkTokenCountSink int64
 type errorAfterReadCloser struct {
 	data []byte
 	done bool
+}
+
+func TestFirstByteWriterRecordsFirstWrite(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	start := time.Now().Add(-time.Millisecond)
+	w := firstByteWriter{writer: io.Discard, onFirstByte: func() { c.Set(ctxKeyFirstByteTime, time.Now()) }}
+	_, err := w.Write([]byte("x"))
+	require.NoError(t, err)
+	v, ok := c.Get(ctxKeyFirstByteTime)
+	require.True(t, ok)
+	assert.False(t, v.(time.Time).Before(start))
 }
 
 type dataAndErrorReadCloser struct {
@@ -2046,4 +2059,326 @@ data: [DONE]
 	require.True(t, ok)
 	assert.NotContains(t, logBody, "gAAAA-response-reasoning")
 	assert.Contains(t, logBody, `"encrypted_content": "[REDACTED]"`)
+}
+
+func TestHandleCodexForcedStreamResponseRecordsFirstByte(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Parallel()
+
+	streamData := `event: response.created
+data: {"type":"response.created","response":{"id":"resp_first_byte","model":"gpt-5","status":"in_progress"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_first_byte","model":"gpt-5","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+data: [DONE]
+`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamData)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+
+	ps := &ProxyServer{}
+	ps.handleCodexForcedStreamResponse(c, resp)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	_, exists := c.Get(ctxKeyFirstByteTime)
+	assert.True(t, exists, "first byte time must be set once the converted response is delivered")
+}
+
+func TestHandleNormalResponseEmptyBodyLeavesFirstByteUnset(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("")),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	_, exists := c.Get(ctxKeyFirstByteTime)
+	assert.False(t, exists, "first byte time must remain unset for an empty upstream body")
+}
+
+func TestHandleNormalResponseNonEmptyBodySetsFirstByte(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{EnableRequestBodyLogging: true}})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"choices":[]}`)),
+	}
+
+	ps := &ProxyServer{}
+	ps.handleNormalResponse(c, resp)
+
+	_, exists := c.Get(ctxKeyFirstByteTime)
+	assert.True(t, exists, "first byte time must be set when a non-empty body is written")
+}
+
+// blockingBody blocks on Read until closed, simulating an upstream that sent
+// response headers but never delivers body data.
+type blockingBody struct {
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func newBlockingBody() *blockingBody {
+	return &blockingBody{closed: make(chan struct{})}
+}
+
+func (b *blockingBody) Read(p []byte) (int, error) {
+	<-b.closed
+	return 0, io.EOF
+}
+
+func (b *blockingBody) Close() error {
+	b.closeOnce.Do(func() { close(b.closed) })
+	return nil
+}
+
+// TestHandleStreamingResponseFirstByteTimeoutCoversBodyRead verifies that
+// stream_first_byte_timeout also bounds the first body read when headers
+// arrive immediately but the upstream stalls before sending body data
+// (ResponseHeaderTimeout stops at header arrival and does not cover body reads).
+func TestHandleStreamingResponseFirstByteTimeoutCoversBodyRead(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	// Anchor the request 2s in the past with a 1s first-byte budget: the
+	// remaining budget is exhausted, so the wrapper arms a 1ms fast-fail
+	// deadline (see getEffectiveSSETimeouts) and the stalled body must fail
+	// quickly instead of blocking the test for the full budget.
+	c.Set("group", &models.Group{
+		EffectiveConfig: types.SystemSettings{StreamFirstByteTimeout: 1},
+	})
+	c.Set(ctxKeyUpstreamRequestStart, time.Now().Add(-2*time.Second))
+
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		defer close(done)
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       newBlockingBody(),
+		}
+		(&ProxyServer{}).handleStreamingResponse(c, resp)
+	}()
+
+	select {
+	case <-done:
+		elapsed := time.Since(start)
+		if elapsed > 800*time.Millisecond {
+			t.Fatalf("handleStreamingResponse blocked %dms on a stalled body instead of honoring stream_first_byte_timeout", elapsed.Milliseconds())
+		}
+		_, exists := c.Get(ctxKeyResponseProcessingFailed)
+		assert.True(t, exists, "stalled first body read must mark response processing failed")
+		// Regression (CodeRabbit): the first-byte timeout must not be committed
+		// as an empty 200. The client must receive a gateway-timeout response
+		// and logRequest must record the request as failed via the logical
+		// failure context.
+		assert.Equal(t, http.StatusGatewayTimeout, w.Code, "first-byte timeout must reply 504, not an empty 200")
+		logicalStatus, _, ok := logicalStatusFromContext(c)
+		assert.True(t, ok, "first-byte timeout must set the logical failure context")
+		assert.Equal(t, http.StatusGatewayTimeout, logicalStatus, "logical status must be 504 so logRequest records a failure")
+		// Regression (CodeRabbit): the delivered 504 error body is a non-empty
+		// response, so first-byte timing must be recorded even on the timeout
+		// path (writeJSONMarkingFirstByte marks only on a successful write).
+		_, exists = c.Get(ctxKeyFirstByteTime)
+		assert.True(t, exists, "the 504 error body delivery must record the first-byte time")
+	case <-time.After(3 * time.Second):
+		t.Fatal("handleStreamingResponse did not return within 3s; first body read was not bounded by the remaining first-byte budget")
+	}
+}
+
+// TestHandleFunctionCallStreamingResponseFirstByteTimeout verifies that the
+// function-call streaming path (trigger signal present) wraps the upstream
+// body with the first-byte deadline too: a stalled upstream that sent headers
+// but no body must fail fast with a 504 instead of blocking the schema readers
+// until request_timeout (or forever when it is disabled). All three schema
+// branches (chat raw reader, Responses SSE collector, Anthropic SSE collector)
+// must propagate the timeout as a 504. (CodeRabbit)
+func TestHandleFunctionCallStreamingResponseFirstByteTimeout(t *testing.T) {
+	schemas := map[string]string{
+		"chat raw reader":     "openai",
+		"responses collector": "openai-response",
+		"anthropic collector": "anthropic",
+	}
+	for name, channelType := range schemas {
+		t.Run(name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			// Exhaust the remaining first-byte budget so the wrapper arms a 1ms
+			// fast-fail deadline (see getEffectiveSSETimeouts).
+			c.Set("group", &models.Group{
+				ChannelType:     channelType,
+				EffectiveConfig: types.SystemSettings{StreamFirstByteTimeout: 1},
+			})
+			c.Set(ctxKeyUpstreamRequestStart, time.Now().Add(-2*time.Second))
+			c.Set(ctxKeyTriggerSignal, "test-trigger")
+
+			done := make(chan struct{})
+			start := time.Now()
+			go func() {
+				defer close(done)
+				resp := &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       newBlockingBody(),
+				}
+				(&ProxyServer{}).handleFunctionCallStreamingResponse(c, resp)
+			}()
+
+			select {
+			case <-done:
+				elapsed := time.Since(start)
+				if elapsed > 800*time.Millisecond {
+					t.Fatalf("handleFunctionCallStreamingResponse blocked %dms on a stalled body instead of honoring stream_first_byte_timeout", elapsed.Milliseconds())
+				}
+				// The function-call readers see errStreamFirstByteTimeout and must
+				// reply 504 via writeStreamFirstByteTimeout (no byte was written, so
+				// the status is still mutable) and mark the request as failed.
+				assert.Equal(t, http.StatusGatewayTimeout, w.Code, "function-call first-byte timeout must reply 504")
+				logicalStatus, _, ok := logicalStatusFromContext(c)
+				assert.True(t, ok, "function-call first-byte timeout must set the logical failure context")
+				assert.Equal(t, http.StatusGatewayTimeout, logicalStatus, "logical status must be 504 so logRequest records a failure")
+				_, exists := c.Get(ctxKeyResponseProcessingFailed)
+				assert.True(t, exists, "stalled first body read must mark response processing failed")
+			case <-time.After(3 * time.Second):
+				t.Fatal("handleFunctionCallStreamingResponse did not return within 3s; first body read was not bounded by the remaining first-byte budget")
+			}
+		})
+	}
+}
+
+// TestHandleStreamingResponseDisabledFirstByteTimeoutKeepsNormalStream verifies
+// that when stream_first_byte_timeout is disabled (0), the deadline wrapper is
+// not installed and a normal stream flows through unchanged (request_timeout
+// and client-side cancellation remain the lifecycle bounds).
+func TestHandleStreamingResponseDisabledFirstByteTimeoutKeepsNormalStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("group", &models.Group{EffectiveConfig: types.SystemSettings{StreamFirstByteTimeout: 0}})
+
+	// The deadline wrapper must not be installed: read from the body directly
+	// through the same entry path is impossible without a stalled source, so
+	// assert on the wiring instead by checking a normal short stream works and
+	// that errStreamFirstByteTimeout is never involved.
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n")),
+	}
+	(&ProxyServer{}).handleStreamingResponse(c, resp)
+
+	assert.Contains(t, w.Body.String(), "hi")
+	_, exists := c.Get(ctxKeyResponseProcessingFailed)
+	assert.False(t, exists)
+}
+
+// TestFirstByteDeadlineBodyUnit covers the wrapper directly: the first
+// non-empty read stops the timer, and a deadline that fires before any data
+// surfaces as errStreamFirstByteTimeout instead of the raw close error.
+func TestFirstByteDeadlineBodyUnit(t *testing.T) {
+	t.Run("deadline fires before data", func(t *testing.T) {
+		body := newBlockingBody()
+		b := newFirstByteDeadlineBody(body, 20*time.Millisecond)
+		buf := make([]byte, 16)
+		start := time.Now()
+		_, err := b.Read(buf)
+		require.ErrorIs(t, err, errStreamFirstByteTimeout)
+		assert.Less(t, time.Since(start), time.Second)
+		require.NoError(t, body.Close())
+	})
+
+	t.Run("first non-empty read clears deadline", func(t *testing.T) {
+		b := newFirstByteDeadlineBody(io.NopCloser(strings.NewReader("data")), time.Hour)
+		buf := make([]byte, 4)
+		n, err := b.Read(buf)
+		require.NoError(t, err)
+		assert.Equal(t, 4, n)
+		// The timer must have been stopped; a zero-duration read must not
+		// report a timeout even after the original budget would have elapsed.
+		_, err = b.Read(buf)
+		require.ErrorIs(t, err, io.EOF)
+	})
+
+	t.Run("callback loses race when first read already claimed", func(t *testing.T) {
+		// Regression for the CodeRabbit race finding: when the timeout
+		// callback starts while the first Read has just delivered a chunk,
+		// only one side may claim gotFirst. The callback that loses the CAS
+		// must not close the body; otherwise the healthy stream is truncated
+		// because timer.Stop() cannot cancel a callback already running.
+		b := newFirstByteDeadlineBody(io.NopCloser(strings.NewReader("data")), time.Hour)
+		buf := make([]byte, 4)
+		n, err := b.Read(buf)
+		require.NoError(t, err)
+		assert.Equal(t, 4, n)
+		// Simulate the timer callback firing after the first read claimed
+		// gotFirst: it must lose the CAS and leave the body open.
+		b.onDeadline()
+		assert.False(t, b.timedOut.Load(), "callback that loses the CAS must not mark timed out")
+		// The stream must still deliver the remaining EOF without a
+		// closed-body error.
+		_, err = b.Read(buf)
+		require.ErrorIs(t, err, io.EOF, "body must stay open after the losing callback")
+	})
+
+	t.Run("callback wins race before first read", func(t *testing.T) {
+		// Real-timer ordering: the deadline fires while the first Read is
+		// parked on the body; the callback claims gotFirst, closes the body,
+		// and the parked read surfaces as errStreamFirstByteTimeout. The read
+		// cannot return on its own (blockingBody never yields data), so its
+		// return proves the callback fired and released it.
+		body := newBlockingBody()
+		b := newFirstByteDeadlineBody(body, 30*time.Millisecond)
+		buf := make([]byte, 16)
+		done := make(chan struct{})
+		var n int
+		var err error
+		go func() {
+			defer close(done)
+			n, err = b.Read(buf)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("read never returned; deadline callback did not release the parked read")
+		}
+		assert.Zero(t, n)
+		require.ErrorIs(t, err, errStreamFirstByteTimeout)
+		require.NoError(t, body.Close())
+	})
+}
+
+// TestFirstByteDeadlineBodyTimeoutClaimIsTerminal pins the race where onDeadline
+// wins gotFirst after body.Read already produced bytes — the read result must be
+// discarded and errStreamFirstByteTimeout returned so the handler can still
+// reply 504 instead of writing a partial successful stream.
+func TestFirstByteDeadlineBodyTimeoutClaimIsTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := io.NopCloser(bytes.NewReader([]byte("hello")))
+	b := newFirstByteDeadlineBody(body, time.Hour) // budget far in the future
+	// Simulate the deadline callback winning the claim first (as it would in the
+	// race window): it claims gotFirst, sets timedOut and closes the body.
+	b.onDeadline()
+	// The underlying read still produces bytes, but the timeout claim is terminal:
+	// the bytes must be discarded and errStreamFirstByteTimeout returned.
+	n, err := b.Read(make([]byte, 16))
+	assert.Zero(t, n)
+	assert.ErrorIs(t, err, errStreamFirstByteTimeout)
 }

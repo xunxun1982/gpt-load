@@ -1194,61 +1194,6 @@ func TestShouldAbortOnIgnorableErrorStopsWhenClientCanceled(t *testing.T) {
 	assert.True(t, ps.shouldAbortOnIgnorableError(c, err))
 }
 
-func TestEffectiveNonStreamRequestContextFallsBackForNonPositiveTimeout(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name              string
-		cfg               types.SystemSettings
-		expectImmediate   bool
-		expectHasDeadline bool
-	}{
-		{
-			name: "positive non-stream timeout uses deadline",
-			cfg: types.SystemSettings{
-				NonStreamRequestTimeout: 1,
-				RequestTimeout:          0,
-			},
-			expectImmediate:   false,
-			expectHasDeadline: true,
-		},
-		{
-			name: "zero non-stream timeout falls back to legacy request timeout",
-			cfg: types.SystemSettings{
-				NonStreamRequestTimeout: 0,
-				RequestTimeout:          1,
-			},
-			expectImmediate:   false,
-			expectHasDeadline: true,
-		},
-		{
-			name: "zero non-stream and legacy timeouts uses cancelable context",
-			cfg: types.SystemSettings{
-				NonStreamRequestTimeout: 0,
-				RequestTimeout:          0,
-			},
-			expectImmediate:   false,
-			expectHasDeadline: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := effectiveNonStreamRequestContext(context.Background(), tt.cfg)
-			defer cancel()
-
-			_, hasDeadline := ctx.Deadline()
-			assert.Equal(t, tt.expectHasDeadline, hasDeadline)
-			select {
-			case <-ctx.Done():
-				assert.True(t, tt.expectImmediate, "context should not be canceled immediately")
-			default:
-				assert.False(t, tt.expectImmediate, "context should be canceled immediately")
-			}
-		})
-	}
-}
-
 func TestExecuteRequestWithRetryStopsWhenNonStreamLifecycleTimeoutExpires(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Parallel()
@@ -2947,20 +2892,20 @@ func TestExecuteRequestWithAggregateRetryStopsWhenNonStreamLifecycleTimeoutExpir
 	slowGroup := createTestGroup(t, db, "agg-timeout-slow", "openai")
 	slowGroup.Upstreams = []byte(`[{"url":"` + slowUpstream.URL + `","weight":100}]`)
 	slowGroup.Config = map[string]any{
-		"max_retries":                0,
-		"non_stream_request_timeout": 1,
-		"stream_request_timeout":     0,
-		"blacklist_threshold":        100,
+		"max_retries":               0,
+		"request_timeout":           1,
+		"stream_first_byte_timeout": 0,
+		"blacklist_threshold":       100,
 	}
 	require.NoError(t, db.Save(slowGroup).Error)
 
 	fastGroup := createTestGroup(t, db, "agg-timeout-fast", "openai")
 	fastGroup.Upstreams = []byte(`[{"url":"` + fastUpstream.URL + `","weight":100}]`)
 	fastGroup.Config = map[string]any{
-		"max_retries":                0,
-		"non_stream_request_timeout": 1,
-		"stream_request_timeout":     0,
-		"blacklist_threshold":        100,
+		"max_retries":               0,
+		"request_timeout":           1,
+		"stream_first_byte_timeout": 0,
+		"blacklist_threshold":       100,
 	}
 	require.NoError(t, db.Save(fastGroup).Error)
 
@@ -3038,11 +2983,11 @@ func TestExecuteRequestWithAggregateRetryUsesEffectiveStreamModeForLifecycle(t *
 	subGroup := createTestGroup(t, db, "agg-effective-mode-sub", "openai")
 	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
 	subGroup.Config = map[string]any{
-		"max_retries":                0,
-		"force_non_stream":           true,
-		"stream_request_timeout":     1,
-		"non_stream_request_timeout": 2,
-		"blacklist_threshold":        100,
+		"max_retries":               0,
+		"force_non_stream":          true,
+		"stream_first_byte_timeout": 1,
+		"request_timeout":           2,
+		"blacklist_threshold":       100,
 	}
 	require.NoError(t, db.Save(subGroup).Error)
 
@@ -3053,9 +2998,9 @@ func TestExecuteRequestWithAggregateRetryUsesEffectiveStreamModeForLifecycle(t *
 		Enabled:     true,
 		Upstreams:   []byte(`[{"url":"https://unused.example","weight":100}]`),
 		Config: map[string]any{
-			"max_retries":                0,
-			"stream_request_timeout":     1,
-			"non_stream_request_timeout": 2,
+			"max_retries":               0,
+			"stream_first_byte_timeout": 1,
+			"request_timeout":           2,
 		},
 	}
 	require.NoError(t, db.Create(aggregateGroup).Error)
@@ -3472,10 +3417,10 @@ func TestExecuteRequestWithAggregateRetryKeepsSubGroupDelayInsideNonStreamTimeou
 	subGroup := createTestGroup(t, db, "agg-retry-delay-timeout-sub", "openai")
 	subGroup.Upstreams = []byte(`[{"url":"` + upstream.URL + `","weight":100}]`)
 	subGroup.Config = map[string]any{
-		"max_retries":                1,
-		"retry_delay_ms":             1500,
-		"non_stream_request_timeout": 1,
-		"blacklist_threshold":        100,
+		"max_retries":         1,
+		"retry_delay_ms":      1500,
+		"request_timeout":     1,
+		"blacklist_threshold": 100,
 	}
 	require.NoError(t, db.Save(subGroup).Error)
 
@@ -6144,12 +6089,12 @@ func compressBrotliForProxyTest(t *testing.T, body []byte) []byte {
 	return buf.Bytes()
 }
 
-func systemSettingsWithRetryTimeout(maxRetries, nonStreamTimeout int) types.SystemSettings {
+func systemSettingsWithRetryTimeout(maxRetries, requestTimeout int) types.SystemSettings {
 	return types.SystemSettings{
 		MaxRetries:                  maxRetries,
 		RetryBackoffMaxPercent:      500,
-		NonStreamRequestTimeout:     nonStreamTimeout,
-		StreamRequestTimeout:        0,
+		RequestTimeout:              requestTimeout,
+		StreamFirstByteTimeout:      0,
 		ConnectTimeout:              1,
 		IdleConnTimeout:             30,
 		MaxIdleConns:                10,

@@ -831,7 +831,7 @@ func TestValidateAndCleanConfig(t *testing.T) {
 	}
 }
 
-func TestValidateAndCleanConfigLegacyRequestTimeoutCompatibility(t *testing.T) {
+func TestValidateAndCleanConfigTimeoutKeys(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
 	svc := setupTestGroupService(t, db)
@@ -841,44 +841,57 @@ func TestValidateAndCleanConfigLegacyRequestTimeoutCompatibility(t *testing.T) {
 		config      map[string]any
 		expected    map[string]any
 		expectError bool
+		// removedKeys: legacy keys must be removed after normalization.
+		removedKeys []string
 	}{
 		{
-			name: "legacy request timeout backfills missing split timeout",
+			name: "request_timeout passes through",
 			config: map[string]any{
 				"request_timeout": 60,
 			},
 			expected: map[string]any{
-				"request_timeout":            float64(60),
-				"non_stream_request_timeout": float64(60),
+				"request_timeout": float64(60),
 			},
 		},
 		{
-			name: "legacy string request timeout backfills missing split timeout",
-			config: map[string]any{
-				"request_timeout": "60",
-			},
-			expected: map[string]any{
-				"request_timeout":            float64(60),
-				"non_stream_request_timeout": float64(60),
-			},
-		},
-		{
-			name: "explicit zero split timeout overrides legacy fallback",
-			config: map[string]any{
-				"request_timeout":            60,
-				"non_stream_request_timeout": 0,
-			},
-			expected: map[string]any{
-				"request_timeout":            float64(0),
-				"non_stream_request_timeout": float64(0),
-			},
-		},
-		{
-			name: "legacy zero request timeout remains invalid without split timeout",
+			name: "zero request_timeout is allowed",
 			config: map[string]any{
 				"request_timeout": 0,
 			},
-			expectError: true,
+			expected: map[string]any{
+				"request_timeout": float64(0),
+			},
+		},
+		{
+			name: "legacy non_stream_request_timeout is normalized to request_timeout",
+			config: map[string]any{
+				"non_stream_request_timeout": float64(60),
+			},
+			expected: map[string]any{
+				"request_timeout": float64(60),
+			},
+			removedKeys: []string{"non_stream_request_timeout"},
+		},
+		{
+			name: "legacy non_stream_request_timeout yields to explicit request_timeout",
+			config: map[string]any{
+				"request_timeout":            float64(45),
+				"non_stream_request_timeout": float64(60),
+			},
+			expected: map[string]any{
+				"request_timeout": float64(45),
+			},
+			removedKeys: []string{"non_stream_request_timeout"},
+		},
+		{
+			name: "legacy stream_request_timeout is normalized to stream_first_byte_timeout",
+			config: map[string]any{
+				"stream_request_timeout": float64(30),
+			},
+			expected: map[string]any{
+				"stream_first_byte_timeout": float64(30),
+			},
+			removedKeys: []string{"stream_request_timeout"},
 		},
 	}
 
@@ -892,6 +905,9 @@ func TestValidateAndCleanConfigLegacyRequestTimeoutCompatibility(t *testing.T) {
 			require.NoError(t, err)
 			for key, expected := range tt.expected {
 				assert.Equal(t, expected, cleaned[key])
+			}
+			for _, key := range tt.removedKeys {
+				assert.NotContains(t, cleaned, key)
 			}
 		})
 	}

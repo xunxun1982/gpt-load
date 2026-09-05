@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"gpt-load/internal/models"
 	"gpt-load/internal/tokenusage"
@@ -50,15 +52,101 @@ type limitedResponseCaptureWriter struct {
 }
 
 type streamFlushWriter struct {
-	writer   io.Writer
-	flusher  http.Flusher
-	writeErr *error
+	writer      io.Writer
+	flusher     http.Flusher
+	writeErr    *error
+	onFirstByte func()
+}
+
+type firstByteWriter struct {
+	writer      io.Writer
+	onFirstByte func()
+}
+
+// errStreamFirstByteTimeout is returned when the first non-empty body read
+// consumes the remaining stream_first_byte_timeout budget (the transport's
+// ResponseHeaderTimeout stops at header arrival and does not cover body reads).
+var errStreamFirstByteTimeout = errors.New("stream first byte timeout: upstream did not send response body data in time")
+
+// firstByteDeadlineBody extends the stream_first_byte_timeout budget from the
+// response-header wait to the first non-empty body read. The transport-level
+// ResponseHeaderTimeout only covers header arrival; a stalled upstream that
+// sent headers but no body would otherwise block resp.Body.Read until
+// request_timeout (or forever when request_timeout is disabled). The deadline
+// is cleared once the first chunk arrives, so only the initial read is bounded.
+//
+// CLAIM SEMANTICS: gotFirst is a claim flag decided exactly once by either the
+// first non-empty read or the timeout callback, whichever wins the CAS. The
+// loser exits without side effects: timer.Stop() cannot cancel a callback that
+// is already running, so without the CAS a callback racing a first-chunk read
+// could close a healthy body and truncate the stream.
+type firstByteDeadlineBody struct {
+	body     io.ReadCloser
+	timer    *time.Timer
+	gotFirst atomic.Bool // claim flag: first read or timeout, whichever CAS-wins
+	timedOut atomic.Bool // deadline claimed before any data arrived
+}
+
+func newFirstByteDeadlineBody(body io.ReadCloser, timeout time.Duration) *firstByteDeadlineBody {
+	b := &firstByteDeadlineBody{body: body}
+	b.timer = time.AfterFunc(timeout, b.onDeadline)
+	return b
+}
+
+// onDeadline is the timer callback. CAS-claim first: when the first non-empty
+// read already claimed gotFirst, the deadline lost the race and the body must
+// stay open. When the callback wins, close the body to release a Read parked
+// on the connection (Close is idempotent so a concurrent normal close is safe).
+func (b *firstByteDeadlineBody) onDeadline() {
+	if !b.gotFirst.CompareAndSwap(false, true) {
+		return
+	}
+	b.timedOut.Store(true)
+	_ = b.body.Close()
+}
+
+func (b *firstByteDeadlineBody) Read(p []byte) (int, error) {
+	n, err := b.body.Read(p)
+	// Claim first-byte delivery via CAS: losing to the timeout callback means
+	// the deadline expired and tore the stream down; never Stop() the timer
+	// then (it already fired and the callback is past cancellation anyway).
+	if n > 0 && b.gotFirst.CompareAndSwap(false, true) {
+		b.timer.Stop()
+	}
+	// A set timedOut means the deadline callback won the claim: the read result
+	// is discarded and the stream fails with errStreamFirstByteTimeout so the
+	// handler can still reply 504. Bytes read in the race window (after the
+	// deadline already closed the body) are dropped and never written.
+	if b.timedOut.Load() {
+		return 0, errStreamFirstByteTimeout
+	}
+	return n, err
+}
+
+func (b *firstByteDeadlineBody) Close() error {
+	b.timer.Stop()
+	return b.body.Close()
+}
+
+func (w firstByteWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	// Only record the first byte after a successful client write; a failed
+	// write (err != nil) must not be reported as delivered first byte.
+	if err == nil && n > 0 && w.onFirstByte != nil {
+		w.onFirstByte()
+	}
+	return n, err
 }
 
 func (w streamFlushWriter) Write(p []byte) (int, error) {
 	n, err := w.writer.Write(p)
 	if err != nil && w.writeErr != nil {
 		*w.writeErr = err
+	}
+	// Only record the first byte after a successful client write; a failed
+	// write (err != nil) must not be reported as delivered first byte.
+	if err == nil && n > 0 && w.onFirstByte != nil {
+		w.onFirstByte()
 	}
 	if n > 0 && w.flusher != nil {
 		w.flusher.Flush()
@@ -685,6 +773,30 @@ func markResponseProcessingFailed(c *gin.Context) {
 	}
 }
 
+// writeStreamFirstByteTimeout replies with a gateway timeout when the
+// stream_first_byte_timeout deadline fires before any byte was delivered to
+// the client. Nothing has been written yet (the deadline only fires on the
+// zero-byte first read), so the status is still mutable; the logical
+// failure context makes logRequest record this request as failed (via
+// logicalStatusFromContext) instead of a successful 200 with an empty body.
+
+func writeStreamFirstByteTimeout(c *gin.Context) {
+	clearUpstreamEncodingHeaders(c)
+	// The stream handlers already set text/event-stream; a JSON error body
+	// must override that header to notify non-SSE clients about the timeout.
+	c.Header("Content-Type", "application/json")
+	setLogicalFailureContext(c, http.StatusGatewayTimeout, "first_byte_timeout", errStreamFirstByteTimeout.Error())
+	// The 504 error body is a delivered (non-empty) response, so it records the
+	// first-byte timing; writeJSONMarkingFirstByte only marks when the write
+	// actually reached the client.
+	writeJSONMarkingFirstByte(c, http.StatusGatewayTimeout, gin.H{
+		"error": gin.H{
+			"message": "Upstream did not send response body data in time",
+			"type":    "timeout_error",
+		},
+	})
+}
+
 // shouldCaptureResponse checks if response body capturing is enabled for the request
 func shouldCaptureResponse(c *gin.Context) bool {
 	if groupVal, exists := c.Get("group"); exists {
@@ -749,7 +861,7 @@ func captureDecodedResponseChunk(responseCapture *bytes.Buffer, chunk []byte) {
 }
 
 func copyRemainingStreamToClient(c *gin.Context, r io.Reader, flusher http.Flusher) error {
-	_, err := io.Copy(streamFlushWriter{writer: c.Writer, flusher: flusher}, r)
+	_, err := io.Copy(streamFlushWriter{writer: c.Writer, flusher: flusher, onFirstByte: func() { markFirstByte(c) }}, r)
 	if err != nil {
 		logUpstreamError("copying remaining compressed stream to client", err)
 	}
@@ -830,6 +942,18 @@ func setResponsesLogicalFailure(c *gin.Context, status, errorCode, errorMessage 
 }
 
 func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Response) {
+	// stream_first_byte_timeout must also bound the first body read: the
+	// transport-level ResponseHeaderTimeout stops at header arrival, so an
+	// upstream that stalls right after sending headers would otherwise block
+	// this loop until request_timeout (or forever when it is disabled). Reuse
+	// the CC reader's remaining-budget computation; the deadline is cleared
+	// once the first non-empty chunk arrives (see firstByteDeadlineBody).
+	if firstByteTimeout, _ := getEffectiveSSETimeouts(c); firstByteTimeout > 0 {
+		deadlineBody := newFirstByteDeadlineBody(resp.Body, firstByteTimeout)
+		resp.Body = deadlineBody
+		defer func() { _ = deadlineBody.Close() }()
+	}
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -865,9 +989,10 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 	if decodedEncodedResponse {
 		var downstreamWriteErr error
 		teeReader := io.TeeReader(resp.Body, streamFlushWriter{
-			writer:   c.Writer,
-			flusher:  flusher,
-			writeErr: &downstreamWriteErr,
+			writer:      c.Writer,
+			flusher:     flusher,
+			writeErr:    &downstreamWriteErr,
+			onFirstByte: func() { markFirstByte(c) },
 		})
 		decodedReader, err := utils.NewDecompressReader(contentEncoding, io.NopCloser(teeReader))
 		if err != nil {
@@ -913,7 +1038,13 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 			if err != nil {
 				logUpstreamError("decoding compressed stream", err)
 				markResponseProcessingFailed(c)
-				_ = copyRemainingStreamToClient(c, resp.Body, flusher)
+				// A first-byte timeout fires before any byte was written, so
+				// reply with a gateway timeout instead of draining the body.
+				if errors.Is(err, errStreamFirstByteTimeout) {
+					writeStreamFirstByteTimeout(c)
+				} else {
+					_ = copyRemainingStreamToClient(c, resp.Body, flusher)
+				}
 				return
 			}
 		}
@@ -935,11 +1066,14 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 					estimateCapture.Write(chunk)
 					failureCapture.Write(chunk)
 				}
+				// Record first byte time only after the chunk was successfully
+				// written to the client (write returned without error).
 				if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
 					logUpstreamError("writing stream to client", writeErr)
 					markResponseProcessingFailed(c)
 					return
 				}
+				markFirstByte(c)
 
 				// Capture response data if enabled (up to max capture limit)
 				if !encodedResponse {
@@ -957,6 +1091,13 @@ func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Respon
 			if err != nil {
 				logUpstreamError("reading from upstream", err)
 				markResponseProcessingFailed(c)
+				// A first-byte timeout fires before any byte was written, so
+				// the status is still mutable: reply with a gateway timeout
+				// instead of letting gin commit an empty 200 that logRequest
+				// would record as a successful upstream response.
+				if errors.Is(err, errStreamFirstByteTimeout) {
+					writeStreamFirstByteTimeout(c)
+				}
 				return
 			}
 		}
@@ -1018,18 +1159,22 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 			c.Set(ctxKeyResponsesStatusUnverified, true)
 		}
 
-		// Write to client
+		// Write to client, then record first byte only after a successful write
+		// and when the body is non-empty: an empty upstream body has no first byte;
+		// keep the nullable log column NULL so the UI shows '-' as before.
 		if _, err := c.Writer.Write(body); err != nil {
 			logUpstreamError("writing response body", err)
+		} else if len(body) > 0 {
+			markFirstByte(c)
 		}
 	} else if contentEncoding != "" {
 		if isSupportedResponseContentEncoding(contentEncoding) {
-			teeReader := io.TeeReader(resp.Body, c.Writer)
+			teeReader := io.TeeReader(resp.Body, firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }})
 			err := setTokenUsageOrEstimateFromCompressedReader(c, contentEncoding, io.NopCloser(teeReader), resp.StatusCode < http.StatusBadRequest)
 			if err != nil {
 				logUpstreamError("decoding compressed response body for token accounting", err)
 				markResponseProcessingFailed(c)
-				if _, copyErr := io.Copy(c.Writer, resp.Body); copyErr != nil {
+				if _, copyErr := io.Copy(firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }}, resp.Body); copyErr != nil {
 					logUpstreamError("copying remaining compressed response body", copyErr)
 				}
 			}
@@ -1037,7 +1182,7 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 			if c.Request != nil && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 				c.Set(ctxKeyResponsesStatusUnverified, true)
 			}
-			if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+			if _, err := io.Copy(firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }}, resp.Body); err != nil {
 				logUpstreamError("copying compressed response body", err)
 			}
 		}
@@ -1046,11 +1191,11 @@ func (ps *ProxyServer) handleNormalResponse(c *gin.Context, resp *http.Response)
 			limit: maxUsageTailCaptureBytes,
 		}
 		estimateCapture := &estimatedTokenCapture{}
-		copyWriter := io.MultiWriter(c.Writer, usageCapture, estimateCapture)
+		copyWriter := io.MultiWriter(firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }}, usageCapture, estimateCapture)
 		var statusCapture *headResponseCapture
 		if c.Request != nil && isOpenAIResponsesEndpoint(c.Request.URL.Path) {
 			statusCapture = &headResponseCapture{limit: maxResponseCaptureBytes}
-			copyWriter = io.MultiWriter(c.Writer, usageCapture, statusCapture, estimateCapture)
+			copyWriter = io.MultiWriter(firstByteWriter{writer: c.Writer, onFirstByte: func() { markFirstByte(c) }}, usageCapture, statusCapture, estimateCapture)
 		}
 		if _, err := io.Copy(copyWriter, resp.Body); err != nil {
 			logUpstreamError("copying response body", err)
@@ -1081,8 +1226,11 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 	if err != nil {
 		logrus.WithError(err).Error("Codex forced stream: failed to collect stream response")
 		markResponseProcessingFailed(c)
-		// Do not expose internal error details to client for security
-		c.JSON(http.StatusBadGateway, gin.H{
+		// Do not expose internal error details to client for security.
+		// writeJSONMarkingFirstByte records the first byte only when the
+		// response actually reached the client (gin helpers swallow write
+		// errors, which would otherwise persist a false first_byte_duration_ms).
+		writeJSONMarkingFirstByte(c, http.StatusBadGateway, gin.H{
 			"error": gin.H{
 				"message": "Failed to collect stream response",
 				"type":    "server_error",
@@ -1107,7 +1255,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 			"error_type":    codexResp.Error.Type,
 			"error_message": utils.TruncateString(utils.SanitizeErrorBody(codexResp.Error.Message), 200),
 		}).Warn("Codex forced stream: upstream returned error")
-		c.JSON(statusCode, codexResp)
+		writeJSONMarkingFirstByte(c, statusCode, codexResp)
 		return
 	}
 
@@ -1123,7 +1271,7 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 	if err != nil {
 		logrus.WithError(err).Error("Codex forced stream: failed to marshal response")
 		markResponseProcessingFailed(c)
-		c.JSON(http.StatusInternalServerError, gin.H{
+		writeJSONMarkingFirstByte(c, http.StatusInternalServerError, gin.H{
 			"error": gin.H{
 				"message": "Failed to marshal response",
 				"type":    "server_error",
@@ -1151,8 +1299,9 @@ func (ps *ProxyServer) handleCodexForcedStreamResponse(c *gin.Context, resp *htt
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(responseBody, maxResponseCaptureBytes))
 	}
 
-	// c.Data already sets Content-Type, no need for redundant c.Header call
-	c.Data(resp.StatusCode, "application/json", responseBody)
+	// writeDataMarkingFirstByte sets Content-Type only when unset and records
+	// the first byte only when the write actually delivered bytes.
+	writeDataMarkingFirstByte(c, resp.StatusCode, "application/json", responseBody)
 }
 
 // codexStreamResponse represents a Codex streaming response structure for collection.

@@ -209,6 +209,38 @@ func (gm *GroupManager) Initialize() error {
 		gm.preloadUpstreamProxyReferences(preloadCtx, groups, proxyResolveCache)
 		preloadCancel()
 		for _, group := range groups {
+			// One-time migration of persisted legacy group config keys (non_stream_request_timeout
+			// -> request_timeout, stream_request_timeout -> stream_first_byte_timeout). Only fires
+			// while a legacy key exists, so steady-state loads have zero write overhead.
+			if config.NormalizeLegacyGroupTimeoutConfig(group.Config) {
+				updateCtx, updateCancel := context.WithTimeout(context.Background(), timeout)
+				// Optimistic concurrency guard: only write when the row is unchanged since
+				// load. A concurrent GroupService.UpdateGroup save bumps updated_at, which
+				// makes this stale normalized write miss (0 rows) instead of overwriting
+				// the newer config with legacy-normalized data.
+				//
+				// Deliberately NOT advancing updated_at here: GroupService.UpdateGroup
+				// persists via tx.Save, an unconditional full-row write that always stamps
+				// updated_at itself and never compares it, so bumping updated_at in this
+				// migration cannot stop a stale save from overwriting the migrated config.
+				// The real protection is the CAS above (this write misses when the row
+				// changed) plus the fact that UpdateGroup re-normalizes config through
+				// validateAndCleanConfig before saving, and any legacy keys written back
+				// are re-normalized on the next load. Advancing updated_at here would only
+				// make this migration look like a user edit and break the last-write-wins
+				// semantics of the explicit save API.
+				result := gm.db.WithContext(updateCtx).Model(&models.Group{}).
+					Where("id = ? AND updated_at = ?", group.ID, group.UpdatedAt).
+					UpdateColumn("config", group.Config)
+				if result.Error != nil {
+					logrus.WithError(result.Error).WithField("group_name", group.Name).
+						Warn("Failed to persist migrated group timeout config")
+				} else if result.RowsAffected == 0 {
+					logrus.WithField("group_name", group.Name).
+						Debug("Skipped persisting migrated group timeout config: row updated concurrently")
+				}
+				updateCancel()
+			}
 			g := *group
 			g.EffectiveConfig = gm.settingsManager.GetEffectiveConfig(g.Config)
 			if bytes.Contains(g.Upstreams, []byte("proxy-pool:")) {

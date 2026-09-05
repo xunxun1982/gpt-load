@@ -1692,7 +1692,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 				},
 			}
 			clearUpstreamEncodingHeaders(c)
-			c.JSON(http.StatusBadGateway, claudeErr)
+			writeJSONMarkingFirstByte(c, http.StatusBadGateway, claudeErr)
 			return
 		}
 
@@ -1727,7 +1727,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 				},
 			}
 			clearUpstreamEncodingHeaders(c)
-			c.JSON(http.StatusBadGateway, claudeErr)
+			writeJSONMarkingFirstByte(c, http.StatusBadGateway, claudeErr)
 			return
 		}
 		// Other decompression errors: continue with original data but preserve encoding header
@@ -1777,7 +1777,10 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		if !decompressed && origEncoding != "" {
 			c.Header("Content-Encoding", origEncoding)
 		}
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
+		// writeDataMarkingFirstByte records first-byte delivery only when the
+		// write actually succeeds with non-empty bytes; an empty fallback body
+		// keeps first_byte_duration_ms NULL.
+		writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 
@@ -1801,7 +1804,7 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 			claudeErr.Error.Message = "Upstream returned an error"
 		}
 		clearUpstreamEncodingHeaders(c)
-		c.JSON(resp.StatusCode, claudeErr)
+		writeJSONMarkingFirstByte(c, resp.StatusCode, claudeErr)
 		return
 	}
 	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
@@ -1839,14 +1842,18 @@ func (ps *ProxyServer) handleCodexCCNormalResponse(c *gin.Context, resp *http.Re
 		if !decompressed && origEncoding != "" {
 			c.Header("Content-Encoding", origEncoding)
 		}
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
+		// writeDataMarkingFirstByte records first-byte delivery only when the
+		// write actually succeeds with non-empty bytes; an empty fallback body
+		// keeps first_byte_duration_ms NULL (defensive, mirrors the CC fallback
+		// in cc_support.go).
+		writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 
 	c.Set("response_body", sanitizeAndTruncateBytesForLog(claudeBody, maxResponseCaptureBytes))
 	clearUpstreamEncodingHeaders(c)
 	c.Header("Content-Type", "application/json")
-	c.Data(resp.StatusCode, "application/json", claudeBody)
+	writeDataMarkingFirstByte(c, resp.StatusCode, "application/json", claudeBody)
 }
 
 // codexLineReadResult is one line (or read error) produced by the codexLineReader goroutine.
@@ -2040,7 +2047,12 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.Type, string(eventBytes))
+		// Streaming CC records the first byte only after a successful client write,
+		// mirroring the plain streaming handler in response_handlers.go.
+		n, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.Type, string(eventBytes))
+		if err == nil && n > 0 {
+			markFirstByte(c)
+		}
 		if err != nil {
 			return err
 		}
@@ -2140,10 +2152,6 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 			}
 			return
 		}
-		if err == nil {
-			firstByteReceived = true
-		}
-
 		lineCount++
 		// Per AI review: only log line preview when EnableRequestBodyLogging is enabled
 		// to avoid leaking sensitive SSE payloads (tool args, file paths, etc.)
@@ -2241,6 +2249,17 @@ func (ps *ProxyServer) handleCodexCCStreamingResponse(c *gin.Context, resp *http
 					logrus.WithError(err).Error("Codex CC: Failed to write stream event")
 					return
 				}
+			}
+			// The first-byte deadline stays active until the first complete data:
+			// event has been parsed AND successfully written to the client. event:,
+			// blank, keepalive, or partial input lines must not switch to the
+			// (disabled) subsequent timeout, or an upstream that stalls right after
+			// such a line would block the stream indefinitely. A data event that
+			// produces no Claude events also keeps the first-byte timeout active:
+			// it delivered no bytes to the client, and the per-read timeout cannot
+			// harm slow-but-alive streams (any arriving line resets it).
+			if len(claudeEvents) > 0 {
+				firstByteReceived = true
 			}
 			if codexEvent.Type == "response.completed" || codexEvent.Type == "response.done" ||
 				codexEvent.Type == "response.failed" || codexEvent.Type == "response.incomplete" ||

@@ -1514,7 +1514,10 @@ func returnClaudeError(c *gin.Context, statusCode int, message string) {
 			Message: message,
 		},
 	}
-	c.JSON(statusCode, claudeErr)
+	// Record first byte at the client delivery point; the helper marks only
+	// after a successful non-empty write, so a failed response write leaves
+	// first_byte_duration_ms NULL.
+	writeJSONMarkingFirstByte(c, statusCode, claudeErr)
 }
 
 // OpenAIChoice represents a choice in OpenAI response.
@@ -2886,7 +2889,10 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 				},
 			}
 			clearUpstreamEncodingHeaders(c)
-			c.JSON(http.StatusBadGateway, claudeErr)
+			// Record first byte at the client delivery point; the helper marks
+			// only after a successful non-empty write, so a failed response
+			// write leaves first_byte_duration_ms NULL.
+			writeJSONMarkingFirstByte(c, http.StatusBadGateway, claudeErr)
 			return
 		}
 
@@ -2921,7 +2927,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 				},
 			}
 			clearUpstreamEncodingHeaders(c)
-			c.JSON(http.StatusBadGateway, claudeErr)
+			writeJSONMarkingFirstByte(c, http.StatusBadGateway, claudeErr)
 			return
 		}
 		// Other decompression errors: continue with original data but preserve encoding header
@@ -2976,7 +2982,10 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 
 		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
 		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
+		// writeDataMarkingFirstByte records first-byte delivery only when the
+		// write actually succeeds with non-empty bytes; an empty fallback body
+		// keeps first_byte_duration_ms NULL.
+		writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 
@@ -3001,14 +3010,17 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 			claudeErr.Error.Message = "Upstream returned an error"
 		}
 		clearUpstreamEncodingHeaders(c)
-		c.JSON(resp.StatusCode, claudeErr)
+		writeJSONMarkingFirstByte(c, resp.StatusCode, claudeErr)
 		return
 	}
 	if len(openaiResp.Choices) == 0 && openaiResp.Usage == nil {
 		clearUpstreamEncodingHeaders(c)
 		canEstimateFromBody := resp.StatusCode < http.StatusBadRequest && (origEncoding == "" || decompressed)
 		setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, canEstimateFromBody)
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
+		// writeDataMarkingFirstByte records first-byte delivery only when the
+		// write actually succeeds with non-empty bytes; an empty fallback body
+		// keeps first_byte_duration_ms NULL.
+		writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 	setTokenUsageOrEstimateFromFullBodyIf(c, bodyBytes, resp.StatusCode < http.StatusBadRequest)
@@ -3077,7 +3089,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 				},
 			}
 			clearUpstreamEncodingHeaders(c)
-			c.JSON(http.StatusBadGateway, claudeErr)
+			writeJSONMarkingFirstByte(c, http.StatusBadGateway, claudeErr)
 			return
 		}
 	}
@@ -3141,7 +3153,10 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 		if !decompressed && origEncoding != "" {
 			c.Header("Content-Encoding", origEncoding)
 		}
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
+		// writeDataMarkingFirstByte records first-byte delivery only when the
+		// write actually succeeds with non-empty bytes; an empty fallback body
+		// keeps first_byte_duration_ms NULL.
+		writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), bodyBytes)
 		return
 	}
 
@@ -3154,7 +3169,7 @@ func (ps *ProxyServer) handleCCNormalResponse(c *gin.Context, resp *http.Respons
 	clearUpstreamEncodingHeaders(c)
 
 	c.Header("Content-Type", "application/json")
-	c.Data(resp.StatusCode, "application/json", claudeBody)
+	writeDataMarkingFirstByte(c, resp.StatusCode, "application/json", claudeBody)
 }
 
 // ClaudeStreamEvent represents a Claude streaming event.
@@ -3699,7 +3714,14 @@ func (ps *ProxyServer) handleCCStreamingResponse(c *gin.Context, resp *http.Resp
 		}()
 	}
 
-	writer := NewSSEWriter(streamWriter, flusher)
+	// Wrap the stream writer (including the response-capture variant) so the
+	// first byte is recorded only after the client write succeeded, mirroring
+	// the plain streaming handler. The wrapper sits outside the capture writer,
+	// so capture behavior is unchanged.
+	writer := NewSSEWriter(firstByteWriter{
+		writer:      streamWriter,
+		onFirstByte: func() { markFirstByte(c) },
+	}, flusher)
 	defer writer.Close()
 
 	reqID := ""
@@ -4575,20 +4597,16 @@ func appendToContent(content json.RawMessage, suffix string) json.RawMessage {
 	return content
 }
 
-// SSE timeout preset constants for CC support streaming mode.
-// These are the maximum allowed timeout values. Actual timeouts may be shorter
-// if group/system config specifies smaller values.
-// Priority: group config > system config > preset values
-// If config value < preset value, use config value; otherwise use preset value.
+// SSE timeout defaults for CC support streaming mode. Both are disabled by default;
+// stream_first_byte_timeout may enable only the wait for the first SSE event.
 const (
-	// sseFirstByteTimeoutPreset is the maximum time to wait for the first SSE event
-	// in streaming mode. Set to 30 seconds to allow for model initialization.
-	sseFirstByteTimeoutPreset = 30 * time.Second
+	// sseFirstByteTimeoutPreset disables the first-byte timeout by default.
+	sseFirstByteTimeoutPreset = 0
 
 	// sseSubsequentTimeoutPreset is the maximum time to wait between SSE events
 	// after the first event has been received. Set to 60 seconds to allow
 	// for reasonable pauses during model generation.
-	sseSubsequentTimeoutPreset = 60 * time.Second
+	sseSubsequentTimeoutPreset = 0
 
 	// nonStreamFirstByteTimeoutPreset is the maximum time to wait for the first byte
 	// in non-streaming mode. Set to 60 minutes to allow for complex reasoning tasks.
@@ -4609,13 +4627,13 @@ const (
 // Logic: min(preset_value, effective_config_value)
 // - If config value < preset value: use config value (allows stricter timeouts)
 // - If config value >= preset value: use preset value (prevents excessively long timeouts)
-// - If StreamRequestTimeout is 0: disable idle timeout between SSE events
+// - StreamFirstByteTimeout controls only the first SSE event wait; subsequent reads are unbounded.
 //
 // Timeout mapping:
 // - firstByteTimeout: derived from ResponseHeaderTimeout (time to wait for first response)
-// - subsequentTimeout: derived from StreamRequestTimeout (idle time between SSE events)
+// - subsequentTimeout: always disabled because stream timeout is no longer a lifecycle/idle timeout
 func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeout time.Duration) {
-	// Default to preset values (upper bounds)
+	// Default to no timeout; an explicit positive group/system value enables it.
 	firstByteTimeout = sseFirstByteTimeoutPreset
 	subsequentTimeout = sseSubsequentTimeoutPreset
 
@@ -4632,23 +4650,30 @@ func getEffectiveSSETimeouts(c *gin.Context) (firstByteTimeout, subsequentTimeou
 	// EffectiveConfig already contains merged group + system settings
 	cfg := group.EffectiveConfig
 
-	// Apply ResponseHeaderTimeout if smaller than preset (stricter timeout)
-	if cfg.ResponseHeaderTimeout > 0 {
-		configTimeout := time.Duration(cfg.ResponseHeaderTimeout) * time.Second
-		if configTimeout < firstByteTimeout {
-			firstByteTimeout = configTimeout
+	// Apply the configured first-byte timeout (stricter than the preset).
+	if cfg.StreamFirstByteTimeout > 0 {
+		firstByteTimeout = time.Duration(cfg.StreamFirstByteTimeout) * time.Second
+		// Single request-scoped deadline: the transport (ResponseHeaderTimeout) already
+		// waited up to the same budget for response headers, so the SSE reader must only
+		// receive the remaining time. This prevents the stream from awaiting nearly two
+		// full first-byte timeouts (headers + first event) for the first SSE event.
+		// When StreamFirstByteTimeout is 0 both the header wait and the read-side wait
+		// are unbounded (preset 0 = no timeout), so the anchor is only consulted here.
+		if startVal, ok := c.Get(ctxKeyUpstreamRequestStart); ok {
+			if start, ok := startVal.(time.Time); ok && !start.IsZero() {
+				elapsed := time.Since(start)
+				if elapsed >= firstByteTimeout {
+					// Deadline already exhausted while waiting for headers: fail fast on
+					// the next read. 0 would mean "no timeout", so keep a tiny positive
+					// value so the reader reports ErrSSETimeout almost immediately.
+					firstByteTimeout = time.Millisecond
+				} else {
+					firstByteTimeout -= elapsed
+				}
+			}
 		}
 	}
-
-	// StreamRequestTimeout=0 explicitly disables the SSE idle timeout.
-	if cfg.StreamRequestTimeout == 0 {
-		subsequentTimeout = 0
-	} else if cfg.StreamRequestTimeout > 0 {
-		configTimeout := time.Duration(cfg.StreamRequestTimeout) * time.Second
-		if configTimeout < subsequentTimeout {
-			subsequentTimeout = configTimeout
-		}
-	}
+	subsequentTimeout = 0
 
 	return
 }

@@ -123,6 +123,7 @@ func clearAttemptResponseContext(c *gin.Context) {
 	delete(c.Keys, ctxKeyUpstreamLogicalErrorMessage)
 	delete(c.Keys, ctxKeyResponsesStatusUnverified)
 	delete(c.Keys, ctxKeyResponseProcessingFailed)
+	delete(c.Keys, ctxKeyFirstByteTime)
 }
 
 func retryDelayForAttempt(cfg types.SystemSettings, retryCount int) time.Duration {
@@ -412,16 +413,6 @@ func isCodexEncryptedContentFailure(message string) bool {
 			strings.Contains(message, "could not be parsed"))
 }
 
-func effectiveNonStreamRequestContext(parent context.Context, cfg types.SystemSettings) (context.Context, context.CancelFunc) {
-	if cfg.NonStreamRequestTimeout > 0 {
-		return context.WithTimeout(parent, time.Duration(cfg.NonStreamRequestTimeout)*time.Second)
-	}
-	if cfg.RequestTimeout > 0 {
-		return context.WithTimeout(parent, time.Duration(cfg.RequestTimeout)*time.Second)
-	}
-	return context.WithCancel(parent)
-}
-
 // Context keys used for function call middleware.
 const (
 	ctxKeyTriggerSignal               = "fc_trigger_signal"
@@ -433,7 +424,71 @@ const (
 	ctxKeyUpstreamUserAgent           = "upstream_user_agent"
 	ctxKeyResponsesStatusUnverified   = "responses_status_unverified"
 	ctxKeyResponseProcessingFailed    = "response_processing_failed"
+	ctxKeyFirstByteTime               = "first_byte_time"
+	// ctxKeyUpstreamRequestStart records the moment the upstream request was dispatched
+	// (just before client.Do), so getEffectiveSSETimeouts can subtract the elapsed time
+	// from the stream-first-byte budget and give the SSE reader only the remaining wait.
+	ctxKeyUpstreamRequestStart = "upstream_request_start"
 )
+
+func markFirstByte(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	if _, exists := c.Get(ctxKeyFirstByteTime); !exists {
+		c.Set(ctxKeyFirstByteTime, time.Now())
+	}
+}
+
+// markFirstByteAfterWrite writes data through the gin response writer so the
+// write result is observable, and records first-byte delivery only when the
+// write succeeded with non-empty bytes. Gin's c.JSON/c.Data consume renderer
+// write errors (c.Errors + Abort), so the call sites cannot observe a failed
+// write and would otherwise persist a false first_byte_duration_ms when the
+// client disconnected mid-render.
+func markFirstByteAfterWrite(c *gin.Context, data []byte) {
+	n, err := c.Writer.Write(data)
+	if err == nil && n > 0 {
+		markFirstByte(c)
+	}
+}
+
+// setContentTypeIfUnset mirrors gin's render writeContentType semantics: an
+// explicitly set Content-Type (e.g. a preserved upstream value) is never
+// overwritten by the renderer.
+func setContentTypeIfUnset(c *gin.Context, contentType string) {
+	if contentType != "" && c.Writer.Header().Get("Content-Type") == "" {
+		c.Writer.Header().Set("Content-Type", contentType)
+	}
+}
+
+// writeJSONMarkingFirstByte renders obj as JSON like c.JSON (status recorded
+// up-front, Content-Type "application/json; charset=utf-8" when not already
+// set) and records first-byte delivery only when the payload was actually
+// delivered to the client.
+func writeJSONMarkingFirstByte(c *gin.Context, code int, obj any) {
+	c.Status(code)
+	setContentTypeIfUnset(c, "application/json; charset=utf-8")
+	data, err := json.Marshal(obj)
+	if err != nil {
+		// Unreachable for the locally built error/response structs used at
+		// the call sites; log instead of gin's abort path so the write
+		// contract stays observable.
+		logrus.WithError(err).Error("Failed to marshal JSON response")
+		return
+	}
+	markFirstByteAfterWrite(c, data)
+}
+
+// writeDataMarkingFirstByte writes a pre-encoded body like c.Data (status
+// recorded up-front, Content-Type set only when non-empty and not already
+// present) and records first-byte delivery only when the write delivered
+// bytes to the client. An empty body keeps first_byte_duration_ms NULL.
+func writeDataMarkingFirstByte(c *gin.Context, code int, contentType string, data []byte) {
+	c.Status(code)
+	setContentTypeIfUnset(c, contentType)
+	markFirstByteAfterWrite(c, data)
+}
 
 // ProxyServer represents the proxy server
 type ProxyServer struct {
@@ -1683,19 +1738,15 @@ func (rc *retryContext) ensureLifecycleContext(parent context.Context, isStream 
 }
 
 func lifecycleTimeoutSeconds(cfg types.SystemSettings, isStream bool) int {
-	if isStream {
-		return cfg.StreamRequestTimeout
-	}
-	if cfg.NonStreamRequestTimeout > 0 {
-		return cfg.NonStreamRequestTimeout
-	}
+	// request_timeout bounds the full lifecycle of both stream and non-stream requests
+	// (zero disables it). The isStream parameter is kept for call-site clarity but no
+	// longer changes the timeout, so streams get the same lifecycle bound as non-streams.
 	return cfg.RequestTimeout
 }
 
 func (ps *ProxyServer) aggregateRetryLifecycleConfig(originalGroup *models.Group) types.SystemSettings {
 	cfg := originalGroup.EffectiveConfig
-	nonStreamTimeout := lifecycleTimeoutSeconds(cfg, false)
-	streamTimeout := lifecycleTimeoutSeconds(cfg, true)
+	lifecycleTimeout := lifecycleTimeoutSeconds(cfg, false)
 	for _, relation := range originalGroup.SubGroups {
 		if !relation.SubGroupEnabled {
 			continue
@@ -1704,21 +1755,13 @@ func (ps *ProxyServer) aggregateRetryLifecycleConfig(originalGroup *models.Group
 		if err != nil {
 			continue
 		}
-		subNonStreamTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, false)
-		if subNonStreamTimeout > 0 && (nonStreamTimeout <= 0 || subNonStreamTimeout < nonStreamTimeout) {
-			nonStreamTimeout = subNonStreamTimeout
-		}
-		subStreamTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, true)
-		if subStreamTimeout > 0 && (streamTimeout <= 0 || subStreamTimeout < streamTimeout) {
-			streamTimeout = subStreamTimeout
+		subLifecycleTimeout := lifecycleTimeoutSeconds(subGroup.EffectiveConfig, false)
+		if subLifecycleTimeout > 0 && (lifecycleTimeout <= 0 || subLifecycleTimeout < lifecycleTimeout) {
+			lifecycleTimeout = subLifecycleTimeout
 		}
 	}
-	if nonStreamTimeout > 0 {
-		cfg.NonStreamRequestTimeout = nonStreamTimeout
-		cfg.RequestTimeout = nonStreamTimeout
-	}
-	if streamTimeout > 0 {
-		cfg.StreamRequestTimeout = streamTimeout
+	if lifecycleTimeout > 0 {
+		cfg.RequestTimeout = lifecycleTimeout
 	}
 	return cfg
 }
@@ -1943,6 +1986,11 @@ func (ps *ProxyServer) executeRequestWithRetryLifecycle(
 	isCodexAffinityAttempt := affinityAttempt
 	if isCodexAffinityAttempt {
 		retryCtx.codexAffinityAttemptCount++
+	}
+	if isStream {
+		// Anchor the request-scoped first-byte deadline so the SSE reader receives only
+		// the remaining time after the response headers arrive (see getEffectiveSSETimeouts).
+		c.Set(ctxKeyUpstreamRequestStart, time.Now())
 	}
 	resp, err := client.Do(req)
 	if resp != nil {
@@ -2911,6 +2959,11 @@ func (ps *ProxyServer) executeRequestWithAggregateRetry(
 		// Count only attempts that reach the actual upstream client call.
 		retryCtx.codexAffinityAttemptCount++
 	}
+	if isStream {
+		// Anchor the first-byte deadline for the SSE reader in CC paths
+		// (see getEffectiveSSETimeouts).
+		c.Set(ctxKeyUpstreamRequestStart, time.Now())
+	}
 	resp, err := client.Do(req)
 	if resp != nil {
 		defer resp.Body.Close()
@@ -3426,6 +3479,13 @@ func (ps *ProxyServer) logRequest(
 	}
 
 	duration := time.Since(startTime).Milliseconds()
+	var firstByteDuration *int64
+	if firstByteAt, ok := c.Get(ctxKeyFirstByteTime); ok {
+		if ts, ok := firstByteAt.(time.Time); ok && !ts.Before(startTime) {
+			value := ts.Sub(startTime).Milliseconds()
+			firstByteDuration = &value
+		}
+	}
 
 	upstreamAddrForLog := formatUpstreamAddrForLog(upstreamAddr, proxyURL, gatewayProxy)
 
@@ -3437,6 +3497,7 @@ func (ps *ProxyServer) logRequest(
 		StatusCode:             statusCode,
 		RequestPath:            utils.TruncateString(utils.SanitizeURLForLog(c.Request.URL), 500), // Sanitize to prevent auth token leakage
 		Duration:               duration,
+		FirstByteDuration:      firstByteDuration,
 		UserAgent:              userAgent,
 		UpstreamUserAgent:      upstreamUserAgent,
 		SimulatedClientEnabled: channel.IsSimulatedClientEnabled(group),
@@ -3540,23 +3601,32 @@ func (ps *ProxyServer) logRequest(
 	clearTokenUsage(c)
 
 	// Debug log for request recording
+	// TextFormatter prints pointer values as addresses via fmt.Sprint, so
+	// dereference the duration for text logs and use an explicit marker when
+	// the first byte was never delivered.
+	var firstByteDurationLog any = "unset"
+	if logEntry.FirstByteDuration != nil {
+		firstByteDurationLog = *logEntry.FirstByteDuration
+	}
 	if !logEntry.IsSuccess {
 		logrus.WithFields(logrus.Fields{
-			"group_name":   logEntry.GroupName,
-			"status_code":  logEntry.StatusCode,
-			"is_success":   logEntry.IsSuccess,
-			"request_path": logEntry.RequestPath,
-			"duration_ms":  logEntry.Duration,
-			"request_type": logEntry.RequestType,
-			"error_msg":    logEntry.ErrorMessage,
+			"group_name":             logEntry.GroupName,
+			"status_code":            logEntry.StatusCode,
+			"is_success":             logEntry.IsSuccess,
+			"request_path":           logEntry.RequestPath,
+			"duration_ms":            logEntry.Duration,
+			"first_byte_duration_ms": firstByteDurationLog,
+			"request_type":           logEntry.RequestType,
+			"error_msg":              logEntry.ErrorMessage,
 		}).Debug("Recording failed request log")
 	} else {
 		logrus.WithFields(logrus.Fields{
-			"group_name":   logEntry.GroupName,
-			"status_code":  logEntry.StatusCode,
-			"request_path": logEntry.RequestPath,
-			"duration_ms":  logEntry.Duration,
-			"request_type": logEntry.RequestType,
+			"group_name":             logEntry.GroupName,
+			"status_code":            logEntry.StatusCode,
+			"request_path":           logEntry.RequestPath,
+			"duration_ms":            logEntry.Duration,
+			"first_byte_duration_ms": firstByteDurationLog,
+			"request_type":           logEntry.RequestType,
 		}).Debug("Recording request log")
 	}
 

@@ -27,16 +27,18 @@ type SystemSettings struct {
 	EnableRequestBodyLogging       bool   `json:"enable_request_body_logging" default:"false" name:"config.enable_request_body_logging" category:"config.category.basic" desc:"config.enable_request_body_logging_desc"`
 
 	// Request settings
-	RequestTimeout          int    `json:"request_timeout" default:"1200" name:"config.request_timeout" category:"-" desc:"config.request_timeout_desc" validate:"required,min=1"`
-	NonStreamRequestTimeout int    `json:"non_stream_request_timeout" default:"1200" name:"config.non_stream_request_timeout" category:"config.category.request" desc:"config.non_stream_request_timeout_desc" validate:"required,min=0"`
-	StreamRequestTimeout    int    `json:"stream_request_timeout" default:"600" name:"config.stream_request_timeout" category:"config.category.request" desc:"config.stream_request_timeout_desc" validate:"required,min=0"`
-	ConnectTimeout          int    `json:"connect_timeout" default:"30" name:"config.connect_timeout" category:"config.category.request" desc:"config.connect_timeout_desc" validate:"required,min=1"`
-	IdleConnTimeout         int    `json:"idle_conn_timeout" default:"120" name:"config.idle_conn_timeout" category:"config.category.request" desc:"config.idle_conn_timeout_desc" validate:"required,min=1"`
-	ResponseHeaderTimeout   int    `json:"response_header_timeout" default:"600" name:"config.response_header_timeout" category:"config.category.request" desc:"config.response_header_timeout_desc" validate:"required,min=1"`
-	MaxIdleConns            int    `json:"max_idle_conns" default:"100" name:"config.max_idle_conns" category:"config.category.request" desc:"config.max_idle_conns_desc" validate:"required,min=1"`
-	MaxIdleConnsPerHost     int    `json:"max_idle_conns_per_host" default:"50" name:"config.max_idle_conns_per_host" category:"config.category.request" desc:"config.max_idle_conns_per_host_desc" validate:"required,min=1,ltecsfield=MaxIdleConns"`
-	ProxyURL                string `json:"proxy_url" name:"config.proxy_url" category:"config.category.request" desc:"config.proxy_url_desc"`
-	SkipTLSVerify           bool   `json:"skip_tls_verify" default:"false" name:"config.skip_tls_verify" category:"config.category.request" desc:"config.skip_tls_verify_desc"`
+	// request_timeout bounds the full lifecycle of both stream and non-stream requests;
+	// zero disables the timeout. stream_first_byte_timeout independently guards the wait
+	// for the first byte of a stream response.
+	RequestTimeout         int    `json:"request_timeout" default:"0" name:"config.request_timeout" category:"config.category.request" desc:"config.request_timeout_desc" validate:"required,min=0"`
+	StreamFirstByteTimeout int    `json:"stream_first_byte_timeout" default:"0" name:"config.stream_first_byte_timeout" category:"config.category.request" desc:"config.stream_first_byte_timeout_desc" validate:"required,min=0"`
+	ConnectTimeout         int    `json:"connect_timeout" default:"30" name:"config.connect_timeout" category:"config.category.request" desc:"config.connect_timeout_desc" validate:"required,min=1"`
+	IdleConnTimeout        int    `json:"idle_conn_timeout" default:"120" name:"config.idle_conn_timeout" category:"config.category.request" desc:"config.idle_conn_timeout_desc" validate:"required,min=1"`
+	ResponseHeaderTimeout  int    `json:"response_header_timeout" default:"600" name:"config.response_header_timeout" category:"config.category.request" desc:"config.response_header_timeout_desc" validate:"required,min=1"`
+	MaxIdleConns           int    `json:"max_idle_conns" default:"100" name:"config.max_idle_conns" category:"config.category.request" desc:"config.max_idle_conns_desc" validate:"required,min=1"`
+	MaxIdleConnsPerHost    int    `json:"max_idle_conns_per_host" default:"50" name:"config.max_idle_conns_per_host" category:"config.category.request" desc:"config.max_idle_conns_per_host_desc" validate:"required,min=1,ltecsfield=MaxIdleConns"`
+	ProxyURL               string `json:"proxy_url" name:"config.proxy_url" category:"config.category.request" desc:"config.proxy_url_desc"`
+	SkipTLSVerify          bool   `json:"skip_tls_verify" default:"false" name:"config.skip_tls_verify" category:"config.category.request" desc:"config.skip_tls_verify_desc"`
 
 	// Proxy pool health-check settings are managed from More > Proxy Pool only.
 	ProxyPoolTestTargetURL              string `json:"proxy_pool_test_target_url" default:"https://www.gstatic.com/generate_204" name:"config.proxy_pool_test_target_url" category:"-" desc:"config.proxy_pool_test_target_url_desc" validate:"required"`

@@ -201,11 +201,9 @@ var MessagesEnUS = map[string]string{
 
 	// Request settings related
 	"config.request_timeout":                               "Request Timeout (seconds)",
-	"config.request_timeout_desc":                          "Legacy request timeout compatibility field.",
-	"config.non_stream_request_timeout":                    "Non-Stream Request Timeout (seconds)",
-	"config.non_stream_request_timeout_desc":               "Complete lifecycle timeout (seconds) for non-stream forwarded requests.",
-	"config.stream_request_timeout":                        "Stream Request Timeout (seconds)",
-	"config.stream_request_timeout_desc":                   "Complete lifecycle timeout (seconds) for stream forwarded requests; 0 disables the overall stream request timeout.",
+	"config.request_timeout_desc":                          "Complete lifecycle timeout (seconds) for both stream and non-stream forwarded requests, zero disables this timeout.",
+	"config.stream_first_byte_timeout":                     "Stream First Byte Timeout (seconds)",
+	"config.stream_first_byte_timeout_desc":                "Maximum time (seconds) to wait for the first byte of a stream response; 0 disables this timeout.",
 	"config.connect_timeout":                               "Connect Timeout (seconds)",
 	"config.connect_timeout_desc":                          "Timeout (seconds) for establishing new connections to upstream services.",
 	"config.idle_conn_timeout":                             "Idle Connection Timeout (seconds)",

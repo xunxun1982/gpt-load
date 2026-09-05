@@ -227,6 +227,12 @@ func TestDefaultConstants(t *testing.T) {
 	assert.Equal(t, 10, DefaultConstants.DefaultMaxFreeSockets)
 }
 
+func TestStreamFirstByteTimeoutDefaultsToDisabled(t *testing.T) {
+	settings := utils.DefaultSystemSettings()
+
+	assert.Equal(t, 0, settings.StreamFirstByteTimeout)
+}
+
 // TestGetSettings tests getting system settings without initialization
 func TestGetSettings(t *testing.T) {
 	manager := NewSystemSettingsManager()
@@ -234,9 +240,8 @@ func TestGetSettings(t *testing.T) {
 	// Should return default settings when not initialized
 	settings := manager.GetSettings()
 	assert.NotNil(t, settings)
-	assert.Equal(t, 1200, settings.RequestTimeout)
-	assert.Equal(t, 1200, settings.NonStreamRequestTimeout)
-	assert.Equal(t, 600, settings.StreamRequestTimeout)
+	assert.Equal(t, 0, settings.RequestTimeout)
+	assert.Equal(t, 0, settings.StreamFirstByteTimeout)
 	assert.Equal(t, 30, settings.ConnectTimeout)
 }
 
@@ -292,7 +297,7 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "valid integer setting",
 			settings: map[string]any{
-				"non_stream_request_timeout": float64(60),
+				"request_timeout": float64(60),
 			},
 			expectError: false,
 		},
@@ -325,21 +330,21 @@ func TestValidateSettings(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "valid non-stream timeout disabled",
+			name: "valid request timeout disabled",
 			settings: map[string]any{
-				"non_stream_request_timeout": float64(0),
+				"request_timeout": float64(0),
 			},
 			expectError: false,
 		},
 		{
 			name: "valid stream timeout disabled",
 			settings: map[string]any{
-				"stream_request_timeout": float64(0),
+				"stream_first_byte_timeout": float64(0),
 			},
 			expectError: false,
 		},
 		{
-			name: "valid legacy request timeout",
+			name: "valid request timeout",
 			settings: map[string]any{
 				"request_timeout": float64(60),
 			},
@@ -409,15 +414,15 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "invalid type for integer",
 			settings: map[string]any{
-				"non_stream_request_timeout": "not_a_number",
+				"request_timeout": "not_a_number",
 			},
 			expectError: true,
 			errorMsg:    "expected a number",
 		},
 		{
-			name: "non-stream timeout below minimum",
+			name: "request timeout below minimum",
 			settings: map[string]any{
-				"non_stream_request_timeout": float64(-1),
+				"request_timeout": float64(-1),
 			},
 			expectError: true,
 			errorMsg:    "below minimum value",
@@ -433,7 +438,7 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "stream timeout below minimum",
 			settings: map[string]any{
-				"stream_request_timeout": float64(-1),
+				"stream_first_byte_timeout": float64(-1),
 			},
 			expectError: true,
 			errorMsg:    "below minimum value",
@@ -441,7 +446,7 @@ func TestValidateSettings(t *testing.T) {
 		{
 			name: "non-integer float value",
 			settings: map[string]any{
-				"non_stream_request_timeout": float64(30.5),
+				"request_timeout": float64(30.5),
 			},
 			expectError: true,
 			errorMsg:    "must be an integer",
@@ -1029,15 +1034,15 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "valid split timeout overrides",
+			name: "valid request timeout override",
 			config: map[string]any{
-				"non_stream_request_timeout": float64(120),
-				"stream_request_timeout":     float64(0),
+				"request_timeout":           float64(120),
+				"stream_first_byte_timeout": float64(0),
 			},
 			expectError: false,
 		},
 		{
-			name: "valid legacy timeout override",
+			name: "valid request timeout only",
 			config: map[string]any{
 				"request_timeout": float64(120),
 			},
@@ -1061,58 +1066,55 @@ func TestValidateGroupConfigOverrides(t *testing.T) {
 	}
 }
 
-func TestGetEffectiveConfigSplitTimeouts(t *testing.T) {
+func TestGetEffectiveConfigRequestTimeout(t *testing.T) {
 	manager := NewSystemSettingsManager()
 
 	cfg := manager.GetEffectiveConfig(map[string]any{
-		"non_stream_request_timeout": float64(45),
-		"stream_request_timeout":     float64(0),
+		"request_timeout":           float64(45),
+		"stream_first_byte_timeout": float64(0),
 	})
 
-	assert.Equal(t, 45, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 0, cfg.StreamRequestTimeout)
-	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+	assert.Equal(t, 45, cfg.RequestTimeout)
+	assert.Equal(t, 0, cfg.StreamFirstByteTimeout)
 }
 
-func TestGetEffectiveConfigSplitTimeoutsWithNonZeroStreamTimeout(t *testing.T) {
+func TestGetEffectiveConfigRequestTimeoutWithNonZeroStreamTimeout(t *testing.T) {
 	manager := NewSystemSettingsManager()
 
 	cfg := manager.GetEffectiveConfig(map[string]any{
-		"non_stream_request_timeout": float64(45),
-		"stream_request_timeout":     float64(30),
+		"request_timeout":           float64(45),
+		"stream_first_byte_timeout": float64(30),
 	})
 
-	assert.Equal(t, 45, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 30, cfg.StreamRequestTimeout)
-	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+	assert.Equal(t, 45, cfg.RequestTimeout)
+	assert.Equal(t, 30, cfg.StreamFirstByteTimeout)
 }
 
-func TestGetEffectiveConfigLegacyRequestTimeout(t *testing.T) {
+func TestGetEffectiveConfigRequestTimeoutDoesNotBackfillStreamFirstByte(t *testing.T) {
 	manager := NewSystemSettingsManager()
 
+	// request_timeout no longer backfills stream_first_byte_timeout (normalizeSplitRequestTimeouts is removed).
 	cfg := manager.GetEffectiveConfig(map[string]any{
 		"request_timeout": float64(75),
 	})
 
-	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 75, cfg.StreamRequestTimeout)
-	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+	assert.Equal(t, 75, cfg.RequestTimeout)
+	assert.Equal(t, 0, cfg.StreamFirstByteTimeout)
 }
 
-func TestGetEffectiveConfigLegacyRequestTimeoutKeepsExplicitStreamOverride(t *testing.T) {
+func TestGetEffectiveConfigKeepsExplicitStreamOverride(t *testing.T) {
 	manager := NewSystemSettingsManager()
 
 	cfg := manager.GetEffectiveConfig(map[string]any{
-		"request_timeout":        float64(75),
-		"stream_request_timeout": float64(30),
+		"request_timeout":           float64(75),
+		"stream_first_byte_timeout": float64(30),
 	})
 
-	assert.Equal(t, 75, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 30, cfg.StreamRequestTimeout)
-	assert.Equal(t, cfg.NonStreamRequestTimeout, cfg.RequestTimeout)
+	assert.Equal(t, 75, cfg.RequestTimeout)
+	assert.Equal(t, 30, cfg.StreamFirstByteTimeout)
 }
 
-func TestLegacyRequestTimeoutPersistsSplitTimeoutBackfill(t *testing.T) {
+func TestRequestTimeoutPersistsAcrossReload(t *testing.T) {
 	testDB := setupSystemSettingsTestDB(t)
 	require.NoError(t, testDB.Create(&models.SystemSetting{
 		SettingKey:   "request_timeout",
@@ -1132,8 +1134,7 @@ func TestLegacyRequestTimeoutPersistsSplitTimeoutBackfill(t *testing.T) {
 
 	settings := manager.GetSettings()
 	assert.Equal(t, 75, settings.RequestTimeout)
-	assert.Equal(t, 75, settings.NonStreamRequestTimeout)
-	assert.Equal(t, 75, settings.StreamRequestTimeout)
+	assert.Equal(t, 0, settings.StreamFirstByteTimeout)
 
 	require.NoError(t, manager.UpdateSettings(map[string]any{
 		"request_timeout": float64(90),
@@ -1142,24 +1143,315 @@ func TestLegacyRequestTimeoutPersistsSplitTimeoutBackfill(t *testing.T) {
 
 	settings = manager.GetSettings()
 	assert.Equal(t, 90, settings.RequestTimeout)
-	assert.Equal(t, 90, settings.NonStreamRequestTimeout)
-	assert.Equal(t, 90, settings.StreamRequestTimeout)
+	assert.Equal(t, 0, settings.StreamFirstByteTimeout)
 	assertSystemSettingValue(t, testDB, "request_timeout", "90")
-	assertSystemSettingValue(t, testDB, "non_stream_request_timeout", "90")
-	assertSystemSettingValue(t, testDB, "stream_request_timeout", "90")
 }
 
-func TestGetEffectiveConfigExplicitZeroNonStreamTimeoutDisablesLegacyFallback(t *testing.T) {
+// TestLegacyStreamRequestTimeoutMigrationKeepsExistingValue pins the "both keys
+// present" case: stream_request_timeout must be dropped while the already-stored
+// stream_first_byte_timeout value survives untouched. It deterministically mirrors
+// the concurrent-write scenario — the real race protection (conflict updates only
+// updated_at plus an in-transaction re-read) is enforced at the database layer, so
+// no flaky multi-goroutine timing test is used.
+
+func TestLegacyStreamRequestTimeoutMigrationKeepsExistingValue(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "stream_request_timeout",
+		SettingValue: "5",
+	}).Error)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "stream_first_byte_timeout",
+		SettingValue: "60",
+	}).Error)
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.Initialize(memStore, noopSystemSettingsGroupManager{}, false))
+	t.Cleanup(func() {
+		manager.Stop(context.Background())
+	})
+
+	assert.Equal(t, 60, manager.GetSettings().StreamFirstByteTimeout)
+	assertSystemSettingValue(t, testDB, "stream_first_byte_timeout", "60")
+
+	var legacy models.SystemSetting
+	require.ErrorIs(t, testDB.Where("setting_key = ?", "stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+
+}
+
+// TestLegacyStreamRequestTimeoutMigrationBackfillsNewKey pins the normal one-time
+// migration: only the legacy key exists, so its value must be copied to
+// stream_first_byte_timeout and the legacy key removed.
+
+func TestLegacyStreamRequestTimeoutMigrationBackfillsNewKey(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "stream_request_timeout",
+		SettingValue: "5",
+	}).Error)
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.Initialize(memStore, noopSystemSettingsGroupManager{}, false))
+	t.Cleanup(func() {
+		manager.Stop(context.Background())
+	})
+
+	assert.Equal(t, 5, manager.GetSettings().StreamFirstByteTimeout)
+	assertSystemSettingValue(t, testDB, "stream_first_byte_timeout", "5")
+
+	var legacy models.SystemSetting
+	require.ErrorIs(t, testDB.Where("setting_key = ?", "stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+
+}
+
+func TestGetEffectiveConfigExplicitZeroRequestTimeout(t *testing.T) {
 	manager := NewSystemSettingsManager()
 
 	cfg := manager.GetEffectiveConfig(map[string]any{
-		"request_timeout":            float64(75),
-		"non_stream_request_timeout": float64(0),
+		"request_timeout": float64(0),
 	})
 
-	assert.Equal(t, 0, cfg.NonStreamRequestTimeout)
-	assert.Equal(t, 600, cfg.StreamRequestTimeout)
 	assert.Equal(t, 0, cfg.RequestTimeout)
+	assert.Equal(t, 0, cfg.StreamFirstByteTimeout)
+}
+
+// TestLegacyNonStreamRequestTimeoutMigrationBackfillsRequestTimeout pins the
+// one-time non-stream key rename: request_timeout now bounds both stream and
+// non-stream request lifecycles, so the stored non_stream value must be copied
+// over and the legacy key removed.
+
+func TestLegacyNonStreamRequestTimeoutMigrationBackfillsRequestTimeout(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "non_stream_request_timeout",
+		SettingValue: "45",
+	}).Error)
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.Initialize(memStore, noopSystemSettingsGroupManager{}, false))
+	t.Cleanup(func() {
+		manager.Stop(context.Background())
+	})
+
+	assert.Equal(t, 45, manager.GetSettings().RequestTimeout)
+	assertSystemSettingValue(t, testDB, "request_timeout", "45")
+
+	var legacy models.SystemSetting
+	require.ErrorIs(t, testDB.Where("setting_key = ?", "non_stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+}
+
+// TestLegacyNonStreamRequestTimeoutMigrationKeepsExistingValue pins the "both keys
+// present" case: request_timeout (already written by the legacy split-timeout sync)
+// is authoritative, the legacy non_stream key is dropped and the stored value survives.
+
+// TestEnsureSettingsInitializedMigratesLegacyTimeoutKeys pins the startup ordering
+// (CodeRabbit): EnsureSettingsInitialized runs before the SystemSettingsManager
+// loader and inserts default rows for request_timeout/stream_first_byte_timeout.
+// Without migrating legacy keys first, the loader would see both key forms and
+// delete the legacy key, losing the user's custom values to the defaults. Both
+// legacy keys must be migrated (value preserved), not deleted by a conflict.
+func TestEnsureSettingsInitializedMigratesLegacyTimeoutKeys(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+
+	// Simulate a pre-upgrade database holding only legacy custom values.
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "non_stream_request_timeout",
+		SettingValue: "300",
+	}).Error)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "stream_request_timeout",
+		SettingValue: "120",
+	}).Error)
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.EnsureSettingsInitialized(types.AuthConfig{}))
+
+	// Custom legacy values must survive as the replacement keys.
+	assertSystemSettingValue(t, testDB, "request_timeout", "300")
+	assertSystemSettingValue(t, testDB, "stream_first_byte_timeout", "120")
+
+	// Legacy keys must be gone.
+	for _, legacyKey := range []string{"non_stream_request_timeout", "stream_request_timeout"} {
+		var legacy models.SystemSetting
+		require.ErrorIs(t, testDB.Where("setting_key = ?", legacyKey).First(&legacy).Error, gorm.ErrRecordNotFound,
+			"legacy key %s must be removed after migration", legacyKey)
+	}
+}
+
+// TestEnsureSettingsInitializedLegacyConflictKeepsReplacement pins the "both key
+// forms exist" case during initialization: when the replacement key already holds
+// a value, EnsureSettingsInitialized must drop the legacy key and keep the
+// replacement value (no unconditional legacy migration overwriting it).
+func TestEnsureSettingsInitializedLegacyConflictKeepsReplacement(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "request_timeout",
+		SettingValue: "60",
+	}).Error)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "non_stream_request_timeout",
+		SettingValue: "300",
+	}).Error)
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.EnsureSettingsInitialized(types.AuthConfig{}))
+
+	assertSystemSettingValue(t, testDB, "request_timeout", "60")
+	var legacy models.SystemSetting
+	require.ErrorIs(t, testDB.Where("setting_key = ?", "non_stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+}
+
+// TestMigrateSettingKeyInTx pins the transactional rename helper semantics
+// (CodeRabbit race fix): the legacy value is read with a locking SELECT inside
+// the transaction (never from a pre-transaction snapshot), so the migrated value
+// is whatever the row holds when the transaction starts; a source row that has
+// already vanished is a no-op instead of a spurious error.
+func TestMigrateSettingKeyInTx(t *testing.T) {
+	t.Run("migrates the value committed before the locking read", func(t *testing.T) {
+		testDB := setupSystemSettingsTestDB(t)
+		require.NoError(t, testDB.Create(&models.SystemSetting{
+			SettingKey:   "non_stream_request_timeout",
+			SettingValue: "300",
+		}).Error)
+
+		// A concurrent writer lands BEFORE the migration transaction starts:
+		// its value must be the one migrated (proving the snapshot from the
+		// pre-transaction read is no longer used).
+		require.NoError(t, testDB.Model(&models.SystemSetting{}).
+			Where("setting_key = ?", "non_stream_request_timeout").
+			Update("setting_value", "999").Error)
+
+		var value string
+		err := testDB.Transaction(func(tx *gorm.DB) error {
+			var innerErr error
+			value, _, innerErr = migrateSettingKeyInTx(tx, "non_stream_request_timeout", "request_timeout")
+			return innerErr
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "999", value)
+		assertSystemSettingValue(t, testDB, "request_timeout", "999")
+		var legacy models.SystemSetting
+		require.ErrorIs(t, testDB.Where("setting_key = ?", "non_stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+	})
+
+	t.Run("missing source key is a no-op", func(t *testing.T) {
+		testDB := setupSystemSettingsTestDB(t)
+
+		var migrated bool
+		err := testDB.Transaction(func(tx *gorm.DB) error {
+			var innerErr error
+			_, migrated, innerErr = migrateSettingKeyInTx(tx, "non_stream_request_timeout", "request_timeout")
+			return innerErr
+		})
+		require.NoError(t, err)
+		assert.False(t, migrated, "a missing source key must not be reported as migrated")
+		var count int64
+		require.NoError(t, testDB.Model(&models.SystemSetting{}).Count(&count).Error)
+		assert.Zero(t, count, "a missing source key must not create any row")
+	})
+
+	t.Run("peer migration hydrates the replacement value", func(t *testing.T) {
+		testDB := setupSystemSettingsTestDB(t)
+		require.NoError(t, testDB.Create(&models.SystemSetting{
+			SettingKey:   "non_stream_request_timeout",
+			SettingValue: "300",
+		}).Error)
+
+		// First call performs the migration (as this instance would).
+		var value string
+		var migrated bool
+		err := testDB.Transaction(func(tx *gorm.DB) error {
+			var innerErr error
+			value, migrated, innerErr = migrateSettingKeyInTx(tx, "non_stream_request_timeout", "request_timeout")
+			return innerErr
+		})
+		require.NoError(t, err)
+		assert.True(t, migrated)
+		assert.Equal(t, "300", value)
+
+		// A peer loader then runs with a stale settingsMap snapshot (it still
+		// saw the legacy key). Its transaction finds the source row already
+		// gone: it must hydrate the replacement value (migrated=true) so this
+		// load does not fall back to the default while the database holds the
+		// migrated value. (CodeRabbit)
+		err = testDB.Transaction(func(tx *gorm.DB) error {
+			var innerErr error
+			value, migrated, innerErr = migrateSettingKeyInTx(tx, "non_stream_request_timeout", "request_timeout")
+			return innerErr
+		})
+		require.NoError(t, err)
+		assert.True(t, migrated, "a peer-migrated replacement row must be hydrated")
+		assert.Equal(t, "300", value, "the peer's migrated value must be retained")
+	})
+
+	t.Run("conflicting replacement keeps its value and drops the legacy row", func(t *testing.T) {
+		testDB := setupSystemSettingsTestDB(t)
+		require.NoError(t, testDB.Create(&models.SystemSetting{
+			SettingKey:   "request_timeout",
+			SettingValue: "60",
+		}).Error)
+		require.NoError(t, testDB.Create(&models.SystemSetting{
+			SettingKey:   "non_stream_request_timeout",
+			SettingValue: "300",
+		}).Error)
+
+		var value string
+		err := testDB.Transaction(func(tx *gorm.DB) error {
+			var innerErr error
+			value, _, innerErr = migrateSettingKeyInTx(tx, "non_stream_request_timeout", "request_timeout")
+			return innerErr
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "60", value, "the existing replacement value stays authoritative on conflict")
+		assertSystemSettingValue(t, testDB, "request_timeout", "60")
+		var legacy models.SystemSetting
+		require.ErrorIs(t, testDB.Where("setting_key = ?", "non_stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
+	})
+}
+
+func TestLegacyNonStreamRequestTimeoutMigrationKeepsExistingValue(t *testing.T) {
+	testDB := setupSystemSettingsTestDB(t)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "request_timeout",
+		SettingValue: "60",
+	}).Error)
+	require.NoError(t, testDB.Create(&models.SystemSetting{
+		SettingKey:   "non_stream_request_timeout",
+		SettingValue: "45",
+	}).Error)
+
+	memStore := store.NewMemoryStore()
+	t.Cleanup(func() {
+		require.NoError(t, memStore.Close())
+	})
+
+	manager := NewSystemSettingsManager()
+	require.NoError(t, manager.Initialize(memStore, noopSystemSettingsGroupManager{}, false))
+	t.Cleanup(func() {
+		manager.Stop(context.Background())
+	})
+
+	assert.Equal(t, 60, manager.GetSettings().RequestTimeout)
+	assertSystemSettingValue(t, testDB, "request_timeout", "60")
+
+	var legacy models.SystemSetting
+	require.ErrorIs(t, testDB.Where("setting_key = ?", "non_stream_request_timeout").First(&legacy).Error, gorm.ErrRecordNotFound)
 }
 
 func TestGetEffectiveConfigRetryDelayOverride(t *testing.T) {

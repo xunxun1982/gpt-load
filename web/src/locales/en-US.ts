@@ -857,6 +857,7 @@ export default {
     nonStream: "Non-Stream",
     statusCode: "Status Code",
     duration: "Duration(ms)",
+    firstByteDuration: "First Byte(ms)",
     model: "Model",
     requestedModel: "Requested Model",
     sourceIP: "Source IP",

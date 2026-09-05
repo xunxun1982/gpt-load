@@ -1978,7 +1978,7 @@ func (ps *ProxyServer) handleForceCodexNormalResponse(c *gin.Context, resp *http
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(out, maxResponseCaptureBytes))
 	}
 	clearUpstreamEncodingHeaders(c)
-	c.Data(resp.StatusCode, "application/json", out)
+	writeDataMarkingFirstByte(c, resp.StatusCode, "application/json", out)
 }
 
 func (ps *ProxyServer) handleForceCodexStreamingResponse(c *gin.Context, resp *http.Response) {
@@ -2060,8 +2060,11 @@ func writeForceCodexCollectedStreamEvents(c *gin.Context, streamResp *CodexRespo
 				captured.WriteString(chunk)
 			}
 		}
-		_, err = c.Writer.Write([]byte(chunk))
-		return err
+		n, werr := c.Writer.Write([]byte(chunk))
+		if werr == nil && n > 0 {
+			markFirstByte(c)
+		}
+		return werr
 	}
 
 	if err := writeEvent("response.created", map[string]any{
@@ -2103,8 +2106,10 @@ func writeForceCodexCollectedStreamEvents(c *gin.Context, streamResp *CodexRespo
 			captured.WriteString(doneChunk)
 		}
 	}
-	if _, err := c.Writer.Write([]byte(doneChunk)); err != nil {
+	if n, err := c.Writer.Write([]byte(doneChunk)); err != nil {
 		return err
+	} else if n > 0 {
+		markFirstByte(c)
 	}
 	if shouldCaptureResponse(c) && captured.Len() > 0 {
 		c.Set("response_body", sanitizeAndTruncateStringForLog(captured.String(), maxResponseCaptureBytes))
@@ -2552,7 +2557,7 @@ func rawCodexErrorResponse(statusCode int, body []byte) *CodexResponse {
 
 func writeForceCodexGatewayError(c *gin.Context, message string) {
 	clearUpstreamEncodingHeaders(c)
-	c.JSON(http.StatusBadGateway, gin.H{
+	writeJSONMarkingFirstByte(c, http.StatusBadGateway, gin.H{
 		"error": gin.H{
 			"message": message,
 			"type":    "server_error",
@@ -2567,5 +2572,8 @@ func writeForceCodexPassthrough(c *gin.Context, resp *http.Response, body []byte
 	if shouldCaptureResponse(c) {
 		c.Set("response_body", sanitizeAndTruncateBytesForLog(body, maxResponseCaptureBytes))
 	}
-	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	// writeDataMarkingFirstByte records first-byte delivery only when the
+	// write actually succeeds with non-empty bytes; an empty passthrough body
+	// keeps first_byte_duration_ms NULL.
+	writeDataMarkingFirstByte(c, resp.StatusCode, resp.Header.Get("Content-Type"), body)
 }

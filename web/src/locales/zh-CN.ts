@@ -814,6 +814,7 @@ export default {
     nonStream: "非流",
     statusCode: "状态码",
     duration: "耗时(ms)",
+    firstByteDuration: "首字耗时(ms)",
     model: "模型",
     requestedModel: "请求模型",
     sourceIP: "源IP",
