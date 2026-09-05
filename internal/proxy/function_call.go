@@ -2010,6 +2010,20 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 		return
 	}
 
+	// stream_first_byte_timeout must also bound the first body read on the
+	// function-call path: the schema readers below can block on a stalled
+	// upstream that sent headers but no body, and request_timeout does not
+	// bound them when disabled. Mirror handleStreamingResponse: wrap the raw
+	// body BEFORE decompression and schema dispatch so every reader inherits
+	// the deadline, which is cleared once the first non-empty chunk arrives
+	// (see firstByteDeadlineBody). The deferred Close is idempotent and also
+	// stops the deadline timer.
+	if firstByteTimeout, _ := getEffectiveSSETimeouts(c); firstByteTimeout > 0 {
+		deadlineBody := newFirstByteDeadlineBody(resp.Body, firstByteTimeout)
+		resp.Body = deadlineBody
+		defer func() { _ = deadlineBody.Close() }()
+	}
+
 	clearUpstreamEncodingHeaders(c)
 	streamBody := resp.Body
 	if contentEncoding := resp.Header.Get("Content-Encoding"); contentEncoding != "" {
@@ -2150,8 +2164,14 @@ func (ps *ProxyServer) handleFunctionCallStreamingResponse(c *gin.Context, resp 
 					}
 					break
 				}
-				// Non-EOF error: abort streaming.
+				// Non-EOF error: abort streaming. A first-byte timeout fired
+				// before any byte was written, so reply 504 instead of letting
+				// gin commit an empty 200 (mirrors handleStreamingResponse).
 				logUpstreamError("reading from upstream", err)
+				if errors.Is(err, errStreamFirstByteTimeout) {
+					markResponseProcessingFailed(c)
+					writeStreamFirstByteTimeout(c)
+				}
 				return
 			}
 
@@ -2698,7 +2718,14 @@ func (ps *ProxyServer) handleFunctionCallResponsesStreamingBody(c *gin.Context, 
 	if err != nil {
 		logUpstreamError("reading Responses function call stream", err)
 		markResponseProcessingFailed(c)
-		writeUpstreamErrorBodyReadFailure(c)
+		// A first-byte timeout fires before any byte was written, so the
+		// status is still mutable: reply 504 (mirrors handleStreamingResponse)
+		// instead of a generic 502.
+		if errors.Is(err, errStreamFirstByteTimeout) {
+			writeStreamFirstByteTimeout(c)
+		} else {
+			writeUpstreamErrorBodyReadFailure(c)
+		}
 		return
 	}
 	if result.Passthrough != nil {
@@ -2905,7 +2932,15 @@ func (ps *ProxyServer) handleFunctionCallAnthropicStreamingBody(c *gin.Context, 
 	result, err := readFunctionCallSSEEvents(body)
 	if err != nil {
 		logUpstreamError("reading Anthropic function call stream", err)
-		writeUpstreamErrorBodyReadFailure(c)
+		// A first-byte timeout fires before any byte was written, so the
+		// status is still mutable: reply 504 (mirrors handleStreamingResponse)
+		// instead of a generic 502.
+		if errors.Is(err, errStreamFirstByteTimeout) {
+			markResponseProcessingFailed(c)
+			writeStreamFirstByteTimeout(c)
+		} else {
+			writeUpstreamErrorBodyReadFailure(c)
+		}
 		return
 	}
 	if result.Passthrough != nil {

@@ -2201,6 +2201,68 @@ func TestHandleStreamingResponseFirstByteTimeoutCoversBodyRead(t *testing.T) {
 	}
 }
 
+// TestHandleFunctionCallStreamingResponseFirstByteTimeout verifies that the
+// function-call streaming path (trigger signal present) wraps the upstream
+// body with the first-byte deadline too: a stalled upstream that sent headers
+// but no body must fail fast with a 504 instead of blocking the schema readers
+// until request_timeout (or forever when it is disabled). All three schema
+// branches (chat raw reader, Responses SSE collector, Anthropic SSE collector)
+// must propagate the timeout as a 504. (CodeRabbit)
+func TestHandleFunctionCallStreamingResponseFirstByteTimeout(t *testing.T) {
+	schemas := map[string]string{
+		"chat raw reader":     "openai",
+		"responses collector": "openai-response",
+		"anthropic collector": "anthropic",
+	}
+	for name, channelType := range schemas {
+		t.Run(name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			// Exhaust the remaining first-byte budget so the wrapper arms a 1ms
+			// fast-fail deadline (see getEffectiveSSETimeouts).
+			c.Set("group", &models.Group{
+				ChannelType:     channelType,
+				EffectiveConfig: types.SystemSettings{StreamFirstByteTimeout: 1},
+			})
+			c.Set(ctxKeyUpstreamRequestStart, time.Now().Add(-2*time.Second))
+			c.Set(ctxKeyTriggerSignal, "test-trigger")
+
+			done := make(chan struct{})
+			start := time.Now()
+			go func() {
+				defer close(done)
+				resp := &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       newBlockingBody(),
+				}
+				(&ProxyServer{}).handleFunctionCallStreamingResponse(c, resp)
+			}()
+
+			select {
+			case <-done:
+				elapsed := time.Since(start)
+				if elapsed > 800*time.Millisecond {
+					t.Fatalf("handleFunctionCallStreamingResponse blocked %dms on a stalled body instead of honoring stream_first_byte_timeout", elapsed.Milliseconds())
+				}
+				// The function-call readers see errStreamFirstByteTimeout and must
+				// reply 504 via writeStreamFirstByteTimeout (no byte was written, so
+				// the status is still mutable) and mark the request as failed.
+				assert.Equal(t, http.StatusGatewayTimeout, w.Code, "function-call first-byte timeout must reply 504")
+				logicalStatus, _, ok := logicalStatusFromContext(c)
+				assert.True(t, ok, "function-call first-byte timeout must set the logical failure context")
+				assert.Equal(t, http.StatusGatewayTimeout, logicalStatus, "logical status must be 504 so logRequest records a failure")
+				_, exists := c.Get(ctxKeyResponseProcessingFailed)
+				assert.True(t, exists, "stalled first body read must mark response processing failed")
+			case <-time.After(3 * time.Second):
+				t.Fatal("handleFunctionCallStreamingResponse did not return within 3s; first body read was not bounded by the remaining first-byte budget")
+			}
+		})
+	}
+}
+
 // TestHandleStreamingResponseDisabledFirstByteTimeoutKeepsNormalStream verifies
 // that when stream_first_byte_timeout is disabled (0), the deadline wrapper is
 // not installed and a normal stream flows through unchanged (request_timeout
