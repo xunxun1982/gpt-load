@@ -456,7 +456,7 @@ const allColumnConfigs: ColumnConfig[] = [
     render: (row: LogRow) =>
       row.first_byte_duration_ms === null || row.first_byte_duration_ms === undefined
         ? "-"
-        : `${row.first_byte_duration_ms}ms`,
+        : `${row.first_byte_duration_ms}`,
   },
   {
     key: "duration_ms",
@@ -963,7 +963,7 @@ const deselectAllColumns = () => {
                     selectedLog.first_byte_duration_ms === null ||
                     selectedLog.first_byte_duration_ms === undefined
                       ? "-"
-                      : selectedLog.first_byte_duration_ms + "ms"
+                      : selectedLog.first_byte_duration_ms
                   }}
                 </span>
               </div>

@@ -1092,7 +1092,9 @@ func TestManagerDefaultValues(t *testing.T) {
 	assert.Equal(t, "0.0.0.0", serverConfig.Host)
 	assert.Equal(t, 3001, serverConfig.Port)
 	assert.Equal(t, 300, serverConfig.ReadTimeout) // Updated to 300s to support large file uploads
-	assert.Equal(t, 600, serverConfig.WriteTimeout)
+	// WriteTimeout is an absolute per-request deadline (1800s = 30 min) that
+	// leaves headroom above request_timeout while bounding slow clients.
+	assert.Equal(t, 1800, serverConfig.WriteTimeout)
 	assert.Equal(t, 120, serverConfig.IdleTimeout)
 
 	perfConfig := manager.GetPerformanceConfig()
